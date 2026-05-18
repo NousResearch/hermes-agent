@@ -23,6 +23,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_VIDEO_TYPES,
 )
 
 
@@ -117,6 +118,12 @@ def _make_update(msg):
     return update
 
 
+def _make_video(file_obj=None):
+    video = MagicMock()
+    video.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"video-bytes"))
+    return video
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -132,9 +139,12 @@ def adapter():
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point document cache to tmp_path so tests don't touch ~/.hermes."""
+    """Point document/video cache to tmp_path so tests don't touch ~/.hermes."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
 
 
@@ -248,6 +258,43 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/zip"]
 
     @pytest.mark.asyncio
+    async def test_png_document_is_routed_as_image(self, adapter):
+        """Telegram documents that are really PNGs should use the image path."""
+        file_obj = _make_file_obj(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        doc = _make_document(file_name="screenshot.png", mime_type="image/png", file_size=9, file_obj=file_obj)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch.object(adapter, "_photo_batch_key", return_value="batch-1"), patch.object(
+            adapter, "_enqueue_photo_event"
+        ) as enqueue_mock:
+            await adapter._handle_media_message(update, MagicMock())
+
+        enqueue_mock.assert_called_once()
+        event = enqueue_mock.call_args.args[1]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls and event.media_urls[0].endswith(".png")
+        assert event.media_types == ["image/png"]
+        assert adapter.handle_message.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_spoofed_png_document_falls_back_with_error(self, adapter):
+        """A .png filename with non-image bytes should fail clearly, not disappear."""
+        file_obj = _make_file_obj(b"not-a-real-image")
+        doc = _make_document(file_name="spoofed.png", mime_type="image/png", file_size=16, file_obj=file_obj)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch.object(adapter, "_photo_batch_key", return_value="batch-2"), patch.object(
+            adapter, "_enqueue_photo_event"
+        ) as enqueue_mock:
+            await adapter._handle_media_message(update, MagicMock())
+
+        enqueue_mock.assert_not_called()
+        event = adapter.handle_message.call_args[0][0]
+        assert "could not be read as an image" in event.text
+
+    @pytest.mark.asyncio
     async def test_oversized_file_rejected(self, adapter):
         doc = _make_document(file_name="huge.pdf", file_size=25 * 1024 * 1024)
         msg = _make_message(document=doc)
@@ -348,6 +395,37 @@ class TestDocumentDownloadBlock:
         adapter.handle_message.assert_called_once()
 
 
+class TestVideoDownloadBlock:
+    @pytest.mark.asyncio
+    async def test_native_video_is_cached(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp4")
+        file_obj.file_path = "videos/clip.mp4"
+        msg = _make_message()
+        msg.video = _make_video(file_obj)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
+    async def test_mp4_document_is_treated_as_video(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp4-doc")
+        doc = _make_document(file_name="good.mp4", mime_type="video/mp4", file_size=1024, file_obj=file_obj)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+
 # ---------------------------------------------------------------------------
 # TestMediaGroups — media group (album) buffering
 # ---------------------------------------------------------------------------
@@ -410,6 +488,87 @@ class TestMediaGroups:
         assert adapter._media_group_events == {}
         assert adapter._media_group_tasks == {}
         adapter.handle_message.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# TestSendVoice — outbound audio delivery
+# ---------------------------------------------------------------------------
+
+class TestSendVoice:
+    """Tests for TelegramAdapter.send_voice() routing across audio formats."""
+
+    @pytest.fixture()
+    def connected_adapter(self, adapter):
+        """Adapter with a mock bot attached."""
+        bot = AsyncMock()
+        adapter._bot = bot
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_flac_falls_back_to_document(self, connected_adapter, tmp_path):
+        """Telegram sendAudio does not accept FLAC — must fall back to sendDocument."""
+        audio_file = tmp_path / "clip.flac"
+        audio_file.write_bytes(b"fLaC" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 101
+        connected_adapter._bot.send_voice = AsyncMock()
+        connected_adapter._bot.send_audio = AsyncMock()
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+            caption="Audio",
+        )
+
+        assert result.success is True
+        assert result.message_id == "101"
+        connected_adapter._bot.send_document.assert_awaited_once()
+        connected_adapter._bot.send_audio.assert_not_awaited()
+        connected_adapter._bot.send_voice.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_wav_falls_back_to_document(self, connected_adapter, tmp_path):
+        """Telegram sendAudio does not accept WAV — must fall back to sendDocument."""
+        audio_file = tmp_path / "clip.wav"
+        audio_file.write_bytes(b"RIFF" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 102
+        connected_adapter._bot.send_voice = AsyncMock()
+        connected_adapter._bot.send_audio = AsyncMock()
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+        )
+
+        assert result.success is True
+        connected_adapter._bot.send_document.assert_awaited_once()
+        connected_adapter._bot.send_audio.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mp3_routes_to_send_audio(self, connected_adapter, tmp_path):
+        """MP3 is Telegram-sendAudio-compatible."""
+        audio_file = tmp_path / "clip.mp3"
+        audio_file.write_bytes(b"ID3" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 103
+        connected_adapter._bot.send_voice = AsyncMock()
+        connected_adapter._bot.send_audio = AsyncMock(return_value=mock_msg)
+        connected_adapter._bot.send_document = AsyncMock()
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+        )
+
+        assert result.success is True
+        connected_adapter._bot.send_audio.assert_awaited_once()
+        connected_adapter._bot.send_document.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +640,32 @@ class TestSendDocument:
 
         assert result.success is False
         assert "not found" in result.error.lower()
+        connected_adapter._bot.send_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_document_workspace_path_has_docker_hint(self, connected_adapter):
+        """Container-local-looking paths get a more actionable Docker hint."""
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path="/workspace/report.txt",
+        )
+
+        assert result.success is False
+        assert "docker sandbox" in result.error.lower()
+        assert "host-visible path" in result.error.lower()
+        connected_adapter._bot.send_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_document_outputs_path_has_docker_hint(self, connected_adapter):
+        """Legacy /outputs paths also get the Docker hint."""
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path="/outputs/report.txt",
+        )
+
+        assert result.success is False
+        assert "docker sandbox" in result.error.lower()
+        assert "host-visible path" in result.error.lower()
         connected_adapter._bot.send_document.assert_not_called()
 
     @pytest.mark.asyncio
@@ -664,6 +849,17 @@ class TestSendVideo:
 
         assert result.success is False
         assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_video_workspace_path_has_docker_hint(self, connected_adapter):
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path="/workspace/video.mp4",
+        )
+
+        assert result.success is False
+        assert "docker sandbox" in result.error.lower()
+        assert "host-visible path" in result.error.lower()
 
     @pytest.mark.asyncio
     async def test_send_video_not_connected(self, adapter):

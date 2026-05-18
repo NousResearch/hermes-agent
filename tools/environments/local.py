@@ -1,11 +1,14 @@
-"""Local execution environment with interrupt support and non-blocking I/O."""
+"""Local execution environment — spawn-per-call with session snapshot."""
 
-import glob
+import logging
 import os
 import shutil
 import subprocess
-import threading
+import tempfile
 import time
+from pathlib import Path
+
+from tools.environments.base import BaseEnvironment, _pipe_stdin
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.persistent_shell import PersistentShellMixin
@@ -20,28 +23,13 @@ from tools.environments.platform_shell_compat import (
 )
 from tools.interrupt import is_interrupted
 
-# Unique marker to isolate real command output from shell init/exit noise.
-# printf (no trailing newline) keeps the boundaries clean for splitting.
-_OUTPUT_FENCE = "__HERMES_FENCE_a9f7b3__"
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
-# These are loaded from ~/.hermes/.env for Hermes' own LLM/provider calls
-# but can break external CLIs (e.g. codex) that also honor them.
-# See: https://github.com/NousResearch/hermes-agent/issues/1002
-#
-# Built dynamically from the provider registry so new providers are
-# automatically covered without manual blocklist maintenance.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
 
 def _build_provider_env_blocklist() -> frozenset:
-    """Derive the blocklist from provider, tool, and gateway config.
-
-    Automatically picks up api_key_env_vars and base_url_env_var from
-    every registered provider, plus tool/messaging env vars from the
-    optional config registry, so new Hermes-managed secrets are blocked
-    in subprocesses without having to maintain multiple static lists.
-    """
+    """Derive the blocklist from provider, tool, and gateway config."""
     blocked: set[str] = set()
 
     try:
@@ -64,33 +52,30 @@ def _build_provider_env_blocklist() -> frozenset:
     except ImportError:
         pass
 
-    # Vars not covered above but still Hermes-internal / conflict-prone.
     blocked.update({
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
-        "OPENAI_API_BASE",         # legacy alias
+        "OPENAI_API_BASE",
         "OPENAI_ORG_ID",
         "OPENAI_ORGANIZATION",
         "OPENROUTER_API_KEY",
         "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_TOKEN",         # OAuth token (not in registry as env var)
+        "ANTHROPIC_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
-        # Expanded isolation for other major providers (Issue #1002)
-        "GOOGLE_API_KEY",          # Gemini / Google AI Studio
-        "DEEPSEEK_API_KEY",        # DeepSeek
-        "MISTRAL_API_KEY",         # Mistral AI
-        "GROQ_API_KEY",            # Groq
-        "TOGETHER_API_KEY",        # Together AI
-        "PERPLEXITY_API_KEY",      # Perplexity
-        "COHERE_API_KEY",          # Cohere
-        "FIREWORKS_API_KEY",       # Fireworks AI
-        "XAI_API_KEY",             # xAI (Grok)
-        "HELICONE_API_KEY",        # LLM Observability proxy
+        "GOOGLE_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "MISTRAL_API_KEY",
+        "GROQ_API_KEY",
+        "TOGETHER_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "COHERE_API_KEY",
+        "FIREWORKS_API_KEY",
+        "XAI_API_KEY",
+        "HELICONE_API_KEY",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
-        # Gateway/runtime config not represented in OPTIONAL_ENV_VARS.
         "TELEGRAM_HOME_CHANNEL",
         "TELEGRAM_HOME_CHANNEL_NAME",
         "DISCORD_HOME_CHANNEL",
@@ -120,15 +105,17 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
         "GATEWAY_ALLOWED_USERS",
-        # Skills Hub / GitHub app auth paths and aliases.
         "GH_TOKEN",
         "GITHUB_APP_ID",
         "GITHUB_APP_PRIVATE_KEY_PATH",
         "GITHUB_APP_INSTALLATION_ID",
-        # Remote sandbox backend credentials.
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
     })
     return frozenset(blocked)
 
@@ -136,14 +123,20 @@ def _build_provider_env_blocklist() -> frozenset:
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Hermes-managed secrets from a subprocess environment.
+def _inject_context_hermes_home(env: dict) -> None:
+    """Bridge the context-local Hermes home override into subprocess env."""
+    try:
+        from hermes_constants import get_hermes_home_override
 
-    `_HERMES_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
-    intentionally for callers that truly need it.  Vars registered via
-    :mod:`tools.env_passthrough` (skill-declared or user-configured) also
-    bypass the blocklist.
-    """
+        value = get_hermes_home_override()
+        if value:
+            env["HERMES_HOME"] = value
+    except Exception:
+        pass
+
+
+def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
+    """Filter Hermes-managed secrets from a subprocess environment."""
     try:
         from tools.env_passthrough import is_env_passthrough as _is_passthrough
     except Exception:
@@ -164,6 +157,14 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
+    _inject_context_hermes_home(sanitized)
+
+    # Per-profile HOME isolation for background processes (same as _make_run_env).
+    from hermes_constants import get_subprocess_home
+    _profile_home = get_subprocess_home()
+    if _profile_home:
+        sanitized["HOME"] = _profile_home
+
     return sanitized
 
 
@@ -179,26 +180,41 @@ def _find_bash() -> str:
             shutil.which("bash")
             or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
             or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
-            or os.environ.get("SHELL")  # last resort: whatever they have
+            or os.environ.get("SHELL")
             or "/bin/sh"
         )
 
-    # Windows: look for Git Bash (installed with Git for Windows).
-    # Allow override via env var (same pattern as Claude Code).
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
         return custom
 
-    # shutil.which finds bash.exe if Git\bin is on PATH
+    # Prefer our own portable Git install first — this way a broken or
+    # partially-uninstalled system Git can't hijack the bash lookup.  The
+    # install.ps1 installer always drops portable Git here when the user
+    # didn't already have a working system Git.
+    #
+    # Layouts (both checked so upgrades between MinGit and PortableGit
+    # installs work transparently):
+    #   PortableGit: %LOCALAPPDATA%\hermes\git\bin\bash.exe   (primary)
+    #   MinGit:      %LOCALAPPDATA%\hermes\git\usr\bin\bash.exe (legacy/32-bit fallback)
+    _local_appdata = os.environ.get("LOCALAPPDATA", "")
+    _hermes_portable_git = os.path.join(_local_appdata, "hermes", "git") if _local_appdata else ""
+    if _hermes_portable_git:
+        for candidate in (
+            os.path.join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
+            os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
+        ):
+            if os.path.isfile(candidate):
+                return candidate
+
     found = shutil.which("bash")
     if found:
         return found
 
-    # Check common Git for Windows install locations
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
+        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
@@ -285,55 +301,167 @@ def _make_run_env(env: dict) -> dict:
     return run_env
 
 
-def _extract_fenced_output(raw: str) -> str:
-    """Extract real command output from between fence markers.
+def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
+    """Return (shell_init_files, auto_source_bashrc) from config.yaml.
 
-    The execute() method wraps each command with printf(FENCE) markers.
-    This function finds the first and last fence and returns only the
-    content between them, which is the actual command output free of
-    any shell init/exit noise.
-
-    Falls back to pattern-based _clean_shell_noise if fences are missing.
+    Best-effort — returns sensible defaults on any failure so terminal
+    execution never breaks because the config file is unreadable.
     """
-    first = raw.find(_OUTPUT_FENCE)
-    if first == -1:
-        return _clean_shell_noise(raw)
+    try:
+        from hermes_cli.config import load_config
 
-    start = first + len(_OUTPUT_FENCE)
-    last = raw.rfind(_OUTPUT_FENCE)
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal") or {}
+        files = terminal_cfg.get("shell_init_files") or []
+        if not isinstance(files, list):
+            files = []
+        auto_bashrc = bool(terminal_cfg.get("auto_source_bashrc", True))
+        return [str(f) for f in files if f], auto_bashrc
+    except Exception:
+        return [], True
 
-    if last <= first:
-        # Only start fence found (e.g. user command called `exit`)
-        return _clean_shell_noise(raw[start:])
 
-    return raw[start:last]
+def _resolve_shell_init_files() -> list[str]:
+    """Resolve the list of files to source before the login-shell snapshot.
+
+    Expands ``~`` and ``${VAR}`` references and drops anything that doesn't
+    exist on disk, so a missing ``~/.bashrc`` never breaks the snapshot.
+    The ``auto_source_bashrc`` path runs only when the user hasn't supplied
+    an explicit list — once they have, Hermes trusts them.
+    """
+    explicit, auto_bashrc = _read_terminal_shell_init_config()
+
+    candidates: list[str] = []
+    if explicit:
+        candidates.extend(explicit)
+    elif auto_bashrc and not _IS_WINDOWS:
+        # Build a login-shell-ish source list so tools like n / nvm / asdf /
+        # pyenv that self-install into the user's shell rc land on PATH in
+        # the captured snapshot.
+        #
+        # ~/.profile and ~/.bash_profile run first because they have no
+        # interactivity guard — installers like ``n`` and ``nvm`` append
+        # their PATH export there on most distros, and a non-interactive
+        # ``. ~/.profile`` picks that up.
+        #
+        # ~/.bashrc runs last. On Debian/Ubuntu the default bashrc starts
+        # with ``case $- in *i*) ;; *) return;; esac`` and exits early
+        # when sourced non-interactively, which is why sourcing bashrc
+        # alone misses nvm/n PATH additions placed below that guard. We
+        # still include it so users who put PATH logic in bashrc (and
+        # stripped the guard, or never had one) keep working.
+        candidates.extend(["~/.profile", "~/.bash_profile", "~/.bashrc"])
+
+    resolved: list[str] = []
+    for raw in candidates:
+        try:
+            path = os.path.expandvars(os.path.expanduser(raw))
+        except Exception:
+            continue
+        if path and os.path.isfile(path):
+            resolved.append(path)
+    return resolved
 
 
-class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
+def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
+    """Prepend ``source <file>`` lines (guarded + silent) to a bash script.
+
+    Each file is wrapped so a failing rc file doesn't abort the whole
+    bootstrap: ``set +e`` keeps going on errors, ``2>/dev/null`` hides
+    noisy prompts, and ``|| true`` neutralises the exit status.
+    """
+    if not files:
+        return cmd_string
+
+    prelude_parts = ["set +e"]
+    for path in files:
+        # shlex.quote isn't available here without an import; the files list
+        # comes from os.path.expanduser output so it's a concrete absolute
+        # path.  Escape single quotes defensively anyway.
+        safe = path.replace("'", "'\\''")
+        prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
+    prelude = "\n".join(prelude_parts) + "\n"
+    return prelude + cmd_string
+
+
+class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host machine.
 
-    Features:
-    - Popen + polling for interrupt support (user can cancel mid-command)
-    - Background stdout drain thread to prevent pipe buffer deadlocks
-    - stdin_data support for piping content (bypasses ARG_MAX limits)
-    - sudo -S transform via SUDO_PASSWORD env var
-    - Uses interactive login shell so full user env is available
-    - Optional persistent shell mode (cwd/env vars survive across calls)
+    Spawn-per-call: every execute() spawns a fresh bash process.
+    Session snapshot preserves env vars across calls.
+    CWD persists via file-based read after each command.
     """
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None,
-                 persistent: bool = False):
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+        if cwd:
+            cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
-        self.persistent = persistent
-        if self.persistent:
-            self._init_persistent_shell()
+        self.init_session()
 
     @property
     def _temp_prefix(self) -> str:
         return hermes_temp_prefix("local", self._session_id)
 
-    def _spawn_shell_process(self) -> subprocess.Popen:
-        user_shell = _find_bash()
+        Termux does not provide /tmp by default, but exposes a POSIX TMPDIR.
+        Prefer POSIX-style env vars when available, keep using /tmp on regular
+        Unix systems, and only fall back to tempfile.gettempdir() when it also
+        resolves to a POSIX path.
+
+        Check the environment configured for this backend first so callers can
+        override the temp root explicitly (for example via terminal.env or a
+        custom TMPDIR), then fall back to the host process environment.
+
+        **Windows:** hardcoded ``/tmp`` is wrong in two ways — native Python
+        can't open the path, and the Windows default temp (``%TEMP%``) often
+        contains spaces (``C:\\Users\\Some Name\\AppData\\Local\\Temp``) that
+        break unquoted bash interpolations.  Use a dedicated cache dir under
+        ``HERMES_HOME`` instead — single-word path, guaranteed to exist, same
+        string resolves in both Git Bash and native Python.
+        """
+        if _IS_WINDOWS:
+            # Derive a Windows-safe temp dir under HERMES_HOME.  Using
+            # forward slashes makes the same string work unchanged in bash
+            # command interpolations AND in Python ``open()`` — Windows
+            # accepts forward slashes in filesystem paths, and we control
+            # the path so we can guarantee no spaces.
+            try:
+                from hermes_constants import get_hermes_home
+                cache_dir = get_hermes_home() / "cache" / "terminal"
+            except Exception:
+                cache_dir = Path(tempfile.gettempdir()) / "hermes_terminal"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            # Force forward slashes so the same string serves both contexts.
+            return str(cache_dir).replace("\\", "/")
+
+        for env_var in ("TMPDIR", "TMP", "TEMP"):
+            candidate = self.env.get(env_var) or os.environ.get(env_var)
+            if candidate and candidate.startswith("/"):
+                return candidate.rstrip("/") or "/"
+
+        if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK | os.X_OK):
+            return "/tmp"
+
+        candidate = tempfile.gettempdir()
+        if candidate.startswith("/"):
+            return candidate.rstrip("/") or "/"
+
+        return "/tmp"
+
+    def _run_bash(self, cmd_string: str, *, login: bool = False,
+                  timeout: int = 120,
+                  stdin_data: str | None = None) -> subprocess.Popen:
+        bash = _find_bash()
+        # For login-shell invocations (used by init_session to build the
+        # environment snapshot), prepend sources for the user's bashrc /
+        # custom init files so tools registered outside bash_profile
+        # (nvm, asdf, pyenv, …) end up on PATH in the captured snapshot.
+        # Non-login invocations are already sourcing the snapshot and
+        # don't need this.
+        if login:
+            init_files = _resolve_shell_init_files()
+            if init_files:
+                cmd_string = _prepend_shell_init(cmd_string, init_files)
+        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
         return subprocess.Popen(
             [user_shell, "-l"],
@@ -345,15 +473,30 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             preexec_fn=get_popen_preexec_fn(),
         )
 
-    def _read_temp_files(self, *paths: str) -> list[str]:
-        results = []
-        for path in paths:
-            if os.path.exists(path):
-                with open(path) as f:
-                    results.append(f.read())
-            else:
-                results.append("")
-        return results
+        # Recover when the cwd has been deleted out from under us — usually by
+        # a previous tool call that ran ``rm -rf`` on its own working dir
+        # (issue #17558).  Popen would otherwise raise FileNotFoundError on
+        # the cwd before bash starts, wedging every subsequent call until the
+        # gateway restarts.
+        #
+        # On Windows, ``_resolve_safe_cwd`` also normalises Git Bash-style
+        # POSIX paths (``/c/Users/...``) to native form so a perfectly valid
+        # ``pwd -P`` result from bash isn't mistakenly treated as "missing"
+        # and spammed as a warning on every command.
+        safe_cwd = _resolve_safe_cwd(self.cwd)
+        if safe_cwd != self.cwd:
+            # MSYS → Windows translation alone shouldn't surface as a warning
+            # (it's a benign normalization, not a recovery). Only warn when
+            # the directory really doesn't exist on disk.
+            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            if safe_cwd != normalized:
+                logger.warning(
+                    "LocalEnvironment cwd %r is missing on disk; "
+                    "falling back to %r so terminal commands keep working.",
+                    self.cwd,
+                    safe_cwd,
+                )
+            self.cwd = safe_cwd
 
     def _kill_shell_children(self):
         kill_shell_children(self._shell_pid)
@@ -393,9 +536,8 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         run_env = _make_run_env(self.env)
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", fenced_cmd],
+            args,
             text=True,
-            cwd=work_dir,
             env=run_env,
             encoding="utf-8",
             errors="replace",
@@ -404,29 +546,48 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             stdin=subprocess.PIPE if effective_stdin is not None else subprocess.DEVNULL,
             preexec_fn=get_popen_preexec_fn(),
         )
-
-        if effective_stdin is not None:
-            def _write_stdin():
-                try:
-                    proc.stdin.write(effective_stdin)
-                    proc.stdin.close()
-                except (BrokenPipeError, OSError):
-                    pass
-            threading.Thread(target=_write_stdin, daemon=True).start()
-
-        _output_chunks: list[str] = []
-
-        def _drain_stdout():
+        if not _IS_WINDOWS:
             try:
-                for line in proc.stdout:
-                    _output_chunks.append(line)
-            except ValueError:
+                proc._hermes_pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
                 pass
-            finally:
+
+        if stdin_data is not None:
+            _pipe_stdin(proc, stdin_data)
+
+        return proc
+
+    def _kill_process(self, proc):
+        """Kill the entire process group (all children)."""
+
+        def _group_alive(pgid: int) -> bool:
+            try:
+                # POSIX-only: _IS_WINDOWS is handled before this helper is used.
+                os.killpg(pgid, 0)  # windows-footgun: ok — POSIX process-group alive probe
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # The group exists, even if this process cannot signal it.
+                return True
+
+        def _wait_for_group_exit(pgid: int, timeout: float) -> bool:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                # Reap the wrapper promptly. A dead but unreaped group leader
+                # still makes killpg(pgid, 0) report the group as alive.
                 try:
-                    proc.stdout.close()
+                    proc.poll()
                 except Exception:
                     pass
+                if not _group_alive(pgid):
+                    return True
+                time.sleep(0.05)
+            try:
+                proc.poll()
+            except Exception:
+                pass
+            return not _group_alive(pgid)
 
         reader = threading.Thread(target=_drain_stdout, daemon=True)
         reader.start()
@@ -451,6 +612,89 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
                 }
             time.sleep(0.2)
 
-        reader.join(timeout=5)
-        output = _extract_fenced_output("".join(_output_chunks))
-        return {"output": output, "returncode": proc.returncode}
+                try:
+                    os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
+                except ProcessLookupError:
+                    return
+
+                # Wait on the process group, not just the shell wrapper. Under
+                # load the wrapper can exit before grandchildren do; returning
+                # at that point leaves orphaned process-group members behind.
+                if _wait_for_group_exit(pgid, 1.0):
+                    return
+
+                try:
+                    # POSIX-only: _IS_WINDOWS is handled by the outer branch.
+                    os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX process-group SIGKILL
+                except ProcessLookupError:
+                    return
+                _wait_for_group_exit(pgid, 2.0)
+                try:
+                    proc.wait(timeout=0.2)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _update_cwd(self, result: dict):
+        """Read CWD from temp file (local-only, no round-trip needed).
+
+        Skip the assignment when the path no longer exists as a directory —
+        ``pwd -P`` on a deleted cwd can leave a stale value in the marker
+        file, and propagating it would re-wedge the next ``Popen``.  The
+        ``_run_bash`` recovery path will resolve a safe fallback if needed.
+
+        On Windows, the value written by Git Bash's ``pwd -P`` is in
+        MSYS form (``/c/Users/x``). Translate it to native Windows form
+        before validating with ``os.path.isdir`` and before storing on
+        ``self.cwd``; otherwise the isdir check rejects every valid
+        result and ``_run_bash`` later prints a misleading "cwd is
+        missing" warning on every command.
+        """
+        try:
+            with open(self._cwd_file, encoding="utf-8") as f:
+                cwd_path = f.read().strip()
+            if _IS_WINDOWS:
+                cwd_path = _msys_to_windows_path(cwd_path)
+            if cwd_path and os.path.isdir(cwd_path):
+                self.cwd = cwd_path
+        except (OSError, FileNotFoundError):
+            pass
+
+        # Still strip the marker from output so it's not visible
+        self._extract_cwd_from_output(result)
+
+    def _extract_cwd_from_output(self, result: dict):
+        """Same semantics as the base class, but on Windows the value
+        emitted by ``pwd -P`` inside Git Bash is in MSYS form
+        (``/c/Users/x``). Normalize to native Windows form and validate
+        the directory exists before assigning to ``self.cwd`` — otherwise
+        ``_run_bash``'s safe-cwd recovery would warn on every subsequent
+        command.
+
+        Always defers to the base class for stripping the marker text from
+        ``result["output"]`` so output formatting is identical.
+        """
+        # Snapshot pre-existing cwd, defer to base for parsing + marker
+        # stripping, then validate / normalize whatever it assigned.
+        prev_cwd = self.cwd
+        super()._extract_cwd_from_output(result)
+        if self.cwd != prev_cwd:
+            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            if normalized and os.path.isdir(normalized):
+                self.cwd = normalized
+            else:
+                # Stale / non-existent path — keep previous cwd; _run_bash
+                # will resolve a safe fallback on the next call if needed.
+                self.cwd = prev_cwd
+
+    def cleanup(self):
+        """Clean up temp files."""
+        for f in (self._snapshot_path, self._cwd_file):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass

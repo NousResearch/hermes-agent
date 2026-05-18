@@ -1,9 +1,10 @@
 ---
 name: subagent-driven-development
-description: Use when executing implementation plans with independent tasks. Dispatches fresh delegate_task per task with two-stage review (spec compliance then code quality).
+description: "Execute plans via delegate_task subagents (2-stage review)."
 version: 1.1.0
 author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [delegation, subagent, implementation, workflow, parallel]
@@ -340,3 +341,12 @@ Catch issues early
 ```
 
 **Quality is not an accident. It's the result of systematic process.**
+
+## Further reading (load when relevant)
+
+When the orchestration involves significant context usage, long review loops, or complex validation checkpoints, load these references for the specific discipline:
+
+- **`references/context-budget-discipline.md`** — Four-tier context degradation model (PEAK / GOOD / DEGRADING / POOR), read-depth rules that scale with context window size, and early warning signs of silent degradation. Load when a run will clearly consume significant context (multi-phase plans, many subagents, large artifacts).
+- **`references/gates-taxonomy.md`** — The four canonical gate types (Pre-flight, Revision, Escalation, Abort) with behavior, recovery, and examples. Load when designing or reviewing any workflow that has validation checkpoints — use the vocabulary explicitly so each gate has defined entry, failure behavior, and resumption rules.
+
+Both references adapted from gsd-build/get-shit-done (MIT © 2025 Lex Christopherson).

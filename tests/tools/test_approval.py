@@ -2,18 +2,17 @@
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
+    _smart_approve,
     approve_session,
-    clear_session,
     detect_dangerous_command,
-    has_pending,
     is_approved,
     load_permanent,
-    pop_pending,
     prompt_dangerous_approval,
     submit_pending,
 )
@@ -27,6 +26,21 @@ class TestApprovalModeParsing:
     def test_string_off_still_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "off"}}):
             assert _get_approval_mode() == "off"
+
+
+class TestSmartApproval:
+    def test_smart_approval_uses_call_llm(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
+        )
+        with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
+            result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
+
+        assert result == "approve"
+        mock_call.assert_called_once()
+        assert mock_call.call_args.kwargs["task"] == "approval"
+        assert mock_call.call_args.kwargs["temperature"] == 0
+        assert mock_call.call_args.kwargs["max_tokens"] == 16
 
 
 class TestDetectDangerousRm:
@@ -113,41 +127,20 @@ class TestSafeCommand:
         assert desc is None
 
 
-class TestSubmitAndPopPending:
-    def test_submit_and_pop(self):
-        key = "test_session_pending"
-        clear_session(key)
-
-        submit_pending(key, {"command": "rm -rf /", "pattern_key": "rm"})
-        assert has_pending(key) is True
-
-        approval = pop_pending(key)
-        assert approval["command"] == "rm -rf /"
-        assert has_pending(key) is False
-
-    def test_pop_empty_returns_none(self):
-        key = "test_session_empty"
-        clear_session(key)
-        assert pop_pending(key) is None
-        assert has_pending(key) is False
+def _clear_session(key):
+    """Replace for removed clear_session() — directly clear internal state."""
+    approval_module._session_approved.pop(key, None)
+    approval_module._pending.pop(key, None)
 
 
 class TestApproveAndCheckSession:
     def test_session_approval(self):
         key = "test_session_approve"
-        clear_session(key)
+        _clear_session(key)
 
         assert is_approved(key, "rm") is False
         approve_session(key, "rm")
         assert is_approved(key, "rm") is True
-
-    def test_clear_session_removes_approvals(self):
-        key = "test_session_clear"
-        approve_session(key, "rm")
-        assert is_approved(key, "rm") is True
-        clear_session(key)
-        assert is_approved(key, "rm") is False
-        assert has_pending(key) is False
 
 
 class TestSessionKeyContext:
@@ -179,48 +172,7 @@ class TestSessionKeyContext:
         assert "set_current_session_key" in called_names
         assert "reset_current_session_key" in called_names
 
-    def test_context_keeps_pending_approval_attached_to_originating_session(self):
-        import os
-        import threading
 
-        clear_session("alice")
-        clear_session("bob")
-        pop_pending("alice")
-        pop_pending("bob")
-        approval_module._permanent_approved.clear()
-
-        alice_ready = threading.Event()
-        bob_ready = threading.Event()
-
-        def worker_alice():
-            token = approval_module.set_current_session_key("alice")
-            try:
-                os.environ["HERMES_EXEC_ASK"] = "1"
-                os.environ["HERMES_SESSION_KEY"] = "alice"
-                alice_ready.set()
-                bob_ready.wait()
-                approval_module.check_all_command_guards("rm -rf /tmp/alice-secret", "local")
-            finally:
-                approval_module.reset_current_session_key(token)
-
-        def worker_bob():
-            alice_ready.wait()
-            token = approval_module.set_current_session_key("bob")
-            try:
-                os.environ["HERMES_SESSION_KEY"] = "bob"
-                bob_ready.set()
-            finally:
-                approval_module.reset_current_session_key(token)
-
-        t1 = threading.Thread(target=worker_alice)
-        t2 = threading.Thread(target=worker_bob)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
-
-        assert pop_pending("alice") is not None
-        assert pop_pending("bob") is None
 
 
 class TestRmFalsePositiveFix:
@@ -482,6 +434,76 @@ class TestSensitiveRedirectPattern:
         assert dangerous is False
         assert key is None
 
+    def test_redirect_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo TOKEN=x > .env")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_to_nested_config_yaml_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo mode: prod > deploy/config.yaml")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_from_local_dotenv_source_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cat .env > backup.txt")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestProjectSensitiveCopyPattern:
+    def test_cp_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("cp .env.local .env")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_cp_absolute_path_to_dotenv_requires_approval(self):
+        # Regression: the real-world bug report was `cp /opt/data/.env.local /opt/data/.env`.
+        # The regex must cover absolute paths, not just `./` / bare relative paths.
+        dangerous, key, desc = detect_dangerous_command(
+            "cp /opt/data/.env.local /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_absolute_path_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "cat /opt/data/.env.local > /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_mv_to_nested_config_yaml_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("mv tmp/generated.yaml config/config.yaml")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_install_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("install -m 600 template.env .env.production")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_cp_from_config_yaml_source_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp config.yaml backup.yaml")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestProjectSensitiveTeePattern:
+    def test_tee_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("printenv | tee .env.local")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
 
 class TestPatternKeyUniqueness:
     """Bug: pattern_key is derived by splitting on \\b and taking [1], so
@@ -501,13 +523,13 @@ class TestPatternKeyUniqueness:
         _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
         _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
         session = "test_find_collision"
-        clear_session(session)
+        _clear_session(session)
         approve_session(session, key_exec)
         assert is_approved(session, key_exec) is True
         assert is_approved(session, key_delete) is False, (
             "approving find -exec rm should not auto-approve find -delete"
         )
-        clear_session(session)
+        _clear_session(session)
 
     def test_legacy_find_key_still_approves_find_exec(self):
         """Old allowlist entry 'find' should keep approving the matching command."""
@@ -615,11 +637,12 @@ class TestGatewayProtection:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
-    def test_systemctl_restart_not_flagged(self):
-        """Using systemctl to manage the gateway is the correct approach."""
+    def test_systemctl_restart_flagged(self):
+        """systemctl restart kills running agents and should require approval."""
         cmd = "systemctl --user restart hermes-gateway"
         dangerous, key, desc = detect_dangerous_command(cmd)
-        assert dangerous is False
+        assert dangerous is True
+        assert "stop/restart" in desc
 
     def test_pkill_hermes_detected(self):
         """pkill targeting hermes/gateway processes must be caught."""
@@ -716,3 +739,569 @@ class TestNormalizationBypass:
         assert dangerous is False
 
 
+class TestHeredocScriptExecution:
+    """Script execution via heredoc bypasses the -e/-c flag patterns.
+
+    `python3 << 'EOF'` feeds arbitrary code through stdin without any
+    flag that the original patterns check for. See security audit Test 3.
+    """
+
+    def test_python3_heredoc_detected(self):
+        # The heredoc body also contains `rm -rf /` which fires the
+        # "delete in root path" pattern first (patterns are ordered).
+        # The heredoc pattern also matches — either detection is correct.
+        cmd = "python3 << 'EOF'\nimport os; os.system('rm -rf /')\nEOF"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_python_heredoc_detected(self):
+        cmd = 'python << "PYEOF"\nprint("pwned")\nPYEOF'
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_perl_heredoc_detected(self):
+        cmd = "perl <<'END'\nsystem('whoami');\nEND"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_ruby_heredoc_detected(self):
+        cmd = "ruby <<RUBY\n`rm -rf /`\nRUBY"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_node_heredoc_detected(self):
+        cmd = "node << 'JS'\nrequire('child_process').execSync('whoami')\nJS"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_python3_dash_c_still_detected(self):
+        """Existing -c pattern must not regress."""
+        cmd = "python3 -c 'import os; os.system(\"rm -rf /\")'"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_python_not_flagged(self):
+        """Plain 'python3 script.py' without heredoc or -c must stay safe."""
+        cmd = "python3 my_script.py"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
+class TestPgrepKillExpansion:
+    """kill -9 $(pgrep hermes) bypasses the pkill/killall name-matching
+    pattern because the command substitution is opaque to regex.
+
+    See security audit Test 7.
+    """
+
+    def test_kill_dollar_pgrep_detected(self):
+        cmd = 'kill -9 $(pgrep -f "hermes.*gateway")'
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "pgrep" in desc.lower()
+
+    def test_kill_backtick_pgrep_detected(self):
+        cmd = "kill -9 `pgrep hermes`"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_kill_dollar_pgrep_no_flags(self):
+        cmd = "kill $(pgrep gateway)"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_pkill_hermes_still_detected(self):
+        """Existing pkill pattern must not regress."""
+        cmd = "pkill -9 hermes"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_kill_pid_not_flagged(self):
+        """A plain 'kill 12345' (literal PID, no expansion) must stay safe."""
+        cmd = "kill 12345"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
+class TestGitDestructiveOps:
+    """git reset --hard, push --force, clean -f, branch -D can destroy
+    work and rewrite shared history. Not covered by rm/chmod patterns.
+
+    See security audit Test 6.
+    """
+
+    def test_git_reset_hard_detected(self):
+        cmd = "git reset --hard HEAD~3"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "reset" in desc.lower() or "hard" in desc.lower()
+
+    def test_git_push_force_detected(self):
+        cmd = "git push --force origin main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force" in desc.lower()
+
+    def test_git_push_dash_f_detected(self):
+        cmd = "git push -f origin main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_git_clean_force_detected(self):
+        cmd = "git clean -fd"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "clean" in desc.lower()
+
+    def test_git_branch_force_delete_detected(self):
+        cmd = "git branch -D feature-branch"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_git_status_not_flagged(self):
+        cmd = "git status"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_safe_git_push_not_flagged(self):
+        """Normal push without --force must not be flagged."""
+        cmd = "git push origin main"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_git_branch_lowercase_d_also_flagged(self):
+        """git branch -d triggers approval too — IGNORECASE is global.
+
+        This is intentional: -d is safer than -D but an approval prompt
+        for branch deletion is reasonable. The user can still approve.
+        """
+        cmd = "git branch -d feature-branch"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+
+class TestChmodExecuteCombo:
+    """chmod +x && ./ is the two-step social engineering pattern where a
+    script is first made executable then immediately run. The script
+    content may contain dangerous commands invisible to pattern matching.
+
+    See security audit Test 4.
+    """
+
+    def test_chmod_and_execute_detected(self):
+        cmd = "chmod +x /tmp/cleanup.sh && ./cleanup.sh"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "chmod" in desc.lower() or "execution" in desc.lower()
+
+    def test_chmod_semicolon_execute_detected(self):
+        cmd = "chmod +x script.sh; ./script.sh"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        # Semicolon variant — pattern uses && but full-string match
+        # on chmod +x should still trigger even without the && ./
+        assert dangerous is True
+
+    def test_safe_chmod_without_execute_not_flagged(self):
+        """chmod +x alone without immediate execution must not be flagged."""
+        cmd = "chmod +x script.sh"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
+class TestFailClosedUnderPromptToolkit:
+    """Regression guard for #15216.
+
+    When prompt_toolkit owns the terminal and no approval callback is
+    registered on the calling thread, prompt_dangerous_approval() must
+    deny fast instead of falling through to the input() fallback -- which
+    deadlocks because the user's keystrokes go to prompt_toolkit's raw-mode
+    stdin capture, not to input().
+    """
+
+    def test_denies_when_prompt_toolkit_active_and_no_callback(self):
+        import threading
+        import prompt_toolkit.application.current as ptc
+
+        orig = ptc.get_app_or_none
+        ptc.get_app_or_none = lambda: object()  # pretend a pt app is running
+        result = []
+        try:
+            def run():
+                result.append(
+                    prompt_dangerous_approval(
+                        "rm -rf /",
+                        "test danger",
+                        timeout_seconds=30,
+                        approval_callback=None,
+                    )
+                )
+
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+            t.join(timeout=3)
+            assert not t.is_alive(), (
+                "prompt_dangerous_approval deadlocked under prompt_toolkit "
+                "with no callback -- fail-closed guard is broken"
+            )
+            assert result == ["deny"]
+        finally:
+            ptc.get_app_or_none = orig
+
+    def test_callback_path_still_wins_over_guard(self):
+        """Guard must not short-circuit a valid callback."""
+        import prompt_toolkit.application.current as ptc
+
+        orig = ptc.get_app_or_none
+        ptc.get_app_or_none = lambda: object()
+        try:
+            def cb(command, description, **kwargs):
+                return "once"
+
+            result = prompt_dangerous_approval(
+                "rm -rf /",
+                "test danger",
+                approval_callback=cb,
+            )
+            assert result == "once"
+        finally:
+            ptc.get_app_or_none = orig
+
+
+class TestDetectSudoStdin:
+    """Sudo with stdin / askpass / shell / list-privileges flags (#17873 cat 4).
+
+    An LLM-driven agent has no TTY, so the sudo invocations that succeed
+    without human interaction are those reading the password from stdin
+    (-S / --stdin) or via an askpass helper (-A / --askpass). The
+    shell-launch (-s) and list-privileges (-a) flags are also gated since
+    they are privilege-relevant invocations the agent can chain after
+    acquiring the password.
+
+    `_normalize_command_for_detection` lowercases input before pattern
+    matching, so -S/-s and -A/-a are indistinguishable at the regex
+    layer; both letter-pairs are gated.
+    """
+
+    # Positive cases (must match)
+
+    def test_canonical_pipe_to_sudo_S_detected(self):
+        is_dangerous, _, desc = detect_dangerous_command(
+            "echo pwd | sudo -S whoami"
+        )
+        assert is_dangerous is True
+        assert "sudo" in desc.lower()
+
+    def test_long_flag_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo --stdin id")
+        assert is_dangerous is True
+
+    def test_non_interactive_plus_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -n -S id")
+        assert is_dangerous is True
+
+    def test_user_then_stdin_detected(self):
+        # Codex audit caught that the original "leading flags only" regex
+        # missed this form because `-u root` has a flag-argument (`root`)
+        # that broke the (?:\s+-[^\s]+)* loop. The lazy [^;|&\n]*? class
+        # consumes flag-args without spanning command separators.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo -u root -S whoami"
+        )
+        assert is_dangerous is True
+
+    def test_long_non_interactive_plus_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo --non-interactive -S whoami"
+        )
+        assert is_dangerous is True
+
+    def test_long_user_equals_stdin_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo --user=root -S id"
+        )
+        assert is_dangerous is True
+
+    def test_herestring_input_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo -S id <<< 'mypwd'"
+        )
+        assert is_dangerous is True
+
+    def test_combined_short_flags_nS_detected(self):
+        # `-nS` packs `-n` and `-S` into one arg; second pattern catches.
+        is_dangerous, _, _ = detect_dangerous_command("sudo -nS id")
+        assert is_dangerous is True
+
+    def test_printf_form_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            'printf "%s\\n" "$PW" | sudo -S id'
+        )
+        assert is_dangerous is True
+
+    def test_askpass_short_flag_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -A id")
+        assert is_dangerous is True
+
+    def test_askpass_long_flag_detected(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo --askpass id")
+        assert is_dangerous is True
+
+    def test_two_sudo_invocations_second_caught(self):
+        # The first sudo here is benign (no -S); the second has -S.
+        # Lazy [^;|&\n]*? does NOT span past `;`, so re.search anchors
+        # on the second sudo invocation independently.
+        is_dangerous, _, _ = detect_dangerous_command(
+            "sudo whoami; sudo -S id"
+        )
+        assert is_dangerous is True
+
+    # Negative cases (must NOT match)
+
+    def test_plain_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo whoami")
+        assert is_dangerous is False
+
+    def test_sudo_interactive_shell_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -i")
+        assert is_dangerous is False
+
+    def test_sudo_with_user_no_stdin_flag_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("sudo -u root -i")
+        assert is_dangerous is False
+
+    def test_man_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("man sudo")
+        assert is_dangerous is False
+
+    def test_which_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("which sudo")
+        assert is_dangerous is False
+
+    def test_sudo_user_env_reference_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "echo SUDO_USER=$SUDO_USER"
+        )
+        assert is_dangerous is False
+
+    def test_apt_install_sudo_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("apt install sudo")
+        assert is_dangerous is False
+
+    def test_ls_etc_sudoers_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command("ls /etc/sudoers")
+        assert is_dangerous is False
+
+    def test_pseudosudo_safe_word_boundary(self):
+        # `\bsudo\b` requires a word boundary; `pseudosudo` has none
+        # before `sudo`, so should not trigger.
+        is_dangerous, _, _ = detect_dangerous_command("pseudosudo -S id")
+        assert is_dangerous is False
+
+    def test_unrelated_redirection_safe(self):
+        is_dangerous, _, _ = detect_dangerous_command(
+            "make 2>&1 | tee build.log"
+        )
+        assert is_dangerous is False
+
+
+class TestMacOSPrivateSystemPaths:
+    """Inspired by Claude Code 2.1.113 "dangerous path protection".
+
+    On macOS, /etc, /var, /tmp, /home are symlinks to
+    /private/{etc,var,tmp,home}. A command that writes to
+    /private/etc/sudoers works identically to /etc/sudoers but bypasses
+    a plain "/etc/" pattern check.  These tests guard the shared
+    _SYSTEM_CONFIG_PATH fragment used across redirect / tee / cp / mv /
+    install / sed -i patterns.
+    """
+
+    def test_private_etc_redirect(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "echo 'root ALL=NOPASSWD: ALL' > /private/etc/sudoers"
+        )
+        assert dangerous is True
+        assert "system config" in desc.lower()
+
+    def test_private_var_redirect(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "echo payload > /private/var/db/dslocal/nodes/x"
+        )
+        assert dangerous is True
+
+    def test_private_etc_via_tee(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "echo malicious | tee /private/etc/hosts"
+        )
+        assert dangerous is True
+        assert "tee" in desc.lower() or "system" in desc.lower()
+
+    def test_private_etc_cp(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "cp malicious.conf /private/etc/hosts"
+        )
+        assert dangerous is True
+        assert "copy" in desc.lower() or "system config" in desc.lower()
+
+    def test_private_etc_mv(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "mv evil /private/etc/ssh/sshd_config"
+        )
+        assert dangerous is True
+
+    def test_private_etc_install(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "install -m 600 key /private/etc/ssh/keys"
+        )
+        assert dangerous is True
+
+    def test_private_etc_sed_in_place(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "sed -i 's/root/pwned/' /private/etc/passwd"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower() or "system config" in desc.lower()
+
+    def test_private_var_sed_long_flag(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "sed --in-place 's/x/y/' /private/var/log/wtmp"
+        )
+        assert dangerous is True
+
+    def test_private_tmp_cp(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "cp rootkit /private/tmp/payload"
+        )
+        assert dangerous is True
+
+    def test_ls_private_is_safe(self):
+        """Reading under /private/ must not trigger approval."""
+        dangerous, _, _ = detect_dangerous_command("ls /private")
+        assert dangerous is False
+
+    def test_echo_mentioning_private_path_is_safe(self):
+        """Literal mention of /private/etc in an echo string must not fire."""
+        dangerous, _, _ = detect_dangerous_command(
+            "echo 'the macOS path is /private/etc on disk'"
+        )
+        assert dangerous is False
+
+
+class TestKillallKillSignals:
+    """Inspired by Claude Code 2.1.113 expanded deny rules.
+
+    The existing pattern caught `pkill -9` but not the equivalent
+    `killall -9` / `-KILL` / `-s KILL` / `-r <regex>` broad sweeps that
+    can wipe out unrelated processes.
+    """
+
+    def test_killall_dash_9(self):
+        dangerous, _, desc = detect_dangerous_command("killall -9 firefox")
+        assert dangerous is True
+        assert "kill" in desc.lower()
+
+    def test_killall_dash_kill(self):
+        dangerous, _, _ = detect_dangerous_command("killall -KILL firefox")
+        assert dangerous is True
+
+    def test_killall_dash_sigkill(self):
+        dangerous, _, _ = detect_dangerous_command("killall -SIGKILL firefox")
+        assert dangerous is True
+
+    def test_killall_dash_s_kill(self):
+        dangerous, _, _ = detect_dangerous_command("killall -s KILL firefox")
+        assert dangerous is True
+
+    def test_killall_dash_s_signum(self):
+        dangerous, _, _ = detect_dangerous_command("killall -s 9 firefox")
+        assert dangerous is True
+
+    def test_killall_regex(self):
+        """killall -r <regex> is a broad sweep; require approval."""
+        dangerous, _, desc = detect_dangerous_command("killall -r 'fire.*'")
+        assert dangerous is True
+        assert "regex" in desc.lower() or "kill" in desc.lower()
+
+    def test_killall_combined_flags(self):
+        dangerous, _, _ = detect_dangerous_command("killall -9 -r 'herm.*'")
+        assert dangerous is True
+
+    def test_killall_list_signals_is_safe(self):
+        """`killall -l` lists signals and is harmless — must not fire."""
+        dangerous, _, _ = detect_dangerous_command("killall -l")
+        assert dangerous is False
+
+    def test_killall_version_is_safe(self):
+        dangerous, _, _ = detect_dangerous_command("killall -V")
+        assert dangerous is False
+
+
+class TestFindExecdir:
+    """Inspired by Claude Code 2.1.113 tightening of find rules.
+
+    `find -execdir rm` has the same destructive effect as `find -exec rm`
+    but ran in each match's directory. Previously missed because the
+    pattern required a literal `-exec ` followed by a space.
+    """
+
+    def test_find_execdir_rm(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "find . -execdir rm {} \\;"
+        )
+        assert dangerous is True
+        assert "find" in desc.lower() or "rm" in desc.lower()
+
+    def test_find_execdir_with_absolute_rm(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "find /var -execdir /bin/rm -rf {} \\;"
+        )
+        assert dangerous is True
+
+    def test_find_exec_rm_still_caught(self):
+        """Original -exec pattern must still fire (regression guard)."""
+        dangerous, _, _ = detect_dangerous_command(
+            "find . -exec rm {} \\;"
+        )
+        assert dangerous is True
+
+    def test_find_execdir_ls_is_safe(self):
+        """-execdir with a read-only command is not dangerous."""
+        dangerous, _, _ = detect_dangerous_command(
+            "find . -execdir ls {} \\;"
+        )
+        assert dangerous is False
+
+
+class TestEtcPatternsUnaffectedByRefactor:
+    """Regression guard: the /etc/ patterns were refactored to share the
+    _SYSTEM_CONFIG_PATH fragment with the /private/ mirror. Make sure the
+    existing /etc/ coverage remains identical.
+    """
+
+    def test_etc_redirect(self):
+        dangerous, _, _ = detect_dangerous_command("echo x > /etc/hosts")
+        assert dangerous is True
+
+    def test_etc_cp(self):
+        dangerous, _, _ = detect_dangerous_command("cp evil /etc/hosts")
+        assert dangerous is True
+
+    def test_etc_sed_inline(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "sed -i 's/a/b/' /etc/hosts"
+        )
+        assert dangerous is True
+
+    def test_etc_tee(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "echo x | tee /etc/hosts"
+        )
+        assert dangerous is True
+
+    def test_cat_etc_hostname_is_safe(self):
+        """Reading /etc/ files is safe — only writes require approval."""
+        dangerous, _, _ = detect_dangerous_command("cat /etc/hostname")
+        assert dangerous is False
+
+    def test_grep_etc_passwd_is_safe(self):
+        dangerous, _, _ = detect_dangerous_command("grep root /etc/passwd")
+        assert dangerous is False

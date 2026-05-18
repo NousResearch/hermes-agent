@@ -109,6 +109,38 @@ class TestHandleBackgroundCommand:
         assert len(created_tasks) == 1  # background task was created
 
     @pytest.mark.asyncio
+    async def test_telegram_dm_topic_passes_trigger_anchor_to_task(self):
+        """Telegram private-topic completion sends need the original command message id."""
+        runner = _make_runner()
+        runner._run_background_task = AsyncMock()
+
+        def capture_task(coro, *args, **kwargs):
+            coro.close()
+            mock_task = MagicMock()
+            return mock_task
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            chat_type="dm",
+            thread_id="20197",
+        )
+        event = MessageEvent(
+            text="/background summarize",
+            source=source,
+            message_id="463",
+            reply_to_message_id="462",
+        )
+
+        with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
+            result = await runner._handle_background_command(event)
+
+        assert "Background task started" in result
+        runner._run_background_task.assert_called_once()
+        assert runner._run_background_task.call_args.kwargs["event_message_id"] == "463"
+
+    @pytest.mark.asyncio
     async def test_prompt_truncated_in_preview(self):
         """Long prompts are truncated to 60 chars in the confirmation message."""
         runner = _make_runner()
@@ -220,6 +252,8 @@ class TestRunBackgroundTask:
         with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
              patch("run_agent.AIAgent") as MockAgent:
             mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
             mock_agent_instance.run_conversation.return_value = mock_result
             MockAgent.return_value = mock_agent_instance
 
@@ -231,6 +265,89 @@ class TestRunBackgroundTask:
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
         assert "Background task complete" in content
         assert "Hello from background!" in content
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_telegram_dm_topic_completion_preserves_reply_anchor_metadata(self, monkeypatch):
+        """Background completion metadata must let Telegram send thread id plus reply id."""
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={"final_response": "done", "messages": []}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            chat_type="dm",
+            thread_id="20197",
+        )
+
+        await runner._run_background_task(
+            "say hello",
+            source,
+            "bg_test",
+            event_message_id="463",
+        )
+
+        mock_adapter.send.assert_called_once()
+        assert mock_adapter.send.call_args.kwargs["metadata"] == {
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
+            "telegram_reply_to_message_id": "463",
+        }
+
+    @pytest.mark.asyncio
+    async def test_agent_cleanup_runs_when_background_agent_raises(self):
+        """Temporary background agents must be cleaned up on error paths too."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.side_effect = RuntimeError("boom")
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_exception_sends_error_message(self):
@@ -308,6 +425,7 @@ class TestBackgroundInCLICommands:
 
     def test_background_autocompletes(self):
         """The /background command appears in autocomplete results."""
+        pytest.importorskip("prompt_toolkit")
         from hermes_cli.commands import SlashCommandCompleter
         from prompt_toolkit.document import Document
 

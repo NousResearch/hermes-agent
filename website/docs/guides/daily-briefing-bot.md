@@ -1,5 +1,5 @@
 ---
-sidebar_position: 2
+sidebar_position: 3
 title: "Tutorial: Daily Briefing Bot"
 description: "Build an automated daily briefing bot that researches topics, summarizes findings, and delivers them to Telegram or Discord every morning"
 ---
@@ -89,6 +89,8 @@ Try different prompts until you get output you love. Add instructions like "use 
 ## Step 2: Create the Cron Job
 
 Now let's schedule this to run automatically every morning. You can do this in two ways.
+
+Before creating cron jobs, ensure Hermes has a default model and provider configured globally. If you want a specific job to use different values, set explicit per-job model/provider overrides when creating it.
 
 ### Option A: Natural Language (in chat)
 

@@ -15,9 +15,21 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 import pytest
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
-
 import json
 import os
+
+os.environ["TERMINAL_ENV"] = "local"
+
+
+@pytest.fixture(autouse=True)
+def _force_local_terminal(monkeypatch):
+    """Re-set TERMINAL_ENV=local before every test.
+
+    The module-level assignment above covers import time, but under xdist
+    another worker can overwrite os.environ between tests.  monkeypatch
+    ensures each test starts (and ends) with the correct value.
+    """
+    monkeypatch.setenv("TERMINAL_ENV", "local")
 import sys
 import time
 import threading
@@ -32,6 +44,7 @@ from tools.code_execution_tool import (
     build_execute_code_schema,
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
+    _execute_remote,
 )
 
 
@@ -101,7 +114,65 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def json_parse(", src)
         self.assertIn("def shell_quote(", src)
         self.assertIn("def retry(", src)
-        self.assertIn("import json, os, socket, shlex, time", src)
+        self.assertIn("import json, os, socket, shlex, threading, time", src)
+
+    def test_file_transport_uses_tempfile_fallback_for_rpc_dir(self):
+        src = generate_hermes_tools_module(["terminal"], transport="file")
+        self.assertIn("import json, os, shlex, tempfile, threading, time", src)
+        self.assertIn("os.path.join(tempfile.gettempdir(), \"hermes_rpc\")", src)
+        self.assertNotIn('os.environ.get("HERMES_RPC_DIR", "/tmp/hermes_rpc")', src)
+
+    def test_uds_transport_serializes_concurrent_calls(self):
+        """Regression: UDS _call() must hold a lock across send+recv so that
+        concurrent tool calls from multiple threads don't interleave on the
+        shared socket and receive each other's responses."""
+        src = generate_hermes_tools_module(["terminal"], transport="uds")
+        self.assertIn("_call_lock = threading.Lock()", src)
+        self.assertIn("with _call_lock:", src)
+
+    def test_file_transport_serializes_seq_allocation(self):
+        """Regression: file transport _call() must allocate `_seq` under a
+        lock, otherwise concurrent threads can pick the same seq and clobber
+        each other's request files."""
+        src = generate_hermes_tools_module(["terminal"], transport="file")
+        self.assertIn("_seq_lock = threading.Lock()", src)
+        self.assertIn("with _seq_lock:", src)
+
+
+class TestExecuteCodeRemoteTempDir(unittest.TestCase):
+    def test_execute_remote_uses_backend_temp_dir_for_sandbox(self):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return "/data/data/com.termux/files/usr/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                self.commands.append((command, cwd, timeout))
+                if "command -v python3" in command:
+                    return {"output": "OK\n"}
+                if "python3 script.py" in command:
+                    return {"output": "hello\n", "returncode": 0}
+                return {"output": ""}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+            result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
+
+        self.assertEqual(result["status"], "success")
+        mkdir_cmd = env.commands[1][0]
+        run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
+        cleanup_cmd = env.commands[-1][0]
+        self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/hermes_exec_", mkdir_cmd)
+        self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
+        self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
+        self.assertNotIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
@@ -171,6 +242,64 @@ print(f"file lines: {r2['total_lines']}")
         result = self._run("raise ValueError('test error')")
         self.assertEqual(result["status"], "error")
 
+    def test_concurrent_tool_calls_match_responses(self):
+        """Regression for the UDS RPC race: multiple threads inside the
+        sandbox calling terminal() concurrently must each receive their own
+        response, not another thread's.
+
+        Before the fix, `_sock` and the recv-loop were shared without a
+        lock, so responses (written FIFO by the single-threaded server)
+        got delivered to whichever client thread happened to win the
+        recv() race. That surfaced as each thread seeing another thread's
+        output.
+
+        The mock dispatcher sleeps briefly to guarantee the requests
+        overlap on the socket.
+        """
+        code = '''
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from hermes_tools import terminal
+
+N = 10
+
+def call(i):
+    r = terminal(f"echo TAG-{i}")
+    return i, r.get("output", "")
+
+with ThreadPoolExecutor(max_workers=N) as ex:
+    results = list(ex.map(call, range(N)))
+
+mismatches = [(i, out) for i, out in results if f"TAG-{i}" not in out]
+if mismatches:
+    print(f"MISMATCH {len(mismatches)}/{N}: {mismatches[:3]}")
+else:
+    print(f"OK {N}/{N}")
+'''
+
+        def slow_mock(function_name, function_args, task_id=None, user_task=None):
+            import time as _t
+            if function_name == "terminal":
+                _t.sleep(0.05)  # ensure requests overlap on the socket
+                cmd = function_args.get("command", "")
+                # Echo semantics: strip leading "echo " and return the rest
+                out = cmd[5:] if cmd.startswith("echo ") else f"mock: {cmd}"
+                return json.dumps({"output": out, "exit_code": 0})
+            return _mock_handle_function_call(
+                function_name, function_args, task_id=task_id, user_task=user_task
+            )
+
+        with patch("model_tools.handle_function_call", side_effect=slow_mock):
+            raw = execute_code(
+                code=code,
+                task_id="test-concurrent",
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+            )
+        result = json.loads(raw)
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("OK 10/10", result["output"],
+                      msg=f"Concurrent tool calls mismatched: {result['output']!r}")
+
     def test_excluded_tool_returns_error(self):
         """Script calling a tool not in the allow-list gets an error from RPC."""
         code = """
@@ -224,6 +353,10 @@ raise RuntimeError("deliberate crash")
                 ))
         self.assertEqual(result["status"], "timeout")
         self.assertIn("timed out", result.get("error", ""))
+        # The timeout message must also appear in output so the LLM always
+        # surfaces it to the user (#10807).
+        self.assertIn("timed out", result.get("output", ""))
+        self.assertIn("\u23f0", result.get("output", ""))
 
     def test_web_search_tool(self):
         """Script calls web_search and processes results."""
@@ -325,7 +458,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "check_interval", "pty"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the
@@ -641,11 +774,17 @@ class TestEnvVarFiltering(unittest.TestCase):
 class TestExecuteCodeEdgeCases(unittest.TestCase):
 
     def test_windows_returns_error(self):
-        """On Windows (or when SANDBOX_AVAILABLE is False), returns error JSON."""
+        """When SANDBOX_AVAILABLE is False (e.g. when the backend deems
+        the sandbox unusable for this environment), execute_code returns
+        an error JSON with a readable message pointing the caller at
+        regular tool calls.  Previously this was a Windows-only gate;
+        execute_code now works on Windows via loopback TCP, so the
+        error is only emitted when SANDBOX_AVAILABLE is explicitly
+        flipped off (e.g. for future platform-specific disables)."""
         with patch("tools.code_execution_tool.SANDBOX_AVAILABLE", False):
             result = json.loads(execute_code("print('hi')", task_id="test"))
             self.assertIn("error", result)
-            self.assertIn("Windows", result["error"])
+            self.assertIn("unavailable", result["error"].lower())
 
     def test_whitespace_only_code(self):
         result = json.loads(execute_code("   \n\t  ", task_id="test"))
@@ -711,11 +850,19 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_returns_code_execution_section(self):
         from tools.code_execution_tool import _load_config
-        mock_cli = MagicMock()
-        mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 120, "max_tool_calls": 10}}
-        with patch.dict("sys.modules", {"cli": mock_cli}):
+        with patch("hermes_cli.config.read_raw_config",
+                   return_value={"code_execution": {"timeout": 120, "max_tool_calls": 10}}):
             result = _load_config()
-        self.assertIsInstance(result, dict)
+        self.assertEqual(result, {"timeout": 120, "max_tool_calls": 10})
+
+    def test_does_not_import_interactive_cli(self):
+        from tools.code_execution_tool import _load_config
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
+        with patch.dict("sys.modules", {"cli": mock_cli}), \
+             patch("hermes_cli.config.read_raw_config", return_value={}):
+            result = _load_config()
+        self.assertEqual(result, {})
 
 
 # ---------------------------------------------------------------------------
@@ -725,14 +872,18 @@ class TestLoadConfig(unittest.TestCase):
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestInterruptHandling(unittest.TestCase):
     def test_interrupt_event_stops_execution(self):
-        """When _interrupt_event is set, execute_code should stop the script."""
+        """When interrupt is set for the execution thread, execute_code should stop."""
         code = "import time; time.sleep(60); print('should not reach')"
+        from tools.interrupt import set_interrupt
+
+        # Capture the main thread ID so we can target the interrupt correctly.
+        # execute_code runs in the current thread; set_interrupt needs its ID.
+        main_tid = threading.current_thread().ident
 
         def set_interrupt_after_delay():
             import time as _t
             _t.sleep(1)
-            from tools.terminal_tool import _interrupt_event
-            _interrupt_event.set()
+            set_interrupt(True, main_tid)
 
         t = threading.Thread(target=set_interrupt_after_delay, daemon=True)
         t.start()
@@ -749,8 +900,7 @@ class TestInterruptHandling(unittest.TestCase):
             self.assertEqual(result["status"], "interrupted")
             self.assertIn("interrupted", result["output"])
         finally:
-            from tools.terminal_tool import _interrupt_event
-            _interrupt_event.clear()
+            set_interrupt(False, main_tid)
             t.join(timeout=3)
 
 

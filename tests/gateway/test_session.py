@@ -5,13 +5,20 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
+from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionSource,
     SessionStore,
     build_session_context,
     build_session_context_prompt,
     build_session_key,
+    canonical_whatsapp_identifier,
 )
+
+# Legacy name preserved for these tests; product renamed the function to
+# canonical_whatsapp_identifier.  Keep the tests referencing the old name
+# working without duplicating the suite.
+normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
 class TestSessionSourceRoundtrip:
@@ -83,14 +90,22 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
-    def test_invalid_platform_raises(self):
-        with pytest.raises((ValueError, KeyError)):
+    def test_unknown_platform_rejected_for_bad_names(self):
+        """Arbitrary platform names are rejected (no accidental enum pollution).
+
+        Only bundled platform plugins (discovered under ``plugins/platforms/``)
+        and runtime-registered plugins get dynamic enum members.
+        """
+        with pytest.raises(ValueError):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
 
 
 class TestSessionSourceDescription:
     def test_local_cli(self):
-        source = SessionSource.local_cli()
+        source = SessionSource(
+            platform=Platform.LOCAL, chat_id="cli",
+            chat_name="CLI terminal", chat_type="dm",
+        )
         assert source.description == "CLI terminal"
 
     def test_dm_with_username(self):
@@ -143,7 +158,10 @@ class TestSessionSourceDescription:
 
 class TestLocalCliFactory:
     def test_local_cli_defaults(self):
-        source = SessionSource.local_cli()
+        source = SessionSource(
+            platform=Platform.LOCAL, chat_id="cli",
+            chat_name="CLI terminal", chat_type="dm",
+        )
         assert source.platform == Platform.LOCAL
         assert source.chat_id == "cli"
         assert source.chat_type == "dm"
@@ -176,6 +194,25 @@ class TestBuildSessionContextPrompt:
 
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
+
+    def test_bluebubbles_prompt_mentions_short_conversational_i_message_format(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.BLUEBUBBLES: PlatformConfig(enabled=True, extra={"server_url": "http://localhost:1234", "password": "secret"}),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id="iMessage;-;user@example.com",
+            chat_name="Ben",
+            chat_type="dm",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "responding via iMessage" in prompt
+        assert "short and conversational" in prompt
+        assert "blank line" in prompt
 
     def test_discord_prompt(self):
         config = GatewayConfig(
@@ -218,6 +255,7 @@ class TestBuildSessionContextPrompt:
         assert "Slack" in prompt
         assert "cannot search" in prompt.lower()
         assert "pin" in prompt.lower()
+        assert "current message's slack block/attachment payload" in prompt.lower()
 
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""
@@ -267,12 +305,28 @@ class TestBuildSessionContextPrompt:
 
     def test_local_prompt_mentions_machine(self):
         config = GatewayConfig()
-        source = SessionSource.local_cli()
+        source = SessionSource(
+            platform=Platform.LOCAL, chat_id="cli",
+            chat_name="CLI terminal", chat_type="dm",
+        )
         ctx = build_session_context(source, config)
         prompt = build_session_context_prompt(ctx)
 
         assert "Local" in prompt
         assert "machine running this agent" in prompt
+
+    def test_local_delivery_path_uses_display_hermes_home(self):
+        config = GatewayConfig()
+        source = SessionSource(
+            platform=Platform.LOCAL, chat_id="cli",
+            chat_name="CLI terminal", chat_type="dm",
+        )
+        ctx = build_session_context(source, config)
+
+        with patch("hermes_constants.display_hermes_home", return_value="~/.hermes/profiles/coder"):
+            prompt = build_session_context_prompt(ctx)
+
+        assert "~/.hermes/profiles/coder/cron/output/" in prompt
 
     def test_whatsapp_prompt(self):
         config = GatewayConfig(
@@ -290,6 +344,161 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "WhatsApp" in prompt or "whatsapp" in prompt.lower()
+
+    def test_multi_user_thread_prompt(self):
+        """Shared thread sessions show multi-user note instead of single user."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            thread_id="17585",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Multi-user thread" in prompt
+        assert "[sender name]" in prompt
+        # Should NOT show a specific **User:** line (would bust cache)
+        assert "**User:** Alice" not in prompt
+
+    def test_non_thread_group_shows_user(self):
+        """Regular group messages (no thread) still show the user name."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**User:** Alice" in prompt
+        assert "Multi-user thread" not in prompt
+
+    def test_shared_non_thread_group_prompt_hides_single_user(self):
+        """Shared non-thread group sessions should avoid pinning one user."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+            group_sessions_per_user=False,
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Multi-user session" in prompt
+        assert "[sender name]" in prompt
+        assert "**User:** Alice" not in prompt
+
+    def test_dm_thread_shows_user_not_multi(self):
+        """DM threads are single-user and should show User, not multi-user note."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="topic-1",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**User:** Alice" in prompt
+        assert "Multi-user thread" not in prompt
+
+
+class TestSenderPrefixWithBackfill:
+    """Regression: sender prefix must not wrap the backfill context block.
+
+    Tests exercise the real GatewayRunner._prepare_inbound_message_text()
+    method to ensure the [sender_name] prefix applies only to the trigger
+    message, not the channel_context backfill block.
+    """
+
+    @pytest.fixture()
+    def runner(self):
+        from gateway.run import GatewayRunner
+
+        r = GatewayRunner.__new__(GatewayRunner)
+        r.config = GatewayConfig(group_sessions_per_user=False)
+        r.adapters = {}
+        r._model = "test-model"
+        r._base_url = ""
+        r._has_setup_skill = lambda: False
+        return r
+
+    @pytest.fixture()
+    def source(self):
+        return SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="c1",
+            chat_type="group",
+            user_name="Alice",
+        )
+
+    @pytest.mark.asyncio
+    async def test_plain_message_gets_prefix(self, runner, source):
+        """Normal message without backfill gets [sender] prefix."""
+        event = MessageEvent(text="hello world", source=source)
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result == "[Alice] hello world"
+
+    @pytest.mark.asyncio
+    async def test_backfill_prefix_only_on_trigger(self, runner, source):
+        """Backfill context must NOT get the sender prefix."""
+        event = MessageEvent(
+            text="hello world",
+            source=source,
+            channel_context="[Recent channel messages]\n[Bob] some context",
+        )
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result.startswith("[Recent channel messages]")
+        assert "[Alice] [Recent channel messages]" not in result
+        assert "[New message]\n[Alice] hello world" in result
+
+    @pytest.mark.asyncio
+    async def test_backfill_preserves_context_block(self, runner, source):
+        """The backfill block should pass through unchanged — no double-prefixing."""
+        context = "[Recent channel messages]\n[Bob] first\n[Charlie [bot]] second"
+        event = MessageEvent(
+            text="hey everyone", source=source, channel_context=context,
+        )
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result.startswith(context)
+        assert "[Alice] hey everyone" in result
+        assert "[Alice] [Bob]" not in result
+        assert "[Alice] [Charlie" not in result
+        assert "[Alice] [Recent" not in result
 
 
 class TestSessionStoreRewriteTranscript:
@@ -480,9 +689,48 @@ class TestLoadTranscriptPreferLongerSource:
         assert result[0]["content"] == "db-q"
 
 
-class TestWhatsAppDMSessionKeyConsistency:
-    """Regression: all session-key construction must go through build_session_key
-    so DMs are isolated by chat_id across platforms."""
+class TestSessionStoreSwitchSession:
+    """Regression coverage for gateway /resume session switching semantics."""
+
+    def test_switch_session_reopens_target_session_in_db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="chat-1",
+            chat_type="dm",
+            user_id="user-1",
+            user_name="tester",
+        )
+        current_entry = store.get_or_create_session(source)
+        current_session_id = current_entry.session_id
+
+        target_session_id = "old_session_abc"
+        db.create_session(target_session_id, source="feishu", user_id="user-1")
+        db.end_session(target_session_id, end_reason="user_exit")
+        assert db.get_session(target_session_id)["ended_at"] is not None
+
+        switched = store.switch_session(current_entry.session_key, target_session_id)
+
+        assert switched is not None
+        assert switched.session_id == target_session_id
+        assert db.get_session(current_session_id)["end_reason"] == "session_switch"
+        resumed = db.get_session(target_session_id)
+        assert resumed["ended_at"] is None
+        assert resumed["end_reason"] is None
+        db.close()
+
+
+class TestWhatsAppSessionKeyConsistency:
+    """Regression: WhatsApp session keys must collapse JID/LID aliases to a
+    single stable identity for both DM chat_ids and group participant_ids."""
 
     @pytest.fixture()
     def store(self, tmp_path):
@@ -493,7 +741,7 @@ class TestWhatsAppDMSessionKeyConsistency:
         s._loaded = True
         return s
 
-    def test_whatsapp_dm_includes_chat_id(self):
+    def test_whatsapp_dm_uses_canonical_identifier(self):
         source = SessionSource(
             platform=Platform.WHATSAPP,
             chat_id="15551234567@s.whatsapp.net",
@@ -501,7 +749,80 @@ class TestWhatsAppDMSessionKeyConsistency:
             user_name="Phone User",
         )
         key = build_session_key(source)
-        assert key == "agent:main:whatsapp:dm:15551234567@s.whatsapp.net"
+        assert key == "agent:main:whatsapp:dm:15551234567"
+
+    def test_whatsapp_dm_aliases_share_one_session_key(self, tmp_path, monkeypatch):
+        tmp_home = tmp_path / "hermes-home"
+        mapping_dir = tmp_home / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_home))
+
+        lid_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="999999999999999@lid",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        phone_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+
+        assert build_session_key(lid_source) == "agent:main:whatsapp:dm:15551234567"
+        assert build_session_key(phone_source) == "agent:main:whatsapp:dm:15551234567"
+
+    def test_whatsapp_group_participant_aliases_share_session_key(self, tmp_path, monkeypatch):
+        """With group_sessions_per_user, the same human flipping between
+        phone-JID and LID inside a group must not produce two isolated
+        per-user sessions."""
+        tmp_home = tmp_path / "hermes-home"
+        mapping_dir = tmp_home / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_home))
+
+        lid_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="999999999999999@lid",
+            user_name="Group Member",
+        )
+        phone_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="15551234567@s.whatsapp.net",
+            user_name="Group Member",
+        )
+
+        expected = "agent:main:whatsapp:group:120363000000000000@g.us:15551234567"
+        assert build_session_key(lid_source, group_sessions_per_user=True) == expected
+        assert build_session_key(phone_source, group_sessions_per_user=True) == expected
+
+    def test_whatsapp_group_shared_sessions_untouched_by_canonicalisation(self):
+        """When group_sessions_per_user is False, participant_id is not in the
+        key at all, so canonicalisation is a no-op for this mode."""
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="999999999999999@lid",
+            user_name="Group Member",
+        )
+        assert (
+            build_session_key(source, group_sessions_per_user=False)
+            == "agent:main:whatsapp:group:120363000000000000@g.us"
+        )
 
     def test_store_delegates_to_build_session_key(self, store):
         """SessionStore._generate_session_key must produce the same result."""
@@ -636,7 +957,28 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         assert key == "agent:main:telegram:group:-1002285219667:17585"
 
-    def test_group_thread_sessions_are_isolated_per_user(self):
+    def test_group_thread_sessions_are_shared_by_default(self):
+        """Threads default to shared sessions — user_id is NOT appended."""
+        alice = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == "agent:main:telegram:group:-1002285219667:17585"
+        assert build_session_key(bob) == "agent:main:telegram:group:-1002285219667:17585"
+        assert build_session_key(alice) == build_session_key(bob)
+
+    def test_group_thread_sessions_can_be_isolated_per_user(self):
+        """thread_sessions_per_user=True restores per-user isolation in threads."""
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="-1002285219667",
@@ -644,8 +986,110 @@ class TestWhatsAppDMSessionKeyConsistency:
             thread_id="17585",
             user_id="42",
         )
-        key = build_session_key(source)
+        key = build_session_key(source, thread_sessions_per_user=True)
         assert key == "agent:main:telegram:group:-1002285219667:17585:42"
+
+    def test_non_thread_group_sessions_still_isolated_per_user(self):
+        """Regular group messages (no thread_id) remain per-user by default."""
+        alice = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == "agent:main:telegram:group:-1002285219667:alice"
+        assert build_session_key(bob) == "agent:main:telegram:group:-1002285219667:bob"
+        assert build_session_key(alice) != build_session_key(bob)
+
+    def test_discord_thread_sessions_shared_by_default(self):
+        """Discord threads are shared across participants by default."""
+        alice = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="thread",
+            thread_id="thread-456",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="thread",
+            thread_id="thread-456",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == build_session_key(bob)
+        assert "alice" not in build_session_key(alice)
+        assert "bob" not in build_session_key(bob)
+
+    def test_dm_thread_sessions_not_affected(self):
+        """DM threads use their own keying logic and are not affected."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="topic-1",
+            user_id="42",
+        )
+        key = build_session_key(source)
+        # DM logic: chat_id + thread_id, user_id never included
+        assert key == "agent:main:telegram:dm:99:topic-1"
+
+
+class TestWhatsAppIdentifierPublicHelpers:
+    """Contract tests for the public WhatsApp identifier helpers.
+
+    These helpers are part of the public API for plugins that need
+    WhatsApp identity awareness. Breaking these contracts is a
+    breaking change for downstream plugins.
+    """
+
+    def test_normalize_strips_jid_suffix(self):
+        assert normalize_whatsapp_identifier("60123456789@s.whatsapp.net") == "60123456789"
+
+    def test_normalize_strips_lid_suffix(self):
+        assert normalize_whatsapp_identifier("999999999999999@lid") == "999999999999999"
+
+    def test_normalize_strips_device_suffix(self):
+        assert normalize_whatsapp_identifier("60123456789:47@s.whatsapp.net") == "60123456789"
+
+    def test_normalize_strips_leading_plus(self):
+        assert normalize_whatsapp_identifier("+60123456789") == "60123456789"
+
+    def test_normalize_handles_bare_numeric(self):
+        assert normalize_whatsapp_identifier("60123456789") == "60123456789"
+
+    def test_normalize_handles_empty_and_none(self):
+        assert normalize_whatsapp_identifier("") == ""
+        assert normalize_whatsapp_identifier(None) == ""  # type: ignore[arg-type]
+
+    def test_canonical_without_mapping_returns_normalized(self, tmp_path, monkeypatch):
+        """With no bridge mapping files, the normalized input is returned."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert canonical_whatsapp_identifier("60123456789@lid") == "60123456789"
+
+    def test_canonical_walks_lid_mapping(self, tmp_path, monkeypatch):
+        """LID is resolved to its paired phone identity via lid-mapping files."""
+        mapping_dir = tmp_path / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        canonical = canonical_whatsapp_identifier("999999999999999@lid")
+        assert canonical == "15551234567"
+        assert canonical_whatsapp_identifier("15551234567@s.whatsapp.net") == "15551234567"
+
+    def test_canonical_empty_input(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert canonical_whatsapp_identifier("") == ""
 
 
 class TestSessionStoreEntriesAttribute:
@@ -841,6 +1285,7 @@ class TestRewriteTranscriptPreservesReasoning:
             role="assistant",
             content="The answer is 42.",
             reasoning="I need to think step by step.",
+            reasoning_content="provider scratchpad",
             reasoning_details=[{"type": "summary", "text": "step by step"}],
             codex_reasoning_items=[{"id": "r1", "type": "reasoning"}],
         )
@@ -848,6 +1293,7 @@ class TestRewriteTranscriptPreservesReasoning:
         # Verify all three were stored
         before = db.get_messages_as_conversation(session_id)
         assert before[0].get("reasoning") == "I need to think step by step."
+        assert before[0].get("reasoning_content") == "provider scratchpad"
         assert before[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert before[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
@@ -864,5 +1310,48 @@ class TestRewriteTranscriptPreservesReasoning:
         # Load again — all three reasoning fields must survive
         after = db.get_messages_as_conversation(session_id)
         assert after[0].get("reasoning") == "I need to think step by step."
+        assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+    def test_db_rewrite_is_atomic_on_insert_failure(self, tmp_path, monkeypatch):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        session_id = "atomic-rewrite-test"
+        db.create_session(session_id=session_id, source="cli")
+        db.append_message(session_id=session_id, role="user", content="before user")
+        db.append_message(session_id=session_id, role="assistant", content="before assistant")
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        # Force the second insert inside replace_messages to fail, simulating
+        # any storage-layer error that might abort a multi-row rewrite.
+        real_encode = SessionDB._encode_content
+        calls = {"n": 0}
+
+        def flaky_encode(cls, content):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated storage failure")
+            return real_encode.__func__(cls, content)
+
+        monkeypatch.setattr(SessionDB, "_encode_content", classmethod(flaky_encode))
+
+        replacement = [
+            {"role": "user", "content": "after user"},
+            {"role": "assistant", "content": "after assistant"},
+        ]
+
+        store.rewrite_transcript(session_id, replacement)
+
+        # The rewrite must roll back atomically — original messages preserved.
+        after = db.get_messages_as_conversation(session_id)
+        assert [msg["content"] for msg in after] == [
+            "before user",
+            "before assistant",
+        ]

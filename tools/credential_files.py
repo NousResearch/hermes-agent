@@ -22,21 +22,35 @@ from __future__ import annotations
 
 import logging
 import os
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Dict, List
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
 # Session-scoped list of credential files to mount.
-# Key: container_path (deduplicated), Value: host_path
-_registered_files: Dict[str, str] = {}
+# Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
+_registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
+
+
+def _get_registered() -> Dict[str, str]:
+    """Get or create the registered credential files dict for the current context/session."""
+    try:
+        return _registered_files_var.get()
+    except LookupError:
+        val: Dict[str, str] = {}
+        _registered_files_var.set(val)
+        return val
+
 
 # Cache for config-based file list (loaded once per process).
 _config_files: List[Dict[str, str]] | None = None
 
 
 def _resolve_hermes_home() -> Path:
-    return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    from hermes_constants import get_hermes_home
+    return get_hermes_home()
 
 
 def register_credential_file(
@@ -67,26 +81,24 @@ def register_credential_file(
 
     # Resolve symlinks and normalise ``..`` before the containment check so
     # that traversal like ``../. ssh/id_rsa`` cannot escape HERMES_HOME.
-    try:
-        resolved = host_path.resolve()
-        hermes_home_resolved = hermes_home.resolve()
-        resolved.relative_to(hermes_home_resolved)  # raises ValueError if outside
-    except ValueError:
+    from tools.path_security import validate_within_dir
+
+    containment_error = validate_within_dir(host_path, hermes_home)
+    if containment_error:
         logger.warning(
-            "credential_files: rejected path traversal %r "
-            "(resolves to %s, outside HERMES_HOME %s)",
+            "credential_files: rejected path traversal %r (%s)",
             relative_path,
-            resolved,
-            hermes_home_resolved,
+            containment_error,
         )
         return False
 
+    resolved = host_path.resolve()
     if not resolved.is_file():
         logger.debug("credential_files: skipping %s (not found)", resolved)
         return False
 
     container_path = f"{container_base.rstrip('/')}/{relative_path}"
-    _registered_files[container_path] = str(resolved)
+    _get_registered()[container_path] = str(resolved)
     logger.debug("credential_files: registered %s -> %s", resolved, container_path)
     return True
 
@@ -124,42 +136,38 @@ def _load_config_files() -> List[Dict[str, str]]:
 
     result: List[Dict[str, str]] = []
     try:
+        from hermes_cli.config import read_raw_config
         hermes_home = _resolve_hermes_home()
-        config_path = hermes_home / "config.yaml"
-        if config_path.exists():
-            import yaml
+        cfg = read_raw_config()
+        cred_files = cfg_get(cfg, "terminal", "credential_files")
+        if isinstance(cred_files, list):
+            from tools.path_security import validate_within_dir
 
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            cred_files = cfg.get("terminal", {}).get("credential_files")
-            if isinstance(cred_files, list):
-                hermes_home_resolved = hermes_home.resolve()
-                for item in cred_files:
-                    if isinstance(item, str) and item.strip():
-                        rel = item.strip()
-                        if os.path.isabs(rel):
-                            logger.warning(
-                                "credential_files: rejected absolute config path %r", rel,
-                            )
-                            continue
-                        host_path = (hermes_home / rel).resolve()
-                        try:
-                            host_path.relative_to(hermes_home_resolved)
-                        except ValueError:
-                            logger.warning(
-                                "credential_files: rejected config path traversal %r "
-                                "(resolves to %s, outside HERMES_HOME %s)",
-                                rel, host_path, hermes_home_resolved,
-                            )
-                            continue
-                        if host_path.is_file():
-                            container_path = f"/root/.hermes/{rel}"
-                            result.append({
-                                "host_path": str(host_path),
-                                "container_path": container_path,
-                            })
+            for item in cred_files:
+                if isinstance(item, str) and item.strip():
+                    rel = item.strip()
+                    if os.path.isabs(rel):
+                        logger.warning(
+                            "credential_files: rejected absolute config path %r", rel,
+                        )
+                        continue
+                    host_path = hermes_home / rel
+                    containment_error = validate_within_dir(host_path, hermes_home)
+                    if containment_error:
+                        logger.warning(
+                            "credential_files: rejected config path traversal %r (%s)",
+                            rel, containment_error,
+                        )
+                        continue
+                    resolved_path = host_path.resolve()
+                    if resolved_path.is_file():
+                        container_path = f"/root/.hermes/{rel}"
+                        result.append({
+                            "host_path": str(resolved_path),
+                            "container_path": container_path,
+                        })
     except Exception as e:
-        logger.debug("Could not read terminal.credential_files from config: %s", e)
+        logger.warning("Could not read terminal.credential_files from config: %s", e)
 
     _config_files = result
     return _config_files
@@ -174,7 +182,7 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
     mounts: Dict[str, str] = {}
 
     # Skill-registered files
-    for container_path, host_path in _registered_files.items():
+    for container_path, host_path in _get_registered().items():
         # Re-check existence (file may have been deleted since registration)
         if Path(host_path).is_file():
             mounts[container_path] = host_path
@@ -366,6 +374,34 @@ def get_cache_directory_mounts(
     return mounts
 
 
+def to_agent_visible_cache_path(
+    host_path: str,
+    container_base: str = "/root/.hermes",
+) -> str:
+    """Translate a host cache path to its mounted path inside the sandbox.
+
+    Returns the input unchanged if it is not under any auto-mounted cache
+    directory, or if the active terminal backend does not require path
+    translation (only Docker for now).
+    """
+    # Only Docker backend requires translation at this time.  Other backends
+    # (Modal, Daytona, Vercel) use different mount semantics and will be
+    # addressed separately if needed.  Backend is identified by TERMINAL_ENV
+    # (same env var tools/terminal_tool.py reads in _get_environment_config).
+    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+        return host_path
+
+    path = Path(host_path)
+    for mount in get_cache_directory_mounts(container_base=container_base):
+        host_dir = Path(mount["host_path"])
+        try:
+            rel = path.relative_to(host_dir)
+            return str(Path(mount["container_path"]) / rel)
+        except ValueError:
+            continue
+    return host_path
+
+
 def iter_cache_files(
     container_base: str = "/root/.hermes",
 ) -> List[Dict[str, str]]:
@@ -395,10 +431,6 @@ def iter_cache_files(
 
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
-    _registered_files.clear()
+    _get_registered().clear()
 
 
-def reset_config_cache() -> None:
-    """Force re-read of config on next access (for testing)."""
-    global _config_files
-    _config_files = None

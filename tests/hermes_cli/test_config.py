@@ -10,9 +10,11 @@ from hermes_cli.config import (
     DEFAULT_CONFIG,
     get_hermes_home,
     ensure_hermes_home,
+    get_compatible_custom_providers,
     load_config,
     load_env,
     migrate_config,
+    remove_env_value,
     save_config,
     save_env_value,
     save_env_value_secure,
@@ -67,6 +69,7 @@ class TestLoadConfigDefaults:
             assert "max_turns" not in config
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
+            assert config["display"]["interim_assistant_messages"] is True
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -76,6 +79,81 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+
+class TestLoadConfigParseFailure:
+    """A YAML parse failure must NOT silently fall back to defaults.
+
+    Before issue #23570 this was a single ``print(...)`` that scrolled past
+    on the first invocation — users saw aux-fallback misbehavior with no clue
+    their config.yaml was being ignored. The helper must:
+      * log at WARNING (so ``hermes logs`` surfaces it)
+      * also write to stderr (so it's visible at startup even before
+        ``setup_logging()`` has wired up file handlers)
+      * dedup on (path, mtime_ns, size) so concurrent loads don't spam
+      * re-warn after the user edits the file (different mtime)
+    """
+
+    def test_logs_and_warns_on_parse_failure(self, tmp_path, caplog, capsys):
+        # Reset the dedup cache so this test isn't affected by other tests
+        # that may have warned about a different broken config.
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("\tbroken tab indent:\n")
+
+            import logging
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+                config = load_config()
+
+            # Falls back to defaults — confirms the silent-fallback we're warning about
+            assert config["model"] == DEFAULT_CONFIG["model"]
+
+            # WARNING-level log was emitted with file path + reason
+            assert any(
+                str(tmp_path / "config.yaml") in rec.message
+                and "Falling back to default config" in rec.message
+                for rec in caplog.records
+            ), f"expected WARNING log, got: {[r.message for r in caplog.records]}"
+
+            # stderr also got a user-visible message (with the ⚠️ marker so it
+            # stands out at hermes startup before logging is configured)
+            captured = capsys.readouterr()
+            assert "hermes config:" in captured.err
+            assert str(tmp_path / "config.yaml") in captured.err
+
+    def test_dedup_on_repeated_load_same_file(self, tmp_path, capsys):
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("\tbroken:\n")
+
+            load_config()
+            first = capsys.readouterr().err
+            assert "hermes config:" in first
+
+            load_config()
+            second = capsys.readouterr().err
+            assert second == "", "second load should NOT re-warn (same file, same mtime)"
+
+    def test_rewarns_after_file_edit(self, tmp_path, capsys):
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("\tbroken:\n")
+            load_config()
+            capsys.readouterr()  # discard first warning
+
+            # Edit the file (still broken, but different content) — mtime changes
+            time.sleep(0.05)
+            (tmp_path / "config.yaml").write_text("\tstill broken differently:\n")
+            load_config()
+            after_edit = capsys.readouterr().err
+            assert "hermes config:" in after_edit, "edited file should re-warn"
 
 
 class TestSaveAndLoadRoundtrip:
@@ -147,6 +225,49 @@ class TestSaveEnvValueSecure:
             save_env_value("TENOR_API_KEY", "sk-test-secret")
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
+
+
+class TestRemoveEnvValue:
+    def test_removes_key_from_env_file(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("KEY_A=value_a\nKEY_B=value_b\nKEY_C=value_c\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "KEY_B": "value_b"}):
+            result = remove_env_value("KEY_B")
+            assert result is True
+            content = env_path.read_text()
+            assert "KEY_B" not in content
+            assert "KEY_A=value_a" in content
+            assert "KEY_C=value_c" in content
+
+    def test_clears_os_environ(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("MY_KEY=my_value\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "MY_KEY": "my_value"}):
+            remove_env_value("MY_KEY")
+            assert "MY_KEY" not in os.environ
+
+    def test_returns_false_when_key_not_found(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("OTHER_KEY=value\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            result = remove_env_value("MISSING_KEY")
+            assert result is False
+            # File should be untouched
+            assert env_path.read_text() == "OTHER_KEY=value\n"
+
+    def test_handles_missing_env_file(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "GHOST_KEY": "ghost"}):
+            result = remove_env_value("GHOST_KEY")
+            assert result is False
+            # os.environ should still be cleared
+            assert "GHOST_KEY" not in os.environ
+
+    def test_clears_os_environ_even_when_not_in_file(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("OTHER=stuff\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "ORPHAN_KEY": "orphan"}):
+            remove_env_value("ORPHAN_KEY")
+            assert "ORPHAN_KEY" not in os.environ
 
 
 class TestSaveConfigAtomicity:
@@ -273,6 +394,23 @@ class TestSanitizeEnvLines:
         assert result[0].startswith("OPENROUTER_API_KEY=")
         assert result[1].startswith("OPENAI_BASE_URL=")
 
+    def test_glm_suffix_collision_not_split(self):
+        """GLM_API_KEY / GLM_BASE_URL must not be mangled by LM_API_KEY / LM_BASE_URL suffixes (#17138)."""
+        lines = [
+            "GLM_API_KEY=glm-secret\n",
+            "GLM_BASE_URL=https://api.z.ai/api/paas/v4\n",
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == lines, f"GLM_* lines were corrupted by suffix collision: {result}"
+
+    def test_suffix_collision_does_not_break_real_concatenation(self):
+        """A genuine concatenation that happens to start with a suffix-superset key still splits."""
+        lines = ["GLM_API_KEY=glmLM_API_KEY=lm-key\n"]
+        result = _sanitize_env_lines(lines)
+        assert len(result) == 2
+        assert result[0].startswith("GLM_API_KEY=")
+        assert result[1].startswith("LM_API_KEY=")
+
     def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
         """save_env_value sanitizes corrupted lines when writing a new key."""
         env_file = tmp_path / ".env"
@@ -377,3 +515,220 @@ class TestAnthropicTokenMigration:
         }):
             migrate_config(interactive=False, quiet=True)
             assert load_env().get("ANTHROPIC_TOKEN") == "current-token"
+
+
+class TestCustomProviderCompatibility:
+    """Custom provider compatibility across legacy and v12+ config schemas."""
+
+    def test_v11_upgrade_moves_custom_providers_into_providers(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 11,
+                    "model": {
+                        "default": "openai/gpt-5.4",
+                        "provider": "openrouter",
+                    },
+                    "custom_providers": [
+                        {
+                            "name": "OpenAI Direct",
+                            "base_url": "https://api.openai.com/v1",
+                            "api_key": "test-key",
+                            "api_mode": "codex_responses",
+                            "model": "gpt-5-mini",
+                        }
+                    ],
+                    "fallback_providers": [
+                        {"provider": "openai-direct", "model": "gpt-5-mini"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["providers"]["openai-direct"] == {
+            "api": "https://api.openai.com/v1",
+            "api_key": "test-key",
+            "default_model": "gpt-5-mini",
+            "name": "OpenAI Direct",
+            "transport": "codex_responses",
+        }
+        # custom_providers removed by migration — runtime reads via compat layer
+        assert "custom_providers" not in raw
+
+    def test_providers_dict_resolves_at_runtime(self, tmp_path):
+        """After migration deleted custom_providers, get_compatible_custom_providers
+        still finds entries from the providers dict."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "openai-direct": {
+                            "api": "https://api.openai.com/v1",
+                            "api_key": "test-key",
+                            "default_model": "gpt-5-mini",
+                            "name": "OpenAI Direct",
+                            "transport": "codex_responses",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert len(compatible) == 1
+        assert compatible[0]["name"] == "OpenAI Direct"
+        assert compatible[0]["base_url"] == "https://api.openai.com/v1"
+        assert compatible[0]["provider_key"] == "openai-direct"
+        assert compatible[0]["api_mode"] == "codex_responses"
+
+    def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
+        """URL field precedence is base_url > url > api (PR #9332)."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "my-provider": {
+                            "name": "My Provider",
+                            "api": "https://api.example.com/v1",
+                            "url": "https://url.example.com/v1",
+                            "base_url": "https://base.example.com/v1",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible == [
+            {
+                "name": "My Provider",
+                "base_url": "https://base.example.com/v1",
+                "provider_key": "my-provider",
+            }
+        ]
+
+    def test_dedup_across_legacy_and_providers(self, tmp_path):
+        """Same name+url in both schemas should not produce duplicates."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "custom_providers": [
+                        {
+                            "name": "OpenAI Direct",
+                            "base_url": "https://api.openai.com/v1",
+                            "api_key": "legacy-key",
+                        }
+                    ],
+                    "providers": {
+                        "openai-direct": {
+                            "api": "https://api.openai.com/v1",
+                            "api_key": "new-key",
+                            "name": "OpenAI Direct",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert len(compatible) == 1
+        # Legacy entry wins (read first)
+        assert compatible[0]["api_key"] == "legacy-key"
+
+    def test_dedup_preserves_entries_with_different_models(self, tmp_path):
+        """Entries with same name+URL but different models must not be collapsed."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "custom_providers": [
+                        {"name": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "qwen3-coder"},
+                        {"name": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "glm-5.1"},
+                        {"name": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "kimi-k2.5"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert len(compatible) == 3
+        models = [e.get("model") for e in compatible]
+        assert models == ["qwen3-coder", "glm-5.1", "kimi-k2.5"]
+
+
+class TestInterimAssistantMessageConfig:
+    """Test the explicit gateway interim-message config gate."""
+
+    def test_default_config_enables_interim_assistant_messages(self):
+        assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
+
+    def test_migrate_to_v15_adds_interim_assistant_message_gate(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"_config_version": 14, "display": {"tool_progress": "off"}}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["display"]["tool_progress"] == "off"
+        assert raw["display"]["interim_assistant_messages"] is True
+
+
+class TestDiscordChannelPromptsConfig:
+    def test_default_config_includes_discord_channel_prompts(self):
+        assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
+
+    def test_migrate_adds_discord_channel_prompts_default(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"_config_version": 17, "discord": {"auto_thread": True}}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["discord"]["auto_thread"] is True
+        assert raw["discord"]["channel_prompts"] == {}
+
+
+class TestUserMessagePreviewConfig:
+    def test_default_config_preview_line_counts(self):
+        preview = DEFAULT_CONFIG["display"]["user_message_preview"]
+        assert preview["first_lines"] == 2
+        assert preview["last_lines"] == 2

@@ -34,7 +34,6 @@ from tools.web_tools import (
     check_firecrawl_api_key,
     check_web_api_key,
     check_auxiliary_model,
-    get_debug_session_info,
     _get_backend,
 )
 
@@ -137,12 +136,6 @@ class WebToolsTester:
             self.test_llm = False
         else:
             self.log_result("Auxiliary LLM", "passed", "Found")
-        
-        # Check debug mode
-        debug_info = get_debug_session_info()
-        if debug_info["enabled"]:
-            print_info(f"Debug mode enabled - Session: {debug_info['session_id']}")
-            print_info(f"Debug log: {debug_info['log_path']}")
         
         return True
     
@@ -585,7 +578,6 @@ class WebToolsTester:
                 "firecrawl_api_key": check_firecrawl_api_key(),
                 "parallel_api_key": bool(os.getenv("PARALLEL_API_KEY")),
                 "auxiliary_model": check_auxiliary_model(),
-                "debug_mode": get_debug_session_info()["enabled"]
             }
         }
         

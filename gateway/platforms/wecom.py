@@ -59,6 +59,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -92,7 +93,6 @@ REQUEST_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 
-DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 1000
 
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
@@ -143,6 +143,10 @@ class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    SUPPORTS_MESSAGE_EDITING = False
+    # Threshold for detecting WeCom client-side message splits.
+    # When a chunk is near the 4000-char limit, a continuation is almost certain.
+    _SPLIT_THRESHOLD = 3900
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM)
@@ -169,8 +173,17 @@ class WeComAdapter(BasePlatformAdapter):
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._pending_responses: Dict[str, asyncio.Future] = {}
-        self._seen_messages: Dict[str, float] = {}
+        self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+
+        # Text batching: merge rapid successive messages (Telegram-style).
+        # WeCom clients split long messages around 4000 chars.
+        self._text_batch_delay_seconds = float(os.getenv("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
+        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._device_id = uuid.uuid4().hex
+        self._last_chat_req_ids: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -195,7 +208,11 @@ class WeComAdapter(BasePlatformAdapter):
             return False
 
         try:
-            self._http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0, follow_redirects=True, limits=platform_httpx_limits(),
+            )
             await self._open_connection()
             self._mark_connected()
             self._listen_task = asyncio.create_task(self._listen_loop())
@@ -240,7 +257,7 @@ class WeComAdapter(BasePlatformAdapter):
             await self._http_client.aclose()
             self._http_client = None
 
-        self._seen_messages.clear()
+        self._dedup.clear()
         logger.info("[%s] Disconnected", self.name)
 
     async def _cleanup_ws(self) -> None:
@@ -256,7 +273,7 @@ class WeComAdapter(BasePlatformAdapter):
     async def _open_connection(self) -> None:
         """Open and authenticate a websocket connection."""
         await self._cleanup_ws()
-        self._session = aiohttp.ClientSession()
+        self._session = aiohttp.ClientSession(trust_env=True)
         self._ws = await self._session.ws_connect(
             self._ws_url,
             heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2,
@@ -268,13 +285,17 @@ class WeComAdapter(BasePlatformAdapter):
             {
                 "cmd": APP_CMD_SUBSCRIBE,
                 "headers": {"req_id": req_id},
-                "body": {"bot_id": self._bot_id, "secret": self._secret},
+                "body": {
+                    "bot_id": self._bot_id,
+                    "secret": self._secret,
+                    "device_id": self._device_id,
+                },
             }
         )
 
         auth_payload = await self._wait_for_handshake(req_id)
         errcode = auth_payload.get("errcode", 0)
-        if errcode not in (0, None):
+        if errcode not in {0, None}:
             errmsg = auth_payload.get("errmsg", "authentication failed")
             raise RuntimeError(f"{errmsg} (errcode={errcode})")
 
@@ -299,7 +320,7 @@ class WeComAdapter(BasePlatformAdapter):
                 if self._payload_req_id(payload) == req_id:
                     return payload
                 logger.debug("[%s] Ignoring pre-auth payload: %s", self.name, payload.get("cmd"))
-            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+            elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WeCom websocket closed during authentication")
 
     async def _listen_loop(self) -> None:
@@ -324,6 +345,7 @@ class WeComAdapter(BasePlatformAdapter):
                 try:
                     await self._open_connection()
                     backoff_idx = 0
+                    self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
@@ -339,7 +361,7 @@ class WeComAdapter(BasePlatformAdapter):
                 payload = self._parse_json(msg.data)
                 if payload:
                     await self._dispatch_payload(payload)
-            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WeCom websocket closed")
 
     async def _heartbeat_loop(self) -> None:
@@ -466,7 +488,7 @@ class WeComAdapter(BasePlatformAdapter):
             return
 
         msg_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex)
-        if self._is_duplicate(msg_id):
+        if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
             return
         self._remember_reply_req_id(msg_id, self._payload_req_id(payload))
@@ -487,7 +509,17 @@ class WeComAdapter(BasePlatformAdapter):
             logger.debug("[%s] DM sender %s blocked by policy", self.name, sender_id)
             return
 
+        # Cache the inbound req_id after policy checks so proactive sends to
+        # this chat can fall back to APP_CMD_RESPONSE (required for groups —
+        # WeCom AI Bots cannot initiate APP_CMD_SEND in group chats).
+        self._remember_chat_req_id(chat_id, self._payload_req_id(payload))
+
         text, reply_text = self._extract_text(body)
+        # Strip leading @mention in group chats so slash commands like
+        # "@BotName /approve" are correctly recognized as "/approve".
+        # Mirrors what the Telegram adapter does (re.sub @botname).
+        if is_group and text:
+            text = re.sub(r"^@\S+\s*", "", text).strip()
         media_urls, media_types = await self._extract_media(body)
         message_type = self._derive_message_type(body, text, media_types)
         has_reply_context = bool(reply_text and (text or media_urls))
@@ -519,7 +551,82 @@ class WeComAdapter(BasePlatformAdapter):
             timestamp=datetime.now(tz=timezone.utc),
         )
 
-        await self.handle_message(event)
+        # Only batch plain text messages — commands, media, etc. dispatch
+        # immediately since they won't be split by the WeCom client.
+        if message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+            self._enqueue_text_event(event)
+        else:
+            await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Text message aggregation (handles WeCom client-side splits)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer.
+
+        When WeCom splits a long user message at 4000 chars, the chunks
+        arrive within a few hundred milliseconds.  This merges them into
+        a single event before dispatching.
+        """
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            # Merge any media that might be attached
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        # Cancel any pending flush and restart the timer
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text.
+
+        Uses a longer delay when the latest chunk is near WeCom's 4000-char
+        split point, since a continuation chunk is almost certain.
+        """
+        current_task = asyncio.current_task()
+        try:
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            if last_len >= self._SPLIT_THRESHOLD:
+                delay = self._text_batch_split_delay_seconds
+            else:
+                delay = self._text_batch_delay_seconds
+            await asyncio.sleep(delay)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[WeCom] Flushing text batch %s (%d chars)",
+                key, len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
 
     @staticmethod
     def _extract_text(body: Dict[str, Any]) -> Tuple[str, Optional[str]]:
@@ -529,13 +636,16 @@ class WeComAdapter(BasePlatformAdapter):
         msgtype = str(body.get("msgtype") or "").lower()
 
         if msgtype == "mixed":
-            mixed = body.get("mixed") if isinstance(body.get("mixed"), dict) else {}
-            items = mixed.get("msg_item") if isinstance(mixed.get("msg_item"), list) else []
+            _raw_mixed = body.get("mixed")
+            mixed = _raw_mixed if isinstance(_raw_mixed, dict) else {}
+            _raw_items = mixed.get("msg_item")
+            items = _raw_items if isinstance(_raw_items, list) else []
             for item in items:
                 if not isinstance(item, dict):
                     continue
                 if str(item.get("msgtype") or "").lower() == "text":
-                    text_block = item.get("text") if isinstance(item.get("text"), dict) else {}
+                    _raw_text = item.get("text")
+                    text_block = _raw_text if isinstance(_raw_text, dict) else {}
                     content = str(text_block.get("content") or "").strip()
                     if content:
                         text_parts.append(content)
@@ -550,6 +660,13 @@ class WeComAdapter(BasePlatformAdapter):
                 voice_text = str(voice_block.get("content") or "").strip()
                 if voice_text:
                     text_parts.append(voice_text)
+
+            # Extract appmsg title (filename) for WeCom AI Bot attachments
+            if msgtype == "appmsg":
+                appmsg = body.get("appmsg") if isinstance(body.get("appmsg"), dict) else {}
+                title = str(appmsg.get("title") or "").strip()
+                if title:
+                    text_parts.append(title)
 
         quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
         quote_type = str(quote.get("msgtype") or "").lower()
@@ -570,8 +687,10 @@ class WeComAdapter(BasePlatformAdapter):
         msgtype = str(body.get("msgtype") or "").lower()
 
         if msgtype == "mixed":
-            mixed = body.get("mixed") if isinstance(body.get("mixed"), dict) else {}
-            items = mixed.get("msg_item") if isinstance(mixed.get("msg_item"), list) else []
+            _raw_mixed = body.get("mixed")
+            mixed = _raw_mixed if isinstance(_raw_mixed, dict) else {}
+            _raw_items = mixed.get("msg_item")
+            items = _raw_items if isinstance(_raw_items, list) else []
             for item in items:
                 if not isinstance(item, dict):
                     continue
@@ -583,6 +702,13 @@ class WeComAdapter(BasePlatformAdapter):
                 refs.append(("image", body["image"]))
             if msgtype == "file" and isinstance(body.get("file"), dict):
                 refs.append(("file", body["file"]))
+            # Handle appmsg (WeCom AI Bot attachments with PDF/Word/Excel)
+            if msgtype == "appmsg" and isinstance(body.get("appmsg"), dict):
+                appmsg = body["appmsg"]
+                if isinstance(appmsg.get("file"), dict):
+                    refs.append(("file", appmsg["file"]))
+                elif isinstance(appmsg.get("image"), dict):
+                    refs.append(("image", appmsg["image"]))
 
         quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
         quote_type = str(quote.get("msgtype") or "").lower()
@@ -611,7 +737,11 @@ class WeComAdapter(BasePlatformAdapter):
 
             if kind == "image":
                 ext = self._detect_image_ext(raw)
-                return cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+                try:
+                    return cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+                except ValueError as exc:
+                    logger.warning("[%s] Rejected non-image bytes: %s", self.name, exc)
+                    return None
 
             filename = str(media.get("filename") or media.get("name") or "wecom_file")
             return cache_document_from_bytes(raw, filename), mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -637,7 +767,11 @@ class WeComAdapter(BasePlatformAdapter):
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         if kind == "image":
             ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
-            return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+            try:
+                return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+            except ValueError as exc:
+                logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
+                return None
 
         filename = self._guess_filename(url, headers.get("content-disposition"), content_type)
         return cache_document_from_bytes(raw, filename), content_type
@@ -653,7 +787,7 @@ class WeComAdapter(BasePlatformAdapter):
             return ".png"
         if data.startswith(b"\xff\xd8\xff"):
             return ".jpg"
-        if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        if data.startswith((b"GIF87a", b"GIF89a")):
             return ".gif"
         if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
             return ".webp"
@@ -689,7 +823,7 @@ class WeComAdapter(BasePlatformAdapter):
     @staticmethod
     def _derive_message_type(body: Dict[str, Any], text: str, media_types: List[str]) -> MessageType:
         """Choose the normalized inbound message type."""
-        if any(mtype.startswith("application/") or mtype.startswith("text/") for mtype in media_types):
+        if any(mtype.startswith(("application/", "text/")) for mtype in media_types):
             return MessageType.DOCUMENT
         if any(mtype.startswith("image/") for mtype in media_types):
             return MessageType.TEXT if text else MessageType.PHOTO
@@ -732,24 +866,6 @@ class WeComAdapter(BasePlatformAdapter):
         wildcard = self._groups.get("*")
         return wildcard if isinstance(wildcard, dict) else {}
 
-    def _is_duplicate(self, msg_id: str) -> bool:
-        now = time.time()
-        if len(self._seen_messages) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
-            self._seen_messages = {
-                key: ts for key, ts in self._seen_messages.items() if ts > cutoff
-            }
-            if self._reply_req_ids:
-                self._reply_req_ids = {
-                    key: value for key, value in self._reply_req_ids.items() if key in self._seen_messages
-                }
-
-        if msg_id in self._seen_messages:
-            return True
-
-        self._seen_messages[msg_id] = now
-        return False
-
     def _remember_reply_req_id(self, message_id: str, req_id: str) -> None:
         normalized_message_id = str(message_id or "").strip()
         normalized_req_id = str(req_id or "").strip()
@@ -758,6 +874,23 @@ class WeComAdapter(BasePlatformAdapter):
         self._reply_req_ids[normalized_message_id] = normalized_req_id
         while len(self._reply_req_ids) > DEDUP_MAX_SIZE:
             self._reply_req_ids.pop(next(iter(self._reply_req_ids)))
+
+    def _remember_chat_req_id(self, chat_id: str, req_id: str) -> None:
+        """Cache the most recent inbound req_id per chat.
+
+        Used as a fallback reply target when we need to send into a group
+        without an explicit ``reply_to`` — WeCom AI Bots are blocked from
+        APP_CMD_SEND in groups and must use APP_CMD_RESPONSE bound to some
+        prior req_id. Bounded like _reply_req_ids so long-running gateways
+        don't leak memory across many chats.
+        """
+        normalized_chat_id = str(chat_id or "").strip()
+        normalized_req_id = str(req_id or "").strip()
+        if not normalized_chat_id or not normalized_req_id:
+            return
+        self._last_chat_req_ids[normalized_chat_id] = normalized_req_id
+        while len(self._last_chat_req_ids) > DEDUP_MAX_SIZE:
+            self._last_chat_req_ids.pop(next(iter(self._last_chat_req_ids)))
 
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
         normalized = str(reply_to or "").strip()
@@ -866,7 +999,7 @@ class WeComAdapter(BasePlatformAdapter):
     @staticmethod
     def _response_error(response: Dict[str, Any]) -> Optional[str]:
         errcode = response.get("errcode", 0)
-        if errcode in (0, None):
+        if errcode in {0, None}:
             return None
         errmsg = str(response.get("errmsg") or "unknown error")
         return f"WeCom errcode {errcode}: {errmsg}"
@@ -884,6 +1017,8 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
+        # WeCom doesn't pad base64 keys; add padding if needed
+        aes_key = aes_key + '=' * ((4 - len(aes_key) % 4) % 4)
         key = base64.b64decode(aes_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
@@ -910,6 +1045,10 @@ class WeComAdapter(BasePlatformAdapter):
         url: str,
         max_bytes: int,
     ) -> Tuple[bytes, Dict[str, str]]:
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
+
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
 
@@ -1071,19 +1210,15 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send media message")
         return response
 
-    async def _send_reply_stream(self, reply_req_id: str, content: str) -> Dict[str, Any]:
+    async def _send_reply_markdown(self, reply_req_id: str, content: str) -> Dict[str, Any]:
         response = await self._send_reply_request(
             reply_req_id,
             {
-                "msgtype": "stream",
-                "stream": {
-                    "id": self._new_req_id("stream"),
-                    "finish": True,
-                    "content": content[:self.MAX_MESSAGE_LENGTH],
-                },
+                "msgtype": "markdown",
+                "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
             },
         )
-        self._raise_for_wecom_error(response, "send reply stream")
+        self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
     async def _send_reply_media_message(
@@ -1143,6 +1278,9 @@ class WeComAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=prepared["reject_reason"])
 
         reply_req_id = self._reply_req_id_for_message(reply_to)
+        if not reply_req_id and chat_id in self._last_chat_req_ids:
+            reply_req_id = self._last_chat_req_ids[chat_id]
+
         try:
             upload_result = await self._upload_media_bytes(
                 prepared["data"],
@@ -1210,8 +1348,12 @@ class WeComAdapter(BasePlatformAdapter):
 
         try:
             reply_req_id = self._reply_req_id_for_message(reply_to)
+
+            if not reply_req_id and chat_id in self._last_chat_req_ids:
+                reply_req_id = self._last_chat_req_ids[chat_id]
+
             if reply_req_id:
-                response = await self._send_reply_stream(reply_req_id, content)
+                response = await self._send_reply_markdown(reply_req_id, content)
             else:
                 response = await self._send_request(
                     APP_CMD_SEND,
@@ -1336,3 +1478,133 @@ class WeComAdapter(BasePlatformAdapter):
             "name": chat_id,
             "type": "group" if chat_id and chat_id.lower().startswith("group") else "dm",
         }
+
+
+# ------------------------------------------------------------------
+# QR code scan flow for obtaining bot credentials
+# ------------------------------------------------------------------
+
+_QR_GENERATE_URL = "https://work.weixin.qq.com/ai/qc/generate"
+_QR_QUERY_URL = "https://work.weixin.qq.com/ai/qc/query_result"
+_QR_CODE_PAGE = "https://work.weixin.qq.com/ai/qc/gen?source=hermes&scode="
+_QR_POLL_INTERVAL = 3  # seconds
+_QR_POLL_TIMEOUT = 300  # 5 minutes
+
+
+def qr_scan_for_bot_info(
+    *,
+    timeout_seconds: int = _QR_POLL_TIMEOUT,
+) -> Optional[Dict[str, str]]:
+    """Run the WeCom QR scan flow to obtain bot_id and secret.
+
+    Fetches a QR code from WeCom, renders it in the terminal, and polls
+    until the user scans it or the timeout expires.
+
+    Returns ``{"bot_id": ..., "secret": ...}`` on success, ``None`` on
+    failure or timeout.
+
+    Note: the ``work.weixin.qq.com/ai/qc/{generate,query_result}`` endpoints
+    used here are not part of WeCom's public developer API — they back the
+    admin-console web UI's bot-creation flow and may change without notice.
+    The same pattern is used by the feishu/dingtalk QR setup wizards.
+    """
+    try:
+        import urllib.request
+        import urllib.parse
+    except ImportError:  # pragma: no cover
+        logger.error("urllib is required for WeCom QR scan")
+        return None
+
+    generate_url = f"{_QR_GENERATE_URL}?source=hermes"
+
+    # ── Step 1: Fetch QR code ──
+    print("  Connecting to WeCom...", end="", flush=True)
+    try:
+        req = urllib.request.Request(generate_url, headers={"User-Agent": "HermesAgent/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        logger.error("WeCom QR: failed to fetch QR code: %s", exc)
+        print(f" failed: {exc}")
+        return None
+
+    data = raw.get("data") or {}
+    scode = str(data.get("scode") or "").strip()
+    auth_url = str(data.get("auth_url") or "").strip()
+
+    if not scode or not auth_url:
+        logger.error("WeCom QR: unexpected response format: %s", raw)
+        print(" failed: unexpected response format")
+        return None
+
+    print(" done.")
+
+    # ── Step 2: Render QR code in terminal ──
+    print()
+    qr_rendered = False
+    try:
+        import qrcode as _qrcode
+        qr = _qrcode.QRCode()
+        qr.add_data(auth_url)
+        qr.make(fit=True)
+        qr.print_ascii(invert=True)
+        qr_rendered = True
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    page_url = f"{_QR_CODE_PAGE}{urllib.parse.quote(scode)}"
+    if qr_rendered:
+        print(f"\n  Scan the QR code above, or open this URL directly:\n  {page_url}")
+    else:
+        print(f"  Open this URL in WeCom on your phone:\n\n  {page_url}\n")
+        print("  Tip: pip install qrcode  to display a scannable QR code here next time")
+    print()
+    print("  Fetching configuration results...", end="", flush=True)
+
+    # ── Step 3: Poll for result ──
+    deadline = time.monotonic() + timeout_seconds
+    query_url = f"{_QR_QUERY_URL}?scode={urllib.parse.quote(scode)}"
+    poll_count = 0
+
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(query_url, headers={"User-Agent": "HermesAgent/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            logger.debug("WeCom QR poll error: %s", exc)
+            time.sleep(_QR_POLL_INTERVAL)
+            continue
+
+        poll_count += 1
+        # Print a dot on every poll so progress is visible within 3s.
+        print(".", end="", flush=True)
+
+        result_data = result.get("data") or {}
+        status = str(result_data.get("status") or "").lower()
+
+        if status == "success":
+            print()  # newline after "Fetching configuration results..." dots
+            bot_info = result_data.get("bot_info") or {}
+            bot_id = str(bot_info.get("botid") or bot_info.get("bot_id") or "").strip()
+            secret = str(bot_info.get("secret") or "").strip()
+            if bot_id and secret:
+                return {"bot_id": bot_id, "secret": secret}
+            logger.warning(
+                "WeCom QR: scan reported success but bot_info missing or incomplete: %s",
+                result_data,
+            )
+            print(
+                "  QR scan reported success but no bot credentials were returned.\n"
+                "  This usually means the bot was not actually created on the WeCom side.\n"
+                "  Falling back to manual credential entry."
+            )
+            return None
+
+        time.sleep(_QR_POLL_INTERVAL)
+
+    print()  # newline after dots
+    print(f"  QR scan timed out ({timeout_seconds // 60} minutes). Please try again.")
+    return None

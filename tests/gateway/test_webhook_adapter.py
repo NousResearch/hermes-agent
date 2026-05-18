@@ -352,7 +352,7 @@ class TestHTTPHandling:
     async def test_connect_starts_server(self):
         """connect() starts the HTTP listener and marks adapter as connected."""
         routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
-        adapter = _make_adapter(routes=routes, port=0)
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
         # Use port 0 — the OS picks a free port, but aiohttp requires a real bind.
         # We just test that the method completes and marks connected.
         # Need to mock TCPSite to avoid actual binding.
@@ -590,8 +590,15 @@ class TestSessionIsolation:
 class TestDeliveryCleanup:
 
     @pytest.mark.asyncio
-    async def test_delivery_info_cleaned_after_send(self):
-        """send() pops delivery_info so the entry doesn't leak memory."""
+    async def test_delivery_info_survives_multiple_sends(self):
+        """send() must NOT pop delivery_info.
+
+        Interim status messages (fallback notifications, context-pressure
+        warnings, etc.) flow through the same send() path as the final
+        response.  If the entry were popped on the first send, the final
+        response would silently downgrade to the ``log`` deliver type.
+        Regression test for that bug.
+        """
         adapter = _make_adapter()
         chat_id = "webhook:test:d-xyz"
         adapter._delivery_info[chat_id] = {
@@ -599,10 +606,40 @@ class TestDeliveryCleanup:
             "deliver_extra": {},
             "payload": {"x": 1},
         }
+        adapter._delivery_info_created[chat_id] = time.time()
 
-        result = await adapter.send(chat_id, "Agent response here")
-        assert result.success is True
-        assert chat_id not in adapter._delivery_info
+        # First send (e.g. an interim status message)
+        result1 = await adapter.send(chat_id, "Status: switching to fallback")
+        assert result1.success is True
+        # Entry must still be present so the final send can read it
+        assert chat_id in adapter._delivery_info
+
+        # Second send (the final agent response)
+        result2 = await adapter.send(chat_id, "Final agent response")
+        assert result2.success is True
+        assert chat_id in adapter._delivery_info
+
+    @pytest.mark.asyncio
+    async def test_delivery_info_pruned_via_ttl(self):
+        """Stale delivery_info entries are dropped on the next POST."""
+        adapter = _make_adapter()
+        adapter._idempotency_ttl = 60  # short TTL for the test
+        now = time.time()
+
+        # Stale entry — older than TTL
+        adapter._delivery_info["webhook:test:old"] = {"deliver": "log"}
+        adapter._delivery_info_created["webhook:test:old"] = now - 120
+
+        # Fresh entry — should survive
+        adapter._delivery_info["webhook:test:new"] = {"deliver": "log"}
+        adapter._delivery_info_created["webhook:test:new"] = now - 5
+
+        adapter._prune_delivery_info(now)
+
+        assert "webhook:test:old" not in adapter._delivery_info
+        assert "webhook:test:old" not in adapter._delivery_info_created
+        assert "webhook:test:new" in adapter._delivery_info
+        assert "webhook:test:new" in adapter._delivery_info_created
 
 
 # ===================================================================
@@ -617,3 +654,184 @@ class TestCheckRequirements:
     @patch("gateway.platforms.webhook.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self):
         assert check_webhook_requirements() is False
+
+
+# ===================================================================
+# __raw__ template token
+# ===================================================================
+
+
+class TestRawTemplateToken:
+    """Tests for the {__raw__} special token in _render_prompt."""
+
+    def test_raw_resolves_to_full_json_payload(self):
+        """{__raw__} in a template dumps the entire payload as JSON."""
+        adapter = _make_adapter()
+        payload = {"action": "opened", "number": 42}
+        result = adapter._render_prompt(
+            "Payload: {__raw__}", payload, "push", "test"
+        )
+        expected_json = json.dumps(payload, indent=2)
+        assert result == f"Payload: {expected_json}"
+
+    def test_raw_truncated_at_4000_chars(self):
+        """{__raw__} output is truncated at 4000 characters for large payloads."""
+        adapter = _make_adapter()
+        # Build a payload whose JSON repr exceeds 4000 chars
+        payload = {"data": "x" * 5000}
+        result = adapter._render_prompt("{__raw__}", payload, "push", "test")
+        assert len(result) <= 4000
+
+    def test_raw_mixed_with_other_variables(self):
+        """{__raw__} can be mixed with regular template variables."""
+        adapter = _make_adapter()
+        payload = {"action": "closed", "number": 7}
+        result = adapter._render_prompt(
+            "Action={action} Raw={__raw__}", payload, "push", "test"
+        )
+        assert result.startswith("Action=closed Raw=")
+        assert '"action": "closed"' in result
+        assert '"number": 7' in result
+
+
+# ===================================================================
+# Cross-platform delivery thread_id passthrough
+# ===================================================================
+
+
+class TestDeliverCrossPlatformThreadId:
+    """Tests for thread_id passthrough in _deliver_cross_platform."""
+
+    def _setup_adapter_with_mock_target(self):
+        """Set up a webhook adapter with a mocked gateway_runner and target adapter."""
+        adapter = _make_adapter()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner.config.get_home_channel.return_value = None
+
+        adapter.gateway_runner = mock_runner
+        return adapter, mock_target
+
+    @pytest.mark.asyncio
+    async def test_thread_id_passed_as_metadata(self):
+        """thread_id from deliver_extra is passed as metadata to adapter.send()."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "thread_id": "999",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata={"thread_id": "999"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_message_thread_id_passed_as_thread_id(self):
+        """message_thread_id from deliver_extra is mapped to thread_id in metadata."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "message_thread_id": "888",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata={"thread_id": "888"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_thread_id_sends_no_metadata(self):
+        """When no thread_id is present, metadata is None."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata=None
+        )
+
+
+class TestInsecureNoAuthSafetyRail:
+    """connect() refuses to start when INSECURE_NO_AUTH is combined with a
+    non-loopback bind. Guards against accidentally exposing an unauthenticated
+    webhook endpoint on a public interface."""
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_insecure_no_auth_on_public_bind(self):
+        """INSECURE_NO_AUTH + 0.0.0.0 is refused before the server starts."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+        with pytest.raises(ValueError, match="INSECURE_NO_AUTH"):
+            await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_insecure_no_auth_on_lan_ip(self):
+        """A LAN IP is treated as public."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="192.168.1.50", port=0)
+        with pytest.raises(ValueError, match="non-loopback"):
+            await adapter.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_insecure_no_auth_on_empty_host(self):
+        """Empty host is conservatively treated as non-loopback."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="", port=0)
+        with pytest.raises(ValueError, match="INSECURE_NO_AUTH"):
+            await adapter.connect()
+
+    @pytest.mark.parametrize(
+        "host",
+        ["127.0.0.1", "localhost"],
+    )
+    @pytest.mark.asyncio
+    async def test_connect_allows_insecure_no_auth_on_loopback(self, host):
+        """Recognised loopback hosts are permitted with INSECURE_NO_AUTH."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host=host, port=0)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.parametrize(
+        "host",
+        ["127.0.0.1", "localhost", "Localhost", "::1", "ip6-localhost", "ip6-loopback"],
+    )
+    def test_is_loopback_host_accepts(self, host):
+        """_is_loopback_host covers all documented loopback spellings."""
+        from gateway.platforms.webhook import _is_loopback_host
+        assert _is_loopback_host(host) is True
+
+    @pytest.mark.parametrize(
+        "host",
+        ["0.0.0.0", "192.168.1.5", "10.0.0.1", "example.com", "", None],
+    )
+    def test_is_loopback_host_rejects(self, host):
+        """_is_loopback_host treats public/LAN/empty as non-loopback."""
+        from gateway.platforms.webhook import _is_loopback_host
+        assert _is_loopback_host(host) is False
+
+    @pytest.mark.asyncio
+    async def test_connect_allows_real_secret_on_public_bind(self):
+        """A real HMAC secret bound to 0.0.0.0 is the normal production case."""
+        routes = {"r1": {"secret": "real-secret-abc123", "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+        finally:
+            await adapter.disconnect()
+

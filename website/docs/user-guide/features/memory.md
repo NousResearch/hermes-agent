@@ -177,19 +177,23 @@ Memory entries are scanned for injection and exfiltration patterns before being 
 Beyond MEMORY.md and USER.md, the agent can search its past conversations using the `session_search` tool:
 
 - All CLI and messaging sessions are stored in SQLite (`~/.hermes/state.db`) with FTS5 full-text search
-- Search queries return relevant past conversations with Gemini Flash summarization
+- Search queries return actual messages from the DB — no LLM summarization, no truncation
 - The agent can find things it discussed weeks ago, even if they're not in its active memory
+- The agent can also scroll forward/backward inside any session it finds
 
 ```bash
 hermes sessions list    # Browse past sessions
 ```
+
+See [Session Search Tool](/docs/user-guide/sessions#session-search-tool) for the three calling shapes (discovery / scroll / browse) and the response format.
 
 ### session_search vs memory
 
 | Feature | Persistent Memory | Session Search |
 |---------|------------------|----------------|
 | **Capacity** | ~1,300 tokens total | Unlimited (all sessions) |
-| **Speed** | Instant (in system prompt) | Requires search + LLM summarization |
+| **Speed** | Instant (in system prompt) | ~20ms FTS5 query, ~1ms scroll |
+| **Cost** | Token cost in every prompt | Free — no LLM calls |
 | **Use case** | Key facts always available | Finding specific past conversations |
 | **Management** | Manually curated by agent | Automatic — all sessions stored |
 | **Token cost** | Fixed per session (~1,300 tokens) | On-demand (searched when needed) |
@@ -209,7 +213,7 @@ memory:
 
 ## External Memory Providers
 
-For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 7 external memory provider plugins — including Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, and ByteRover.
+For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 8 external memory provider plugins — including Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, and Supermemory.
 
 External providers run **alongside** built-in memory (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
 

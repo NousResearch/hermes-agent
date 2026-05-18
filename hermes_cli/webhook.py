@@ -11,23 +11,23 @@ hot-reloaded by the webhook adapter without a gateway restart.
 """
 
 import json
-import os
 import re
 import secrets
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 from hermes_constants import display_hermes_home
+from utils import atomic_replace
+from hermes_cli.config import cfg_get
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 
 
 def _hermes_home() -> Path:
-    return Path(
-        os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))
-    ).expanduser()
+    from hermes_constants import get_hermes_home
+    return get_hermes_home()
 
 
 def _subscriptions_path() -> Path:
@@ -53,7 +53,7 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
         json.dumps(subs, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    os.replace(str(tmp_path), str(path))
+    atomic_replace(tmp_path, path)
 
 
 def _get_webhook_config() -> dict:
@@ -61,7 +61,7 @@ def _get_webhook_config() -> dict:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        return cfg.get("platforms", {}).get("webhook", {})
+        return cfg_get(cfg, "platforms", "webhook", default={})
     except Exception:
         return {}
 
@@ -124,11 +124,11 @@ def webhook_command(args):
     if not _require_webhook_enabled():
         return
 
-    if sub in ("subscribe", "add"):
+    if sub in {"subscribe", "add"}:
         _cmd_subscribe(args)
-    elif sub in ("list", "ls"):
+    elif sub in {"list", "ls"}:
         _cmd_list(args)
-    elif sub in ("remove", "rm"):
+    elif sub in {"remove", "rm"}:
         _cmd_remove(args)
     elif sub == "test":
         _cmd_test(args)
@@ -156,6 +156,15 @@ def _cmd_subscribe(args):
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
+    if getattr(args, "deliver_only", False):
+        if route["deliver"] == "log":
+            print(
+                "Error: --deliver-only requires --deliver to be a real target "
+                "(telegram, discord, slack, github_comment, etc.) — not 'log'."
+            )
+            return
+        route["deliver_only"] = True
+
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
 
@@ -173,9 +182,12 @@ def _cmd_subscribe(args):
     else:
         print("  Events: (all)")
     print(f"  Deliver: {route['deliver']}")
+    if route.get("deliver_only"):
+        print("  Mode: direct delivery (no agent, zero LLM cost)")
     if route.get("prompt"):
         prompt_preview = route["prompt"][:80] + ("..." if len(route["prompt"]) > 80 else "")
-        print(f"  Prompt: {prompt_preview}")
+        label = "Message" if route.get("deliver_only") else "Prompt"
+        print(f"  {label}: {prompt_preview}")
     print(f"\n  Configure your service to POST to the URL above.")
     print(f"  Use the secret for HMAC-SHA256 signature validation.")
     print(f"  The gateway must be running to receive events (hermes gateway run).\n")
@@ -193,6 +205,8 @@ def _cmd_list(args):
     for name, route in subs.items():
         events = ", ".join(route.get("events", [])) or "(all)"
         deliver = route.get("deliver", "log")
+        if route.get("deliver_only"):
+            deliver = f"{deliver} (direct — no agent)"
         desc = route.get("description", "")
         print(f"  ◆ {name}")
         if desc:

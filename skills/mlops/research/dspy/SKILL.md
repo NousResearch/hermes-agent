@@ -1,10 +1,11 @@
 ---
 name: dspy
-description: Build complex AI systems with declarative programming, optimize prompts automatically, create modular RAG systems and agents with DSPy - Stanford NLP's framework for systematic LM programming
+description: "DSPy: declarative LM programs, auto-optimize prompts, RAG."
 version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [dspy, openai, anthropic]
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Prompt Engineering, DSPy, Declarative Programming, RAG, Agents, Prompt Optimization, LM Programming, Stanford NLP, Automatic Optimization, Modular AI]

@@ -40,14 +40,14 @@ def clarify_tool(
         JSON string with the user's response.
     """
     if not question or not question.strip():
-        return json.dumps({"error": "Question text is required."}, ensure_ascii=False)
+        return tool_error("Question text is required.")
 
     question = question.strip()
 
     # Validate and trim choices
     if choices is not None:
         if not isinstance(choices, list):
-            return json.dumps({"error": "choices must be a list of strings."}, ensure_ascii=False)
+            return tool_error("choices must be a list of strings.")
         choices = [str(c).strip() for c in choices if str(c).strip()]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
@@ -126,7 +126,7 @@ CLARIFY_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="clarify",

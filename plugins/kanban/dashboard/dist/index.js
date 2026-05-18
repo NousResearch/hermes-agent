@@ -1701,7 +1701,7 @@
     return h("div", { className: "hermes-kanban-boardswitcher" },
       h("div", { className: "hermes-kanban-boardswitcher-inner" },
         h("div", { className: "flex flex-col gap-0.5" },
-          h("div", { className: "text-[11px] uppercase tracking-wider text-muted-foreground" },
+          h("div", { className: "text-[11px] tracking-wider text-muted-foreground" },
             tx(t, "board", "Board")),
           h("div", { className: "flex items-center gap-2" },
             h(Select, Object.assign({

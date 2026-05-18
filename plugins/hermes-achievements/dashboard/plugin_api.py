@@ -359,7 +359,7 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     # tool_calls_list[i] is None for tool_name-only entries, so we check both paths.
     memory_write_events = _count_tool(tool_sequence, "mnemosyne_remember")
     for i, name in enumerate(tool_sequence):
-        if name == "memory" and tool_calls_list[i] is not None:
+        if str(name).lower() == "memory" and tool_calls_list[i] is not None:
             if _is_memory_write_call(tool_calls_list[i]):
                 memory_write_events += 1
 

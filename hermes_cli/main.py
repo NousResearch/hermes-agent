@@ -11146,6 +11146,21 @@ Examples:
         "setup", help="Interactive provider selection and configuration"
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
+    _audit_parser = memory_sub.add_parser(
+        "audit",
+        help="Dry-run audit of built-in memory quality",
+    )
+    _audit_parser.add_argument(
+        "--target",
+        choices=["all", "memory", "user"],
+        default="all",
+        help="Which store to audit: 'all' (default), 'memory', or 'user'",
+    )
+    _audit_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable JSON report",
+    )
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
     _reset_parser = memory_sub.add_parser(
         "reset",

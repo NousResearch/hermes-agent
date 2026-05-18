@@ -68,7 +68,7 @@ Improve Hermes memory quality with a minimal-risk slice: make the memory layer s
 
 ## Later safe follow-ups
 
-- Add a `hermes memory audit` command that scores current entries without editing them.
+- Add a `hermes memory audit` command that scores current entries without editing them. **Implemented in this PR.**
 - Add explicit session snapshot manifests for active long-running tasks.
 - Add retrieval/ranking hooks for external memory providers, behind opt-in config.
 - Add telemetry for background-review actions: saved memory vs warnings vs nothing-to-save.

@@ -8,6 +8,7 @@ the provider's config schema. Writes config to config.yaml + .env.
 from __future__ import annotations
 
 import getpass
+import json
 import os
 import sys
 import shlex
@@ -450,6 +451,104 @@ def cmd_status(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Built-in memory audit
+# ---------------------------------------------------------------------------
+
+def _audit_targets(target: str) -> list[tuple[str, str]]:
+    if target == "memory":
+        return [("memory", "agent notes")]
+    if target == "user":
+        return [("user", "user profile")]
+    return [("memory", "agent notes"), ("user", "user profile")]
+
+
+def collect_memory_audit(target: str = "all") -> dict:
+    """Return a dry-run quality audit for built-in memory entries.
+
+    The audit is intentionally read-only.  It reuses the same advisory policy
+    warnings that the memory tool attaches to writes, so users can inspect
+    existing MEMORY.md/USER.md quality without deleting or rewriting anything.
+    """
+    from tools.memory_tool import MemoryStore, _memory_selection_warnings
+
+    store = MemoryStore()
+    store.load_from_disk()
+
+    targets: dict[str, dict] = {}
+    total_entries = 0
+    total_warnings = 0
+
+    for target_name, description in _audit_targets(target):
+        entries = store.user_entries if target_name == "user" else store.memory_entries
+        audited_entries = []
+        warning_count = 0
+        for idx, entry in enumerate(entries, start=1):
+            warnings = _memory_selection_warnings(entry)
+            if warnings:
+                warning_count += 1
+            audited_entries.append(
+                {
+                    "index": idx,
+                    "content": entry,
+                    "warnings": warnings,
+                }
+            )
+
+        targets[target_name] = {
+            "description": description,
+            "entry_count": len(entries),
+            "warning_count": warning_count,
+            "entries": audited_entries,
+        }
+        total_entries += len(entries)
+        total_warnings += warning_count
+
+    return {
+        "target": target,
+        "entry_count": total_entries,
+        "warning_count": total_warnings,
+        "targets": targets,
+    }
+
+
+def cmd_audit(args) -> None:
+    """Dry-run audit of built-in memory quality."""
+    target = getattr(args, "target", "all")
+    report = collect_memory_audit(target=target)
+
+    if getattr(args, "json", False):
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+
+    print("\nMemory audit (dry run)\n" + "─" * 40)
+    print(f"  Entries:  {report['entry_count']}")
+    print(f"  Warnings: {report['warning_count']}")
+    print("  No files were modified.")
+
+    for target_name, data in report["targets"].items():
+        print(f"\n  {target_name} ({data['description']}):")
+        if not data["entries"]:
+            print("    No entries.")
+            continue
+        for entry in data["entries"]:
+            warnings = entry["warnings"]
+            if not warnings:
+                continue
+            preview = entry["content"].replace("\n", " ")
+            if len(preview) > 100:
+                preview = preview[:97] + "..."
+            print(f"    #{entry['index']}: {preview}")
+            for warning in warnings:
+                print(f"      ⚠ {warning}")
+
+    if report["warning_count"] == 0:
+        print("\n  ✓ No policy warnings found.")
+    else:
+        print("\n  Review warnings manually; audit never deletes or rewrites memory.")
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 
@@ -460,5 +559,7 @@ def memory_command(args) -> None:
         cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
+    elif sub == "audit":
+        cmd_audit(args)
     else:
         cmd_status(args)

@@ -1985,6 +1985,9 @@ class AIAgent:
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
+        # Cached memory blocks (injected as separate system messages to
+        # keep the main prefix cacheable across memory updates).
+        self._cached_memory_messages: str = ""
         
         # Filesystem checkpoint manager (transparent — not a tool)
         from tools.checkpoint_manager import CheckpointManager
@@ -2819,6 +2822,7 @@ class AIAgent:
 
         # ── Invalidate cached system prompt so it rebuilds next turn ──
         self._cached_system_prompt = None
+        self._cached_memory_messages = ""
 
         # ── Update _primary_runtime so the change persists across turns ──
         _cc = self.context_compressor if hasattr(self, "context_compressor") and self.context_compressor else None
@@ -4440,6 +4444,7 @@ class AIAgent:
                     # measured impact (~26% end-to-end cost reduction on
                     # Sonnet 4.5).
                     review_agent._cached_system_prompt = self._cached_system_prompt
+                    review_agent._cached_memory_messages = self._cached_memory_messages
                     # Defensive: pin session_start + session_id to the
                     # parent's so any code path that re-renders parts of
                     # the system prompt (compression, plugin hooks) still
@@ -6054,14 +6059,16 @@ class AIAgent:
     def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
         """Assemble the system prompt as three ordered parts.
 
-        Returns a dict with three keys:
+        Returns a dict with four keys:
           * ``stable``   — identity, tool guidance, skills prompt,
             environment hints, platform hints, model-family operational
             guidance.
           * ``context``  — context files (AGENTS.md, .cursorrules, etc.)
             and caller-supplied system_message.
-          * ``volatile`` — memory snapshot, user profile, external
-            memory provider block, timestamp line.
+          * ``volatile`` — external memory provider block, timestamp line.
+          * ``memory``   — built-in memory and user profile blocks
+            (injected as separate system messages to keep the main prefix
+            cacheable across memory updates).
 
         Joined into a single string by ``_build_system_prompt`` and
         cached on ``_cached_system_prompt`` for the lifetime of the
@@ -6222,16 +6229,21 @@ class AIAgent:
         # ── Volatile tier (changes per session/turn — never cached) ───
         volatile_parts: List[str] = []
 
+        # ── Memory tier (injected as separate system messages after the
+        # main prefix so built-in memory updates don't invalidate the
+        # DeepSeek prefix cache) ──
+        memory_parts: List[str] = []
+
         if self._memory_store:
             if self._memory_enabled:
                 mem_block = self._memory_store.format_for_system_prompt("memory")
                 if mem_block:
-                    volatile_parts.append(mem_block)
+                    memory_parts.append(mem_block)
             # USER.md is always included when enabled.
             if self._user_profile_enabled:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
-                    volatile_parts.append(user_block)
+                    memory_parts.append(user_block)
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:
@@ -6257,6 +6269,7 @@ class AIAgent:
             "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
             "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
             "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
+            "memory":   "\n\n".join(p.strip() for p in memory_parts  if p and p.strip()),
         }
 
     def _build_system_prompt(self, system_message: str = None) -> str:
@@ -6269,13 +6282,19 @@ class AIAgent:
 
         Layers are ordered cache-friendly: stable identity/guidance first,
         then session-stable context files, then per-call volatile content
-        (memory, USER profile, timestamp).  The whole string is treated as
-        one cached block — Hermes never rebuilds or reinjects parts of it
-        mid-session, which is the only way to keep upstream prompt caches
-        warm across turns.
+        (timestamp).  The whole string is treated as one cached block — Hermes
+        never rebuilds or reinjects parts of it mid-session, which is the only
+        way to keep upstream prompt caches warm across turns.
+
+        Memory and user profile blocks are intentionally EXCLUDED from this
+        cached string and injected as separate system messages at API-call
+        time.  This keeps the main prefix stable across memory updates and
+        session restarts — only the memory messages change, not the cache key.
         """
         parts = self._build_system_prompt_parts(system_message=system_message)
         joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+        # Store memory blocks separately for injection at message construction time
+        self._cached_memory_messages = parts.get("memory", "")
         return joined
 
     # =========================================================================
@@ -6647,6 +6666,7 @@ class AIAgent:
         so the rebuilt prompt captures any writes from this session.
         """
         self._cached_system_prompt = None
+        self._cached_memory_messages = ""
         if self._memory_store:
             self._memory_store.load_from_disk()
 
@@ -11958,6 +11978,8 @@ class AIAgent:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
+                if self._cached_memory_messages:
+                    api_messages.insert(1, {"role": "system", "content": self._cached_memory_messages})
             if self.prefill_messages:
                 sys_offset = 1 if effective_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
@@ -12800,6 +12822,13 @@ class AIAgent:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
+                # Inject memory blocks as a separate system message right after
+                # the main prefix.  This keeps the immutable prefix cacheable
+                # across memory updates — only the memory message changes, not
+                # the cache key.  DeepSeek supports multiple system messages
+                # and treats them as concatenated.
+                if self._cached_memory_messages:
+                    api_messages.insert(1, {"role": "system", "content": self._cached_memory_messages})
 
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.

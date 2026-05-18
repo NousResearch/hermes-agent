@@ -79,7 +79,19 @@ _MEMORY_THREAT_PATTERNS = [
     # Persistence via shell rc
     (r'authorized_keys', "ssh_backdoor"),
     (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
+    # hermes_env: require an action verb (read/transmit) in the same line as
+    # the secrets path. The bare-reference shape produced false positives on
+    # legitimate notes that mention the path while documenting other Hermes
+    # env vars / paths (e.g. "Hermes home is ~/.hermes; secrets live at
+    # ~/.hermes/.env"). Real exfil attempts pair the path with an action
+    # verb (cat / curl / wget / source / scp / rsync / nc / cp / mv / ...).
+    # The companion `read_secrets` pattern (above) still catches the bare
+    # `cat ~/.env` form.
+    (
+        r'(?:cat|curl|wget|less|more|tail|head|source|scp|rsync|sftp|nc|cp|mv|tar|zip|gzip|base64|xxd|od)'
+        r'\s+[^\n]*(?:\$HOME/\.hermes/\.env|\~/\.hermes/\.env)',
+        "hermes_env",
+    ),
 ]
 
 # Subset of invisible chars for injection detection
@@ -115,11 +127,28 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 4000,
+        user_char_limit: int = 3000,
+        eviction_policy: str = "oldest",
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Eviction policy applied by `add()` when a new entry would exceed
+        # the cap. "oldest" / "none" → drop oldest entries until it fits
+        # (logged at WARN). "fail" → reject with an error (legacy behavior).
+        # Anything else falls back to "oldest" to avoid surprise hard-fails.
+        policy = (eviction_policy or "oldest").lower()
+        if policy not in {"oldest", "none", "fail"}:
+            logger.warning(
+                "MemoryStore: unknown eviction_policy %r, falling back to 'oldest'",
+                eviction_policy,
+            )
+            policy = "oldest"
+        self.eviction_policy = policy
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -244,24 +273,69 @@ class MemoryStore:
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
 
+            evicted: List[str] = []
             if new_total > limit:
-                current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
+                # Single entry already exceeds the cap on its own — nothing
+                # to evict that would help. Fail loudly regardless of policy.
+                if len(content) > limit:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Entry is {len(content):,} chars but the {target} cap "
+                            f"is {limit:,}. Shorten the entry or raise "
+                            f"`memory.{target}_char_limit` in config.yaml."
+                        ),
+                        "usage": f"{self._char_count(target):,}/{limit:,}",
+                    }
+
+                if self.eviction_policy == "fail":
+                    current = self._char_count(target)
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Memory at {current:,}/{limit:,} chars. "
+                            f"Adding this entry ({len(content)} chars) would exceed the limit. "
+                            f"Replace or remove existing entries first, "
+                            f"or set `memory.eviction_policy: oldest` in config.yaml."
+                        ),
+                        "current_entries": entries,
+                        "usage": f"{current:,}/{limit:,}",
+                    }
+
+                # Evict oldest entries until the new entry fits.  We keep
+                # entries[1:] / entries[2:] / ... and re-test until the join
+                # of (kept + content) is within the cap.
+                kept = list(entries)
+                while kept and len(ENTRY_DELIMITER.join(kept + [content])) > limit:
+                    evicted.append(kept.pop(0))
+                # Replace `entries` with the post-eviction tail; the append
+                # below puts the new entry at the end (newest position).
+                entries = kept
+                self._set_entries(target, entries)
+                logger.warning(
+                    "MemoryStore: evicted %d oldest %s entr%s to fit new entry "
+                    "(%d chars, cap %d). Evicted previews: %s",
+                    len(evicted),
+                    target,
+                    "y" if len(evicted) == 1 else "ies",
+                    len(content),
+                    limit,
+                    [e[:80] + ("..." if len(e) > 80 else "") for e in evicted],
+                )
 
             entries.append(content)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        msg = "Entry added."
+        if evicted:
+            msg = (
+                f"Entry added; evicted {len(evicted)} oldest entr"
+                f"{'y' if len(evicted) == 1 else 'ies'} to fit "
+                f"(policy={self.eviction_policy}, cap={limit:,}). "
+                f"See agent.log for details."
+            )
+        return self._success_response(target, msg)
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""

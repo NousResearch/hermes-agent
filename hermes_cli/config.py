@@ -1152,8 +1152,21 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
-        "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
-        "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Char limits (NOT tokens; model-independent). Raised May 2026 from
+        # the old 2200/1375 floor because real-world user profiles routinely
+        # bumped against the USER cap during normal use and hard-failed
+        # `memory.add` calls. Eviction (see ``eviction_policy``) is the
+        # preferred safety valve when limits are reached; the higher floor
+        # just buys headroom so eviction is infrequent rather than constant.
+        "memory_char_limit": 4000,   # ~1450 tokens at 2.75 chars/token
+        "user_char_limit": 3000,     # ~1100 tokens at 2.75 chars/token
+        # What to do when `memory.add` would exceed the cap:
+        #   "oldest" — drop the oldest entries until the new one fits (default;
+        #              logged at WARN). Caller's add succeeds.
+        #   "none"   — same as "oldest" (alias, kept for forward compat).
+        #   "fail"   — preserve old behavior: reject the add with an error
+        #              telling the model to replace/remove first.
+        "eviction_policy": "oldest",
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

@@ -251,6 +251,7 @@ class TestNonStringContent:
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "codex-token",
             "api_mode": "codex_responses",
+            "default_headers": None,
         }
 
 

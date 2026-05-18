@@ -554,10 +554,42 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            # Resolve custom_headers from custom_providers config for
+            # gateway auth (e.g. subscription keys for API-management proxies).
+            # Matches base_url against custom_providers entries to find the
+            # right header set. See PR #3 / commit fc1b74a02 on the fork —
+            # forward-ported to agent_init.py after upstream's refactor that
+            # moved client construction here from run_agent.py.
+            # Also resolves the `verify` flag for self-signed cert proxies.
+            _custom_default_headers = None
+            _custom_verify = True
+            try:
+                from hermes_cli.config import load_config as _load_cp_cfg
+                _cp_cfg = _load_cp_cfg()
+                _cp_list = _cp_cfg.get("custom_providers", [])
+                if isinstance(_cp_list, list):
+                    for _cp in _cp_list:
+                        if isinstance(_cp, dict) and _cp.get("custom_headers"):
+                            _cp_base = (_cp.get("base_url") or "").rstrip("/")
+                            _my_base = (base_url or "").rstrip("/")
+                            if _cp_base and _my_base and _cp_base.lower() == _my_base.lower():
+                                _custom_default_headers = dict(_cp.get("custom_headers"))
+                                if isinstance(_cp.get("verify"), bool):
+                                    _custom_verify = _cp["verify"]
+                                break
+            except Exception:
+                pass
+            agent._anthropic_client = build_anthropic_client(
+                effective_key, base_url, timeout=_provider_timeout,
+                default_headers=_custom_default_headers,
+                verify=_custom_verify,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
+            # Store headers in _client_kwargs so auxiliary client can pick them up
+            if _custom_default_headers:
+                agent._client_kwargs["default_headers"] = _custom_default_headers
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
                 # ``effective_key`` may be a callable Entra ID bearer

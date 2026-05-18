@@ -643,6 +643,8 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    default_headers: dict = None,
+    verify: bool = True,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -753,6 +755,22 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    # Caller-supplied headers (e.g. custom gateway auth keys)
+    # win over our defaults so users can override anthropic-beta, user-agent, etc.
+    if isinstance(default_headers, dict) and default_headers:
+        merged = dict(kwargs.get("default_headers") or {})
+        merged.update({k: v for k, v in default_headers.items() if v is not None})
+        kwargs["default_headers"] = merged
+
+    # When verify=False (e.g. self-signed cert on local proxy), create a
+    # custom httpx client that skips SSL verification.
+    if not verify:
+        from httpx import Client as _HttpxClient
+        kwargs["http_client"] = _HttpxClient(
+            verify=False,
+            timeout=kwargs.pop("timeout"),
+        )
 
     return _anthropic_sdk.Anthropic(**kwargs)
 

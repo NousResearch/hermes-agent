@@ -801,14 +801,26 @@ class AIAgent:
             detail = detail[:217].rstrip() + "..."
         self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
 
-    def _current_main_runtime(self) -> Dict[str, str]:
-        """Return the live main runtime for session-scoped auxiliary routing."""
+    def _current_main_runtime(self) -> Dict[str, Any]:
+        """Return the live main runtime for session-scoped auxiliary routing.
+
+        ``default_headers`` is propagated from ``_client_kwargs`` so the
+        auxiliary client inherits the same HTTP headers as the main agent
+        (e.g. API-management subscription-key headers on a custom gateway).
+        Without this, compression/summarization/vision/web-extract round-trips
+        to the gateway 401 because the subscription-key header is missing.
+        See PR #3 on the fork — forward-ported after upstream's refactor
+        moved this method but stripped the default_headers line.
+        """
+        _ck = getattr(self, "_client_kwargs", None) or {}
+        _hdrs = _ck.get("default_headers") if isinstance(_ck, dict) else None
         return {
             "model": getattr(self, "model", "") or "",
             "provider": getattr(self, "provider", "") or "",
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
+            "default_headers": dict(_hdrs) if isinstance(_hdrs, dict) and _hdrs else None,
         }
 
     def _check_compression_model_feasibility(self) -> None:

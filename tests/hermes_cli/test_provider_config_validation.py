@@ -193,3 +193,91 @@ class TestNormalizeCustomProviderEntry:
         result = _normalize_custom_provider_entry(entry)
         assert result is not None
         assert "models" not in result
+
+    def test_id_preserved_for_stable_slug_lookup(self):
+        """The ``id`` field must be forwarded so renaming ``name`` doesn't
+        break ``model.provider: custom:<id>`` resolution downstream.
+
+        The runtime resolver (``_get_named_custom_provider`` in
+        ``hermes_cli/runtime_provider.py``) matches the requested slug
+        against an id-derived slug, but that lookup only sees what this
+        normalizer forwards. Previously ``id`` was not in ``_KNOWN_KEYS``
+        and never copied into the normalized result, so a cosmetic
+        ``name`` change silently invalidated every persisted
+        ``custom:<old-slug>`` reference (main model, gateway, auxiliary
+        tasks, cron jobs).
+        """
+        entry = {
+            "id": "amd-llm-gateway",
+            "name": "AMD LLM Gateway (Anthropic)",
+            "base_url": "https://gateway.example.com:8443/Anthropic",
+            "api_key": "sk-test",
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["id"] == "amd-llm-gateway"
+        # name and id are independent — name follows the cosmetic label,
+        # id stays put across renames.
+        assert result["name"] == "AMD LLM Gateway (Anthropic)"
+
+    def test_id_stripped_of_surrounding_whitespace(self):
+        """``id`` values are stripped to match the same normalization the
+        runtime resolver applies before slug comparison."""
+        entry = {
+            "id": "  my-stable-slug  ",
+            "name": "My Gateway",
+            "base_url": "https://api.example.com/v1",
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["id"] == "my-stable-slug"
+
+    def test_id_omitted_when_missing_or_empty(self):
+        """Entries without an ``id`` (or with empty/whitespace-only ``id``)
+        must not synthesize one — leaving the field absent preserves the
+        legacy "match by name only" behaviour for configs that never opted
+        into the stable-slug pattern."""
+        for missing_id in (None, "", "   "):
+            entry = {
+                "name": "Cosmetic Only",
+                "base_url": "https://api.example.com/v1",
+            }
+            if missing_id is not None:
+                entry["id"] = missing_id
+            result = _normalize_custom_provider_entry(entry)
+            assert result is not None
+            assert "id" not in result, (
+                f"id should be absent when value is {missing_id!r}"
+            )
+
+    def test_id_non_string_ignored(self):
+        """Non-string ``id`` values are silently ignored rather than
+        coerced — matches the defensive style of the other field
+        normalizers."""
+        for bad_id in (123, ["list"], {"dict": 1}, True):
+            entry = {
+                "id": bad_id,
+                "name": "Bad ID Type",
+                "base_url": "https://api.example.com/v1",
+            }
+            result = _normalize_custom_provider_entry(entry)
+            assert result is not None
+            assert "id" not in result, (
+                f"id should be absent for non-string value {bad_id!r}"
+            )
+
+    def test_id_is_a_known_key_not_warned_as_unknown(self, caplog):
+        """``id`` belongs in ``_KNOWN_KEYS`` so configs that set it
+        don't trigger spurious ``unknown config keys ignored`` warnings."""
+        import logging
+        entry = {
+            "id": "stable-slug",
+            "name": "Some Provider",
+            "base_url": "https://api.example.com/v1",
+        }
+        with caplog.at_level(logging.WARNING):
+            _normalize_custom_provider_entry(entry, provider_key="acme")
+        assert not any(
+            "unknown config keys" in rec.message and "id" in rec.message
+            for rec in caplog.records
+        ), "id field should not trigger an unknown-keys warning"

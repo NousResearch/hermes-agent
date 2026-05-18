@@ -489,6 +489,7 @@ class ContextCompressor(ContextEngine):
         api_key: Any = "",
         provider: str = "",
         api_mode: str = "",
+        default_headers: Optional[Dict[str, str]] = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
         self.model = model
@@ -496,6 +497,11 @@ class ContextCompressor(ContextEngine):
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
+        self.default_headers = (
+            dict(default_headers)
+            if isinstance(default_headers, dict) and default_headers
+            else None
+        )
         self.context_length = context_length
         self.threshold_tokens = max(
             int(context_length * self.threshold_percent),
@@ -524,12 +530,18 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        default_headers: Optional[Dict[str, str]] = None,
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
+        self.default_headers = (
+            dict(default_headers)
+            if isinstance(default_headers, dict) and default_headers
+            else None
+        )
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
@@ -1061,6 +1073,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "base_url": self.base_url,
                     "api_key": self.api_key,
                     "api_mode": self.api_mode,
+                    "default_headers": getattr(self, "default_headers", None),
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": int(summary_budget * 1.3),

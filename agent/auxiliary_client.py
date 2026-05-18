@@ -1134,6 +1134,8 @@ def _maybe_wrap_anthropic(
     api_key: str,
     base_url: str,
     api_mode: Optional[str] = None,
+    *,
+    default_headers: Optional[Dict[str, str]] = None,
 ) -> Any:
     """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when
     the endpoint actually speaks Anthropic Messages.
@@ -1192,7 +1194,10 @@ def _maybe_wrap_anthropic(
         return client_obj
 
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        real_client = build_anthropic_client(
+            api_key, base_url,
+            default_headers=default_headers if default_headers else None,
+        )
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
@@ -2081,11 +2086,16 @@ _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Return a sanitized copy of a live main-runtime override.
 
-    Most fields are stripped strings. ``api_key`` may legitimately be a
+    String fields (provider/model/base_url/api_key/api_mode) are stripped and
+    lowercased where appropriate. ``api_key`` may legitimately be a
     zero-arg callable (Azure Foundry Entra ID token provider) — preserve
     those as-is so auxiliary clients inherit the same authentication
     surface as the main agent. The OpenAI SDK accepts ``Callable[[], str]``
     for ``api_key`` and calls it before every request.
+
+    ``default_headers`` (dict) is preserved so transports that need extra
+    HTTP headers (e.g. an API-management subscription key) can forward
+    them to the underlying SDK.
     """
     if not isinstance(main_runtime, dict):
         return {}
@@ -2101,6 +2111,12 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     provider = normalized.get("provider")
     if isinstance(provider, str):
         normalized["provider"] = provider.lower()
+    headers = main_runtime.get("default_headers")
+    if isinstance(headers, dict) and headers:
+        normalized["default_headers"] = {
+            k: v for k, v in headers.items()
+            if isinstance(k, str) and v is not None
+        }
     return normalized
 
 
@@ -2924,12 +2940,31 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     # config.yaml (auxiliary.<task>.provider) still win over this.
     main_provider = str(runtime_provider or _read_main_provider() or "")
     main_model = str(runtime_model or _read_main_model() or "")
+    runtime_default_headers = runtime.get("default_headers")
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
         explicit_base_url = None
         explicit_api_key = None
         if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+            resolved_provider = "custom"
+            explicit_base_url = runtime_base_url
+            explicit_api_key = runtime_api_key or None
+        # APIM-style gateway reroute: when the live runtime carries an
+        # explicit base_url AND non-empty default_headers (typically a
+        # subscription-key header on a third-party Anthropic/OpenAI gateway),
+        # the user has manually overridden BOTH the URL and the auth headers.
+        # Bypass the native provider branches (which would route to the
+        # provider's canonical hostname with provider-only auth and lose the
+        # subscription header) and go through the anonymous-custom branch,
+        # which forwards default_headers to the SDK and re-wraps for
+        # anthropic_messages when needed.  This fixes auxiliary 401s after a
+        # /model switch from `custom:<gateway>` to a native provider name
+        # (e.g. switching to Claude-Opus-4.7 promotes provider to "anthropic"
+        # while keeping the AMD gateway base_url + headers in _client_kwargs).
+        elif (runtime_base_url
+              and isinstance(runtime_default_headers, dict)
+              and runtime_default_headers):
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
@@ -2948,6 +2983,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
                 api_mode=runtime_api_mode or None,
+                main_runtime=runtime,
             )
             if client is not None:
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
@@ -3136,7 +3172,9 @@ def resolve_provider_client(
         return False
 
     def _wrap_if_needed(client_obj, final_model_str: str, base_url_str: str = "",
-                        api_key_str: str = ""):
+                        api_key_str: str = "",
+                        *,
+                        default_headers: Optional[Dict[str, str]] = None):
         """Wrap a plain OpenAI client in the correct transport adapter.
 
         Handles two cases:
@@ -3148,6 +3186,9 @@ def resolve_provider_client(
           suffix, ``api.kimi.com/coding``, or ``api.anthropic.com``).
 
         Clients that are already specialized wrappers pass through unchanged.
+        ``default_headers`` (when provided) is forwarded to ``build_anthropic_client``
+        so custom gateway auth headers propagate to
+        the wrapped Anthropic SDK transport.
         """
         if _needs_codex_wrap(client_obj, base_url_str, final_model_str):
             logger.debug(
@@ -3160,6 +3201,7 @@ def resolve_provider_client(
         # chat.completions.create() is translated to /v1/messages.
         return _maybe_wrap_anthropic(
             client_obj, final_model_str, api_key_str, base_url_str, api_mode,
+            default_headers=default_headers,
         )
 
     # ── Auto: try all providers in priority order ────────────────────
@@ -3287,6 +3329,16 @@ def resolve_provider_client(
             _clean_base, _dq = _extract_url_query_params(custom_base)
             if _dq:
                 extra["default_query"] = _dq
+            # Extract caller-supplied headers from main_runtime so custom
+            # gateway auth headers propagate to the auxiliary transport.
+            _runtime_headers: Optional[Dict[str, str]] = None
+            if isinstance(main_runtime, dict):
+                _rh = main_runtime.get("default_headers")
+                if isinstance(_rh, dict) and _rh:
+                    _runtime_headers = {
+                        k: v for k, v in _rh.items()
+                        if isinstance(k, str) and v is not None
+                    }
             if base_url_host_matches(custom_base, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
@@ -3306,8 +3358,15 @@ def resolve_provider_client(
                         extra["default_headers"] = dict(_ph_custom.default_headers)
                 except Exception:
                     pass
+            if _runtime_headers:
+                merged = dict(extra.get("default_headers") or {})
+                merged.update(_runtime_headers)
+                extra["default_headers"] = merged
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
-            client = _wrap_if_needed(client, final_model, custom_base, custom_key)
+            client = _wrap_if_needed(
+                client, final_model, custom_base, custom_key,
+                default_headers=extra.get("default_headers"),
+            )
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         # Try custom first, then API-key providers (Codex excluded here:
@@ -3391,7 +3450,21 @@ def resolve_provider_client(
                 if entry_api_mode == "anthropic_messages":
                     try:
                         from agent.anthropic_adapter import build_anthropic_client
-                        real_client = build_anthropic_client(custom_key, custom_base)
+                        # Forward gateway-auth headers + TLS-verify from the
+                        # custom_providers entry so APIM-style gateways (which
+                        # require subscription keys via custom_headers and
+                        # often run on self-signed certs) authenticate
+                        # auxiliary calls the same way the main agent does.
+                        _entry_headers = custom_entry.get("custom_headers")
+                        _entry_verify = custom_entry.get("verify", True)
+                        _build_kwargs = {}
+                        if isinstance(_entry_headers, dict) and _entry_headers:
+                            _build_kwargs["default_headers"] = dict(_entry_headers)
+                        if _entry_verify is False:
+                            _build_kwargs["verify"] = False
+                        real_client = build_anthropic_client(
+                            custom_key, custom_base, **_build_kwargs,
+                        )
                     except ImportError:
                         logger.warning(
                             "Named custom provider %r declares api_mode="
@@ -3995,7 +4068,18 @@ def _client_cache_key(
     is_vision: bool = False,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
-    runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
+    if provider == "auto":
+        parts = [runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS]
+        _hdrs = runtime.get("default_headers")
+        if isinstance(_hdrs, dict) and _hdrs:
+            # Freeze the dict to a sorted tuple so the cache key stays
+            # hashable and deterministic across insertion-order variation.
+            parts.append(tuple(sorted(_hdrs.items())))
+        else:
+            parts.append(())
+        runtime_key = tuple(parts)
+    else:
+        runtime_key = ()
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
     return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, pool_hint)
 

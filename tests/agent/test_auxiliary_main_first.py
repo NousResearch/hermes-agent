@@ -162,6 +162,115 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.args[0] == "anthropic"
         assert mock_resolve.call_args.args[1] == "runtime-model"
 
+    def test_apim_gateway_reroutes_to_custom_branch(self, monkeypatch):
+        """Runtime provider=anthropic + base_url + default_headers → custom branch.
+
+        Regression: after /model switch from custom:amd-llm-gateway to
+        Claude-Opus-4.7, the live agent's provider becomes "anthropic" but
+        base_url + Ocp-Apim-Subscription-Key remain in _client_kwargs. Without
+        this reroute, _resolve_auto hits _try_anthropic() (which ignores
+        main_runtime) and the subscription header is dropped → HTTP 401 on
+        title generation / compression / vision.
+
+        With the reroute, _resolve_auto routes through the "custom" branch with
+        explicit base_url + api_key, and resolve_provider_client's custom
+        branch forwards main_runtime["default_headers"] to the SDK.
+        """
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="anthropic",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-7",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_resolve.return_value = (MagicMock(), "claude-opus-4-7")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            _resolve_auto(main_runtime={
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+                "base_url": "https://llm-api.amd.com:8443/Anthropic",
+                "api_key": "dummy",
+                "api_mode": "anthropic_messages",
+                "default_headers": {
+                    "Ocp-Apim-Subscription-Key": "secret-key",
+                    "Host": "llm-api.amd.com",
+                },
+            })
+
+        # Must reroute to "custom" branch (not "anthropic") so that
+        # resolve_provider_client picks up main_runtime["default_headers"]
+        # via the custom-endpoint header-merging path.
+        assert mock_resolve.call_args.args[0] == "custom"
+        assert mock_resolve.call_args.kwargs["explicit_base_url"] == (
+            "https://llm-api.amd.com:8443/Anthropic"
+        )
+        assert mock_resolve.call_args.kwargs["explicit_api_key"] == "dummy"
+        assert mock_resolve.call_args.kwargs["api_mode"] == "anthropic_messages"
+        # main_runtime forwarded so the custom branch can read default_headers
+        runtime_arg = mock_resolve.call_args.kwargs["main_runtime"]
+        assert runtime_arg["default_headers"]["Ocp-Apim-Subscription-Key"] == "secret-key"
+
+    def test_native_anthropic_without_headers_not_rerouted(self, monkeypatch):
+        """Plain native Anthropic (no APIM headers) must NOT be rerouted.
+
+        Guards against regressions where any anthropic runtime would get
+        forced through the custom branch. The reroute condition requires
+        BOTH a runtime base_url AND a non-empty default_headers dict.
+        """
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="anthropic",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-7",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_resolve.return_value = (MagicMock(), "claude-opus-4-7")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            # No base_url, no default_headers → native anthropic path
+            _resolve_auto(main_runtime={
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+                "base_url": "",
+                "api_key": "",
+                "api_mode": "anthropic_messages",
+            })
+
+        assert mock_resolve.call_args.args[0] == "anthropic"
+
+    def test_apim_reroute_requires_headers_not_just_base_url(self, monkeypatch):
+        """base_url alone (without default_headers) must NOT trigger the reroute.
+
+        A runtime base_url without auth headers is the normal case for
+        many providers (Azure, Bedrock, Vercel AI Gateway via profile.default_headers).
+        Those paths already handle auth correctly inside the native branches;
+        only the APIM/subscription-key case needs the custom-branch reroute.
+        """
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="anthropic",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-7",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_resolve.return_value = (MagicMock(), "claude-opus-4-7")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            _resolve_auto(main_runtime={
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+                "base_url": "https://api.anthropic.com",
+                "api_key": "sk-ant-test",
+                "api_mode": "anthropic_messages",
+                # No default_headers
+            })
+
+        assert mock_resolve.call_args.args[0] == "anthropic"
+
 
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────
 

@@ -792,6 +792,158 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
     assert resolved["model"] == "gpt-5-mini"
 
 
+def test_named_custom_provider_resolves_by_stable_id_after_name_rename(monkeypatch):
+    """Renaming a custom_providers ``name`` must not break persisted
+    ``custom:<old-slug>`` references when an ``id`` is set.
+
+    Scenario: user has a provider whose original ``name`` was "Acme
+    Gateway" (deriving slug ``acme-gateway``). They rename ``name`` to
+    "Acme Gateway (Anthropic)" for clarity. Without ``id`` plumbing,
+    ``model.provider: custom:acme-gateway`` (and the same slug embedded
+    in cron jobs and auxiliary task pins) would no longer resolve and
+    the main agent, gateway, and every dependent cron job would fail
+    with ``Unknown provider 'custom:acme-gateway'``.
+
+    With ``id: acme-gateway`` set in the config, the runtime resolver
+    matches against the id-derived slug too. This test guards against
+    regression where either (a) the ``_normalize_custom_provider_entry``
+    stops forwarding the ``id`` field, or (b) the resolver stops checking
+    against the id-derived slug.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "id": "acme-gateway",
+                    "name": "Acme Gateway (Anthropic)",
+                    "base_url": "https://gateway.example.com:8443/Anthropic",
+                    "api_key": "subscription-key-stub",
+                    "api_mode": "anthropic_messages",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    # The historical slug (matches id) must still resolve after the rename.
+    resolved = rp.resolve_runtime_provider(requested="custom:acme-gateway")
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://gateway.example.com:8443/Anthropic"
+    assert resolved["api_key"] == "subscription-key-stub"
+    assert resolved["api_mode"] == "anthropic_messages"
+    # The resolved source reflects the current (renamed) ``name`` — the
+    # cosmetic label is the user-facing one even when the lookup hit via
+    # ``id``.
+    assert resolved["source"] == "custom_provider:Acme Gateway (Anthropic)"
+
+    # The new slug (derived from the renamed ``name``) also resolves to
+    # the same entry — both forms work in parallel.
+    resolved_new = rp.resolve_runtime_provider(
+        requested="custom:acme-gateway-(anthropic)"
+    )
+    assert resolved_new["base_url"] == resolved["base_url"]
+    assert resolved_new["api_key"] == resolved["api_key"]
+
+
+def test_named_custom_provider_id_gives_punctuation_free_slug(monkeypatch):
+    """An ``id`` also lets users address a provider with a clean,
+    punctuation-free slug instead of the literal-paren form the
+    name-derived slug produces.
+
+    Before id-aware lookup landed, a provider with ``name: "Acme Gateway
+    (OnPrem)"`` could only be addressed as ``custom:acme-gateway-(onprem)``
+    (with literal parens in the slug). With ``id: acme-gateway-onprem``
+    set, the cleaner paren-free form resolves the same entry — useful
+    for cron jobs and config where escaping parens is awkward.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "id": "acme-gateway-onprem",
+                    "name": "Acme Gateway (OnPrem)",
+                    "base_url": "https://gateway.example.com:8443/OnPrem",
+                    "api_key": "subscription-key-stub",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    # Paren-free id slug resolves.
+    resolved = rp.resolve_runtime_provider(
+        requested="custom:acme-gateway-onprem"
+    )
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://gateway.example.com:8443/OnPrem"
+
+    # Punctuated name-derived slug still resolves (backwards compatible).
+    resolved_paren = rp.resolve_runtime_provider(
+        requested="custom:acme-gateway-(onprem)"
+    )
+    assert resolved_paren["base_url"] == resolved["base_url"]
+
+
+def test_named_custom_provider_id_works_via_providers_dict(monkeypatch):
+    """The id-aware lookup must also work for v12+ ``providers`` dict
+    entries, not just legacy ``custom_providers`` list entries — both
+    funnel through the same ``_get_named_custom_provider`` resolver via
+    ``get_compatible_custom_providers``."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "renamed-gateway": {
+                    "id": "original-slug",
+                    "name": "Renamed Gateway",
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "dict-stub",
+                    "default_model": "test-model",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("resolve_provider should not be called")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:original-slug")
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://api.example.com/v1"
+    assert resolved["api_key"] == "dict-stub"
+
+
 def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     """providers dict entries with key_env should resolve API key from env var."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

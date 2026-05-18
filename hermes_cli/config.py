@@ -3003,6 +3003,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models",
+        "custom_headers", "id", "verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -3096,6 +3097,29 @@ def _normalize_custom_provider_entry(
     discover_models = entry.get("discover_models")
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
+
+    # Preserve custom_headers for providers that need extra HTTP headers
+    # (e.g. API-management subscription-key headers for API gateways).
+    custom_headers = entry.get("custom_headers")
+    if isinstance(custom_headers, dict) and custom_headers:
+        normalized["custom_headers"] = dict(custom_headers)
+
+    # Preserve verify flag for self-signed cert proxies.
+    verify = entry.get("verify")
+    if isinstance(verify, bool):
+        normalized["verify"] = verify
+
+    # Preserve the stable ``id`` slug so renaming the user-facing ``name``
+    # doesn't break ``model.provider: custom:<id>`` resolution downstream.
+    # The runtime resolver (``_get_named_custom_provider`` in
+    # runtime_provider.py) matches the requested provider key against the
+    # id-derived slug too — but the lookup only sees what this normalizer
+    # forwards. Without preserving ``id`` here, a cosmetic ``name`` change
+    # silently invalidates every persisted ``custom:<old-slug>`` reference
+    # (main model, gateway, auxiliary tasks, cron jobs).
+    entry_id = entry.get("id")
+    if isinstance(entry_id, str) and entry_id.strip():
+        normalized["id"] = entry_id.strip()
 
     return normalized
 

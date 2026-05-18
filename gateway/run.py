@@ -5755,6 +5755,15 @@ class GatewayRunner:
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
 
+        # Adapters with a stable secondary identity (Signal UUID alongside
+        # phone, DingTalk staff_id alongside sender_id, Feishu union_id, ...)
+        # carry it in source.user_id_alt. Honor it so operators can put either
+        # form in the platform allowlist.
+        if source.user_id_alt:
+            check_ids.add(source.user_id_alt)
+            if "@" in source.user_id_alt:
+                check_ids.add(source.user_id_alt.split("@")[0])
+
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:
             normalized_allowed_ids = set()

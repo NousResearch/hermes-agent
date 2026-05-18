@@ -646,3 +646,78 @@ def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.QQBOT)
     assert behavior == "ignore"
+
+
+def test_signal_user_id_alt_uuid_matches_allowlist(monkeypatch):
+    """Signal adapter carries the stable account UUID in source.user_id_alt
+    while source.user_id is the phone number. Operators allowlisting the UUID
+    must still be authorized — previously the auth check only inspected
+    source.user_id and silently rejected them.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "uuid:abc-123")
+
+    runner, _adapter = _make_runner(
+        Platform.SIGNAL,
+        GatewayConfig(platforms={Platform.SIGNAL: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.SIGNAL,
+        user_id="+15550000001",
+        user_id_alt="uuid:abc-123",
+        chat_id="+15550000001",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_dingtalk_user_id_alt_staff_id_matches_allowlist(monkeypatch):
+    """DingTalk adapter carries the staff_id (stable org identity) in
+    source.user_id_alt while source.user_id is the per-conversation sender_id.
+    Operators allowlisting the staff_id must still be authorized.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("DINGTALK_ALLOWED_USERS", "staff_1234")
+
+    runner, _adapter = _make_runner(
+        Platform.DINGTALK,
+        GatewayConfig(platforms={Platform.DINGTALK: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.DINGTALK,
+        user_id="sender1",
+        user_id_alt="staff_1234",
+        chat_id="cid-1",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_user_id_alt_not_in_allowlist_still_rejected(monkeypatch):
+    """The alt-ID path must not become a backdoor: when neither user_id nor
+    user_id_alt is in the allowlist, the user stays unauthorized.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "uuid:allowed-only")
+
+    runner, _adapter = _make_runner(
+        Platform.SIGNAL,
+        GatewayConfig(platforms={Platform.SIGNAL: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.SIGNAL,
+        user_id="+15550000002",
+        user_id_alt="uuid:not-listed",
+        chat_id="+15550000002",
+        user_name="stranger",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is False

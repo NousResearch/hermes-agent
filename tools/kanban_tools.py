@@ -357,6 +357,81 @@ def _handle_list(args: dict, **kw) -> str:
         return tool_error(f"kanban_list: {e}")
 
 
+def _handle_search(args: dict, **kw) -> str:
+    """Search task titles, bodies, and comments with list-style filters."""
+    guard = _require_orchestrator_tool("kanban_search")
+    if guard:
+        return guard
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return tool_error("query is required")
+    fields = args.get("fields")
+    if fields is None:
+        fields = ["title", "body", "comments"]
+    elif isinstance(fields, str):
+        fields = [fields]
+    elif not isinstance(fields, (list, tuple)):
+        return tool_error("fields must be an array of strings")
+    fields = [str(f).strip() for f in fields if str(f).strip()]
+
+    include_archived, bool_error = _parse_bool_arg(args, "include_archived")
+    if bool_error:
+        return tool_error(bool_error)
+    limit = args.get("limit")
+    if limit is None:
+        limit = KANBAN_LIST_DEFAULT_LIMIT
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        return tool_error("limit must be an integer")
+    if limit < 1:
+        return tool_error("limit must be >= 1")
+    if limit > KANBAN_LIST_MAX_LIMIT:
+        return tool_error(f"limit must be <= {KANBAN_LIST_MAX_LIMIT}")
+
+    try:
+        kb, conn = _connect()
+        try:
+            promoted = kb.recompute_ready(conn)
+            rows = kb.search_tasks(
+                conn,
+                query,
+                fields=fields,
+                assignee=args.get("assignee"),
+                status=args.get("status"),
+                tenant=args.get("tenant"),
+                include_archived=include_archived,
+                limit=limit + 1,
+            )
+            truncated = len(rows) > limit
+            rows = rows[:limit]
+            return json.dumps({
+                "matches": [
+                    {
+                        **_task_summary_dict(kb, conn, row["task"]),
+                        "match_field": row["field"],
+                        "snippet": row["snippet"],
+                    }
+                    for row in rows
+                ],
+                "count": len(rows),
+                "limit": limit,
+                "truncated": truncated,
+                "next_limit": (
+                    min(limit * 2, KANBAN_LIST_MAX_LIMIT)
+                    if truncated and limit < KANBAN_LIST_MAX_LIMIT else None
+                ),
+                "promoted": promoted,
+            })
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_search: {e}")
+    except Exception as e:
+        logger.exception("kanban_search failed")
+        return tool_error(f"kanban_search: {e}")
+
+
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _default_task_id(args.get("task_id"))
@@ -788,6 +863,58 @@ KANBAN_LIST_SCHEMA = {
     },
 }
 
+KANBAN_SEARCH_SCHEMA = {
+    "name": "kanban_search",
+    "description": (
+        "Search Kanban task titles, bodies, and comments so an orchestrator "
+        "profile can discover related board work without direct database "
+        "access. Supports filters for assignee, status, tenant, archived "
+        "visibility, fields, and limit. Returns compact task rows plus the "
+        "matched field and snippet. Orchestrator-only — dispatcher-spawned "
+        "task workers never see this tool."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search text to find in selected fields.",
+            },
+            "fields": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["title", "body", "comments"]},
+                "description": "Fields to search. Defaults to title, body, and comments.",
+            },
+            "assignee": {
+                "type": "string",
+                "description": "Optional assignee/profile filter.",
+            },
+            "status": {
+                "type": "string",
+                "enum": [
+                    "triage", "todo", "ready", "running",
+                    "blocked", "done", "archived",
+                ],
+                "description": "Optional task status filter.",
+            },
+            "tenant": {
+                "type": "string",
+                "description": "Optional tenant/project namespace filter.",
+            },
+            "include_archived": {
+                "type": "boolean",
+                "description": "Include archived tasks. Defaults to false.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional maximum rows to return (default 50, max 200).",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
 KANBAN_COMPLETE_SCHEMA = {
     "name": "kanban_complete",
     "description": (
@@ -1137,6 +1264,15 @@ registry.register(
     handler=_handle_list,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="📋",
+)
+
+registry.register(
+    name="kanban_search",
+    toolset="kanban",
+    schema=KANBAN_SEARCH_SCHEMA,
+    handler=_handle_search,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🔎",
 )
 
 registry.register(

@@ -1551,6 +1551,71 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
+def search_tasks(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    fields: Optional[Iterable[str]] = None,
+    assignee: Optional[str] = None,
+    status: Optional[str] = None,
+    tenant: Optional[str] = None,
+    include_archived: bool = False,
+    limit: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    """Search tasks by title/body/comments and return compact match metadata.
+
+    This is the kernel-backed API for agent-facing search tools. It keeps
+    callers away from direct ``kanban.db`` SQL while preserving the same core
+    filtering semantics as :func:`list_tasks`.
+    """
+    needle = (query or "").strip()
+    if not needle:
+        raise ValueError("query is required")
+
+    valid_fields = {"title", "body", "comments"}
+    selected = set(fields or valid_fields)
+    invalid = sorted(selected - valid_fields)
+    if invalid:
+        raise ValueError(f"fields must be a subset of {sorted(valid_fields)}; got {invalid}")
+
+    tasks = list_tasks(
+        conn,
+        assignee=assignee,
+        status=status,
+        tenant=tenant,
+        include_archived=include_archived,
+        limit=None,
+    )
+    needle_l = needle.lower()
+    results: list[dict[str, Any]] = []
+    for task in tasks:
+        haystacks: list[tuple[str, str]] = []
+        if "title" in selected:
+            haystacks.append(("title", task.title or ""))
+        if "body" in selected:
+            haystacks.append(("body", task.body or ""))
+        if "comments" in selected:
+            comments_text = "\n".join(c.body for c in list_comments(conn, task.id))
+            haystacks.append(("comments", comments_text))
+
+        for field, text in haystacks:
+            idx = text.lower().find(needle_l)
+            if idx < 0:
+                continue
+            start = max(0, idx - 80)
+            end = min(len(text), idx + len(needle) + 80)
+            snippet = text[start:end].replace("\n", " ").strip()
+            if start > 0:
+                snippet = "…" + snippet
+            if end < len(text):
+                snippet += "…"
+            results.append({"task": task, "field": field, "snippet": snippet})
+            break
+        if limit and len(results) >= int(limit):
+            break
+    return results
+
+
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign or reassign a task.  Returns True on success.
 

@@ -84,10 +84,11 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     kanban = {n for n in names if n and n.startswith("kanban_")}
     assert {
         "kanban_list",
+        "kanban_search",
         "kanban_unblock",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock'}}"
+        f"{kanban & {'kanban_list', 'kanban_search', 'kanban_unblock'}}"
     )
 
 
@@ -108,7 +109,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
-        "kanban_list",
+        "kanban_list", "kanban_search",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
@@ -261,6 +262,45 @@ def test_list_rejects_bad_include_archived(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_list({"include_archived": "sometimes"})
     assert "include_archived must be" in json.loads(out).get("error", "")
+
+
+def test_search_finds_title_body_and_comments(monkeypatch, worker_env):
+    """kanban_search returns filtered task rows with match snippets."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        title_hit = kb.create_task(conn, title="alpha launch", assignee="factory")
+        body_hit = kb.create_task(
+            conn,
+            title="body task",
+            body="Needs the special widget path",
+            assignee="factory",
+        )
+        comment_hit = kb.create_task(conn, title="comment task", assignee="factory")
+        kb.add_comment(conn, comment_hit, "tester", "The widget note lives here")
+        other = kb.create_task(conn, title="unrelated", assignee="reviewer")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_search({"query": "widget", "assignee": "factory", "limit": 10})
+    d = json.loads(out)
+    ids = [m["id"] for m in d["matches"]]
+    assert ids == [body_hit, comment_hit]
+    assert d["matches"][0]["match_field"] == "body"
+    assert "widget" in d["matches"][0]["snippet"]
+    assert other not in ids
+
+    title_out = kt._handle_search({"query": "alpha", "fields": ["title"]})
+    assert [m["id"] for m in json.loads(title_out)["matches"]] == [title_hit]
+
+
+def test_search_rejects_invalid_fields(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    out = kt._handle_search({"query": "x", "fields": ["events"]})
+    assert "fields must be" in json.loads(out).get("error", "")
 
 
 def test_complete_happy_path(worker_env):

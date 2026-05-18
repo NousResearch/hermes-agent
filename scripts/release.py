@@ -640,6 +640,7 @@ AUTHOR_MAP = {
     "geoff.wellman@gmail.com": "geoffwellman",
     "han.shan@live.cn": "jamesarch",
     "haolong@microsoft.com": "LongOddCode",
+    "glennc@microsoft.com": "glennc",
     "hata1234@gmail.com": "hata1234",
     "hmbown@gmail.com": "Hmbown",
     "iacobs@m0n5t3r.info": "m0n5t3r",

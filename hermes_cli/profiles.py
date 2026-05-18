@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
+from utils import is_truthy_value
+
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # Directories bootstrapped inside every new profile
@@ -529,7 +531,9 @@ def read_profile_meta(profile_dir: Path) -> dict:
         return {"description": "", "description_auto": False}
     return {
         "description": str(data.get("description") or "").strip(),
-        "description_auto": bool(data.get("description_auto", False)),
+        "description_auto": is_truthy_value(
+            data.get("description_auto", False), default=False
+        ),
     }
 
 
@@ -561,7 +565,9 @@ def write_profile_meta(
     if description is not None:
         existing["description"] = description.strip()
     if description_auto is not None:
-        existing["description_auto"] = bool(description_auto)
+        existing["description_auto"] = is_truthy_value(
+            description_auto, default=False
+        )
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
 

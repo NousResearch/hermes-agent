@@ -989,6 +989,28 @@ class TestBuildSystemPrompt:
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
 
+    def test_datetime_is_date_only_not_minute_precision(self, agent):
+        """Timestamp must be date-only (no HH:MM) so the system prompt
+        stays byte-stable for the full day. Minute precision invalidates
+        prefix-cache KV on every rebuild path (compression, fresh-agent
+        gateway turns, session resume without a stored prompt)."""
+        prompt = agent._build_system_prompt()
+        # Find the line and strip it for inspection
+        for line in prompt.splitlines():
+            if line.startswith("Conversation started:"):
+                # Must NOT contain AM/PM indicator (minute precision had %I:%M %p)
+                assert " AM" not in line and " PM" not in line, (
+                    f"Timestamp line has time-of-day, breaks daily cache stability: {line!r}"
+                )
+                # Must NOT contain a colon followed by two digits (HH:MM pattern)
+                import re as _re
+                assert not _re.search(r":\d{2}", line), (
+                    f"Timestamp line has HH:MM, breaks daily cache stability: {line!r}"
+                )
+                break
+        else:
+            assert False, "Expected a 'Conversation started:' line in the system prompt"
+
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
         prompt = agent._build_system_prompt()

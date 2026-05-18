@@ -159,7 +159,10 @@ def _call_composer(prompt: str) -> str:
             "detail": str(e)[:200],
         })
         raise ComposerAuthFailure(str(e)) from e
-    return response.choices[0].message.content
+    content = response.choices[0].message.content
+    if not content:
+        content = getattr(response.choices[0].message, "reasoning_content", None)
+    return content or ""
 
 
 def llm_compose(prompt: str, context: str) -> Optional[str]:

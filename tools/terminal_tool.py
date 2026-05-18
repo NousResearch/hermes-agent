@@ -322,7 +322,8 @@ from tools.approval import (
 def _check_all_guards(command: str, env_type: str) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
-                                  approval_callback=_get_approval_callback())
+                                  approval_callback=_get_approval_callback(),
+                                  caller="terminal_tool")
 
 
 # Allowlist: characters that can legitimately appear in directory paths.

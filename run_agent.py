@@ -834,18 +834,18 @@ class AIAgent:
     def _is_azure_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets Azure OpenAI.
 
-        Azure OpenAI exposes an OpenAI-compatible endpoint at
-        ``{resource}.openai.azure.com/openai/v1`` that accepts the
-        standard ``openai`` Python client.  Unlike api.openai.com it
-        does NOT support the Responses API — gpt-5.x models are served
-        on the regular ``/chat/completions`` path — so routing decisions
-        must treat Azure separately from direct OpenAI.
+        Covers both direct Azure OpenAI resources at
+        ``{resource}.openai.azure.com`` and Azure API Management
+        gateways at ``{name}.azure-api.net`` that front corporate
+        Azure OpenAI deployments. Both serve gpt-5.x on the regular
+        ``/chat/completions`` path, so routing decisions must treat
+        them separately from direct OpenAI.
         """
         if base_url is not None:
             url = str(base_url).lower()
         else:
             url = getattr(self, "_base_url_lower", "") or ""
-        return "openai.azure.com" in url
+        return "openai.azure.com" in url or "azure-api.net" in url
 
     def _is_github_copilot_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
@@ -2784,6 +2784,13 @@ class AIAgent:
             self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
                 self._client_kwargs.get("api_key", "")
             )
+        elif base_url_host_matches(base_url, "azure-api.net") or base_url_host_matches(base_url, "openai.azure.com"):
+            # Azure OpenAI — both direct resources and APIM gateways —
+            # authenticate with an ``api-key`` header rather than Bearer.
+            # The standard OpenAI SDK only sends Bearer, so inject the
+            # header explicitly.  Required for APIM gateways (which 401
+            # on Bearer); harmless for direct ``*.openai.azure.com``.
+            self._client_kwargs["default_headers"] = {"api-key": self._client_kwargs.get("api_key", "")}
         else:
             # No URL-specific headers — check profile.default_headers before clearing.
             _ph_headers = None

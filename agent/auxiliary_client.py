@@ -3296,6 +3296,9 @@ def resolve_provider_client(
                 )
             elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
                 extra["default_headers"] = build_nvidia_nim_headers(custom_base)
+            elif base_url_host_matches(custom_base, "azure-api.net") or base_url_host_matches(custom_base, "openai.azure.com"):
+                # Azure OpenAI (direct + APIM) requires api-key header.
+                extra["default_headers"] = {"api-key": custom_key}
             else:
                 # Fall back to profile.default_headers for providers that
                 # declare client-level attribution headers on their profile.

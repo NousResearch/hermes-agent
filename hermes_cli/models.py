@@ -3106,7 +3106,13 @@ def probe_api_models(
         headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"
     elif api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        # Azure API Management gateways (*.azure-api.net) and direct
+        # Azure OpenAI resources authenticate via ``api-key`` header,
+        # not Bearer.  Sending Bearer to APIM returns 401.
+        if "azure-api.net" in normalized.lower() or "openai.azure.com" in normalized.lower():
+            headers["api-key"] = api_key
+        else:
+            headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
 
@@ -3395,6 +3401,17 @@ def validate_requested_model(
         }
 
     if normalized == "custom" or normalized.startswith("custom:"):
+        # Azure OpenAI / APIM endpoints don't consistently expose /models,
+        # and APIM gateways often 404 on it. Skip probing and accept
+        # the model name as-is for Azure hosts.
+        if base_url and ("azure-api.net" in base_url.lower() or "openai.azure.com" in base_url.lower()):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": None,
+            }
+
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
             probe = probe_api_models(api_key, base_url, api_mode=api_mode)

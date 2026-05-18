@@ -4082,6 +4082,19 @@ class TestGpt5ApiModeRouting:
         agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
         assert agent._is_azure_openai_url() is True
 
+    def test_is_azure_openai_url_detects_apim_gateway(self, agent):
+        """Azure API Management gateways front Azure OpenAI behind ``*.azure-api.net``.
+
+        APIM enforces ``api-key`` auth and rejects Bearer with HTTP 401, and the
+        GPT-5 deployments behind it still need ``max_completion_tokens``, so the
+        detector must recognise this host family.
+        """
+        # Real-world APIM gateway shape: <name>.azure-api.net/openai/deployments/<dep>
+        apim = "https://acme-stg-apim01.azure-api.net/openai/deployments/gpt-5-2025-12-11?api-version=2024-02-15-preview"
+        assert agent._is_azure_openai_url(apim) is True
+        # Non-APIM Azure subdomains shouldn't be misclassified as Azure OpenAI
+        assert agent._is_azure_openai_url("https://example.azurewebsites.net/v1") is False
+
 
 # ---------------------------------------------------------------------------
 # System prompt stability for prompt caching

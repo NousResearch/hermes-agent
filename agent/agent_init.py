@@ -979,7 +979,7 @@ def init_agent(
         else:
             # No explicit creds — use the centralized provider router
             from agent.auxiliary_client import resolve_provider_client
-            _routed_client, _ = resolve_provider_client(
+            _routed_client, _resolved_model = resolve_provider_client(
                 agent.provider or "auto", model=agent.model, raw_codex=True)
             if _routed_client is not None:
                 client_kwargs = {
@@ -999,6 +999,15 @@ def init_agent(
                     _routed_headers = getattr(_routed_client, "_default_headers", None)
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
+                # Sync resolved runtime state back to AIAgent when previously
+                # empty (fixes _primary_runtime snapshot inconsistency after
+                # provider routing — see #12078). provider sync not included
+                # because resolve_provider_client does not currently return
+                # the resolved provider name.
+                if not agent.model and _resolved_model:
+                    agent.model = _resolved_model
+                if not agent.base_url:
+                    agent.base_url = str(_routed_client.base_url)
             else:
                 # When the user explicitly chose a non-OpenRouter provider
                 # but no credentials were found, fail fast with a clear

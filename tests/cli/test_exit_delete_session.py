@@ -6,6 +6,7 @@ flag that the CLI shutdown path uses to remove the current session from
 SQLite + on-disk transcripts before exit.
 """
 
+from datetime import datetime
 from unittest.mock import MagicMock
 
 
@@ -22,7 +23,10 @@ def _make_cli():
     cli.agent = None
     cli.conversation_history = []
     cli.session_id = "test-session"
+    cli.session_start = datetime.now()
+    cli._session_db = None
     cli._delete_session_on_exit = False
+    cli._session_deleted_on_exit = False
     return cli
 
 
@@ -58,10 +62,11 @@ class TestExitDeleteFlag:
         assert result is False
         assert cli._delete_session_on_exit is True
 
-    def test_quit_alias_q_is_not_quit(self):
+    def test_quit_alias_q_is_not_quit(self, monkeypatch):
         """`/q` is the alias for `/queue`, not `/quit`. This test documents
         that /q --delete does NOT arm session deletion — it would dispatch
         to /queue instead."""
+        monkeypatch.setattr("cli._cprint", lambda *_args, **_kwargs: None)
         cli = _make_cli()
         cli._pending_input = __import__("queue").Queue()
         # /q with no args shows a usage error and keeps the CLI running.
@@ -81,25 +86,40 @@ class TestExitDeleteFlag:
         assert result is False
         assert cli._delete_session_on_exit is True
 
-    def test_unknown_exit_argument_does_not_exit(self):
+    def test_unknown_exit_argument_does_not_exit(self, monkeypatch):
         """Unrecognised args should NOT exit the CLI — they surface an
         error message and stay in the session. This prevents accidental
         session destruction from typos like `/exit -delete`."""
+        monkeypatch.setattr("cli._cprint", lambda *_args, **_kwargs: None)
         cli = _make_cli()
         result = cli.process_command("/exit --delte")
         # process_command returns True = keep running
         assert result is True
         assert cli._delete_session_on_exit is False
 
-    def test_unknown_exit_argument_prints_help(self):
+    def test_unknown_exit_argument_prints_help(self, monkeypatch):
+        monkeypatch.setattr("cli._cprint", lambda *_args, **_kwargs: None)
         cli = _make_cli()
-        # _cprint goes through module-level print, so capture via console.
-        # We can't patch _cprint directly without import juggling; the
-        # previous assertion already proves the unknown-arg branch is
-        # reached (result True + flag False).
         result = cli.process_command("/exit garbage")
         assert result is True
         assert cli._delete_session_on_exit is False
+
+    def test_deleted_session_suppresses_resume_hint(self, capsys):
+        """A successfully deleted session must not advertise `hermes --resume`.
+
+        `/exit --delete` removes the SQLite row and transcript files during
+        shutdown. Printing the normal exit summary after that points users at a
+        session ID that no longer exists.
+        """
+        cli = _make_cli()
+        cli.conversation_history = [{"role": "user", "content": "hello"}]
+        cli._session_deleted_on_exit = True
+
+        cli._print_exit_summary()
+
+        out = capsys.readouterr().out
+        assert "Resume this session with:" not in out
+        assert "hermes --resume test-session" not in out
 
 
 class TestCommandRegistry:

@@ -2830,6 +2830,7 @@ class HermesCLI:
         # process_command() when the user runs /exit --delete or /quit --delete.
         # Ported from google-gemini/gemini-cli#19332.
         self._delete_session_on_exit = False
+        self._session_deleted_on_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
         self._clarify_freetext = False
@@ -7709,6 +7710,7 @@ class HermesCLI:
             _args = (_rest[1] if len(_rest) > 1 else "").strip().lower()
             if _args in {"--delete", "-d"}:
                 self._delete_session_on_exit = True
+                self._session_deleted_on_exit = False
             elif _args:
                 _cprint(f"  {_DIM}✗ Unknown argument: {_escape(_args)}. Use /exit --delete to also remove session history.{_RST}")
                 return True
@@ -11339,6 +11341,9 @@ class HermesCLI:
     
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
+        if getattr(self, '_session_deleted_on_exit', False):
+            return
+
         print()
         msg_count = len(self.conversation_history)
         if msg_count > 0:
@@ -13897,6 +13902,7 @@ class HermesCLI:
                         _sessions_dir = _ghh() / "sessions"
                         _sid = self.agent.session_id
                         if self._session_db.delete_session(_sid, sessions_dir=_sessions_dir):
+                            self._session_deleted_on_exit = True
                             _cprint(f"  {_DIM}✓ Session {_escape(_sid)} deleted{_RST}")
                         else:
                             _cprint(f"  {_DIM}✗ Session {_escape(_sid)} not found for deletion{_RST}")

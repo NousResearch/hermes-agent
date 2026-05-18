@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch, call
 
+import cli as cli_module
 from cli import HermesCLI
 
 
@@ -128,3 +129,31 @@ class TestToolsSlashEnableWithReset:
         cli_obj._handle_tools_command("/tools enable")
         out = capsys.readouterr().out
         assert "Usage" in out
+
+
+# ── _cprint routing (fix #20711) ────────────────────────────────────────────
+
+
+class TestToolsUsageHintRoutedViaCprint:
+    """Usage hint lines must go through _cprint, not bare print(), so they are
+    visible when stdout is redirected or patched by prompt_toolkit's TUI."""
+
+    def test_disable_missing_name_routes_through_cprint(self):
+        """_handle_tools_command('/tools disable') must call _cprint for usage hints."""
+        cli_obj = _make_cli()
+        captured = []
+        with patch.object(cli_module, "_cprint", side_effect=captured.append) as mock_cp:
+            cli_obj._handle_tools_command("/tools disable")
+        assert mock_cp.called, "_cprint was never called"
+        combined = " ".join(captured)
+        assert "Usage" in combined
+
+    def test_enable_missing_name_routes_through_cprint(self):
+        """_handle_tools_command('/tools enable') must call _cprint for usage hints."""
+        cli_obj = _make_cli()
+        captured = []
+        with patch.object(cli_module, "_cprint", side_effect=captured.append) as mock_cp:
+            cli_obj._handle_tools_command("/tools enable")
+        assert mock_cp.called, "_cprint was never called"
+        combined = " ".join(captured)
+        assert "Usage" in combined

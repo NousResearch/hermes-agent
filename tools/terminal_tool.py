@@ -990,6 +990,10 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     must remain distinct so authorized network sessions do not share shell
     state, files, cwd, or cleanup lifetimes.
 
+    API server calls may use ``api-session-*`` task IDs while still targeting
+    the shared default CLI sandbox; those IDs should resolve to ``"default"``
+    for lookup/cleanup compatibility.
+
     ``delegate_task`` children pass their own subagent ID so file-state
     tracking, the active-subagents registry, and TUI events stay distinct per
     child.  ``register_task_container_alias`` maps those child IDs back to the
@@ -1009,6 +1013,8 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         return task_id
     if task_id in _task_container_aliases:
         return _task_container_aliases[task_id]
+    if task_id.startswith("api-session-"):
+        return "default"
     if _is_subagent_task_id(task_id):
         return "default"
     return task_id

@@ -50,6 +50,14 @@ def test_gateway_session_id_keeps_its_own_container_key():
     )
 
 
+@pytest.mark.parametrize(
+    "task_id",
+    ["api-session-A", "api-session-", "api-session-123", "api-session-long-uuid-string"],
+)
+def test_api_session_id_collapses_to_default_container_key(task_id):
+    assert terminal_tool._resolve_container_task_id(task_id) == "default"
+
+
 def test_subagent_alias_maps_child_to_parent_session_container():
     terminal_tool.register_task_container_alias("sa-0-deadbeef", "gateway-session-1")
     assert terminal_tool._resolve_container_task_id("sa-0-deadbeef") == "gateway-session-1"

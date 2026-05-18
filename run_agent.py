@@ -3710,6 +3710,12 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
+    def _mark_context_pressure_dirty(self, reason: str) -> None:
+        """Invalidate provider-exact prompt-token state after local mutation."""
+        _compressor = getattr(self, "context_compressor", None)
+        if _compressor and hasattr(_compressor, "_mark_transcript_dirty"):
+            _compressor._mark_transcript_dirty(reason)
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``."""
         from agent.conversation_compression import compress_context

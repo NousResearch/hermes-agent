@@ -47,11 +47,68 @@ class TestUpdateFromResponse:
             "total_tokens": 6000,
         })
         assert compressor.last_prompt_tokens == 5000
+        assert compressor.last_provider_prompt_tokens == 5000
+        assert compressor.projected_prompt_tokens == 5000
+        assert compressor.projected_prompt_tokens_source == "provider_exact"
+        assert compressor._transcript_mutated_since_api is False
         assert compressor.last_completion_tokens == 1000
 
     def test_missing_fields_default_zero(self, compressor):
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
+        assert compressor.projected_prompt_tokens_source == "provider_exact"
+        assert compressor._transcript_mutated_since_api is False
+
+
+class TestProjectedPressure:
+    def test_last_prompt_tokens_aliases_projected_prompt_tokens(self, compressor):
+        compressor.last_prompt_tokens = 1234
+        assert compressor.projected_prompt_tokens == 1234
+        assert compressor.last_prompt_tokens == 1234
+
+    def test_get_current_request_pressure_uses_provider_exact_when_clean(self, compressor):
+        compressor.update_from_response({"prompt_tokens": 777, "completion_tokens": 0})
+
+        tokens, source = compressor.get_current_request_pressure(
+            messages=[{"role": "user", "content": "hello"}],
+            system_prompt="system",
+            tools=[],
+        )
+
+        assert (tokens, source) == (777, "provider_exact")
+        assert compressor.projected_prompt_tokens == 777
+        assert compressor.projected_prompt_tokens_source == "provider_exact"
+
+    def test_get_current_request_pressure_reestimates_when_dirty(self, compressor):
+        compressor.update_from_response({"prompt_tokens": 100, "completion_tokens": 0})
+        compressor.projected_prompt_tokens_source = "estimated_post_compression"
+        compressor._mark_transcript_dirty("tool_batch")
+
+        tokens, source = compressor.get_current_request_pressure(
+            messages=[{"role": "user", "content": "hello"}],
+            system_prompt="system prompt",
+            tools=[{"type": "function", "function": {"name": "tool"}}],
+        )
+
+        assert source == "estimated_post_compression"
+        assert tokens == compressor.projected_prompt_tokens
+        assert tokens != compressor.last_provider_prompt_tokens
+
+    def test_get_current_request_pressure_includes_tools_schema(self, compressor):
+        compressor._mark_transcript_dirty("post_compression")
+
+        tokens_without_tools, _ = compressor.get_current_request_pressure(
+            messages=[{"role": "user", "content": "hello"}],
+            system_prompt="system",
+            tools=[],
+        )
+        tokens_with_tools, _ = compressor.get_current_request_pressure(
+            messages=[{"role": "user", "content": "hello"}],
+            system_prompt="system",
+            tools=[{"type": "function", "function": {"name": "x", "description": "tool schema padding" * 50}}],
+        )
+
+        assert tokens_with_tools > tokens_without_tools
 
 
 

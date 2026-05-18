@@ -396,6 +396,7 @@ def run_conversation(
     # Add user message
     user_msg = {"role": "user", "content": user_message}
     messages.append(user_msg)
+    agent._mark_context_pressure_dirty("user_message_appended")
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
     
@@ -1784,6 +1785,7 @@ def run_conversation(
                                 active_system_prompt = _sanitized_system
                                 agent._cached_system_prompt = _sanitized_system
                                 _system_sanitized = True
+                                agent._mark_context_pressure_dirty("active_system_prompt_swapped")
                         if isinstance(getattr(agent, "ephemeral_system_prompt", None), str):
                             _sanitized_ephemeral = _strip_non_ascii(agent.ephemeral_system_prompt)
                             if _sanitized_ephemeral != agent.ephemeral_system_prompt:
@@ -3133,6 +3135,7 @@ def run_conversation(
 
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                     messages.append(assistant_msg)
+                    agent._mark_context_pressure_dirty("assistant_turn_committed")
                     for tc in assistant_message.tool_calls:
                         if tc.function.name not in agent.valid_tool_names:
                             content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
@@ -3217,6 +3220,7 @@ def run_conversation(
                         # Append the assistant message with its (broken) tool_calls
                         recovery_assistant = agent._build_assistant_message(assistant_message, finish_reason)
                         messages.append(recovery_assistant)
+                        agent._mark_context_pressure_dirty("assistant_turn_committed")
                         
                         # Respond with tool error results for each tool call
                         invalid_names = {name for name, _ in invalid_json_args}
@@ -3305,6 +3309,7 @@ def run_conversation(
                 agent._post_tool_empty_retried = False
 
                 messages.append(assistant_msg)
+                agent._mark_context_pressure_dirty("assistant_turn_committed")
                 agent._emit_interim_assistant_message(assistant_msg)
 
                 # Close any open streaming display (response box, reasoning
@@ -3320,6 +3325,7 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                agent._mark_context_pressure_dirty("tool_execution_batch_completed")
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
@@ -3366,21 +3372,11 @@ def run_conversation(
                 # a session can grow unbounded after disconnects because
                 # should_compress(0) never fires.  (#2153)
                 _compressor = agent.context_compressor
-                if _compressor.last_prompt_tokens > 0:
-                    # Only use prompt_tokens — completion/reasoning
-                    # tokens don't consume context window space.
-                    # Thinking models (GLM-5.1, QwQ, DeepSeek R1)
-                    # inflate completion_tokens with reasoning,
-                    # causing premature compression.  (#12026)
-                    _real_tokens = _compressor.last_prompt_tokens
-                else:
-                    # Include tool schemas — with 50+ tools enabled
-                    # these add 20-30K tokens the messages-only
-                    # estimate misses, which can skip compression
-                    # past the configured threshold (#14695).
-                    _real_tokens = estimate_request_tokens_rough(
-                        messages, tools=agent.tools or None
-                    )
+                _real_tokens, _tokens_source = _compressor.get_current_request_pressure(
+                    messages=messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or [],
+                )
 
                 if agent.compression_enabled and _compressor.should_compress(_real_tokens):
                     agent._safe_print("  ⟳ compacting context…")
@@ -3727,6 +3723,7 @@ def run_conversation(
                     messages.pop()
 
                 messages.append(final_msg)
+                agent._mark_context_pressure_dirty("assistant_turn_committed")
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:

@@ -174,6 +174,9 @@ class TestCompressorSessionReset:
     def test_reset_clears_state(self):
         c = ContextCompressor(model="test", quiet_mode=True, config_context_length=200000)
         c.last_prompt_tokens = 50000
+        c.last_provider_prompt_tokens = 49000
+        c.projected_prompt_tokens_source = "estimated"
+        c._transcript_mutated_since_api = True
         c.compression_count = 3
         c._previous_summary = "some old summary"
         c._context_probed = True
@@ -182,6 +185,9 @@ class TestCompressorSessionReset:
         c.on_session_reset()
 
         assert c.last_prompt_tokens == 0
+        assert c.last_provider_prompt_tokens == 0
+        assert c.projected_prompt_tokens_source == "none"
+        assert c._transcript_mutated_since_api is False
         assert c.last_completion_tokens == 0
         assert c.last_total_tokens == 0
         assert c.compression_count == 0

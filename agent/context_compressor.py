@@ -27,6 +27,7 @@ from agent.auxiliary_client import call_llm, _is_connection_error
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    estimate_request_tokens_rough,
     get_model_context_length,
     estimate_messages_tokens_rough,
 )
@@ -569,7 +570,10 @@ class ContextCompressor(ContextEngine):
             )
         self._context_probed = False  # True after a step-down from context error
 
-        self.last_prompt_tokens = 0
+        self.last_provider_prompt_tokens = 0
+        self.projected_prompt_tokens = 0
+        self.projected_prompt_tokens_source = "none"
+        self._transcript_mutated_since_api = False
         self.last_completion_tokens = 0
 
         self.summary_model = summary_model_override or ""
@@ -593,10 +597,55 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
 
+    @property
+    def last_prompt_tokens(self) -> int:
+        """Backward-compatible alias for projected context pressure."""
+        return self.projected_prompt_tokens
+
+    @last_prompt_tokens.setter
+    def last_prompt_tokens(self, value: int) -> None:
+        self.projected_prompt_tokens = int(value or 0)
+
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
-        self.last_prompt_tokens = usage.get("prompt_tokens", 0)
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        self.last_provider_prompt_tokens = prompt_tokens
+        self.projected_prompt_tokens = prompt_tokens
+        self.projected_prompt_tokens_source = "provider_exact"
+        self._transcript_mutated_since_api = False
         self.last_completion_tokens = usage.get("completion_tokens", 0)
+
+    def _mark_transcript_dirty(self, reason: str = "") -> None:
+        """Mark the tracked request projection as stale after local mutation."""
+        self._transcript_mutated_since_api = True
+        if reason:
+            logger.debug("Context projection marked dirty: %s", reason)
+
+    def get_current_request_pressure(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]],
+    ) -> tuple[int, str]:
+        """Return current request pressure using exact state when still valid."""
+        if self.last_provider_prompt_tokens > 0 and not self._transcript_mutated_since_api:
+            self.projected_prompt_tokens = self.last_provider_prompt_tokens
+            self.projected_prompt_tokens_source = "provider_exact"
+            return self.last_provider_prompt_tokens, "provider_exact"
+
+        est = estimate_request_tokens_rough(
+            messages,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+        source = (
+            self.projected_prompt_tokens_source
+            if self.projected_prompt_tokens_source == "estimated_post_compression"
+            else "estimated"
+        )
+        self.projected_prompt_tokens = est
+        self.projected_prompt_tokens_source = source
+        return est, source
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
@@ -619,6 +668,17 @@ class ContextCompressor(ContextEngine):
                 )
             return False
         return True
+
+    def on_session_reset(self) -> None:
+        """Reset token tracking and compression metadata for a fresh session."""
+        super().on_session_reset()
+        self.last_provider_prompt_tokens = 0
+        self.projected_prompt_tokens = 0
+        self.projected_prompt_tokens_source = "none"
+        self._transcript_mutated_since_api = False
+        self._context_probed = False
+        self._context_probe_persistable = False
+        self._previous_summary = None
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)

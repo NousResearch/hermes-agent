@@ -554,6 +554,123 @@ def test_resolve_xai_runtime_credentials_honours_env_base_url(tmp_path, monkeypa
 
 
 # ---------------------------------------------------------------------------
+# Quarantine: terminal refresh failure clears dead tokens (#28155 sibling)
+# ---------------------------------------------------------------------------
+
+_STALE_XAI_OAUTH_STATE = {
+    "tokens": {
+        "access_token": "dead-access-token",
+        "refresh_token": "dead-refresh-token",
+        "id_token": "",
+        "expires_in": 3600,
+        "token_type": "Bearer",
+    },
+    "discovery": {"token_endpoint": "https://auth.x.ai/oauth2/token"},
+    "redirect_uri": "http://127.0.0.1:51827/callback",
+    "last_refresh": "2000-01-01T00:00:00Z",
+    "auth_mode": "oauth_pkce",
+}
+
+
+def _seed_xai_oauth_state(
+    hermes_home: Path, state: dict, *, active_provider: str = "xai-oauth"
+) -> None:
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_store = {
+        "version": 1,
+        "active_provider": active_provider,
+        "providers": {"xai-oauth": state},
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store, indent=2))
+
+
+def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terminal refresh failure (relogin_required=True, code=xai_refresh_failed)
+    must clear access_token/refresh_token from auth.json and write a
+    last_auth_error marker so subsequent calls fail fast without a network retry.
+    Mirrors the credential_pool.py quarantine for the singleton/direct resolve path.
+    """
+    hermes_home = tmp_path / "hermes"
+    _seed_xai_oauth_state(hermes_home, dict(_STALE_XAI_OAUTH_STATE), active_provider="nous")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _terminal_refresh(tokens, **kwargs):
+        raise AuthError(
+            "xAI token refresh failed. Response: invalid_grant",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_xai_oauth_tokens", _terminal_refresh)
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_xai_oauth_runtime_credentials(force_refresh=True)
+
+    assert exc_info.value.code == "xai_refresh_failed"
+    assert exc_info.value.relogin_required is True
+
+    raw = json.loads((hermes_home / "auth.json").read_text())
+    tokens = raw["providers"]["xai-oauth"]["tokens"]
+
+    # Dead OAuth fields must be cleared.
+    assert "access_token" not in tokens
+    assert "refresh_token" not in tokens
+
+    # Non-credential metadata must be preserved.
+    assert tokens.get("token_type") == "Bearer"
+
+    # Structured diagnostic blob must be written.
+    err = raw["providers"]["xai-oauth"].get("last_auth_error")
+    assert isinstance(err, dict)
+    assert err["provider"] == "xai-oauth"
+    assert err["code"] == "xai_refresh_failed"
+    assert err["reason"] == "runtime_refresh_failure"
+    assert err["relogin_required"] is True
+    assert "at" in err
+
+    # Active provider must be unchanged.
+    assert raw["active_provider"] == "nous"
+
+
+def test_resolve_credentials_does_not_quarantine_on_transient_refresh_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transient refresh failure (relogin_required=False, e.g. 429 / 5xx) must
+    NOT trigger the quarantine path — tokens stay on disk for the next attempt.
+    """
+    hermes_home = tmp_path / "hermes"
+    _seed_xai_oauth_state(hermes_home, dict(_STALE_XAI_OAUTH_STATE))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _transient_refresh(tokens, **kwargs):
+        raise AuthError(
+            "xAI token refresh failed: connection error",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=False,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_xai_oauth_tokens", _transient_refresh)
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_xai_oauth_runtime_credentials(force_refresh=True)
+
+    assert exc_info.value.relogin_required is False
+
+    # Tokens must be untouched — no quarantine on transient errors.
+    raw = json.loads((hermes_home / "auth.json").read_text())
+    tokens = raw["providers"]["xai-oauth"]["tokens"]
+    assert tokens["refresh_token"] == "dead-refresh-token"
+    assert tokens["access_token"] == "dead-access-token"
+    assert "last_auth_error" not in raw["providers"]["xai-oauth"]
+
+
+# ---------------------------------------------------------------------------
 # Auth status surface
 # ---------------------------------------------------------------------------
 

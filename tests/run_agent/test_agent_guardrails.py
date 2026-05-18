@@ -8,10 +8,28 @@ Covers three static methods on AIAgent (inspired by PR #1321 — @alireza78a):
 
 import types
 
+import pytest
+
 from run_agent import AIAgent
 from tools.delegate_tool import _get_max_concurrent_children
 
 MAX_CONCURRENT_CHILDREN = _get_max_concurrent_children()
+
+
+@pytest.fixture(autouse=True)
+def _force_default_max_concurrent_children(monkeypatch):
+    # Local-fix 2026-05-18: ``MAX_CONCURRENT_CHILDREN`` is computed at this
+    # test module's import time from ``_get_max_concurrent_children()``,
+    # which reads ``cli.CLI_CONFIG``. If ``cli`` was first imported by a
+    # prior test BEFORE the per-test HERMES_HOME isolation kicked in,
+    # CLI_CONFIG carries Jamie's real ``delegation.max_concurrent_children``
+    # (5 on this box). Later ``AIAgent._cap_delegate_task_calls`` re-reads
+    # the function and may see a different value than the module-level
+    # constant. Pin both so the test is hermetic.
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {})
+    # Also reset the module-level constant to match (default is 3).
+    import tests.run_agent.test_agent_guardrails as _mod
+    monkeypatch.setattr(_mod, "MAX_CONCURRENT_CHILDREN", 3)
 
 
 # ---------------------------------------------------------------------------

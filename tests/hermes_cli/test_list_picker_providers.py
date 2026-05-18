@@ -19,6 +19,18 @@ import pytest
 from hermes_cli import model_switch
 
 
+@pytest.fixture(autouse=True)
+def _no_live_endpoint_probe(monkeypatch):
+    # Local-fix 2026-05-18: list_authenticated_providers probes each custom
+    # endpoint via fetch_api_models. On a dev box with live Ollama at
+    # localhost:11434, the real models leak into picker results and break
+    # assertions. Stub the probe to return empty so tests measure picker
+    # logic, not the dev box.
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models", lambda *a, **k: []
+    )
+
+
 def _make_provider(slug, name=None, models=None, *, is_current=False,
                    is_user_defined=False, source="built-in", api_url=None):
     """Build a dict shaped like ``list_authenticated_providers`` output."""

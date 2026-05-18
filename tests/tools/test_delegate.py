@@ -345,7 +345,15 @@ class TestDelegateTask(unittest.TestCase):
             delegate_task(goal="Test tracking", parent_agent=parent)
             self.assertEqual(len(parent._active_children), 0)
 
-    def test_child_inherits_runtime_credentials(self):
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_child_inherits_runtime_credentials(self, mock_load):
+        # Local-fix 2026-05-18: ``cli.CLI_CONFIG`` is module-level state. If
+        # ``cli`` was first imported by a test that ran before the per-test
+        # HERMES_HOME isolation fixture (or before any test fixture at all),
+        # CLI_CONFIG carries the dev box's ``delegation`` block (LiteLLM
+        # router URL). The test expects empty delegation config so child
+        # inherits credentials from parent. Force empty config to make
+        # the test hermetic.
         parent = _make_mock_parent(depth=0)
         parent.base_url = "https://chatgpt.com/backend-api/codex"
         parent.api_key="***"
@@ -836,7 +844,10 @@ class TestBlockedTools(unittest.TestCase):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
-    def test_constants(self):
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_constants(self, mock_load):
+        # Local-fix 2026-05-18: force empty delegation config — see
+        # test_child_inherits_runtime_credentials above for rationale.
         from tools.delegate_tool import (
             _get_max_spawn_depth, _get_orchestrator_enabled,
             _MIN_SPAWN_DEPTH, _MAX_SPAWN_DEPTH_CAP,

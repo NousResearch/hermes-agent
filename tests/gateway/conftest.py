@@ -47,10 +47,20 @@ def _ensure_telegram_mock() -> None:
     ``setdefault`` so it wins even if a partial/broken import
     already cached a module with ``ChatType = None``.
     """
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
+    # Local-fix 2026-05-18: original bail-out used `hasattr(mod, "__file__")`,
+    # but MagicMock auto-creates ANY attribute on access — so the check is
+    # always True once any mock exists, blocking the comprehensive mock when
+    # a per-file limited one got installed first. Use ``vars()`` (only
+    # explicitly-set attributes) plus a sentinel so we only bail when OUR
+    # comprehensive mock is the one already in sys.modules.
+    _existing = sys.modules.get("telegram")
+    if _existing is not None and "_hermes_test_mock" in vars(_existing):
+        return  # Our comprehensive mock already installed
+    if _existing is not None and not isinstance(_existing, MagicMock) and hasattr(_existing, "__path__"):
         return  # Real library is installed — nothing to mock
 
     mod = MagicMock()
+    mod._hermes_test_mock = True
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
     mod.constants.ParseMode.MARKDOWN = "Markdown"
     mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
@@ -59,6 +69,23 @@ def _ensure_telegram_mock() -> None:
     mod.constants.ChatType.GROUP = "group"
     mod.constants.ChatType.SUPERGROUP = "supergroup"
     mod.constants.ChatType.CHANNEL = "channel"
+
+    # Local-fix 2026-05-18: ``sys.modules["telegram.constants"] = mod``
+    # (set below) means that ``from telegram.constants import ChatType``
+    # resolves to ``mod.ChatType`` (parent-level attribute), NOT
+    # ``mod.constants.ChatType``. Mirror ChatType values onto mod.ChatType
+    # so production code's ``ChatType.SUPERGROUP`` matches the test's
+    # ``_ChatType.SUPERGROUP`` (which goes through the same import path).
+    # See the comment block at the top of tests/gateway/test_dm_topics.py
+    # for the historical context of this two-path quirk.
+    # NOTE: do NOT mirror ParseMode — some tests (telegram_approval_buttons,
+    # telegram_model_picker) assert ``"MARKDOWN_V2" in repr(parse_mode)``
+    # and rely on parse_mode being a MagicMock whose repr contains the
+    # attribute name. Mirroring to a real string breaks those.
+    mod.ChatType.PRIVATE = "private"
+    mod.ChatType.GROUP = "group"
+    mod.ChatType.SUPERGROUP = "supergroup"
+    mod.ChatType.CHANNEL = "channel"
 
     # Real exception classes so ``except (NetworkError, ...)`` clauses
     # in production code don't blow up with TypeError.
@@ -96,12 +123,17 @@ def _ensure_discord_mock() -> None:
     this function (it short-circuits when already present) rather than
     maintaining their own mock setup.
     """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    # Local-fix 2026-05-18: see _ensure_telegram_mock for explanation.
+    _existing = sys.modules.get("discord")
+    if _existing is not None and "_hermes_test_mock" in vars(_existing):
+        return  # Our comprehensive mock already installed
+    if _existing is not None and not isinstance(_existing, MagicMock) and hasattr(_existing, "__path__"):
         return  # Real library is installed — nothing to mock
 
     from types import SimpleNamespace
 
     discord_mod = MagicMock()
+    discord_mod._hermes_test_mock = True
     discord_mod.Intents.default.return_value = MagicMock()
     discord_mod.Client = MagicMock
     discord_mod.File = MagicMock
@@ -207,10 +239,57 @@ def _ensure_discord_mock() -> None:
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
+        autocomplete=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
         Group=_FakeGroup,
         Command=_FakeCommand,
     )
+
+    # AllowedMentions: real class so tests can assert on .everyone/.roles/.users
+    # default values (which must be False for safe defaults).
+    class _FakeAllowedMentions:
+        def __init__(self, *, everyone=True, roles=True, users=True, replied_user=True):
+            self.everyone = everyone
+            self.roles = roles
+            self.users = users
+            self.replied_user = replied_user
+    discord_mod.AllowedMentions = _FakeAllowedMentions
+
+    # Permissions: simple class with .value used by slash-command auth tests.
+    class _FakePermissions:
+        def __init__(self, value=0, **_):
+            self.value = value
+    discord_mod.Permissions = _FakePermissions
+
+    # opus: voice support stub — tests only check the attribute exists / is loaded.
+    discord_mod.opus = SimpleNamespace(
+        is_loaded=lambda: True,
+        load_opus=lambda *a, **k: None,
+    )
+
+    # Real exception classes so ``except discord.Forbidden`` etc. don't
+    # explode with "catching classes that do not inherit from BaseException".
+    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    discord_mod.NotFound = type("NotFound", (Exception,), {})
+    discord_mod.HTTPException = type("HTTPException", (Exception,), {})
+    discord_mod.RateLimited = type("RateLimited", (Exception,), {})
+    discord_mod.ConnectionClosed = type("ConnectionClosed", (Exception,), {})
+
+    # MessageType / Object — used by e2e, dm-topic, and system-message tests.
+    discord_mod.MessageType = SimpleNamespace(
+        default=0, reply=19,
+        new_member=7, recipient_add=1, recipient_remove=2,
+        call=3, channel_name_change=4, channel_icon_change=5,
+        pins_add=6, premium_guild_subscription=8,
+        premium_guild_tier_1=9, premium_guild_tier_2=10, premium_guild_tier_3=11,
+        channel_follow_add=12, guild_stream=13, guild_discovery_disqualified=14,
+        guild_discovery_requalified=15, thread_created=18,
+        chat_input_command=20, thread_starter_message=21,
+        guild_invite_reminder=22, context_menu_command=23,
+        auto_moderation_action=24, role_subscription_purchase=25,
+        thread_rename=27, stage_start=27,
+    )
+    discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
 
     ext_mod = MagicMock()
     commands_mod = MagicMock()

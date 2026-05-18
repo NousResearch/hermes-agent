@@ -21,29 +21,9 @@ if _repo not in sys.path:
 # Minimal Telegram mock so TelegramAdapter can be imported
 # ---------------------------------------------------------------------------
 def _ensure_telegram_mock():
-    """Wire up the minimal mocks required to import TelegramAdapter."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
-    mod = MagicMock()
-    mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
-    mod.constants.ChatType.PRIVATE = "private"
-    mod.constants.ChatType.GROUP = "group"
-    mod.constants.ChatType.SUPERGROUP = "supergroup"
-    mod.constants.ChatType.CHANNEL = "channel"
-    # Provide real exception classes so ``except (NetworkError, ...)`` in
-    # connect() doesn't blow up under xdist when this mock leaks.
-    mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    mod.error.BadRequest = type("BadRequest", (Exception,), {})
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, mod)
-    sys.modules.setdefault("telegram.error", mod.error)
-
+    """Delegate to central comprehensive mock in gateway/conftest.py."""
+    from tests.gateway.conftest import _ensure_telegram_mock as _central
+    _central()
 
 _ensure_telegram_mock()
 

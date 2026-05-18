@@ -2,9 +2,30 @@
 
 import importlib
 
-from model_tools import get_tool_definitions
+import pytest
+
+from model_tools import _clear_tool_defs_cache, get_tool_definitions
 
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
+
+
+@pytest.fixture(autouse=True)
+def _drop_tool_definitions_cache():
+    # Local-fix 2026-05-18: there are TWO module-level caches that key off
+    # state these tests monkeypatch:
+    #   1. ``model_tools._tool_defs_cache`` — keyed on toolsets + registry
+    #      generation + config mtime (NOT on env_config).
+    #   2. ``tools.registry._check_fn_cache`` — 30s TTL'd memoization of
+    #      ``check_terminal_requirements`` etc. that bypasses our
+    #      ``_get_env_config`` monkeypatch entirely.
+    # Without clearing both, a prior test in any other file can pre-populate
+    # them and these vercel-hide tests get stale results.
+    from tools.registry import invalidate_check_fn_cache
+    _clear_tool_defs_cache()
+    invalidate_check_fn_cache()
+    yield
+    _clear_tool_defs_cache()
+    invalidate_check_fn_cache()
 
 
 class TestTerminalRequirements:

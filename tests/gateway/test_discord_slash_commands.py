@@ -10,68 +10,9 @@ from gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        # Real discord is installed — nothing to do.
-        return
-
-    if sys.modules.get("discord") is None:
-        discord_mod = MagicMock()
-        discord_mod.Intents.default.return_value = MagicMock()
-        discord_mod.DMChannel = type("DMChannel", (), {})
-        discord_mod.Thread = type("Thread", (), {})
-        discord_mod.ForumChannel = type("ForumChannel", (), {})
-        discord_mod.Interaction = object
-
-        # Lightweight mock for app_commands.Group and Command used by
-        # _register_skill_group.
-        class _FakeGroup:
-            def __init__(self, *, name, description, parent=None):
-                self.name = name
-                self.description = description
-                self.parent = parent
-                self._children: dict[str, object] = {}
-                if parent is not None:
-                    parent.add_command(self)
-
-            def add_command(self, cmd):
-                self._children[cmd.name] = cmd
-
-        class _FakeCommand:
-            def __init__(self, *, name, description, callback, parent=None):
-                self.name = name
-                self.description = description
-                self.callback = callback
-                self.parent = parent
-
-        discord_mod.app_commands = SimpleNamespace(
-            describe=lambda **kwargs: (lambda fn: fn),
-            choices=lambda **kwargs: (lambda fn: fn),
-            autocomplete=lambda **kwargs: (lambda fn: fn),
-            Choice=lambda **kwargs: SimpleNamespace(**kwargs),
-            Group=_FakeGroup,
-            Command=_FakeCommand,
-        )
-
-        ext_mod = MagicMock()
-        commands_mod = MagicMock()
-        commands_mod.Bot = MagicMock
-        ext_mod.commands = commands_mod
-
-        sys.modules["discord"] = discord_mod
-        sys.modules.setdefault("discord.ext", ext_mod)
-        sys.modules.setdefault("discord.ext.commands", commands_mod)
-
-    # Whether we just installed the mock OR another test module installed
-    # it first via its own _ensure_discord_mock, force the decorators we
-    # need onto discord.app_commands — the flat /skill command uses
-    # @app_commands.autocomplete and not every other mock stub exposes it.
-    _app = getattr(sys.modules["discord"], "app_commands", None)
-    if _app is not None and not hasattr(_app, "autocomplete"):
-        try:
-            _app.autocomplete = lambda **kwargs: (lambda fn: fn)
-        except Exception:
-            pass
-
+    """Delegate to central comprehensive mock in gateway/conftest.py."""
+    from tests.gateway.conftest import _ensure_discord_mock as _central
+    _central()
 
 _ensure_discord_mock()
 

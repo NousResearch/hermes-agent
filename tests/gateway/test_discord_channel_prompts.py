@@ -10,23 +10,9 @@ import pytest
 
 
 def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return
-    discord_mod = types.ModuleType("discord")
-    discord_mod.Intents = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
-    discord_mod.DMChannel = type("DMChannel", (), {})
-    discord_mod.Thread = type("Thread", (), {})
-    discord_mod.ForumChannel = type("ForumChannel", (), {})
-    discord_mod.Interaction = object
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
-    commands_mod.Bot = MagicMock
-    ext_mod.commands = commands_mod
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
-
+    """Delegate to central comprehensive mock in gateway/conftest.py."""
+    from tests.gateway.conftest import _ensure_discord_mock as _central
+    _central()
 
 import gateway.run as gateway_run
 from gateway.config import Platform

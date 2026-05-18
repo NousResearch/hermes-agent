@@ -32,52 +32,9 @@ class _FakeAllowedMentions:
 
 
 def _ensure_discord_mock():
-    """Install (or augment) a mock ``discord`` module.
-
-    Other test modules in this directory stub ``discord`` via
-    ``sys.modules.setdefault`` — whichever test file imports first wins and
-    our full module is then silently dropped. We therefore ALWAYS force
-    ``AllowedMentions`` onto whatever is currently in ``sys.modules["discord"]``;
-    that's the only attribute this test file actually needs real behavior from.
-    """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
-        return
-
-    if sys.modules.get("discord") is None:
-        discord_mod = MagicMock()
-        discord_mod.Intents.default.return_value = MagicMock()
-        discord_mod.Client = MagicMock
-        discord_mod.File = MagicMock
-        discord_mod.DMChannel = type("DMChannel", (), {})
-        discord_mod.Thread = type("Thread", (), {})
-        discord_mod.ForumChannel = type("ForumChannel", (), {})
-        discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
-        discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, danger=3, green=1, blurple=2, red=3, grey=4, secondary=5)
-        discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4)
-        discord_mod.Interaction = object
-        discord_mod.Embed = MagicMock
-        discord_mod.app_commands = SimpleNamespace(
-            describe=lambda **kwargs: (lambda fn: fn),
-            choices=lambda **kwargs: (lambda fn: fn),
-            Choice=lambda **kwargs: SimpleNamespace(**kwargs),
-        )
-        discord_mod.opus = SimpleNamespace(is_loaded=lambda: True)
-
-        ext_mod = MagicMock()
-        commands_mod = MagicMock()
-        commands_mod.Bot = MagicMock
-        ext_mod.commands = commands_mod
-
-        sys.modules["discord"] = discord_mod
-        sys.modules.setdefault("discord.ext", ext_mod)
-        sys.modules.setdefault("discord.ext.commands", commands_mod)
-
-    # Whether we just installed the mock OR the mock was already installed
-    # by another test's _ensure_discord_mock, force the AllowedMentions
-    # stand-in onto it — _build_allowed_mentions() reads this attribute.
-    sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
-
+    """Delegate to central comprehensive mock in gateway/conftest.py."""
+    from tests.gateway.conftest import _ensure_discord_mock as _central
+    _central()
 
 _ensure_discord_mock()
 

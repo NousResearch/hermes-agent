@@ -5,9 +5,26 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+import pytest
+
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
+
+
+@pytest.fixture(autouse=True)
+def _no_live_endpoint_probe(monkeypatch):
+    # Local-fix 2026-05-18: ``list_authenticated_providers`` does a live HTTP
+    # probe of each custom_providers endpoint via ``fetch_api_models`` (see
+    # ``hermes_cli/model_switch.py`` around line 1715). On dev boxes with a
+    # running Ollama at localhost:11434, the probe returns the user's real
+    # models — overwhelming the hand-crafted entries the tests pass in and
+    # breaking assertions like ``total_models == 6``. Stub the probe to
+    # always return an empty list so the tests measure the in-process
+    # grouping logic, not the dev box's environment.
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models", lambda *a, **k: []
+    )
 
 
 _MOCK_VALIDATION = {

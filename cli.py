@@ -7359,6 +7359,12 @@ class HermesCLI:
         normalized = (text or "").strip().lower()
         return normalized in {"퇴근", "퇴근모드", "퇴근 모드", "afterwork", "awaymode"}
 
+    @staticmethod
+    def _looks_like_office_plaintext(text: str) -> bool:
+        """Return True for exact Korean/plaintext office-mode commands."""
+        normalized = (text or "").strip().lower()
+        return normalized in {"출근", "출근모드", "출근 모드", "office", "morning"}
+
     def _should_handle_afterwork_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when away mode should be handled as a command now.
 
@@ -7368,7 +7374,7 @@ class HermesCLI:
         """
         if not text or has_images:
             return False
-        if self._looks_like_afterwork_plaintext(text):
+        if self._looks_like_afterwork_plaintext(text) or self._looks_like_office_plaintext(text):
             return True
         if not _looks_like_slash_command(text):
             return False
@@ -7376,7 +7382,7 @@ class HermesCLI:
             from hermes_cli.commands import resolve_command
             base = text.split(None, 1)[0].lower().lstrip('/')
             cmd = resolve_command(base)
-            return bool(cmd and cmd.name == "afterwork")
+            return bool(cmd and cmd.name in {"afterwork", "office"})
         except Exception:
             return False
 
@@ -7396,13 +7402,38 @@ class HermesCLI:
         )
         return prompt, handoff
 
+    def _handle_project_mode_command(self, mode: str, target: str = "all") -> bool:
+        """Handle global tmux project away/office mode from the local CLI."""
+        try:
+            from types import SimpleNamespace
+            from gateway.project_sessions import set_mode
+            source = SimpleNamespace(
+                platform=SimpleNamespace(value="local"),
+                chat_id="cli",
+                user_id=None,
+                thread_id=None,
+            )
+            message = set_mode(source, mode, target or "all")
+        except Exception as exc:
+            _cprint(f"  {_ERR}프로젝트 모드 전환 실패: {exc}{_RST}")
+            return False
+        for line in str(message).splitlines():
+            _cprint(f"  {line}")
+        return True
+
     def _handle_afterwork_command(self, cmd: str):
         """Handle /afterwork, /awaymode, /퇴근, /퇴근모드 in the local CLI.
 
-        This is deliberately non-interrupting: when an agent is running, prefer
-        agent.steer() so the instruction lands after the next tool call; if
-        steering is unavailable, queue it for the next turn instead.
+        `/afterwork all|current` is the global tmux project-session away mode.
+        Bare `/afterwork` keeps the local-session compatibility path.
+        Plain Korean `퇴근모드` is rewritten to `/afterwork all` before this
+        handler, so the user's natural command acts as the global commute flow.
         """
+        parts = (cmd or "").split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+        if arg in {"all", "current"}:
+            self._handle_project_mode_command("away", arg)
+            return
         prompt, handoff = self._afterwork_prompt()
         try:
             handoff.parent.mkdir(parents=True, exist_ok=True)
@@ -7427,6 +7458,15 @@ class HermesCLI:
             _cprint(f"  {_DIM}handoff: {handoff}{_RST}")
         else:
             _cprint("  (._.) Cannot enter away mode: input queue is unavailable.")
+
+    def _handle_office_command(self, cmd: str):
+        """Handle /office, /morning, /출근, /출근모드 in the local CLI."""
+        parts = (cmd or "").split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "all"
+        if arg not in {"all", "current"}:
+            _cprint("  사용: /office [all|current]")
+            return
+        self._handle_project_mode_command("office", arg)
 
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
@@ -8236,6 +8276,8 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "afterwork":
             self._handle_afterwork_command(cmd_original)
+        elif canonical == "office":
+            self._handle_office_command(cmd_original)
         elif canonical in self._WORKFLOW_SKILL_WRAPPER_COMMANDS:
             self._handle_workflow_skill_command(cmd_original, canonical)
         elif canonical == "background":
@@ -12463,7 +12505,12 @@ class HermesCLI:
                 # normal busy message, because the default busy mode interrupts
                 # the running task.
                 if self._should_handle_afterwork_command_inline(text, has_images=has_images):
-                    command_text = "/afterwork" if self._looks_like_afterwork_plaintext(text) else text
+                    if self._looks_like_afterwork_plaintext(text):
+                        command_text = "/afterwork all"
+                    elif self._looks_like_office_plaintext(text):
+                        command_text = "/office all"
+                    else:
+                        command_text = text
                     self.process_command(command_text)
                     event.app.current_buffer.reset(append_to_history=True)
                     return

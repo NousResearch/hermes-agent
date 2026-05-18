@@ -6894,37 +6894,14 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
-            # /afterwork is a project-session control command. It must be safe
-            # while an agent is running: dispatch the command hook directly so
-            # the project/tmux router can send a non-interrupting /steer to the
-            # target pane instead of rejecting it or treating it as follow-up
-            # text that interrupts the current run.
-            if _cmd_def_inner and _cmd_def_inner.name == "afterwork":
-                raw_args = event.get_command_args().strip()
-                hook_ctx = {
-                    "platform": source.platform.value if source.platform else "",
-                    "user_id": source.user_id,
-                    "command": "afterwork",
-                    "raw_command": _evt_cmd,
-                    "args": raw_args,
-                    "raw_args": raw_args,
-                }
-                try:
-                    hook_results = await self.hooks.emit_collect("command:afterwork", hook_ctx)
-                except Exception as _hook_err:
-                    logger.debug("command:afterwork hook dispatch failed (non-fatal): %s", _hook_err)
-                    hook_results = []
-                for hook_result in hook_results:
-                    if not isinstance(hook_result, dict):
-                        continue
-                    decision = str(hook_result.get("decision", "")).strip().lower()
-                    if decision == "handled":
-                        message = hook_result.get("message")
-                        return message if isinstance(message, str) and message else None
-                    if decision == "deny":
-                        message = hook_result.get("message")
-                        return message if isinstance(message, str) and message else "Command `/afterwork` was blocked by a hook."
-                return "퇴근모드 hook이 설정되어 있지 않습니다. 터미널에서는 /afterwork 또는 퇴근모드를 사용하세요."
+            # /afterwork and /office are project-session control commands. They
+            # must be safe while an agent is running: dispatch directly so the
+            # project/tmux router sends a non-interrupting /steer to target panes
+            # instead of treating the text as a follow-up that interrupts.
+            if _cmd_def_inner and _cmd_def_inner.name in {"afterwork", "office"}:
+                if _cmd_def_inner.name == "afterwork":
+                    return await self._handle_afterwork_project_command(event)
+                return await self._handle_office_project_command(event)
 
             # /kanban must bypass the guard. It writes to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
@@ -7218,6 +7195,24 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "projects":
+            return await self._handle_projects_command(event)
+
+        if canonical == "switch":
+            return await self._handle_switch_project_command(event)
+
+        if canonical == "current":
+            return await self._handle_current_project_command(event)
+
+        if canonical == "psend":
+            return await self._handle_psend_command(event)
+
+        if canonical == "afterwork":
+            return await self._handle_afterwork_project_command(event)
+
+        if canonical == "office":
+            return await self._handle_office_project_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -7550,6 +7545,19 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        # Project-session prefix routing: in away mode, messages like
+        # `[dev-1] 다음 작업 진행해줘` should steer the matching tmux/Hermes
+        # pane instead of becoming a new Gateway agent turn. Approval commands
+        # remain handled by their dedicated /approve and /deny paths above.
+        if not command:
+            try:
+                from gateway.project_sessions import handle_prefixed_message
+                routed = await asyncio.to_thread(handle_prefixed_message, source, event.text)
+                if routed is not None:
+                    return routed
+            except Exception as e:
+                logger.debug("Project-session prefix routing failed (non-fatal): %s", e)
 
         if self._is_telegram_topic_root_lobby(source):
             # Debounce the lobby reminder so a user who forgets about
@@ -9412,6 +9420,70 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_projects_command(self, event: MessageEvent) -> str:
+        """List Telegram-routable tmux/project sessions."""
+        try:
+            from gateway.project_sessions import format_projects, load_state, refresh_from_tmux, save_state
+            state = await asyncio.to_thread(lambda: refresh_from_tmux(load_state()))
+            await asyncio.to_thread(save_state, state)
+            return format_projects(state, event.source)
+        except Exception as e:
+            logger.debug("/projects failed: %s", e)
+            return f"프로젝트 세션 조회 실패: {e}"
+
+    async def _handle_switch_project_command(self, event: MessageEvent) -> str:
+        """Switch the active Telegram project session."""
+        target = event.get_command_args().strip()
+        if not target:
+            return "사용: /switch <번호|label>"
+        try:
+            from gateway.project_sessions import switch_project
+            return await asyncio.to_thread(switch_project, event.source, target)
+        except Exception as e:
+            logger.debug("/switch failed: %s", e)
+            return f"프로젝트 전환 실패: {e}"
+
+    async def _handle_current_project_command(self, event: MessageEvent) -> str:
+        """Show the active Telegram project session."""
+        try:
+            from gateway.project_sessions import current_project
+            return await asyncio.to_thread(current_project, event.source)
+        except Exception as e:
+            logger.debug("/current failed: %s", e)
+            return f"현재 프로젝트 조회 실패: {e}"
+
+    async def _handle_psend_command(self, event: MessageEvent) -> str:
+        """Send a prompt to the active Telegram project tmux pane."""
+        message = event.get_command_args().strip()
+        if not message:
+            return "사용: /psend <지시>  또는 [label] <지시>"
+        try:
+            from gateway.project_sessions import send_prompt_to_project
+            return await asyncio.to_thread(send_prompt_to_project, event.source, message)
+        except Exception as e:
+            logger.debug("/psend failed: %s", e)
+            return f"프로젝트 지시 전달 실패: {e}"
+
+    async def _handle_afterwork_project_command(self, event: MessageEvent) -> str:
+        """Turn on away-mode relay instructions for project sessions."""
+        target = event.get_command_args().strip() or "all"
+        try:
+            from gateway.project_sessions import set_mode
+            return await asyncio.to_thread(set_mode, event.source, "away", target)
+        except Exception as e:
+            logger.debug("/afterwork project routing failed: %s", e)
+            return f"퇴근모드 전환 실패: {e}"
+
+    async def _handle_office_project_command(self, event: MessageEvent) -> str:
+        """Turn off away-mode relay instructions for project sessions."""
+        target = event.get_command_args().strip() or "all"
+        try:
+            from gateway.project_sessions import set_mode
+            return await asyncio.to_thread(set_mode, event.source, "office", target)
+        except Exception as e:
+            logger.debug("/office project routing failed: %s", e)
+            return f"출근모드 전환 실패: {e}"
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

@@ -123,6 +123,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, args_hint="<prompt>"),
     CommandDef("afterwork", "Put current/all project sessions into away mode", "Session",
                aliases=("awaymode", "퇴근", "퇴근모드"), args_hint="[current|all]"),
+    CommandDef("office", "Return project sessions to terminal-only office mode", "Session",
+               aliases=("morning", "출근", "출근모드"), args_hint="[current|all]"),
 
     # Workflow skill wrappers
     CommandDef("autopilot", "Run the autopilot goal-completion workflow skill", "Workflow",

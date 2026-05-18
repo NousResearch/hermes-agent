@@ -133,6 +133,33 @@ class TestAfterworkCommand(unittest.TestCase):
 
         self.assertFalse(cli_mod.HermesCLI._looks_like_afterwork_plaintext("그냥 퇴근할까?"))
 
+    def test_plaintext_office_phrases_are_recognized(self):
+        cli_mod = _import_cli()
+
+        for text in ("출근", "출근모드", "출근 모드", "office", "morning"):
+            self.assertTrue(cli_mod.HermesCLI._looks_like_office_plaintext(text))
+            self.assertTrue(cli_mod.HermesCLI._should_handle_afterwork_command_inline(cli_mod.HermesCLI, text))
+
+        self.assertFalse(cli_mod.HermesCLI._looks_like_office_plaintext("내일 출근하면"))
+
+    def test_office_command_uses_project_mode_router(self):
+        cli_mod = _import_cli()
+        calls = []
+        stub = SimpleNamespace(_handle_project_mode_command=lambda mode, target: calls.append((mode, target)))
+
+        cli_mod.HermesCLI._handle_office_command(stub, "/office current")
+
+        self.assertEqual(calls, [("office", "current")])
+
+    def test_afterwork_all_uses_project_mode_router(self):
+        cli_mod = _import_cli()
+        calls = []
+        stub = SimpleNamespace(_handle_project_mode_command=lambda mode, target: calls.append((mode, target)))
+
+        cli_mod.HermesCLI._handle_afterwork_command(stub, "/afterwork all")
+
+        self.assertEqual(calls, [("away", "all")])
+
     def test_afterwork_steers_running_agent_without_interrupt_queue(self):
         cli_mod = _import_cli()
 

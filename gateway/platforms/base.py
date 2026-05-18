@@ -1033,6 +1033,10 @@ _PLAINTEXT_AFTERWORK_COMMANDS: frozenset[str] = frozenset(
     {"퇴근", "퇴근모드", "퇴근 모드", "afterwork", "awaymode"}
 )
 
+_PLAINTEXT_OFFICE_COMMANDS: frozenset[str] = frozenset(
+    {"출근", "출근모드", "출근 모드", "office", "morning"}
+)
+
 
 def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
     """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
@@ -1051,11 +1055,14 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         text = (event.text or "").strip()
         if not text or text.startswith("/"):
             return
-        if text.lower() in _PLAINTEXT_AFTERWORK_COMMANDS:
-            event.text = "/afterwork"
-            return
         source = getattr(event, "source", None)
         if getattr(source, "chat_type", None) != "dm":
+            return
+        if text.lower() in _PLAINTEXT_AFTERWORK_COMMANDS:
+            event.text = "/afterwork all"
+            return
+        if text.lower() in _PLAINTEXT_OFFICE_COMMANDS:
+            event.text = "/office all"
             return
         for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS:
             if pattern.match(text):

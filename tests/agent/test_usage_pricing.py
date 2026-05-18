@@ -145,6 +145,16 @@ def test_estimate_usage_cost_marks_subscription_routes_included():
     assert float(result.amount_usd) == 0.0
 
 
+def test_deepseek_v4_models_use_official_docs_pricing():
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+
+    for model in ("deepseek-v4-pro", "deepseek-v4-flash"):
+        result = estimate_usage_cost(model, usage)
+
+        assert result.status == "estimated"
+        assert float(result.amount_usd) == 0.42
+
+
 def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(monkeypatch):
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_model_metadata",

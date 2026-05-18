@@ -11847,8 +11847,12 @@ Examples:
     insights_parser.add_argument(
         "--source", help="Filter by platform (cli, telegram, discord, etc.)"
     )
+    insights_parser.add_argument(
+        "--json", action="store_true", help="Output the full insights report as JSON"
+    )
 
     def cmd_insights(args):
+        db = None
         try:
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
@@ -11856,10 +11860,15 @@ Examples:
             db = SessionDB()
             engine = InsightsEngine(db)
             report = engine.generate(days=args.days, source=args.source)
-            print(engine.format_terminal(report))
-            db.close()
+            if args.json:
+                print(json.dumps(report, indent=2, ensure_ascii=False))
+            else:
+                print(engine.format_terminal(report))
         except Exception as e:
             print(f"Error generating insights: {e}")
+        finally:
+            if db is not None:
+                db.close()
 
     insights_parser.set_defaults(func=cmd_insights)
 

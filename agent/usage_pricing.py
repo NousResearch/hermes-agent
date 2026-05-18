@@ -362,6 +362,26 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ),
     (
         "deepseek",
+        "deepseek-v4-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-03-16",
+    ),
+    (
+        "deepseek",
+        "deepseek-v4-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-03-16",
+    ),
+    (
+        "deepseek",
         "deepseek-reasoner",
     ): PricingEntry(
         input_cost_per_million=Decimal("0.55"),
@@ -534,9 +554,11 @@ def resolve_billing_route(
     model = (model_name or "").strip()
     if not provider_name and "/" in model:
         inferred_provider, bare_model = model.split("/", 1)
-        if inferred_provider in {"anthropic", "openai", "google"}:
+        if inferred_provider in {"anthropic", "openai", "google", "deepseek"}:
             provider_name = inferred_provider
             model = bare_model
+    if not provider_name and model.lower().startswith("deepseek-"):
+        provider_name = "deepseek"
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
@@ -546,6 +568,8 @@ def resolve_billing_route(
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "openai":
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name == "deepseek":
+        return BillingRoute(provider="deepseek", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):

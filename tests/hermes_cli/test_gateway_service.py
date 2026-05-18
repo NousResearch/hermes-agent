@@ -69,6 +69,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
 
         calls = []
 
@@ -92,6 +93,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
 
         calls = []
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -551,6 +553,145 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdMacOSAppWrapper:
+    def test_generate_launchd_plist_prioritizes_hermes_home_bins_and_filters_stale_path_entries(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes-home"
+        repo = home / "hermes-agent"
+        venv = repo / ".venv"
+        node_dir = tmp_path / "homebrew" / "bin"
+        stale_codex = tmp_path / ".codex" / "tmp" / "arg0" / "codex-arg0dead"
+        codex_app = tmp_path / "Applications" / "Codex.app" / "Contents" / "Resources"
+        missing_dir = tmp_path / "missing" / "bin"
+        for path in [
+            venv / "bin",
+            home / "bin",
+            home / ".go" / "bin",
+            repo / "node_modules" / ".bin",
+            node_dir,
+            codex_app,
+        ]:
+            path.mkdir(parents=True)
+        (venv / "bin" / "python").write_text("venv-python", encoding="utf-8")
+        (node_dir / "node").write_text("node", encoding="utf-8")
+
+        real_path_exists = Path.exists
+
+        def fake_path_exists(path):
+            if str(path) in {"/config/hermes/bin", "/config/.go/bin", "/share/hermes/bin"}:
+                return True
+            return real_path_exists(path)
+
+        monkeypatch.setattr(Path, "exists", fake_path_exists)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", repo)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(venv / "bin" / "python"))
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(node_dir / "node") if cmd == "node" else None)
+        monkeypatch.setenv(
+            "PATH",
+            ":".join([
+                str(stale_codex),
+                str(codex_app),
+                str(missing_dir),
+                "/config/hermes/bin",
+                "/config/.go/bin",
+                "/share/hermes/bin",
+                str(node_dir),
+                str(home / "bin"),
+            ]),
+        )
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+
+        path_parts = plist["EnvironmentVariables"]["PATH"].split(":")
+        expected_prefix = [
+            str(venv / "bin"),
+            str(home / "bin"),
+            str(home / ".go" / "bin"),
+            str(repo / "node_modules" / ".bin"),
+            str(node_dir),
+        ]
+        assert path_parts[: len(expected_prefix)] == expected_prefix
+        assert str(stale_codex) not in path_parts
+        assert str(codex_app) not in path_parts
+        assert str(missing_dir) not in path_parts
+        assert path_parts.count(str(home / "bin")) == 1
+        assert "/config/hermes/bin" not in path_parts
+        assert "/config/.go/bin" not in path_parts
+        assert "/share/hermes/bin" not in path_parts
+        assert not any(part.startswith("/share") for part in path_parts)
+
+    def test_generate_launchd_plist_preserves_logical_hermes_home(self, tmp_path, monkeypatch):
+        physical_home = tmp_path / "physical-home"
+        logical_home = tmp_path / "logical-home"
+        physical_home.mkdir()
+        logical_home.symlink_to(physical_home, target_is_directory=True)
+        physical_repo = physical_home / "hermes-agent"
+        logical_repo = logical_home / "hermes-agent"
+        physical_venv = physical_repo / ".venv"
+        logical_venv = logical_repo / ".venv"
+        node_bin = physical_repo / "node_modules" / ".bin"
+        (physical_venv / "bin").mkdir(parents=True)
+        (physical_venv / "bin" / "python").write_text("venv-python", encoding="utf-8")
+        node_bin.mkdir(parents=True)
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: logical_home)
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", physical_repo)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: physical_venv)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(physical_venv / "bin" / "python"))
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        env = plist["EnvironmentVariables"]
+        path_parts = env["PATH"].split(":")
+
+        assert env["HERMES_HOME"] == str(logical_home)
+        assert env["HERMES_HOME"] != str(physical_home.resolve())
+        assert env["VIRTUAL_ENV"] == str(logical_venv)
+        assert plist["WorkingDirectory"] == str(logical_home)
+        assert plist["ProgramArguments"][0] == str(logical_venv / "bin" / "python")
+        assert str(logical_repo / "node_modules" / ".bin") in path_parts
+        assert not any(str(physical_home) in part for part in path_parts)
+
+    def test_generate_launchd_plist_rejects_stale_resolved_node_parent(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes-home"
+        repo = home / "hermes-agent"
+        stale_codex = tmp_path / ".codex" / "tmp" / "arg0" / "codex-arg0dead"
+        stale_codex.mkdir(parents=True)
+        (stale_codex / "node").write_text("stale-node", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", repo)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: None)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(stale_codex / "node") if cmd == "node" else None)
+        monkeypatch.setenv("PATH", str(stale_codex))
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        path_parts = plist["EnvironmentVariables"]["PATH"].split(":")
+
+        assert str(stale_codex) not in path_parts
+
+    def test_generate_launchd_plist_keeps_system_path_fallback_when_inherited_path_is_empty(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes-home"
+        repo = home / "hermes-agent"
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", repo)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: None)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+        monkeypatch.setenv("PATH", "")
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        path_parts = plist["EnvironmentVariables"]["PATH"].split(":")
+
+        assert "/usr/bin" in path_parts
+        assert "/bin" in path_parts
+
     def test_generate_launchd_plist_with_app_wrapper_uses_named_bundle_executable(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         repo = tmp_path / "repo"
@@ -772,6 +913,29 @@ class TestLaunchdMacOSAppWrapper:
         monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", repo)
         monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv)
         monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(source_python))
+
+        def fake_generate_launchd_plist(app_wrapper=False):
+            env = {"HERMES_HOME": "/Users/alice/.hermes"}
+            program = str(app_exe) if app_wrapper else str(source_python)
+            if app_wrapper:
+                env["HERMES_LAUNCHD_APP_WRAPPER"] = "1"
+            return plistlib.dumps(
+                {
+                    "Label": "ai.hermes.gateway",
+                    "ProgramArguments": [
+                        program,
+                        "-m",
+                        "hermes_cli.main",
+                        "gateway",
+                        "run",
+                        "--replace",
+                    ],
+                    "EnvironmentVariables": env,
+                },
+                sort_keys=False,
+            ).decode("utf-8")
+
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", fake_generate_launchd_plist)
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
         calls = []
 
@@ -826,7 +990,7 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr(
             gateway_cli,
             "generate_launchd_plist",
-            lambda: (
+            lambda app_wrapper=False: (
                 "<plist>--replace\n<key>HERMES_HOME</key>"
                 "<string>/Users/alice/.hermes</string></plist>"
             ),
@@ -852,6 +1016,112 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "bootout", f"{domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
+
+    def test_refresh_launchd_plist_defers_launchctl_when_running_inside_gateway_process_tree(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("old plist\n", encoding="utf-8")
+        expected = plistlib.dumps({"Label": "ai.hermes.gateway", "ProgramArguments": ["python"]}).decode("utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda app_wrapper=False: expected)
+        monkeypatch.setattr(gateway_cli, "_is_running_inside_gateway_process_tree", lambda: True, raising=False)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+        assert plist_path.read_text(encoding="utf-8") == expected
+        assert calls == []
+
+    def test_launchd_start_defers_kickstart_after_self_context_refresh(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("old plist\n", encoding="utf-8")
+        expected = plistlib.dumps({"Label": "ai.hermes.gateway", "ProgramArguments": ["python"]}).decode("utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda app_wrapper=False: expected)
+        monkeypatch.setattr(gateway_cli, "_is_running_inside_gateway_process_tree", lambda: True, raising=False)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert plist_path.read_text(encoding="utf-8") == expected
+        assert calls == []
+
+    def test_launchd_start_reloads_pending_definition_from_external_shell(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("old plist\n", encoding="utf-8")
+        expected = plistlib.dumps({"Label": "ai.hermes.gateway", "ProgramArguments": ["python"]}).decode("utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+        inside_gateway = True
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda app_wrapper=False: expected)
+        monkeypatch.setattr(gateway_cli, "_is_running_inside_gateway_process_tree", lambda: inside_gateway, raising=False)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+        assert calls == []
+
+        inside_gateway = False
+        gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+
+    def test_launchd_start_defers_missing_plist_bootstrap_inside_gateway_tree(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        expected = plistlib.dumps({"Label": "ai.hermes.gateway", "ProgramArguments": ["python"]}).decode("utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda app_wrapper=False: expected)
+        monkeypatch.setattr(gateway_cli, "_is_running_inside_gateway_process_tree", lambda: True, raising=False)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert plist_path.read_text(encoding="utf-8") == expected
+        assert calls == []
+
+    def test_running_inside_gateway_process_tree_requires_matching_launchd_job_pid(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 123)
+        monkeypatch.setattr(gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: pid == 123)
+
+        def fake_run(cmd, **kwargs):
+            assert cmd == ["launchctl", "print", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"]
+            return SimpleNamespace(returncode=0, stdout="pid = 999\n", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._is_running_inside_gateway_process_tree() is False
 
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -1132,7 +1402,7 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr(
             gateway_cli,
             "generate_launchd_plist",
-            lambda: (
+            lambda app_wrapper=False: (
                 "<plist><key>HERMES_HOME</key>"
                 "<string>/Users/alice/.hermes</string></plist>"
             ),
@@ -1383,6 +1653,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(
@@ -1428,6 +1699,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 10.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -1487,6 +1759,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
         monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
@@ -1517,6 +1790,7 @@ class TestGatewaySystemServiceRouting:
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(
             "gateway.status.read_runtime_status",

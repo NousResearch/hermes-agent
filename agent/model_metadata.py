@@ -152,7 +152,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # OpenAI — GPT-5 family (most have 400k; specific overrides first)
     # Source: https://developers.openai.com/api/docs/models
     # GPT-5.5 (launched Apr 23 2026) is 1.05M on the direct OpenAI API and
-    # ChatGPT Codex OAuth caps it at 272K; both paths resolve via their own
+    # ChatGPT Codex OAuth is pinned to 1M; both paths resolve via their own
     # provider-aware branches (_resolve_codex_oauth_context_length + models.dev).
     # This hardcoded value is only reached when every probe misses.
     "gpt-5.5": 1050000,
@@ -1239,8 +1239,8 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
 # Known ChatGPT Codex OAuth context windows (observed via live
 # chatgpt.com/backend-api/codex/models probe, Apr 2026). These are the
 # `context_window` values, which are what Codex actually enforces — the
-# direct OpenAI API has larger limits for the same slugs, but Codex OAuth
-# caps lower (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex).
+# direct OpenAI API has larger limits for some slugs, while Codex OAuth
+# caps most GPT-5.x models lower. GPT-5.5 is a 1M Codex exception.
 #
 # Used as a fallback when the live probe fails (no token, network error).
 # Longest keys first so substring match picks the most specific entry.
@@ -1256,7 +1256,7 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.3-codex-spark": 128_000,
     "gpt-5.2-codex": 272_000,
     "gpt-5.4-mini": 272_000,
-    "gpt-5.5": 272_000,
+    "gpt-5.5": 1_000_000,
     "gpt-5.4": 272_000,
     "gpt-5.2": 272_000,
     "gpt-5": 272_000,
@@ -1330,6 +1330,11 @@ def _resolve_codex_oauth_context_length(
     model_bare = _strip_provider_prefix(model).strip()
     if not model_bare:
         return None
+
+    # GPT-5.5's Codex OAuth window is intentionally pinned. Older live
+    # metadata and persistent cache entries may still report 272K/1.05M.
+    if model_bare.lower() == "gpt-5.5":
+        return _CODEX_OAUTH_CONTEXT_FALLBACK["gpt-5.5"]
 
     if access_token:
         live = _fetch_codex_oauth_context_lengths(access_token)
@@ -1491,15 +1496,20 @@ def get_model_context_length(
     if base_url and provider != "lmstudio":
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
-            # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
-            # resolved gpt-5.x to the direct-API value (e.g. 1.05M) via
-            # models.dev and persisted it. Codex OAuth caps at 272K for every
-            # slug, so any cached Codex entry at or above 400K is a leftover
-            # from the old resolution path. Drop it and fall through to the
-            # live /models probe in step 5 below.
-            if provider == "openai-codex" and cached >= 400_000:
+            # Invalidate stale Codex OAuth cache entries. Pre-PR #14935 builds
+            # resolved gpt-5.x to direct-API values (e.g. 1.05M) via models.dev.
+            # GPT-5.5 is now pinned to 1M on Codex, so any cached GPT-5.5 value
+            # other than 1M must be normalized. Other Codex GPT-5.x slugs still
+            # treat values >= 400K as stale direct-API leakage.
+            if (
+                provider == "openai-codex"
+                and (
+                    (model.lower() == "gpt-5.5" and cached != 1_000_000)
+                    or (model.lower() != "gpt-5.5" and cached >= 400_000)
+                )
+            ):
                 logger.info(
-                    "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "
+                    "Dropping stale Codex cache entry %s@%s -> %s; "
                     "re-resolving via live /models probe",
                     model, base_url, f"{cached:,}",
                 )
@@ -1638,9 +1648,9 @@ def get_model_context_length(
                 save_context_length(model, base_url, ctx)
             return ctx
     if effective_provider == "openai-codex":
-        # Codex OAuth enforces lower context limits than the direct OpenAI
-        # API for the same slug (e.g. gpt-5.5 is 1.05M on the API but 272K
-        # on Codex). Authoritative source is Codex's own /models endpoint.
+        # Codex OAuth can enforce different context limits than the direct
+        # OpenAI API for the same slug. Authoritative source is Codex's own
+        # /models endpoint, with pinned exceptions in the resolver.
         codex_ctx = _resolve_codex_oauth_context_length(model, access_token=api_key or "")
         if codex_ctx:
             if base_url:

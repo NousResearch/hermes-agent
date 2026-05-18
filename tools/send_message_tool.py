@@ -28,6 +28,8 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 # conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
 # through to channel-name resolution, which only matches by name and fails.
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
+# Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
+_SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
@@ -330,9 +332,17 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             return match.group(1), match.group(2), True
     if platform_name == "slack":
+        match = _SLACK_THREAD_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
         match = _SLACK_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "matrix":
+        trimmed = target_ref.strip()
+        split_idx = trimmed.rfind(":$")
+        if split_idx > 0:
+            return trimmed[:split_idx], trimmed[split_idx + 1 :], True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -354,6 +364,9 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
     if platform_name == "matrix" and (target_ref.startswith("!") or target_ref.startswith("@")):
+        return target_ref, None, True
+    # XMPP JIDs (user@server or room@conference.server) are explicit
+    if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
     return None, None, False
 
@@ -458,7 +471,8 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                result = await adapter.send(chat_id=chat_id, content=chunk)
+                metadata = {"thread_id": thread_id} if thread_id else None
+                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

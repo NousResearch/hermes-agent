@@ -88,9 +88,9 @@ def _as_bool(value: Any, default: bool) -> bool:
         return value
     if isinstance(value, str):
         lowered = value.strip().lower()
-        if lowered in ("true", "1", "yes", "y", "on"):
+        if lowered in {"true", "1", "yes", "y", "on"}:
             return True
-        if lowered in ("false", "0", "no", "n", "off"):
+        if lowered in {"false", "0", "no", "n", "off"}:
             return False
     return default
 
@@ -508,7 +508,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._allowed_containers = [self._container_tag] + list(self._custom_containers)
 
         agent_context = kwargs.get("agent_context", "")
-        self._write_enabled = agent_context not in ("cron", "flush", "subagent")
+        self._write_enabled = agent_context not in {"cron", "flush", "subagent"}
         self._active = bool(self._api_key)
         self._client = None
         if self._active:
@@ -598,7 +598,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         cleaned = []
         for message in messages or []:
             role = message.get("role")
-            if role not in ("user", "assistant"):
+            if role not in {"user", "assistant"}:
                 continue
             content = _clean_text_for_capture(str(message.get("content", "")))
             if content:

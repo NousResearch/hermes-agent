@@ -218,15 +218,60 @@ async def test_on_processing_complete_skipped_when_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_on_processing_complete_cancelled_keeps_existing_reaction(monkeypatch):
-    """Expected cancellation should not replace the in-progress reaction."""
+async def test_on_processing_complete_cancelled_clears_reaction(monkeypatch):
+    """Cancelled processing should clear the in-progress reaction.
+
+    Without this clear, the 👀 reaction lingers on the user's message
+    indefinitely (until another agent run swaps it for 👍/👎). On a
+    ``/stop`` that ends a session, that reaction never gets cleaned up.
+    """
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
 
     await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
 
+    # set_message_reaction with reaction=None clears all reactions on the
+    # message (Bot API documented semantics; equivalent to Bot API 10.0's
+    # deleteMessageReaction but works on PTB 22.6 already).
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_cancelled_skipped_when_disabled(monkeypatch):
+    """Cancelled processing should not call the API when reactions are off."""
+    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    adapter = _make_adapter()
+    event = _make_event()
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+
     adapter._bot.set_message_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_clear_reactions_handles_api_error_gracefully(monkeypatch):
+    """API errors during clear should not propagate."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    adapter._bot.set_message_reaction = AsyncMock(side_effect=RuntimeError("no perms"))
+
+    result = await adapter._clear_reactions("123", "456")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_clear_reactions_returns_false_without_bot(monkeypatch):
+    """_clear_reactions should return False when bot is not available."""
+    adapter = _make_adapter()
+    adapter._bot = None
+
+    result = await adapter._clear_reactions("123", "456")
+    assert result is False
 
 
 # ── config.py bridging ───────────────────────────────────────────────

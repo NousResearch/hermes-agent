@@ -332,6 +332,13 @@ class TelegramAdapter(BasePlatformAdapter):
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
+    # Telegram's edit_message applies MarkdownV2 formatting only on the
+    # finalize=True path.  Without this flag, stream_consumer._send_or_edit
+    # short-circuits when the raw text is unchanged between the last streamed
+    # edit and the final edit, skipping the plain-text → MarkdownV2 conversion.
+    # Fixes #25710.
+    REQUIRES_EDIT_FINALIZE: bool = True
+
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":
     # ≤320 codepoints (one short paragraph) settles in ~180ms; ≤1024
@@ -427,6 +434,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Clarify button state: clarify_id → session_key (for the clarify tool's
+        # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
+        self._clarify_state: Dict[str, str] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -1653,7 +1663,17 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
-            
+
+            # Re-trigger typing indicator after sending a message.
+            # Telegram clears the typing state when a new message is delivered,
+            # so without this the "...typing" bubble disappears mid-response
+            # (especially noticeable when the agent sends intermediate progress
+            # messages like "Checking:" before running tools).
+            try:
+                await self.send_typing(chat_id, metadata=metadata)
+            except Exception:
+                pass  # Typing failures are non-fatal
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -2067,7 +2087,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             default_hint = f" (default: {default})" if default else ""
-            text = f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}"
+            text = self.format_message(f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}")
             keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("✓ Yes", callback_data="update_prompt:y"),
@@ -2079,7 +2099,7 @@ class TelegramAdapter(BasePlatformAdapter):
             msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
                 reply_to_message_id=reply_to_id,
                 **self._thread_kwargs_for_send(
@@ -2215,6 +2235,80 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a clarify prompt with one inline button per choice.
+
+        Multi-choice mode (``choices`` non-empty): renders one button per
+        option plus a final "✏️ Other (type answer)" button.  Picking the
+        "Other" button flips the entry into text-capture mode so the next
+        message becomes the response.
+
+        Open-ended mode (``choices`` empty): renders the question as plain
+        text — no buttons.  The next message in the session is captured by
+        the gateway's text-intercept and resolves the clarify.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            text = f"❓ {_html.escape(question)}"
+            thread_id = self._metadata_thread_id(metadata)
+
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.HTML,
+                **self._link_preview_kwargs(),
+            }
+
+            if choices:
+                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
+                # short.  Button label is also capped (~64 chars in practice).
+                rows = []
+                for idx, choice in enumerate(choices):
+                    label = str(choice)
+                    if len(label) > 60:
+                        label = label[:57] + "..."
+                    rows.append([
+                        InlineKeyboardButton(
+                            f"{idx + 1}. {label}",
+                            callback_data=f"cl:{clarify_id}:{idx}",
+                        )
+                    ])
+                rows.append([
+                    InlineKeyboardButton(
+                        "✏️ Other (type answer)",
+                        callback_data=f"cl:{clarify_id}:other",
+                    )
+                ])
+                kwargs["reply_markup"] = InlineKeyboardMarkup(rows)
+
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                )
+            )
+
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            self._clarify_state[clarify_id] = session_key
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_clarify failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -2257,11 +2351,13 @@ class TelegramAdapter(BasePlatformAdapter):
             keyboard = InlineKeyboardMarkup(rows)
 
             provider_label = get_label(current_provider)
-            text = (
-                f"⚙ *Model Configuration*\n\n"
-                f"Current model: `{current_model or 'unknown'}`\n"
-                f"Provider: {provider_label}\n\n"
-                f"Select a provider:"
+            text = self.format_message(
+                (
+                    f"⚙ *Model Configuration*\n\n"
+                    f"Current model: `{current_model or 'unknown'}`\n"
+                    f"Provider: {provider_label}\n\n"
+                    f"Select a provider:"
+                )
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
@@ -2269,7 +2365,7 @@ class TelegramAdapter(BasePlatformAdapter):
             msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
                 reply_to_message_id=reply_to_id,
                 **self._thread_kwargs_for_send(
@@ -2379,12 +2475,14 @@ class TelegramAdapter(BasePlatformAdapter):
             extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
 
             await query.edit_message_text(
-                text=(
-                    f"⚙ *Model Configuration*\n\n"
-                    f"Provider: *{pname}*{page_info}\n"
-                    f"Select a model:{extra}"
+                text=self.format_message(
+                    (
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Provider: *{pname}*{page_info}\n"
+                        f"Select a model:{extra}"
+                    )
                 ),
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
             )
             await query.answer()
@@ -2413,12 +2511,14 @@ class TelegramAdapter(BasePlatformAdapter):
             extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
 
             await query.edit_message_text(
-                text=(
-                    f"⚙ *Model Configuration*\n\n"
-                    f"Provider: *{pname}*{page_info}\n"
-                    f"Select a model:{extra}"
+                text=self.format_message(
+                    (
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Provider: *{pname}*{page_info}\n"
+                        f"Select a model:{extra}"
+                    )
                 ),
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
             )
             await query.answer()
@@ -2453,8 +2553,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # Edit message to show confirmation, remove buttons
             try:
                 await query.edit_message_text(
-                    text=result_text,
-                    parse_mode=ParseMode.MARKDOWN,
+                    text=self.format_message(result_text),
+                    parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=None,
                 )
             except Exception:
@@ -2494,13 +2594,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 provider_label = state["current_provider"]
 
             await query.edit_message_text(
-                text=(
-                    f"⚙ *Model Configuration*\n\n"
-                    f"Current model: `{state['current_model'] or 'unknown'}`\n"
-                    f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
+                text=self.format_message(
+                    (
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Current model: `{state['current_model'] or 'unknown'}`\n"
+                        f"Provider: {provider_label}\n\n"
+                        f"Select a provider:"
+                    )
                 ),
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
             )
             await query.answer()
@@ -2583,8 +2685,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Edit message to show decision, remove buttons
                 try:
                     await query.edit_message_text(
-                        text=f"{label} by {user_display}",
-                        parse_mode=ParseMode.MARKDOWN,
+                        text=self.format_message(f"{label} by {user_display}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=None,
                     )
                 except Exception:
@@ -2637,8 +2739,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 try:
                     await query.edit_message_text(
-                        text=f"{label} by {user_display}",
-                        parse_mode=ParseMode.MARKDOWN,
+                        text=self.format_message(f"{label} by {user_display}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=None,
                     )
                 except Exception:
@@ -2663,8 +2765,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         prompt_message_id = getattr(query.message, "message_id", None)
                         send_kwargs: Dict[str, Any] = {
                             "chat_id": int(query.message.chat_id),
-                            "text": result_text,
-                            "parse_mode": ParseMode.MARKDOWN,
+                            "text": self.format_message(result_text),
+                            "parse_mode": ParseMode.MARKDOWN_V2,
                             **self._link_preview_kwargs(),
                         }
                         chat_type_value = getattr(chat_type, "value", chat_type)
@@ -2695,9 +2797,114 @@ class TelegramAdapter(BasePlatformAdapter):
                                     {"thread_id": str(thread_id)},
                                 )
                             )
-                        await self._bot.send_message(**send_kwargs)
+                        await self._send_message_with_thread_fallback(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Clarify callbacks (cl:clarify_id:idx | cl:clarify_id:other) ---
+        if data.startswith("cl:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                clarify_id = parts[1]
+                choice_token = parts[2]
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                session_key = self._clarify_state.get(clarify_id)
+                if not session_key:
+                    await query.answer(text="This prompt has already been resolved.")
+                    return
+
+                user_display = getattr(query.from_user, "first_name", "User")
+
+                if choice_token == "other":
+                    # Flip into text-capture mode and tell the user to type
+                    # their answer.  The gateway's text-intercept will pick
+                    # up the next message in this session and resolve the
+                    # clarify.  Do NOT pop _clarify_state yet — we still
+                    # need it if the user is slow to respond and the entry
+                    # is cleared by something else.
+                    try:
+                        from tools.clarify_gateway import mark_awaiting_text
+                        mark_awaiting_text(clarify_id)
+                    except Exception as exc:
+                        logger.warning("[%s] mark_awaiting_text failed: %s", self.name, exc)
+
+                    await query.answer(text="✏️ Type your answer in the chat.")
+                    try:
+                        await query.edit_message_text(
+                            text=f"❓ {query.message.text or ''}\n\n<i>Awaiting typed response from {_html.escape(user_display)}…</i>",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                # Numeric choice → resolve immediately with the chosen text
+                try:
+                    idx = int(choice_token)
+                except (ValueError, TypeError):
+                    await query.answer(text="Invalid choice.")
+                    return
+
+                # Look up the choice text from the entry registered in the
+                # clarify primitive.  Fall back to the index if the entry
+                # has been cleaned up (race with timeout / session reset).
+                resolved_text: Optional[str] = None
+                try:
+                    from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
+                    entry = _clarify_entries.get(clarify_id)
+                    if entry and entry.choices and 0 <= idx < len(entry.choices):
+                        resolved_text = entry.choices[idx]
+                except Exception:
+                    resolved_text = None
+
+                if resolved_text is None:
+                    # Race: entry vanished. Echo the index as a number so
+                    # the agent at least sees an intentional response
+                    # rather than nothing.
+                    resolved_text = f"choice {idx + 1}"
+
+                # Pop state and resolve
+                self._clarify_state.pop(clarify_id, None)
+                try:
+                    from tools.clarify_gateway import resolve_gateway_clarify
+                    resolved = resolve_gateway_clarify(clarify_id, resolved_text)
+                except Exception as exc:
+                    logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
+                    resolved = False
+
+                await query.answer(text=f"✓ {resolved_text[:60]}")
+                try:
+                    await query.edit_message_text(
+                        text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+
+                if resolved:
+                    logger.info(
+                        "Telegram clarify button resolved (id=%s, choice=%r, user=%s)",
+                        clarify_id, resolved_text, user_display,
+                    )
+                else:
+                    logger.warning(
+                        "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
+                        clarify_id,
+                    )
             return
 
         # --- Update prompt callbacks ---
@@ -2719,8 +2926,8 @@ class TelegramAdapter(BasePlatformAdapter):
         label = "Yes" if answer == "y" else "No"
         try:
             await query.edit_message_text(
-                text=f"⚕ Update prompt answered: *{label}*",
-                parse_mode=ParseMode.MARKDOWN,
+                text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
+                parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=None,
             )
         except Exception:
@@ -3307,14 +3514,6 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._bot:
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
-                # Skip the Bot API call entirely for Hermes-created DM topic
-                # lanes: send_chat_action only accepts message_thread_id, which
-                # Telegram's Bot API 10.0 rejects for these lanes. The send
-                # path uses the reply-anchor fallback instead, but typing has
-                # no equivalent — skipping avoids noisy "thread not found"
-                # debug logs on every typing tick.
-                if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
-                    return
                 message_thread_id = self._message_thread_id_for_typing(_typing_thread)
                 # No retry-without-thread fallback here: _message_thread_id_for_typing
                 # already maps the forum General topic to None, so any non-None value
@@ -4579,6 +4778,27 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
             return False
 
+    async def _clear_reactions(self, chat_id: str, message_id: str) -> bool:
+        """Clear all reactions from a Telegram message.
+
+        Calling ``set_message_reaction`` with ``reaction=None`` (or an empty
+        sequence) is the documented Bot API way to remove all bot-set
+        reactions on a message — equivalent to Bot API 10.0's
+        ``deleteMessageReaction`` but supported in PTB 22.6 already.
+        """
+        if not self._bot:
+            return False
+        try:
+            await self._bot.set_message_reaction(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reaction=None,
+            )
+            return True
+        except Exception as e:
+            logger.debug("[%s] clear reactions failed: %s", self.name, e)
+            return False
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
@@ -4593,12 +4813,23 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Unlike Discord (additive reactions), Telegram's set_message_reaction
         replaces all existing reactions in one call — no remove step needed.
+
+        On CANCELLED outcomes (e.g. the user runs ``/stop``, or a session is
+        interrupted mid-flight), we explicitly clear the 👀 in-progress
+        reaction so it doesn't linger on the user's message indefinitely.
+        Without this clear, the only way to remove the 👀 was to wait for
+        another agent run to swap it to 👍/👎 — which never happens if the
+        cancellation was the last activity in the chat.
         """
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
-        if chat_id and message_id and outcome != ProcessingOutcome.CANCELLED:
+        if not (chat_id and message_id):
+            return
+        if outcome == ProcessingOutcome.CANCELLED:
+            await self._clear_reactions(chat_id, message_id)
+        else:
             await self._set_reaction(
                 chat_id,
                 message_id,

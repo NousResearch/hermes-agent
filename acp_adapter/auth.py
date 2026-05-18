@@ -1,8 +1,11 @@
-"""ACP auth helpers — detect the currently configured Hermes provider."""
+"""ACP auth helpers — detect and advertise Hermes authentication methods."""
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
+
+
+TERMINAL_SETUP_AUTH_METHOD_ID = "hermes-setup"
 
 
 def detect_provider() -> Optional[str]:
@@ -22,3 +25,44 @@ def detect_provider() -> Optional[str]:
 def has_provider() -> bool:
     """Return True if Hermes can resolve any runtime provider credentials."""
     return detect_provider() is not None
+
+
+def build_auth_methods() -> list[Any]:
+    """Return registry-compatible ACP auth methods for Hermes.
+
+    The official ACP registry validates that agents advertise at least one
+    usable auth method during the initial handshake. A fresh Zed install may
+    not have Hermes provider credentials configured yet, so Hermes always
+    advertises a terminal setup method. When credentials are already present,
+    it also advertises the resolved provider as the default agent-managed
+    runtime credential method.
+    """
+    from acp.schema import AuthMethodAgent, TerminalAuthMethod
+
+    methods: list[Any] = []
+    provider = detect_provider()
+    if provider:
+        methods.append(
+            AuthMethodAgent(
+                id=provider,
+                name=f"{provider} runtime credentials",
+                description=(
+                    "Authenticate Hermes using the currently configured "
+                    f"{provider} runtime credentials."
+                ),
+            )
+        )
+
+    methods.append(
+        TerminalAuthMethod(
+            id=TERMINAL_SETUP_AUTH_METHOD_ID,
+            name="Configure Hermes provider",
+            description=(
+                "Open Hermes' interactive model/provider setup in a terminal. "
+                "Use this when Hermes has not been configured on this machine yet."
+            ),
+            type="terminal",
+            args=["--setup"],
+        )
+    )
+    return methods

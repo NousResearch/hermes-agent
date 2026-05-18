@@ -42,6 +42,10 @@ class TestNvidiaProfile:
         p = get_provider_profile("nvidia")
         assert "nvidia.com" in p.base_url
 
+    def test_billing_header_not_profile_wide(self):
+        p = get_provider_profile("nvidia")
+        assert p.default_headers == {}
+
 
 class TestKimiProfile:
     def test_temperature_omit(self):
@@ -210,9 +214,10 @@ class TestOpenRouterProfile:
 
 class TestNousProfile:
     def test_tags(self):
+        from agent.portal_tags import nous_portal_tags
         p = get_provider_profile("nous")
         body = p.build_extra_body()
-        assert body["tags"] == ["product=hermes-agent"]
+        assert body["tags"] == nous_portal_tags()
 
     def test_auth_type(self):
         p = get_provider_profile("nous")

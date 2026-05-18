@@ -18,6 +18,7 @@ import acp
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
+    AgentThoughtChunk,
     AuthenticateResponse,
     AvailableCommand,
     AvailableCommandsUpdate,
@@ -57,14 +58,9 @@ from acp.schema import (
     UserMessageChunk,
 )
 
-# AuthMethodAgent was renamed from AuthMethod in agent-client-protocol 0.9.0
-try:
-    from acp.schema import AuthMethodAgent
-except ImportError:
-    from acp.schema import AuthMethod as AuthMethodAgent  # type: ignore[attr-defined]
-
-from acp_adapter.auth import detect_provider
+from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
 from acp_adapter.events import (
+    _build_plan_update_from_todo_result,
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
@@ -744,16 +740,7 @@ class HermesACPAgent(acp.Agent):
         resolved_protocol_version = (
             protocol_version if isinstance(protocol_version, int) else acp.PROTOCOL_VERSION
         )
-        provider = detect_provider()
-        auth_methods = None
-        if provider:
-            auth_methods = [
-                AuthMethodAgent(
-                    id=provider,
-                    name=f"{provider} runtime credentials",
-                    description=f"Authenticate Hermes using the currently configured {provider} runtime credentials.",
-                )
-            ]
+        auth_methods = build_auth_methods()
 
         client_name = client_info.name if client_info else "unknown"
         logger.info(
@@ -784,24 +771,38 @@ class HermesACPAgent(acp.Agent):
         # server has provider credentials configured — harmless under
         # Hermes' threat model (ACP is stdio-only, local-trust), but poor
         # API hygiene and confusing if ACP ever grows multi-method auth.
-        provider = detect_provider()
-        if not provider:
+        if not isinstance(method_id, str):
             return None
-        if not isinstance(method_id, str) or method_id.strip().lower() != provider:
+        normalized_method = method_id.strip().lower()
+        provider = detect_provider()
+
+        if normalized_method == TERMINAL_SETUP_AUTH_METHOD_ID:
+            # Terminal auth launches Hermes setup/model selection out-of-band.
+            # Only report success once that flow has produced usable runtime
+            # credentials for the normal ACP session.
+            return AuthenticateResponse() if provider else None
+
+        if not provider or normalized_method != provider:
             return None
         return AuthenticateResponse()
 
     # ---- Session management -------------------------------------------------
 
     @staticmethod
-    def _history_message_text(message: dict[str, Any]) -> str:
-        """Extract displayable text from a persisted OpenAI-style message."""
-        content = message.get("content")
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
+    def _flatten_history_text(value: Any) -> str:
+        """Normalize a persisted text-or-text-parts value into a single string.
+
+        OpenAI-style assistant content (and provider reasoning fields) can arrive
+        as either a scalar string or a list of ``{"text": ...}`` /
+        ``{"type": "text", "content": ...}`` parts. Whitespace-only inputs
+        collapse to an empty string so callers can treat ``""`` as "nothing to
+        emit".
+        """
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
             parts: list[str] = []
-            for item in content:
+            for item in value:
                 if isinstance(item, dict):
                     text = item.get("text")
                     if isinstance(text, str):
@@ -811,6 +812,29 @@ class HermesACPAgent(acp.Agent):
                 elif isinstance(item, str):
                     parts.append(item)
             return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
+        return ""
+
+    @classmethod
+    def _history_message_text(cls, message: dict[str, Any]) -> str:
+        """Extract displayable text from a persisted OpenAI-style message."""
+        return cls._flatten_history_text(message.get("content"))
+
+    @classmethod
+    def _history_reasoning_text(cls, message: dict[str, Any]) -> str:
+        """Extract displayable reasoning/thought text from a persisted assistant message.
+
+        Returns the first non-empty value among ``reasoning_content`` (the
+        canonical field used by DeepSeek / Moonshot and the post-#16892
+        chat-completions normalizer) and ``reasoning`` (used by the codex
+        event projector and several other transports). Both keys are
+        actively written by live code paths, so neither branch is
+        deprecated — they cover different transports rather than old vs.
+        new sessions.
+        """
+        for key in ("reasoning_content", "reasoning"):
+            text = cls._flatten_history_text(message.get(key))
+            if text:
+                return text
         return ""
 
     @staticmethod
@@ -832,6 +856,11 @@ class HermesACPAgent(acp.Agent):
                 content=block,
             )
         return None
+
+    @staticmethod
+    def _history_thought_update(text: str) -> AgentThoughtChunk:
+        """Build an ACP history replay update for an assistant thought."""
+        return acp.update_agent_thought_text(text)
 
     @staticmethod
     def _history_tool_call_name_args(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -860,13 +889,17 @@ class HermesACPAgent(acp.Agent):
         ).strip()
 
     async def _replay_session_history(self, state: SessionState) -> None:
-        """Send persisted user/assistant history to clients during session/load.
+        """Replay persisted user/assistant history during session/load or session/resume.
 
-        Zed's ACP history UI calls ``session/load`` after the user picks an item
-        from the Agents sidebar. The agent must then replay the full conversation
-        as user/assistant chunks plus reconstructed tool-call start/completion
-        notifications; merely restoring server-side state makes Hermes remember
-        context, but leaves the editor looking like a clean thread.
+        Invoked inline (``await``) from both ``load_session`` and
+        ``resume_session`` so that spec-compliant ACP clients receive the
+        full transcript within the request's lifetime — see the comment at
+        the call sites for the rationale and prior-art citations.
+
+        Replays the conversation as user/assistant chunks, thinking-mode
+        thought chunks, plus reconstructed tool-call start/completion
+        notifications. Merely restoring server-side state makes Hermes
+        remember context, but leaves the editor looking like a clean thread.
         """
         if not self._conn or not state.history:
             return
@@ -888,24 +921,37 @@ class HermesACPAgent(acp.Agent):
         for message in state.history:
             role = str(message.get("role") or "")
 
-            if role in {"user", "assistant"}:
+            if role == "user":
+                text = self._history_message_text(message)
+                if text:
+                    update = self._history_message_update(role=role, text=text)
+                    if update is not None and not await _send(update):
+                        return
+                continue
+
+            if role == "assistant":
+                thought = self._history_reasoning_text(message)
+                if thought and not await _send(self._history_thought_update(thought)):
+                    return
+
                 text = self._history_message_text(message)
                 if text:
                     update = self._history_message_update(role=role, text=text)
                     if update is not None and not await _send(update):
                         return
 
-            if role == "assistant" and isinstance(message.get("tool_calls"), list):
-                for tool_call in message["tool_calls"]:
-                    if not isinstance(tool_call, dict):
-                        continue
-                    tool_call_id = self._history_tool_call_id(tool_call)
-                    if not tool_call_id:
-                        continue
-                    tool_name, args = self._history_tool_call_name_args(tool_call)
-                    active_tool_calls[tool_call_id] = (tool_name, args)
-                    if not await _send(build_tool_start(tool_call_id, tool_name, args)):
-                        return
+                tool_calls = message.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tool_call in tool_calls:
+                        if not isinstance(tool_call, dict):
+                            continue
+                        tool_call_id = self._history_tool_call_id(tool_call)
+                        if not tool_call_id:
+                            continue
+                        tool_name, args = self._history_tool_call_name_args(tool_call)
+                        active_tool_calls[tool_call_id] = (tool_name, args)
+                        if not await _send(build_tool_start(tool_call_id, tool_name, args)):
+                            return
                 continue
 
             if role == "tool":
@@ -917,15 +963,20 @@ class HermesACPAgent(acp.Agent):
                 if not tool_call_id or not tool_name:
                     continue
                 result = message.get("content")
+                result_text = result if isinstance(result, str) else None
                 if not await _send(
                     build_tool_complete(
                         tool_call_id,
                         tool_name,
-                        result=result if isinstance(result, str) else None,
+                        result=result_text,
                         function_args=function_args,
                     )
                 ):
                     return
+                if tool_name == "todo":
+                    plan_update = _build_plan_update_from_todo_result(result_text)
+                    if plan_update is not None and not await _send(plan_update):
+                        return
 
     async def new_session(
         self,
@@ -943,18 +994,6 @@ class HermesACPAgent(acp.Agent):
             models=self._build_model_state(state),
         )
 
-    def _schedule_history_replay(self, state: SessionState) -> None:
-        """Replay persisted history after session/load or session/resume returns.
-
-        Zed only attaches streamed transcript/tool updates once the load/resume
-        response has completed. Sending replay notifications while the request is
-        still in-flight can make the server look correct in logs while the editor
-        drops or fails to attach the tool-call history.
-        """
-        loop = asyncio.get_running_loop()
-        replay_coro = self._replay_session_history(state)
-        loop.call_soon(asyncio.create_task, replay_coro)
-
     async def load_session(
         self,
         cwd: str,
@@ -968,7 +1007,30 @@ class HermesACPAgent(acp.Agent):
             return None
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Loaded session %s", session_id)
-        self._schedule_history_replay(state)
+        # Per ACP spec, `session/load` must stream the prior conversation back
+        # to the client via `session/update` notifications BEFORE responding,
+        # so the client receives the full transcript within the load request's
+        # lifetime. Awaiting the replay here matches Codex / Claude Code /
+        # OpenCode / Pi and the Zed client (which registers the session-update
+        # routing entry before awaiting the loadSession RPC specifically so
+        # in-call history replay updates can find the thread). Deferring this
+        # via `loop.call_soon` (as we did briefly in May 2026) broke every
+        # spec-compliant ACP client that measures notifications synchronously
+        # against the load response — see #12285 follow-up.
+        try:
+            await self._replay_session_history(state)
+        except Exception:
+            # Replay is best-effort — a corrupted or unexpected message shape
+            # must not turn a successful session/load into a JSON-RPC error
+            # response. Per-notification failures are already caught inside
+            # ``_replay_session_history``; this outer guard covers anything
+            # raised by the helpers themselves before reaching ``_send``.
+            logger.warning(
+                "ACP history replay raised during session/load for %s — "
+                "load will still succeed, partial transcript may be missing",
+                session_id,
+                exc_info=True,
+            )
         self._schedule_available_commands_update(session_id)
         self._schedule_usage_update(state)
         return LoadSessionResponse(models=self._build_model_state(state))
@@ -986,7 +1048,18 @@ class HermesACPAgent(acp.Agent):
             state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
-        self._schedule_history_replay(state)
+        # See `load_session` above for the spec rationale — replay must
+        # complete before the response so clients receive the full transcript
+        # within the request's lifetime.
+        try:
+            await self._replay_session_history(state)
+        except Exception:
+            logger.warning(
+                "ACP history replay raised during session/resume for %s — "
+                "resume will still succeed, partial transcript may be missing",
+                state.session_id,
+                exc_info=True,
+            )
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
         return ResumeSessionResponse(models=self._build_model_state(state))

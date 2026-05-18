@@ -1046,7 +1046,7 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
         task = kb.get_task(conn, tid)
         # After timeout, task is back in 'ready' and will be re-spawned
         # by the same pass. That's the intended behaviour.
-        assert task.status in ("ready", "running")
+        assert task.status in {"ready", "running"}
     finally:
         conn.close()
 

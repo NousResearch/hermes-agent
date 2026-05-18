@@ -331,7 +331,25 @@ def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
     assert metadata == {
         "thread_id": "20189",
         "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "20189",
         "telegram_reply_to_message_id": "462",
+    }
+
+
+def test_base_gateway_metadata_for_resumed_telegram_dm_topic_uses_direct_topic():
+    """Resumed/synthetic DM-topic events may have no reply anchor."""
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        thread_id="20189",
+    )
+
+    metadata = _thread_metadata_for_source(source)
+
+    assert metadata == {
+        "thread_id": "20189",
+        "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "20189",
     }
 
 
@@ -533,7 +551,7 @@ async def test_send_model_picker_uses_metadata_reply_fallback_for_dm_topics():
 
 @pytest.mark.asyncio
 async def test_send_dm_topic_fallback_without_anchor_does_not_crash():
-    """DM-topic fallback without an anchor must not use message_thread_id alone."""
+    """DM-topic fallback without an anchor uses direct topic routing."""
     adapter = _make_adapter()
     call_log = []
 
@@ -549,13 +567,14 @@ async def test_send_dm_topic_fallback_without_anchor_does_not_crash():
         metadata={
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
         },
     )
 
     assert result.success is True
     assert call_log[0]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[0]
-    assert "direct_messages_topic_id" not in call_log[0]
+    assert call_log[0]["message_thread_id"] is None
+    assert call_log[0]["direct_messages_topic_id"] == 20197
 
 
 @pytest.mark.asyncio

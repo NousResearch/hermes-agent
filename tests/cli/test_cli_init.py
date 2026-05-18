@@ -3,6 +3,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
+import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -100,6 +101,29 @@ class TestVerboseAndToolProgress:
         cli = _make_cli()
         assert isinstance(cli.tool_progress_mode, str)
         assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
+
+
+class TestCompactResolution:
+    def test_display_compact_config_applies_when_flag_omitted(self):
+        cli_obj = _make_cli(config_overrides={"display": {"compact": True, "tool_progress": "all"}})
+        assert cli_obj.compact is True
+
+    def test_explicit_compact_flag_still_overrides_config(self):
+        cli_obj = _make_cli(
+            config_overrides={"display": {"compact": True, "tool_progress": "all"}},
+            compact=False,
+        )
+        assert cli_obj.compact is False
+
+    def test_hermes_cli_signature_uses_none_default_for_compact(self):
+        import cli as _cli_mod
+
+        assert inspect.signature(_cli_mod.HermesCLI.__init__).parameters["compact"].default is None
+
+    def test_main_signature_uses_none_default_for_compact(self):
+        import cli as _cli_mod
+
+        assert inspect.signature(_cli_mod.main).parameters["compact"].default is None
 
 
 class TestBusyInputMode:

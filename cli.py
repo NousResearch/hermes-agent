@@ -2517,7 +2517,7 @@ class HermesCLI:
         base_url: str = None,
         max_turns: int = None,
         verbose: bool = False,
-        compact: bool = False,
+        compact: bool | None = None,
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
@@ -9253,8 +9253,9 @@ class HermesCLI:
         compressions = compressor.compression_count
 
         msg_count = len(self.conversation_history)
+        model_name = agent.model if isinstance(agent.model, str) else ""
         cost_result = estimate_usage_cost(
-            agent.model,
+            model_name,
             CanonicalUsage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
@@ -13940,7 +13941,7 @@ def main(
     max_turns: int = None,
     verbose: bool = False,
     quiet: bool = False,
-    compact: bool = False,
+    compact: bool | None = None,
     list_tools: bool = False,
     list_toolsets: bool = False,
     gateway: bool = False,

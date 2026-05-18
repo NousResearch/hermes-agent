@@ -120,6 +120,44 @@ class PooledCredential:
         if self.extra is None:
             self.extra = {}
 
+    def __repr__(self) -> str:
+        sensitive_fields = {"access_token", "refresh_token", "agent_key"}
+        sensitive_extra_names = {
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "token",
+            "api_key",
+            "apikey",
+            "client_secret",
+            "password",
+            "auth",
+            "jwt",
+            "secret",
+            "private_key",
+            "authorization",
+            "key",
+        }
+
+        def _repr_value(name: str, value: Any) -> str:
+            if name in sensitive_fields and value:
+                return repr("<redacted>")
+            if name == "extra" and isinstance(value, dict):
+                safe_extra = {
+                    key: "<redacted>"
+                    if str(key).lower() in sensitive_extra_names and extra_value
+                    else extra_value
+                    for key, extra_value in value.items()
+                }
+                return repr(safe_extra)
+            return repr(value)
+
+        parts = [
+            f"{field_def.name}={_repr_value(field_def.name, getattr(self, field_def.name))}"
+            for field_def in fields(self)
+        ]
+        return f"{type(self).__name__}(" + ", ".join(parts) + ")"
+
     def __getattr__(self, name: str):
         if name in _EXTRA_KEYS:
             return self.extra.get(name)

@@ -153,6 +153,24 @@ class TestLifecycle:
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
 
+    def test_app_server_extra_args_are_passed_to_client_factory(self):
+        captured = {}
+        client = FakeClient()
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        s = CodexAppServerSession(
+            cwd="/tmp",
+            client_factory=factory,
+            app_server_extra_args=["-c", 'sandbox_mode="danger-full-access"'],
+        )
+
+        s.ensure_started()
+
+        assert captured["extra_args"] == ["-c", 'sandbox_mode="danger-full-access"']
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)

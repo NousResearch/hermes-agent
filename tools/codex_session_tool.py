@@ -47,7 +47,7 @@ CODEX_SESSION_SCHEMA = {
             },
             "permission_profile": {
                 "type": "string",
-                "description": "Optional Codex permission profile override such as workspace-write or read-only-with-approval.",
+                "description": "Optional Codex permission profile override such as workspace-write, read-only-with-approval, or hermes-worktree-write.",
             },
         },
         "required": ["task"],

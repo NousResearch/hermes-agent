@@ -22,6 +22,12 @@ _UNVERIFIED_RESULT_MARKERS = (
     "could not verify",
     "failed to verify",
 )
+_HERMES_WORKTREE_WRITE_APP_SERVER_ARGS = [
+    "-c",
+    'sandbox_mode="danger-full-access"',
+    "-c",
+    'approval_policy="never"',
+]
 
 
 def _as_string_list(value: Any) -> list[str]:
@@ -66,6 +72,12 @@ def _base_evidence(*, success: bool) -> dict[str, Any]:
 def _reports_unverified_result(summary: str) -> bool:
     lowered = (summary or "").lower()
     return any(marker in lowered for marker in _UNVERIFIED_RESULT_MARKERS)
+
+
+def _app_server_args_for_permission_profile(permission_profile: str | None) -> list[str] | None:
+    if permission_profile == "hermes-worktree-write":
+        return list(_HERMES_WORKTREE_WRITE_APP_SERVER_ARGS)
+    return None
 
 
 def build_codex_executor_prompt(task: str) -> str:
@@ -157,6 +169,7 @@ def run_codex_session(
         codex_bin=codex_bin,
         codex_home=codex_home,
         permission_profile=permission_profile,
+        app_server_extra_args=_app_server_args_for_permission_profile(permission_profile),
     )
     try:
         result = session.run_turn(

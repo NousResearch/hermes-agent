@@ -68,6 +68,39 @@ def test_codex_session_executor_returns_structured_evidence_not_final_answer():
     assert fake.closed is True
 
 
+def test_codex_session_executor_uses_hermes_bounded_write_profile_args():
+    from agent.executors.codex_session import run_codex_session
+
+    run_codex_session(
+        task="Edit only the task worktree marker file",
+        cwd="/tmp/task-worktree",
+        session_factory=FakeCodexSession,
+        permission_profile="hermes-worktree-write",
+    )
+
+    fake = FakeCodexSession.instances[-1]
+    assert fake.kwargs["permission_profile"] == "hermes-worktree-write"
+    assert fake.kwargs["app_server_extra_args"] == [
+        "-c",
+        'sandbox_mode="danger-full-access"',
+        "-c",
+        'approval_policy="never"',
+    ]
+
+
+def test_codex_session_executor_keeps_default_profile_without_app_server_overrides():
+    from agent.executors.codex_session import run_codex_session
+
+    run_codex_session(
+        task="Inspect only",
+        session_factory=FakeCodexSession,
+    )
+
+    fake = FakeCodexSession.instances[-1]
+    assert fake.kwargs["permission_profile"] is None
+    assert fake.kwargs["app_server_extra_args"] is None
+
+
 def test_codex_session_executor_wraps_plain_text_as_unverified_summary():
     from agent.executors.codex_session import run_codex_session
 

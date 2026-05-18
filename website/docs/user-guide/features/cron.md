@@ -190,6 +190,24 @@ What they do:
 - `run` — trigger the job on the next scheduler tick
 - `remove` — delete it entirely
 
+## Previewing future runs
+
+Use `preview` to inspect upcoming run times without creating, editing, or triggering anything.
+
+```bash
+hermes cron preview --schedule "0 9 * * *" --next 5
+hermes cron preview --job-id <job_id> --next 5
+```
+
+Notes:
+
+- pass exactly one of `--schedule` or `--job-id`
+- `--schedule` previews from the current time
+- `--job-id` previews from the persisted state of an existing job
+- `--next` defaults to `5` and accepts values from `1` to `20`
+- paused jobs report no future runs until resumed
+- preview is read-only
+
 ## How it works
 
 **Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds, running any due jobs in isolated agent sessions.

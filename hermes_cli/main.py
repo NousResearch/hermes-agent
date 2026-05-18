@@ -5515,7 +5515,7 @@ def cmd_cron(args):
     """Cron job management."""
     from hermes_cli.cron import cron_command
 
-    cron_command(args)
+    return cron_command(args)
 
 
 def cmd_webhook(args):
@@ -10549,6 +10549,18 @@ def main():
     cron_run.add_argument("job_id", help="Job ID to trigger")
     _add_accept_hooks_flag(cron_run)
 
+    cron_preview = cron_subparsers.add_parser(
+        "preview", help="Preview future runs for a schedule or job"
+    )
+    cron_preview.add_argument("--schedule", help="Schedule like 'every 1h' or '0 9 * * *'")
+    cron_preview.add_argument("--job-id", help="Existing job ID to preview")
+    cron_preview.add_argument(
+        "--next",
+        type=int,
+        default=5,
+        help="Number of future occurrences to show (1-20)",
+    )
+
     cron_remove = cron_subparsers.add_parser(
         "remove", aliases=["rm", "delete"], help="Remove a scheduled job"
     )
@@ -12576,7 +12588,9 @@ Examples:
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
+        result = args.func(args)
+        if isinstance(result, int):
+            sys.exit(result)
     else:
         parser.print_help()
 

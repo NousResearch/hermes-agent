@@ -11,6 +11,8 @@ from cron.jobs import (
     parse_duration,
     parse_schedule,
     compute_next_run,
+    preview_schedule_runs,
+    preview_job_runs,
     create_job,
     load_jobs,
     save_jobs,
@@ -25,6 +27,43 @@ from cron.jobs import (
     get_due_jobs,
     save_job_output,
 )
+
+
+def _coerce_preview_dt(value):
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(value)
+
+
+def _base_job(*, job_id: str, schedule: dict, next_run_at, now: datetime, **overrides):
+    job = {
+        "id": job_id,
+        "name": overrides.pop("name", "Preview job"),
+        "prompt": overrides.pop("prompt", "Preview this job"),
+        "skills": overrides.pop("skills", []),
+        "skill": overrides.pop("skill", None),
+        "model": overrides.pop("model", None),
+        "provider": overrides.pop("provider", None),
+        "base_url": overrides.pop("base_url", None),
+        "script": overrides.pop("script", None),
+        "schedule": schedule,
+        "schedule_display": overrides.pop("schedule_display", schedule.get("display", "schedule")),
+        "repeat": overrides.pop("repeat", {"times": None, "completed": 0}),
+        "enabled": overrides.pop("enabled", True),
+        "state": overrides.pop("state", "scheduled"),
+        "paused_at": overrides.pop("paused_at", None),
+        "paused_reason": overrides.pop("paused_reason", None),
+        "created_at": overrides.pop("created_at", now.isoformat()),
+        "next_run_at": next_run_at,
+        "last_run_at": overrides.pop("last_run_at", None),
+        "last_status": overrides.pop("last_status", None),
+        "last_error": overrides.pop("last_error", None),
+        "last_delivery_error": overrides.pop("last_delivery_error", None),
+        "deliver": overrides.pop("deliver", "local"),
+        "origin": overrides.pop("origin", None),
+    }
+    job.update(overrides)
+    return job
 
 
 # =========================================================================
@@ -174,6 +213,192 @@ class TestComputeNextRun:
 
     def test_unknown_kind_returns_none(self):
         assert compute_next_run({"kind": "unknown"}) is None
+
+
+# =========================================================================
+# preview_schedule_runs
+# =========================================================================
+
+class TestPreviewScheduleRuns:
+    def test_duration_returns_single_timezone_aware_timestamp(self, monkeypatch):
+        now = datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        runs = preview_schedule_runs("30m", count=5)
+
+        assert len(runs) == 1
+        assert _coerce_preview_dt(runs[0]).tzinfo is not None
+
+    def test_interval_returns_strictly_increasing_timestamps(self, monkeypatch):
+        now = datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        runs = preview_schedule_runs("every 1h", count=3)
+
+        assert len(runs) == 3
+        parsed = [_coerce_preview_dt(run) for run in runs]
+        assert parsed == sorted(parsed)
+        assert parsed[0] < parsed[1] < parsed[2]
+
+    def test_past_iso_oneshot_returns_empty_list(self, monkeypatch):
+        now = datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        assert preview_schedule_runs("2026-04-01T08:00:00+00:00", count=3) == []
+
+    def test_cron_expression_returns_next_daily_runs(self, monkeypatch):
+        pytest.importorskip("croniter")
+        now = datetime(2026, 4, 1, 8, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        runs = preview_schedule_runs("0 9 * * *", count=3)
+
+        assert [_coerce_preview_dt(run) for run in runs] == [
+            datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 4, 2, 9, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 4, 3, 9, 0, 0, tzinfo=timezone.utc),
+        ]
+
+    def test_missing_croniter_raises_value_error(self, monkeypatch):
+        monkeypatch.setattr("cron.jobs.HAS_CRONITER", False)
+
+        with pytest.raises(ValueError, match="croniter"):
+            preview_schedule_runs("0 9 * * *", count=3)
+
+
+# =========================================================================
+# preview_job_runs
+# =========================================================================
+
+class TestPreviewJobRuns:
+    def test_active_recurring_job_uses_stored_next_run_at(self, monkeypatch):
+        now = datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        first_run = "2026-04-01T10:00:00+00:00"
+        job = _base_job(
+            job_id="preview-active",
+            schedule={"kind": "interval", "minutes": 60, "display": "every 60m"},
+            next_run_at=first_run,
+            now=now,
+        )
+
+        result = preview_job_runs(job, count=3)
+
+        assert result["message"] is None
+        assert [_coerce_preview_dt(run) for run in result["occurrences"]] == [
+            datetime(2026, 4, 1, 10, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 4, 1, 11, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 4, 1, 12, 0, 0, tzinfo=timezone.utc),
+        ]
+
+    def test_stale_recurring_job_fast_forwards_to_future_run(self, monkeypatch):
+        now = datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = _base_job(
+            job_id="preview-stale",
+            schedule={"kind": "interval", "minutes": 60, "display": "every 60m"},
+            next_run_at="2026-04-01T08:20:00+00:00",
+            now=now,
+        )
+
+        result = preview_job_runs(job, count=3)
+
+        assert result["message"] is None
+        assert [_coerce_preview_dt(run) for run in result["occurrences"]] == [
+            datetime(2026, 4, 1, 10, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 4, 1, 11, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 4, 1, 12, 0, 0, tzinfo=timezone.utc),
+        ]
+
+    def test_paused_job_returns_message_without_occurrences(self, monkeypatch):
+        now = datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = _base_job(
+            job_id="preview-paused",
+            schedule={"kind": "interval", "minutes": 60, "display": "every 60m"},
+            next_run_at="2026-04-01T10:00:00+00:00",
+            now=now,
+            enabled=False,
+            state="paused",
+            paused_reason="user paused",
+        )
+
+        result = preview_job_runs(job, count=3)
+
+        assert result["occurrences"] == []
+        assert result["message"] == "Job is paused. Resume it to preview future runs."
+
+    def test_completed_oneshot_returns_message_without_occurrences(self, monkeypatch):
+        now = datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = _base_job(
+            job_id="preview-complete",
+            schedule={"kind": "once", "run_at": "2026-04-01T08:00:00+00:00", "display": "once at 2026-04-01 08:00"},
+            next_run_at=None,
+            now=now,
+            enabled=False,
+            state="completed",
+            last_run_at="2026-04-01T08:00:00+00:00",
+        )
+
+        result = preview_job_runs(job, count=3)
+
+        assert result["occurrences"] == []
+        assert result["message"] == "Job is completed. It has no future runs."
+
+    def test_recent_oneshot_within_grace_returns_original_run_at(self, monkeypatch):
+        now = datetime(2026, 4, 1, 9, 1, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        run_at = "2026-04-01T09:00:00+00:00"
+        job = _base_job(
+            job_id="preview-recent-oneshot",
+            schedule={"kind": "once", "run_at": run_at, "display": "once at 2026-04-01 09:00"},
+            next_run_at=run_at,
+            now=now,
+            repeat={"times": 1, "completed": 0},
+        )
+
+        result = preview_job_runs(job, count=5)
+
+        assert [_coerce_preview_dt(run) for run in result["occurrences"]] == [
+            datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        ]
+        assert result["message"] is None
+
+    def test_recurring_error_state_without_next_run_surfaces_last_error(self, monkeypatch):
+        now = datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = _base_job(
+            job_id="preview-error",
+            schedule={"kind": "interval", "minutes": 60, "display": "every 60m"},
+            next_run_at=None,
+            now=now,
+            enabled=True,
+            state="error",
+            last_status="error",
+            last_error="scheduler lost track of next_run_at",
+        )
+
+        result = preview_job_runs(job, count=3)
+
+        assert result["occurrences"] == []
+        assert result["message"] == "scheduler lost track of next_run_at"
+
+    def test_legacy_naive_next_run_at_returns_timezone_aware_timestamps(self, monkeypatch):
+        now = datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = _base_job(
+            job_id="preview-naive",
+            schedule={"kind": "interval", "minutes": 60, "display": "every 60m"},
+            next_run_at="2026-04-01T10:00:00",
+            now=now,
+        )
+
+        result = preview_job_runs(job, count=2)
+
+        parsed = [_coerce_preview_dt(run) for run in result["occurrences"]]
+        assert len(parsed) == 2
+        assert all(run.tzinfo is not None for run in parsed)
 
 
 # =========================================================================

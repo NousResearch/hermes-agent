@@ -394,6 +394,131 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     return None
 
 
+def _validate_preview_count(count: int) -> int:
+    """Validate preview count bounds."""
+    if not 1 <= count <= 20:
+        raise ValueError("count must be between 1 and 20")
+    return count
+
+
+def _coerce_schedule(schedule: Any) -> Dict[str, Any]:
+    """Accept a raw schedule string or parsed schedule dict."""
+    if isinstance(schedule, str):
+        return parse_schedule(schedule)
+    if isinstance(schedule, dict):
+        return schedule
+    raise ValueError("schedule must be a string or parsed schedule dict")
+
+
+def _preview_recurring_runs(
+    schedule: Dict[str, Any],
+    *,
+    count: int,
+    first_run_at: Optional[str] = None,
+) -> List[str]:
+    """Return recurring occurrences without mutating scheduler state."""
+    kind = schedule.get("kind")
+    occurrences: List[str] = []
+
+    if kind == "interval":
+        minutes = schedule["minutes"]
+        current = (
+            _ensure_aware(datetime.fromisoformat(first_run_at))
+            if first_run_at
+            else _ensure_aware(datetime.fromisoformat(compute_next_run(schedule)))
+        )
+        for _ in range(count):
+            occurrences.append(current.isoformat())
+            current = current + timedelta(minutes=minutes)
+        return occurrences
+
+    if kind == "cron":
+        if not HAS_CRONITER:
+            raise ValueError("Cron previews require croniter")
+        if first_run_at:
+            current = _ensure_aware(datetime.fromisoformat(first_run_at))
+            occurrences.append(current.isoformat())
+            base = current
+        else:
+            base = _hermes_now()
+        cron = croniter(schedule["expr"], base)
+        while len(occurrences) < count:
+            occurrences.append(cron.get_next(datetime).isoformat())
+        return occurrences
+
+    raise ValueError(f"Schedule kind '{kind}' does not support recurring preview")
+
+
+def preview_schedule_runs(schedule: Any, count: int = 5) -> List[str]:
+    """Preview upcoming run times for a schedule."""
+    count = _validate_preview_count(count)
+    parsed = _coerce_schedule(schedule)
+    kind = parsed.get("kind")
+
+    if kind == "once":
+        run_at = _recoverable_oneshot_run_at(parsed, _hermes_now())
+        if not run_at:
+            return []
+        return [_ensure_aware(datetime.fromisoformat(run_at)).isoformat()]
+
+    if kind in ("interval", "cron"):
+        return _preview_recurring_runs(parsed, count=count)
+
+    return []
+
+
+def preview_job_runs(job: Dict[str, Any], count: int = 5) -> Dict[str, Any]:
+    """Preview future runs for a job without mutating stored state."""
+    count = _validate_preview_count(count)
+    preview_job = _apply_skill_fields(copy.deepcopy(job))
+
+    if preview_job.get("state") == "completed":
+        return {
+            "occurrences": [],
+            "message": "Job is completed. It has no future runs.",
+        }
+
+    if preview_job.get("state") == "paused" or (
+        not preview_job.get("enabled", True) and preview_job.get("state") == "paused"
+    ):
+        return {
+            "occurrences": [],
+            "message": "Job is paused. Resume it to preview future runs.",
+        }
+
+    schedule = preview_job.get("schedule", {})
+    kind = schedule.get("kind")
+    now = _hermes_now()
+
+    if kind == "once":
+        run_at = preview_job.get("next_run_at") or _recoverable_oneshot_run_at(
+            schedule,
+            now,
+            last_run_at=preview_job.get("last_run_at"),
+        )
+        occurrences = []
+        if run_at:
+            occurrences = [_ensure_aware(datetime.fromisoformat(run_at)).isoformat()]
+        return {"occurrences": occurrences, "message": None if occurrences else None}
+
+    next_run = preview_job.get("next_run_at")
+    if not next_run:
+        return {
+            "occurrences": [],
+            "message": preview_job.get("last_error") or "Job has no next_run_at to preview.",
+        }
+
+    next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+    grace = _compute_grace_seconds(schedule)
+    if next_run_dt <= now and (now - next_run_dt).total_seconds() > grace:
+        next_run = compute_next_run(schedule, now.isoformat())
+        if not next_run:
+            return {"occurrences": [], "message": preview_job.get("last_error") or "Job has no future runs."}
+
+    occurrences = _preview_recurring_runs(schedule, count=count, first_run_at=next_run)
+    return {"occurrences": occurrences, "message": None}
+
+
 # =============================================================================
 # Job CRUD Operations
 # =============================================================================

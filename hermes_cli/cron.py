@@ -259,6 +259,57 @@ def cron_edit(args):
     return 0
 
 
+def cron_preview(args):
+    from cron.jobs import get_job, preview_job_runs, preview_schedule_runs
+
+    schedule = getattr(args, "schedule", None)
+    job_id = getattr(args, "job_id", None)
+    count = getattr(args, "next", 5)
+
+    if bool(schedule) == bool(job_id):
+        print("Choose exactly one of --schedule or --job-id.")
+        return 1
+
+    if not 1 <= count <= 20:
+        print("--next must be between 1 and 20.")
+        return 1
+
+    if schedule:
+        try:
+            occurrences = preview_schedule_runs(schedule, count=count)
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+
+        print(f"Preview for schedule: {schedule}")
+        if occurrences:
+            for index, occurrence in enumerate(occurrences, start=1):
+                print(f"{index}. {occurrence}")
+        else:
+            print("No future runs found for this schedule.")
+        return 0
+
+    job = get_job(job_id)
+    if not job:
+        print(color(f"Job not found: {job_id}", Colors.RED))
+        return 1
+
+    try:
+        result = preview_job_runs(job, count=count)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+
+    print(f"Preview for job: {job_id}")
+    occurrences = result.get("occurrences", [])
+    if occurrences:
+        for index, occurrence in enumerate(occurrences, start=1):
+            print(f"{index}. {occurrence}")
+    elif result.get("message"):
+        print(result["message"])
+    return 0
+
+
 def _job_action(action: str, job_id: str, success_verb: str) -> int:
     result = _cron_api(action=action, job_id=job_id)
     if not result.get("success"):
@@ -305,9 +356,12 @@ def cron_command(args):
     if subcmd == "run":
         return _job_action("run", args.job_id, "Triggered")
 
+    if subcmd == "preview":
+        return cron_preview(args)
+
     if subcmd in {"remove", "rm", "delete"}:
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|preview|remove|status|tick]")
     sys.exit(1)

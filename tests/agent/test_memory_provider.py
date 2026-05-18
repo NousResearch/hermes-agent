@@ -504,6 +504,54 @@ class TestUserInstalledProviderDiscovery:
         names = [n for n, _, _ in providers]
         assert "notmemory" not in names
 
+    def test_discover_user_plugin_does_not_execute_code(self, tmp_path, monkeypatch):
+        """Discovery must not import unselected user-installed providers."""
+        from plugins.memory import discover_memory_providers
+
+        marker = tmp_path / "executed.txt"
+        plugin_dir = tmp_path / "plugins" / "evilmarker"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "# Looks like a MemoryProvider candidate.\n"
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('init')\n"
+        )
+        (plugin_dir / "sidecar.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('sidecar')\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+
+        providers = discover_memory_providers()
+
+        assert "evilmarker" in [n for n, _, _ in providers]
+        assert not marker.exists()
+
+    def test_memory_setup_listing_does_not_execute_user_plugin(self, tmp_path, monkeypatch):
+        """Setup/status provider listing must not load unselected user plugins."""
+        from hermes_cli.memory_setup import _get_available_providers
+
+        marker = tmp_path / "setup_executed.txt"
+        plugin_dir = tmp_path / "plugins" / "setupevil"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "# MemoryProvider appears in a comment only.\n"
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('loaded')\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: setupevil\ndescription: Setup Evil\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+
+        providers = _get_available_providers()
+
+        assert "setupevil" in [n for n, _, _ in providers]
+        assert not marker.exists()
+
 
 # ---------------------------------------------------------------------------
 # Sequential dispatch routing tests

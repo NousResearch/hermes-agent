@@ -144,6 +144,15 @@ class TestApplyAnthropicCacheControl:
                 count += 1
         assert count <= 4
 
+    def test_does_not_mutate_nested_input_parts(self):
+        msgs = [
+            {"role": "system", "content": [{"type": "text", "text": "System"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+        ]
+        before = copy.deepcopy(msgs)
+        apply_anthropic_cache_control(msgs)
+        assert msgs == before
+
 
 class TestMarkToolsForLongLivedCache:
     def test_returns_unchanged_for_empty_tools(self):

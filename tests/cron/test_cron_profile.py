@@ -380,6 +380,33 @@ class TestRunJobProfileContext:
 
 
 class TestTickProfilePartition:
+    def test_profile_and_workdir_combined(self, isolated_cron_profile_home, monkeypatch):
+        """Both profile and workdir set — verify both are applied and restored."""
+        import cron.scheduler as sched
+
+        root, profile_home = isolated_cron_profile_home
+        observed: dict = {}
+        TestRunJobProfileContext._install_agent_stubs(monkeypatch, observed)
+        fake_workdir = str(root / "myproject")
+        (root / "myproject").mkdir()
+
+        job = {
+            "id": "combo",
+            "name": "combo-job",
+            "profile": "support",
+            "workdir": fake_workdir,
+            "schedule_display": "manual",
+        }
+
+        success, _output, _response, error = sched.run_job(job)
+
+        assert success is True, error
+        assert observed["hermes_home_during_init"] == str(profile_home.resolve())
+        assert os.environ.get("TERMINAL_CWD", "") != fake_workdir, \
+            "TERMINAL_CWD should be restored after job"
+        assert os.environ["HERMES_HOME"] == str(root)
+        assert sched._get_hermes_home() == root
+
     def test_profile_jobs_run_sequentially(self, isolated_cron_profile_home, monkeypatch):
         import threading
         import cron.scheduler as sched

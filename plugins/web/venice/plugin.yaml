@@ -1,0 +1,7 @@
+name: venice
+version: 1.0.0
+description: "Venice web search + scrape backend. Uses /augment/search (Brave/Google, privacy-preserving) and /augment/scrape (page → markdown). One VENICE_API_KEY covers chat + image + video + voice + search."
+author: NousResearch
+kind: backend
+requires_env:
+  - VENICE_API_KEY

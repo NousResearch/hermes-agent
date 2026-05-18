@@ -166,6 +166,11 @@ check_prerequisites() {
 
 check_prerequisites
 
+# On FreeBSD, set MAKE=gmake so Rust builds (jemalloc) use GNU make instead of BSD make
+if [ "$OS" = "freebsd" ]; then
+    export MAKE=gmake
+fi
+
 # ============================================================================
 # Install uv via cargo
 # ============================================================================

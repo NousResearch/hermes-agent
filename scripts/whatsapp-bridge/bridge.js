@@ -12,6 +12,7 @@
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
+ *   POST /group/set-name - Change group subject { chatId, name }
  *   GET  /health         - Health check
  *
  * Usage:
@@ -675,6 +676,23 @@ app.get('/chat/:id', async (req, res) => {
     isGroup,
     participants: [],
   });
+});
+
+// Change group subject
+app.post('/group/set-name', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+  const { chatId, name } = req.body;
+  if (!chatId || !name) {
+    return res.status(400).json({ error: 'chatId and name are required' });
+  }
+  try {
+    await sock.groupUpdateSubject(chatId, name);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Health check

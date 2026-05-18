@@ -1059,6 +1059,23 @@ class WhatsAppAdapter(BasePlatformAdapter):
         
         return {"name": chat_id, "type": "dm"}
     
+    async def set_group_name(self, chat_id: str, name: str) -> bool:
+        """Change a WhatsApp group subject via the bridge."""
+        if not self._running or not self._http_session:
+            return False
+        if await self._check_managed_bridge_exit():
+            return False
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/group/set-name",
+                json={"chatId": chat_id, "name": name},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+    
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp

@@ -679,13 +679,18 @@ def agent_uses_xai_responses(agent: Any) -> bool:
     Centralizes the detection used by ``_preflight_codex_api_kwargs`` callers
     (``conversation_loop.run_conversation`` and
     ``codex_runtime.run_codex_create_stream_fallback``) so the predicate stays
-    in sync if the xAI provider keys or hostname ever change. The standalone
-    ``chat_completion_helpers`` site uses an equivalent local expression that
-    predates this helper.
+    in sync if the xAI provider keys or hostname ever change. Mirrors the
+    expression in ``chat_completion_helpers.py`` (kept inline there for now to
+    avoid widening this PR's surface area).
+
+    Uses bare attribute access — a missing ``provider`` or ``_base_url_hostname``
+    means the agent skipped ``agent_init`` and is genuinely broken; surfacing
+    the ``AttributeError`` is preferable to silently routing as non-xAI and
+    re-triggering the very bug this gating exists to avoid.
     """
     return (
-        getattr(agent, "provider", None) in {"xai", "xai-oauth"}
-        or getattr(agent, "_base_url_hostname", None) == "api.x.ai"
+        agent.provider in {"xai", "xai-oauth"}
+        or agent._base_url_hostname == "api.x.ai"
     )
 
 

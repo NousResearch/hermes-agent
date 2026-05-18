@@ -2061,14 +2061,15 @@ def test_agent_uses_xai_responses_rejects_other_providers():
     assert not agent_uses_xai_responses(_MiniAgent())
 
 
-def test_agent_uses_xai_responses_tolerates_missing_attrs():
-    """If an agent-like object is missing both attributes, the helper falls
-    back to False rather than raising AttributeError — the call sites use
-    this on the hot path and a stray AttributeError would mask the real
-    error a misconfigured agent would produce a few lines later."""
+def test_agent_uses_xai_responses_raises_on_misconstructed_agent():
+    """Helper uses bare attribute access — agents that skipped agent_init
+    blow up loudly here rather than silently routing as non-xAI and
+    re-triggering the very bug the gating exists to avoid."""
+    import pytest
     from agent.codex_responses_adapter import agent_uses_xai_responses
 
     class Bare:
         pass
 
-    assert not agent_uses_xai_responses(Bare())
+    with pytest.raises(AttributeError):
+        agent_uses_xai_responses(Bare())

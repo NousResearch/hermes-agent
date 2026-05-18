@@ -833,18 +833,25 @@ def _preflight_codex_api_kwargs(
 # Response extraction helpers
 # ---------------------------------------------------------------------------
 
+def _response_field(obj: Any, name: str, default: Any = None) -> Any:
+    """Read a Responses object field from SDK objects or raw JSON dicts."""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
 def _extract_responses_message_text(item: Any) -> str:
     """Extract assistant text from a Responses message output item."""
-    content = getattr(item, "content", None)
+    content = _response_field(item, "content")
     if not isinstance(content, list):
         return ""
 
     chunks: List[str] = []
     for part in content:
-        ptype = getattr(part, "type", None)
+        ptype = _response_field(part, "type")
         if ptype not in {"output_text", "text"}:
             continue
-        text = getattr(part, "text", None)
+        text = _response_field(part, "text")
         if isinstance(text, str) and text:
             chunks.append(text)
     return "".join(chunks).strip()
@@ -852,16 +859,16 @@ def _extract_responses_message_text(item: Any) -> str:
 
 def _extract_responses_reasoning_text(item: Any) -> str:
     """Extract a compact reasoning text from a Responses reasoning item."""
-    summary = getattr(item, "summary", None)
+    summary = _response_field(item, "summary")
     if isinstance(summary, list):
         chunks: List[str] = []
         for part in summary:
-            text = getattr(part, "text", None)
+            text = _response_field(part, "text")
             if isinstance(text, str) and text:
                 chunks.append(text)
         if chunks:
             return "\n".join(chunks).strip()
-    text = getattr(item, "text", None)
+    text = _response_field(item, "text")
     if isinstance(text, str) and text:
         return text.strip()
     return ""
@@ -873,12 +880,12 @@ def _extract_responses_reasoning_text(item: Any) -> str:
 
 def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     """Normalize a Responses API object to an assistant_message-like object."""
-    output = getattr(response, "output", None)
+    output = _response_field(response, "output")
     if not isinstance(output, list) or not output:
         # The Codex backend can return empty output when the answer was
         # delivered entirely via stream events. Check output_text as a
         # last-resort fallback before raising.
-        out_text = getattr(response, "output_text", None)
+        out_text = _response_field(response, "output_text")
         if isinstance(out_text, str) and out_text.strip():
             logger.debug(
                 "Codex response has empty output but output_text is present (%d chars); "
@@ -888,18 +895,21 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                 type="message", role="assistant", status="completed",
                 content=[SimpleNamespace(type="output_text", text=out_text.strip())],
             )]
-            response.output = output
+            if isinstance(response, dict):
+                response["output"] = output
+            else:
+                response.output = output
         else:
             raise RuntimeError("Responses API returned no output items")
 
-    response_status = getattr(response, "status", None)
+    response_status = _response_field(response, "status")
     if isinstance(response_status, str):
         response_status = response_status.strip().lower()
     else:
         response_status = None
 
     if response_status in {"failed", "cancelled"}:
-        error_obj = getattr(response, "error", None)
+        error_obj = _response_field(response, "error")
         if isinstance(error_obj, dict):
             error_msg = error_obj.get("message") or str(error_obj)
         else:
@@ -916,8 +926,8 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     saw_final_answer_phase = False
 
     for item in output:
-        item_type = getattr(item, "type", None)
-        item_status = getattr(item, "status", None)
+        item_type = _response_field(item, "type")
+        item_status = _response_field(item, "status")
         if isinstance(item_status, str):
             item_status = item_status.strip().lower()
         else:
@@ -927,7 +937,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             has_incomplete_items = True
 
         if item_type == "message":
-            item_phase = getattr(item, "phase", None)
+            item_phase = _response_field(item, "phase")
             normalized_phase = None
             if isinstance(item_phase, str):
                 normalized_phase = item_phase.strip().lower()
@@ -944,7 +954,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                     "status": _normalize_responses_message_status(item_status),
                     "content": [{"type": "output_text", "text": message_text}],
                 }
-                item_id = getattr(item, "id", None)
+                item_id = _response_field(item, "id")
                 if isinstance(item_id, str) and item_id:
                     raw_message_item["id"] = item_id
                 if normalized_phase:
@@ -957,18 +967,18 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             # Capture the full reasoning item for multi-turn continuity.
             # encrypted_content is an opaque blob the API needs back on
             # subsequent turns to maintain coherent reasoning chains.
-            encrypted = getattr(item, "encrypted_content", None)
+            encrypted = _response_field(item, "encrypted_content")
             if isinstance(encrypted, str) and encrypted:
                 raw_item = {"type": "reasoning", "encrypted_content": encrypted}
-                item_id = getattr(item, "id", None)
+                item_id = _response_field(item, "id")
                 if isinstance(item_id, str) and item_id:
                     raw_item["id"] = item_id
                 # Capture summary — required by the API when replaying reasoning items
-                summary = getattr(item, "summary", None)
+                summary = _response_field(item, "summary")
                 if isinstance(summary, list):
                     raw_summary = []
                     for part in summary:
-                        text = getattr(part, "text", None)
+                        text = _response_field(part, "text")
                         if isinstance(text, str):
                             raw_summary.append({"type": "summary_text", "text": text})
                     raw_item["summary"] = raw_summary
@@ -976,12 +986,12 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         elif item_type == "function_call":
             if item_status in {"queued", "in_progress", "incomplete"}:
                 continue
-            fn_name = getattr(item, "name", "") or ""
-            arguments = getattr(item, "arguments", "{}")
+            fn_name = _response_field(item, "name", "") or ""
+            arguments = _response_field(item, "arguments", "{}")
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments, ensure_ascii=False)
-            raw_call_id = getattr(item, "call_id", None)
-            raw_item_id = getattr(item, "id", None)
+            raw_call_id = _response_field(item, "call_id")
+            raw_item_id = _response_field(item, "id")
             embedded_call_id, _ = _split_responses_tool_id(raw_item_id)
             call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
             if not isinstance(call_id, str) or not call_id.strip():
@@ -997,12 +1007,12 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                 function=SimpleNamespace(name=fn_name, arguments=arguments),
             ))
         elif item_type == "custom_tool_call":
-            fn_name = getattr(item, "name", "") or ""
-            arguments = getattr(item, "input", "{}")
+            fn_name = _response_field(item, "name", "") or ""
+            arguments = _response_field(item, "input", "{}")
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments, ensure_ascii=False)
-            raw_call_id = getattr(item, "call_id", None)
-            raw_item_id = getattr(item, "id", None)
+            raw_call_id = _response_field(item, "call_id")
+            raw_item_id = _response_field(item, "id")
             embedded_call_id, _ = _split_responses_tool_id(raw_item_id)
             call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
             if not isinstance(call_id, str) or not call_id.strip():
@@ -1019,8 +1029,8 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             ))
 
     final_text = "\n".join([p for p in content_parts if p]).strip()
-    if not final_text and hasattr(response, "output_text"):
-        out_text = getattr(response, "output_text", "")
+    if not final_text and _response_field(response, "output_text") is not None:
+        out_text = _response_field(response, "output_text", "")
         if isinstance(out_text, str):
             final_text = out_text.strip()
 

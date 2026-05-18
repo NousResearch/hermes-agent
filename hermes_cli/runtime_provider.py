@@ -88,6 +88,23 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _normalize_provider_base_url(provider: Optional[str], base_url: str) -> str:
+    """Trim copied endpoint suffixes from provider base URLs when safe.
+
+    OpenCode's docs show full endpoint URLs (for example
+    ``.../v1/chat/completions``), but Hermes stores provider *base* URLs and
+    appends the transport path itself. Accept the copied docs URL and collapse
+    it back to the provider base so runtime resolution stays robust.
+    """
+    normalized_provider = (provider or "").strip().lower()
+    normalized_url = (base_url or "").strip().rstrip("/")
+    if not normalized_url:
+        return normalized_url
+    if normalized_provider not in {"opencode-zen", "opencode-go"}:
+        return normalized_url
+    return re.sub(r"/(?:chat/completions|responses|messages)$", "", normalized_url)
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -329,6 +346,8 @@ def _resolve_runtime_from_pool_entry(
             detected = _detect_api_mode_for_url(base_url)
             if detected:
                 api_mode = detected
+
+    base_url = _normalize_provider_base_url(provider, base_url)
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the

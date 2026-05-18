@@ -35,7 +35,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_skills_dir
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
@@ -957,6 +957,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     parts = []
     skipped: list[str] = []
+    _loaded_skill_dirs: list[str] = []
     for skill_name in skill_names:
         loaded = json.loads(skill_view(skill_name))
         if not loaded.get("success"):
@@ -964,6 +965,11 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
             skipped.append(skill_name)
             continue
+
+        # Track skill source directory for threat-scan trust decision
+        skill_dir = loaded.get("skill_dir")
+        if skill_dir:
+            _loaded_skill_dirs.append(skill_dir)
 
         # Bump usage so the curator sees this skill as actively used.
         try:
@@ -993,7 +999,35 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
-    return _scan_assembled_cron_prompt("\n".join(parts), job)
+
+    assembled = "\n".join(parts)
+
+    # Check if all loaded skills came from the user's own skills directory.
+    # User-created skills (~/.hermes/skills/) are inherently trusted —
+    # they commonly contain educational code examples (e.g., curl with tokens
+    # in github-auth) that would falsely trigger threat patterns.
+    # Only scan skill content from external/plugin sources.
+    user_skills_dir = str(get_skills_dir())
+    all_user_skills = all(
+        str(skill_dir).startswith(user_skills_dir)
+        for skill_dir in _loaded_skill_dirs
+    ) if _loaded_skill_dirs else True
+
+    if all_user_skills:
+        # Trusted: only scan the user-supplied prompt.
+        scan_error = _scan_cron_prompt(prompt) if prompt else ""
+        if scan_error:
+            job_label = job.get("name") or job.get("id") or "<unknown>"
+            logger.warning(
+                "Cron job '%s': prompt blocked by injection scanner — %s",
+                job_label, scan_error,
+            )
+            raise CronPromptInjectionBlocked(scan_error)
+    else:
+        # External skill content: scan full assembled prompt (existing behavior).
+        assembled = _scan_assembled_cron_prompt(assembled, job)
+
+    return assembled
 
 
 def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:

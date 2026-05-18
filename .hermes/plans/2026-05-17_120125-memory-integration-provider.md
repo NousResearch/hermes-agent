@@ -22,7 +22,7 @@ This plan has been patched after two adversarial reviews: a Claude Code Opus rea
 
 - Use `memory_references` instead of `references` because `REFERENCES` is a SQLite keyword.
 - Keep the provider directory/name/config value as `memory-integration` to match the requested provider name, but keep v1 single-file inside `__init__.py`; if helper modules are later introduced, first add a discovery test proving relative imports work from the hyphenated provider package.
-- `get_tool_schemas()` must be static and work before `initialize()`, because `MemoryManager.add_provider()` indexes tool names at registration time.
+- `get_tool_schemas(self)` remains an instance method per `agent.memory_provider.MemoryProvider`, but it must be safe before `initialize()`, because `MemoryManager.add_provider()` indexes tool names at registration time. It must not depend on SQLite initialization, config loading, or instance state populated by `initialize()`.
 - `on_memory_write()` must not mirror raw built-in memory content by default. V1 records no built-in-memory content unless an explicit future config/metadata gate enables it; audit-only metadata events are acceptable.
 - `agent_context in ("cron", "flush", "subagent")` disables write paths by default unless a future explicit override is added.
 - Create-entity patch identity fields are persisted in `patches.metadata_json.create_entity`.
@@ -205,7 +205,7 @@ class MemoryIntegrationProvider(MemoryProvider):
         ...
 
     def get_tool_schemas(self) -> list[dict]:
-        ...  # static; must work before initialize()
+        ...  # instance method, but must work before initialize()
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         ...
@@ -548,7 +548,13 @@ Behavior:
 - Approve path:
   - Requires target entity or explicit entity creation fields.
   - For `create_entity`, requires `allow_create_entity: true`.
-  - Applies deterministic merge or replacement strategy.
+  - Applies deterministic patch merge semantics:
+    - `proposed_state` must be a JSON object.
+    - For update patches, `{}` is rejected.
+    - For update patches, load the current canonical state object and apply a shallow merge only: keys absent from `proposed_state` are preserved; keys present in `proposed_state` overwrite current values.
+    - Nested objects are replaced wholesale, not recursively merged.
+    - `null` values are rejected in v1 unless a future explicit deletion semantic is added.
+    - Validate the final merged state against required entity constraints before writing any new version.
   - Creates or updates entity as needed.
   - Creates a new `entity_versions` row.
   - Updates `entities.current_version_id`.
@@ -656,9 +662,9 @@ V1 behavior:
   - `event_type`: `memory_write_audit`
   - `subject`: `target`, e.g. `memory` or `user`
   - `content`: fixed non-sensitive marker such as `Built-in memory write observed; content not mirrored by default.`
-  - `metadata_json` includes action, target, content length/hash, write origin, execution context, session_id, platform, and tool_name when available.
+  - `metadata_json` includes action, target, write origin, execution context, session_id, platform, and tool_name when available. It must not include raw content or derivatives of `content`, including content hash, checksum, length, token count, entropy, preview, MIME/type inference, embedding, or other content-derived fields.
 
-Do not write back to built-in memory. Add tests proving secret-like content is not stored by default.
+Do not write back to built-in memory. Add tests proving secret-like content is not stored by default, either as raw text or as content-derived metadata.
 
 ---
 

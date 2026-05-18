@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Protocol, Sequence
@@ -73,6 +75,33 @@ def _freshness_window(hint: str) -> timedelta:
     }.get((hint or "").lower(), timedelta(days=30))
 
 
+def derive_repo_scope(cwd: str | None = None, *, repo_root: str | None = None) -> str | None:
+    base_dir = (cwd or os.getcwd() or "").strip()
+    if not base_dir:
+        return None
+    resolved_root = (repo_root or "").strip()
+    if not resolved_root:
+        try:
+            proc = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=base_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except Exception:
+            return None
+        resolved_root = (proc.stdout or "").strip()
+    if not resolved_root:
+        return None
+    normalized = os.path.realpath(resolved_root)
+    name = os.path.basename(normalized).strip()
+    if not name:
+        return None
+    fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return f"repo:{name}:{fingerprint}"
+
+
 class ContextRetriever:
     def __init__(
         self,
@@ -88,7 +117,7 @@ class ContextRetriever:
         self.default_min_score = default_min_score
 
     def retrieve(self, request: RetrievalRequest) -> list[RetrievedMemorySnippet]:
-        if not request.query.strip() or not self.pinecone.is_configured():
+        if not request.query.strip() or not request.scope or not self.pinecone.is_configured():
             return []
 
         vector = self._embed(request.query)
@@ -269,7 +298,7 @@ def build_pinecone_recall(
     pinecone: PineconeMemoryClient | None = None,
     embedder: Callable[[str], Sequence[float]] | QueryEmbedder | None = None,
 ) -> str:
-    if not query or not query.strip():
+    if not query or not query.strip() or not scope:
         return ""
     pinecone_client = pinecone or PineconeMemoryClient()
     query_embedder = embedder or OpenAIQueryEmbedder()

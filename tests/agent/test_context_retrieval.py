@@ -5,6 +5,7 @@ from agent.context_retrieval import (
     RetrievalRequest,
     build_pinecone_recall,
     build_pinecone_recall_context_block,
+    derive_repo_scope,
 )
 from agent.pinecone_memory import PineconeMemoryClient
 from agent.prompt_builder import format_pinecone_recall_block
@@ -49,6 +50,31 @@ def test_no_config_returns_empty_without_querying():
     out = retriever.retrieve(RetrievalRequest(query="hello world"))
 
     assert out == []
+
+
+def test_missing_scope_returns_empty_without_querying():
+    retriever = ContextRetriever(
+        pinecone=_make_client([]),
+        embed_query=RaisingEmbedder(),
+    )
+
+    out = retriever.retrieve(RetrievalRequest(query="hello world", scope=None))
+
+    assert out == []
+
+
+def test_derive_repo_scope_uses_repo_root_fingerprint():
+    scope = derive_repo_scope(cwd="/tmp/worktree/hermes-agent", repo_root="/tmp/worktree/hermes-agent")
+
+    assert scope.startswith("repo:hermes-agent:")
+    assert len(scope.split(":")) == 3
+
+
+def test_derive_repo_scope_avoids_same_basename_collisions():
+    left = derive_repo_scope(cwd="/tmp/a/hermes-agent", repo_root="/tmp/a/hermes-agent")
+    right = derive_repo_scope(cwd="/tmp/b/hermes-agent", repo_root="/tmp/b/hermes-agent")
+
+    assert left != right
 
 
 def test_relevant_recall_inclusion_and_prompt_formatting():
@@ -183,7 +209,12 @@ def test_oversized_result_trim_and_low_score_filter():
     )
 
     snippets = retriever.retrieve(
-        RetrievalRequest(query="hello", max_items=3, now=datetime(2026, 5, 17, tzinfo=timezone.utc))
+        RetrievalRequest(
+            query="hello",
+            scope="repo:hermes-agent",
+            max_items=3,
+            now=datetime(2026, 5, 17, tzinfo=timezone.utc),
+        )
     )
 
     assert [snippet.id for snippet in snippets] == ["keep-1", "keep-2", "keep-3"]
@@ -247,7 +278,11 @@ def test_fresh_canonical_sources_beat_stale_derived_and_volatile_stale_is_droppe
     )
 
     snippets = retriever.retrieve(
-        RetrievalRequest(query="repo guidance", now=datetime(2026, 5, 17, tzinfo=timezone.utc))
+        RetrievalRequest(
+            query="repo guidance",
+            scope="repo:hermes-agent",
+            now=datetime(2026, 5, 17, tzinfo=timezone.utc),
+        )
     )
 
     assert [snippet.id for snippet in snippets] == ["fresh-file", "stale-canonical"]
@@ -317,6 +352,19 @@ def test_build_pinecone_recall_wraps_formatted_recall_for_prompt_injection():
 def test_build_pinecone_recall_returns_empty_without_embedding_config():
     recall = build_pinecone_recall(
         "repo guidance",
+        scope="repo:hermes-agent",
+        pinecone=_make_client([]),
+        embedder=DisabledEmbedder(),
+        now=datetime(2026, 5, 17, tzinfo=timezone.utc),
+    )
+
+    assert recall == ""
+
+
+def test_build_pinecone_recall_returns_empty_without_scope():
+    recall = build_pinecone_recall(
+        "repo guidance",
+        scope=None,
         pinecone=_make_client([]),
         embedder=DisabledEmbedder(),
         now=datetime(2026, 5, 17, tzinfo=timezone.utc),

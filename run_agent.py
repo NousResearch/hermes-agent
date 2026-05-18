@@ -147,7 +147,7 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
-from agent.context_retrieval import build_pinecone_recall
+from agent.context_retrieval import build_pinecone_recall, derive_repo_scope
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -11157,10 +11157,7 @@ class AIAgent:
                 _query = original_user_message if isinstance(original_user_message, str) else ""
                 _scope = None
                 try:
-                    _scope_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
-                    _cwd_name = os.path.basename(_scope_cwd).strip()
-                    if _cwd_name:
-                        _scope = f"repo:{_cwd_name}"
+                    _scope = derive_repo_scope(os.getenv("TERMINAL_CWD") or os.getcwd())
                 except Exception:
                     _scope = None
                 _pinecone_recall_cache = build_pinecone_recall(

@@ -46,6 +46,16 @@ OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
 
+def _expand_user_path(path: str) -> Path:
+    """Expand leading ~ while honoring HOME overrides on Windows tests."""
+    if path == "~" or path.startswith("~/") or path.startswith("~\\"):
+        home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
+        if home:
+            suffix = path[1:].lstrip("/\\")
+            return Path(home) / suffix if suffix else Path(home)
+    return Path(path).expanduser()
+
+
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
     if skills is None:
@@ -465,7 +475,7 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     raw = str(workdir).strip()
     if not raw:
         return None
-    expanded = Path(raw).expanduser()
+    expanded = _expand_user_path(raw)
     if not expanded.is_absolute():
         raise ValueError(
             f"Cron workdir must be an absolute path (got {raw!r}). "

@@ -1769,10 +1769,16 @@ def _cprint(text: str):
     """
     _record_output_history(text)
 
+    def _safe_pt_print(value: str) -> None:
+        try:
+            _pt_print(_PT_ANSI(value))
+        except Exception:
+            print(value)
+
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     app = None
@@ -1785,7 +1791,7 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     try:
@@ -1793,7 +1799,7 @@ def _cprint(text: str):
     except Exception:
         loop = None
     if loop is None:
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     import asyncio as _asyncio
@@ -1809,7 +1815,7 @@ def _cprint(text: str):
         current_loop = None
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(text)
         return
 
     # Cross-thread emission: ask the app's event loop to schedule a
@@ -1818,10 +1824,10 @@ def _cprint(text: str):
     # fails we fall back to a direct print so the line isn't lost.
     def _schedule():
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            run_in_terminal(lambda: _safe_pt_print(text))
         except Exception:
             try:
-                _pt_print(_PT_ANSI(text))
+                _safe_pt_print(text)
             except Exception:
                 pass
 
@@ -1829,7 +1835,7 @@ def _cprint(text: str):
         loop.call_soon_threadsafe(_schedule)
     except Exception:
         try:
-            _pt_print(_PT_ANSI(text))
+            _safe_pt_print(text)
         except Exception:
             pass
 
@@ -1857,8 +1863,10 @@ def _termux_example_image_path(filename: str = "cat.png") -> str:
     ]
     for root in candidates:
         if os.path.isdir(root):
+            if root.startswith("/"):
+                return f"{root.rstrip('/')}/Pictures/{filename}"
             return os.path.join(root, "Pictures", filename)
-    return os.path.join("~/storage/shared", "Pictures", filename)
+    return f"~/storage/shared/Pictures/{filename}"
 
 
 def _split_path_input(raw: str) -> tuple[str, str]:
@@ -1929,9 +1937,17 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
                 expanded = unquote(parsed.path or "")
                 if parsed.netloc and os.name == "nt":
                     expanded = f"//{parsed.netloc}{expanded}"
+                elif os.name == "nt" and len(expanded) >= 4 and expanded[0] == "/" and expanded[2] == ":":
+                    expanded = expanded[1:]
         except Exception:
             expanded = token
-    expanded = os.path.expandvars(os.path.expanduser(expanded))
+    expanded = os.path.expandvars(expanded)
+    if expanded == "~" or expanded.startswith("~/") or expanded.startswith("~\\"):
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        rest = expanded[2:] if len(expanded) > 1 else ""
+        expanded = os.path.join(home, rest) if rest else home
+    else:
+        expanded = os.path.expanduser(expanded)
     if os.name != "nt":
         normalized = expanded.replace("\\", "/")
         if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/" and normalized[0].isalpha():
@@ -8051,7 +8067,7 @@ class HermesCLI:
                             if output:
                                 self._console_print(_rich_text_from_ansi(output))
                             else:
-                                self._console_print("[dim]Command returned no output[/]")
+                                self._output_console().print("Command returned no output")
                         except subprocess.TimeoutExpired:
                             self._console_print("[bold red]Quick command timed out (30s)[/]")
                         except Exception as e:

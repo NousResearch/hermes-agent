@@ -302,8 +302,6 @@ def _load_config() -> dict:
       2. ~/.hindsight/config.json             (legacy, shared)
       3. Environment variables
     """
-    from pathlib import Path
-
     # Profile-scoped path (preferred)
     profile_path = get_hermes_home() / "hindsight" / "config.json"
     if profile_path.exists():
@@ -313,7 +311,7 @@ def _load_config() -> dict:
             pass
 
     # Legacy shared path (backward compat)
-    legacy_path = Path.home() / ".hindsight" / "config.json"
+    legacy_path = _user_home() / ".hindsight" / "config.json"
     if legacy_path.exists():
         try:
             return json.loads(legacy_path.read_text(encoding="utf-8"))
@@ -337,6 +335,14 @@ def _load_config() -> dict:
             }
         },
     }
+
+
+def _user_home():
+    """Return the user home, honoring HOME overrides on Windows tests."""
+    from pathlib import Path
+
+    home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
+    return Path(home) if home else Path.home()
 
 
 def _normalize_retain_tags(value: Any) -> List[str]:
@@ -440,9 +446,7 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
 
 
 def _embedded_profile_env_path(config: dict[str, Any]):
-    from pathlib import Path
-
-    return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
+    return _user_home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
 
 
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):

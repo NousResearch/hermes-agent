@@ -76,6 +76,12 @@ def get_chrome_debug_candidates(system: str) -> list[str]:
     for name in _LINUX_BIN_NAMES:
         add(shutil.which(name))
     add_install_paths(("/mnt/c/Program Files", "/mnt/c/Program Files (x86)"))
+    # WSL mounts Windows drives with forward-slash paths even when tests run on
+    # native Windows.  os.path.join() would introduce backslashes there, so keep
+    # these candidates POSIX-shaped.
+    for base in ("/mnt/c/Program Files", "/mnt/c/Program Files (x86)"):
+        for parts in _WINDOWS_INSTALL_PARTS:
+            add("/".join((base.rstrip("/"), *parts)))
     return candidates
 
 

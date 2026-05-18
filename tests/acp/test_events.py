@@ -21,6 +21,21 @@ from acp_adapter.events import (
 )
 
 
+def _close_scheduled_coroutine(mock_rcts):
+    """Close the coroutine captured by the mocked scheduler."""
+    coro = mock_rcts.call_args[0][0]
+    if hasattr(coro, "close"):
+        coro.close()
+    return coro
+
+
+def _close_all_scheduled_coroutines(mock_rcts) -> None:
+    for call in mock_rcts.call_args_list:
+        coro = call.args[0]
+        if hasattr(coro, "close"):
+            coro.close()
+
+
 @pytest.fixture()
 def mock_conn():
     """Mock ACP Client connection."""
@@ -64,7 +79,7 @@ class TestToolProgressCallback:
 
         # Should have called run_coroutine_threadsafe
         mock_rcts.assert_called_once()
-        coro = mock_rcts.call_args[0][0]
+        coro = _close_scheduled_coroutine(mock_rcts)
         # The coroutine should be conn.session_update
         assert mock_conn.session_update.called or coro is not None
 
@@ -84,6 +99,7 @@ class TestToolProgressCallback:
             cb("tool.started", "read_file", "Reading /etc/hosts", '{"path": "/etc/hosts"}')
 
         assert "read_file" in tool_call_ids
+        _close_scheduled_coroutine(mock_rcts)
 
     def test_handles_non_dict_args(self, mock_conn, event_loop_fixture):
         """If args is not a dict, it should be wrapped."""
@@ -101,6 +117,7 @@ class TestToolProgressCallback:
             cb("tool.started", "terminal", "$ echo hi", None)
 
         assert "terminal" in tool_call_ids
+        _close_scheduled_coroutine(mock_rcts)
 
     def test_duplicate_same_name_tool_calls_use_fifo_ids(self, mock_conn, event_loop_fixture):
         """Multiple same-name tool calls should be tracked independently in order."""
@@ -125,6 +142,7 @@ class TestToolProgressCallback:
 
             step_cb(2, [{"name": "terminal", "result": "ok-2"}])
             assert "terminal" not in tool_call_ids
+        _close_all_scheduled_coroutines(mock_rcts)
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +165,7 @@ class TestThinkingCallback:
             cb("Analyzing the code...")
 
         mock_rcts.assert_called_once()
+        _close_scheduled_coroutine(mock_rcts)
 
     def test_ignores_empty_text(self, mock_conn, event_loop_fixture):
         """Empty text should not emit any update."""
@@ -183,6 +202,7 @@ class TestStepCallback:
         # Tool should have been removed from tracking
         assert "terminal" not in tool_call_ids
         mock_rcts.assert_called_once()
+        _close_scheduled_coroutine(mock_rcts)
 
     def test_ignores_untracked_tools(self, mock_conn, event_loop_fixture):
         """Tools not in tool_call_ids should be silently ignored."""
@@ -212,6 +232,7 @@ class TestStepCallback:
 
         assert "read_file" not in tool_call_ids
         mock_rcts.assert_called_once()
+        _close_scheduled_coroutine(mock_rcts)
 
     def test_result_passed_to_build_tool_complete(self, mock_conn, event_loop_fixture):
         """Tool result from prev_tools dict is forwarded to build_tool_complete."""
@@ -234,6 +255,7 @@ class TestStepCallback:
         mock_btc.assert_called_once_with(
             "tc-xyz789", "terminal", result='{"output": "hello"}', function_args=None, snapshot=None
         )
+        _close_scheduled_coroutine(mock_rcts)
 
     def test_none_result_passed_through(self, mock_conn, event_loop_fixture):
         """When result is None (e.g. first iteration), None is passed through."""
@@ -253,6 +275,7 @@ class TestStepCallback:
             cb(1, [{"name": "web_search", "result": None}])
 
         mock_btc.assert_called_once_with("tc-aaa", "web_search", result=None, function_args=None, snapshot=None)
+        _close_scheduled_coroutine(mock_rcts)
 
     def test_step_callback_passes_arguments_and_snapshot(self, mock_conn, event_loop_fixture):
         from collections import deque
@@ -278,6 +301,7 @@ class TestStepCallback:
             function_args={"path": "diff-test.txt"},
             snapshot="snap",
         )
+        _close_scheduled_coroutine(mock_rcts)
 
     def test_tool_progress_captures_snapshot_metadata(self, mock_conn, event_loop_fixture):
         tool_call_ids = {}
@@ -366,6 +390,7 @@ class TestMessageCallback:
             cb("Here is your answer.")
 
         mock_rcts.assert_called_once()
+        _close_scheduled_coroutine(mock_rcts)
 
     def test_ignores_empty_message(self, mock_conn, event_loop_fixture):
         """Empty text should not emit any update."""

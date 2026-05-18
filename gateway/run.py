@@ -6774,6 +6774,8 @@ class GatewayRunner:
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        proc = None
+                        communicate_task = None
                         try:
                             # Sanitize env to prevent credential leakage —
                             # quick commands run in the gateway process which
@@ -6786,7 +6788,8 @@ class GatewayRunner:
                                 stderr=asyncio.subprocess.PIPE,
                                 env=sanitized_env,
                             )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                            communicate_task = asyncio.create_task(proc.communicate())
+                            stdout, stderr = await asyncio.wait_for(communicate_task, timeout=30)
                             output = (stdout or stderr).decode().strip()
                             # Redact any remaining sensitive patterns in output
                             if output:
@@ -6794,6 +6797,19 @@ class GatewayRunner:
                                 output = redact_sensitive_text(output)
                             return output if output else "Command returned no output."
                         except asyncio.TimeoutError:
+                            if communicate_task is not None and not communicate_task.done():
+                                communicate_task.cancel()
+                            if proc is not None and proc.returncode is None:
+                                proc.kill()
+                                try:
+                                    await proc.wait()
+                                except Exception:
+                                    logger.debug("Timed-out quick command cleanup failed", exc_info=True)
+                            if communicate_task is not None:
+                                try:
+                                    await communicate_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
                             return "Quick command timed out (30s)."
                         except Exception as e:
                             return f"Quick command error: {e}"

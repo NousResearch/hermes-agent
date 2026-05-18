@@ -672,6 +672,53 @@ _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _is_windows_wsl_bash(path: str | None) -> bool:
+    """Return True for Windows bash launchers that require a working WSL distro."""
+    if os.name != "nt" or not path:
+        return False
+    normalized = str(path).replace("/", "\\").lower()
+    return (
+        normalized.endswith("\\system32\\bash.exe")
+        or normalized.endswith("\\windowsapps\\bash.exe")
+    )
+
+
+def _resolve_bash_executable() -> str | None:
+    """Resolve a usable bash executable for cron shell scripts."""
+    candidates: list[str] = []
+    found = shutil.which("bash")
+    if found:
+        candidates.append(found)
+
+    if os.name == "nt":
+        git = shutil.which("git")
+        if git:
+            git_root = Path(git).resolve().parent.parent
+            candidates.extend([
+                str(git_root / "bin" / "bash.exe"),
+                str(git_root / "usr" / "bin" / "bash.exe"),
+            ])
+        candidates.extend([
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+        ])
+    else:
+        candidates.append("/bin/bash")
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        if _is_windows_wsl_bash(candidate):
+            continue
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def _get_script_timeout() -> int:
     """Resolve cron pre-run script timeout from module/env/config with a safe default."""
     if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
@@ -768,13 +815,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     suffix = path.suffix.lower()
     if suffix in {".sh", ".bash"}:
         # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
-        # all work.  On native Windows without Git for Windows installed
-        # shutil.which returns None — fall back to a clear error rather
-        # than a FileNotFoundError with a confusing "[WinError 2]"
-        # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
+        # all work.  Native Windows often exposes C:\Windows\System32\bash.exe
+        # or the WindowsApps shim, both of which require a working WSL distro;
+        # prefer Git Bash when available.
+        _bash = _resolve_bash_executable()
         if _bash is None:
             return False, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
@@ -790,6 +834,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             argv,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=script_timeout,
             cwd=str(path.parent),
         )

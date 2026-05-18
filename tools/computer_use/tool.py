@@ -169,7 +169,9 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def start(self) -> None: self._started = True
     def stop(self) -> None: self._started = False
     def is_available(self) -> bool: return True
-    def requires_approval(self, action: str) -> bool: return False
+    def requires_approval(self, action: str) -> bool:
+        """The noop backend is a test stub and never asks for approval."""
+        return False
 
     def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
         self.calls.append(("capture", {"mode": mode, "app": app}))

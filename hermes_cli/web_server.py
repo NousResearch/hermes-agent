@@ -3222,6 +3222,9 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
 _event_channels: dict[str, set] = {}
+# Hold fire-and-forget broadcast tasks so they aren't garbage-collected before
+# the websocket send completes; callbacks drop them once the send finishes.
+_broadcast_tasks: set[asyncio.Task] = set()
 # TestClient opens websocket handlers on a server thread while the test thread
 # polls `_event_channels` directly to wait for subscriber registration. The
 # lock only guards brief dict mutations / snapshots, so the only blocking
@@ -3310,7 +3313,9 @@ async def _broadcast_event(channel: str, payload: str) -> None:
             pass
 
     for sub in subs:
-        asyncio.create_task(_send(sub))
+        task = asyncio.create_task(_send(sub))
+        _broadcast_tasks.add(task)
+        task.add_done_callback(_broadcast_tasks.discard)
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:

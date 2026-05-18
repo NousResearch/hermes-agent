@@ -1685,7 +1685,6 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     review_agent = None
     try:
-        dry_run = prompt.startswith(CURATOR_DRY_RUN_BANNER)
         review_agent = AIAgent(
             model=_model_name,
             provider=_resolved_provider,
@@ -1698,7 +1697,6 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             # single-session review path caps itself at a much smaller
             # number because it's not doing a curation sweep.
             max_iterations=9999,
-            enabled_toolsets=["curator_readonly" if dry_run else "curator"],
             quiet_mode=True,
             platform="curator",
             skip_context_files=True,

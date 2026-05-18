@@ -5,7 +5,6 @@ import logging
 import os
 import stat
 import tempfile
-import functools
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -323,9 +322,7 @@ def normalize_proxy_env_vars() -> None:
 
 # ─── URL Parsing Helpers ──────────────────────────────────────────────────────
 
-# ⚡ Bolt: Cache base_url_hostname to prevent redundant URL parsing and string manipulation.
-# Impact: Reduces CPU overhead during repeated API configurations and provider routing checks.
-@functools.lru_cache(maxsize=1024)
+
 def base_url_hostname(base_url: str) -> str:
     """Return the lowercased hostname for a base URL, or ``""`` if absent.
 

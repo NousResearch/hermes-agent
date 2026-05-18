@@ -11325,12 +11325,9 @@ class GatewayRunner:
         if not name:
             # List recent titled sessions for this user/platform
             try:
-                owner_user_id = source.user_id
-                if not owner_user_id:
-                    return t("gateway.resume.no_named_sessions")
                 user_source = source.platform.value if source.platform else None
                 sessions = self._session_db.list_sessions_rich(
-                    source=user_source, user_id=owner_user_id, limit=10
+                    source=user_source, limit=10
                 )
                 titled = [s for s in sessions if s.get("title")]
                 if not titled:
@@ -11347,14 +11344,8 @@ class GatewayRunner:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return t("gateway.resume.list_failed", error=e)
 
-        # Resolve the name to a session ID owned by this gateway user.
-        owner_user_id = source.user_id
-        if not owner_user_id:
-            return t("gateway.resume.not_found", name=name)
-        user_source = source.platform.value if source.platform else None
-        target_id = self._session_db.resolve_session_by_title(
-            name, source=user_source, user_id=owner_user_id
-        )
+        # Resolve the name to a session ID.
+        target_id = self._session_db.resolve_session_by_title(name)
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.
@@ -11445,7 +11436,6 @@ class GatewayRunner:
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 parent_session_id=parent_session_id,
-                user_id=source.user_id,
             )
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)
@@ -13859,11 +13849,6 @@ class GatewayRunner:
 
         proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
 
-        platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
-
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
                 return True
@@ -13904,10 +13889,6 @@ class GatewayRunner:
             "model": "hermes-agent",
             "messages": api_messages,
             "stream": True,
-            "hermes_proxy_scope": {
-                "origin_platform": platform_key,
-                "enabled_toolsets": enabled_toolsets,
-            },
         }
 
         # Set up platform streaming if available -------------------------
@@ -13917,6 +13898,8 @@ class GatewayRunner:
             from gateway.config import StreamingConfig
             _scfg = StreamingConfig()
 
+        platform_key = _platform_config_key(source.platform)
+        user_config = _load_gateway_config()
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"

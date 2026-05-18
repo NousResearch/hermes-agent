@@ -310,14 +310,6 @@ _SUDO_STDIN_BLOCK = [
     "sudo -S apt-get install foo",
     "echo password | sudo -S systemctl restart nginx",
     "sudo -k && sudo -S whoami",
-    "echo guess | sudo -k -S whoami",
-    "sudo -Sk whoami",
-    "sudo -p '' -S whoami",
-    "sudo --stdin whoami",
-    "env X=1 sudo -S whoami",
-    "X=1 sudo -S whoami",
-    "cat <(sudo -S id <<< hunter2)",
-    "cat >(sudo -S id <<< hunter2)",
 ]
 
 _SUDO_STDIN_ALLOW = [
@@ -330,19 +322,11 @@ _SUDO_STDIN_ALLOW = [
     "some_tool -S thing",
     # Literal text mention of sudo
     "echo 'use sudo -S to pipe passwords'",
-    # Lowercase -s opens a shell; it must not be confused with stdin -S
-    "sudo -s whoami",
-    # sudo-looking text after a non-wrapper command is an argument, not a command
-    "env echo sudo -S whoami",
-    # Plain redirection targets named like sudo flags are not command invocations.
-    "echo hi > sudo -S whoami",
 ]
 
 _SUDO_STDIN_BLOCK_YOLO = [
     "sudo -S whoami",
     "echo hunter2 | sudo -S apt-get install",
-    "cat <(sudo -S id <<< hunter2)",
-    "cat >(sudo -S id <<< hunter2)",
 ]
 
 

@@ -295,10 +295,9 @@ class TestStdinHelpers:
         pty.sendeof.assert_called_once()
         assert result["status"] == "ok"
 
-    def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path, monkeypatch):
-        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         session = registry.spawn_local(
-            "cat",
+            'python3 -c "import sys; print(sys.stdin.read().strip())"',
             cwd=str(tmp_path),
             use_pty=False,
         )

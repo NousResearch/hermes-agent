@@ -669,11 +669,18 @@ def check_cronjob_requirements() -> bool:
     Available in interactive CLI mode and gateway/messaging platforms.
     The cron system is internal (JSON file-based scheduler ticked by the gateway),
     so no external crontab executable is required.
+
+    Session env vars must hold an explicit truthy string (``1``, ``true``,
+    ``yes``, ``on``) — false-like values (``0``, ``false``, ``no``, ``off``)
+    leave the tool disabled. Uses the shared ``env_var_enabled`` helper so
+    every consumer of these flags agrees on the truthy set.
     """
-    return bool(
-        os.getenv("HERMES_INTERACTIVE")
-        or os.getenv("HERMES_GATEWAY_SESSION")
-        or os.getenv("HERMES_EXEC_ASK")
+    from utils import env_var_enabled
+
+    return (
+        env_var_enabled("HERMES_INTERACTIVE")
+        or env_var_enabled("HERMES_GATEWAY_SESSION")
+        or env_var_enabled("HERMES_EXEC_ASK")
     )
 
 

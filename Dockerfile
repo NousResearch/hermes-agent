@@ -72,9 +72,11 @@ RUN npm install --prefer-offline --no-audit && \
 # frontend stats the readme path during dep resolution, so we `touch` an
 # empty placeholder — the real README is restored by `COPY . .` below.
 #
-# `uv sync --frozen --no-install-project --extra all` installs only the
-# deps reachable through the composite `[all]` extra (handpicked set
-# intended for the production image).  We do NOT use `--all-extras`:
+# `uv sync --frozen --no-install-project --extra all --extra messaging`
+# installs the deps reachable through the composite `[all]` extra
+# (handpicked set intended for the production image), plus gateway
+# messaging adapters that should work in the published image without a
+# first-boot lazy install.  We do NOT use `--all-extras`:
 # that would pull in `[rl]` (atroposlib + tinker + torch + wandb from
 # git), `[yc-bench]` (another git dep), and `[termux-all]` (Android
 # redundancy), none of which belong in the published container.
@@ -82,7 +84,7 @@ RUN npm install --prefer-offline --no-audit && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all
+RUN uv sync --frozen --no-install-project --extra all --extra messaging
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -100,10 +102,10 @@ RUN cd web && npm run build && \
 # hermes_cli/main.py succeeds (see #18800). /opt/hermes/web is build-time
 # only (HERMES_WEB_DIST points at hermes_cli/web_dist) and is intentionally
 # not chowned here.
-# The .venv MUST be hermes-writable so lazy_deps.py can install platform
-# packages (discord.py, telegram, slack, etc.) at first gateway boot.
-# Without this, `uv pip install` fails with EACCES and all messaging
-# adapters silently fail to load.  See tools/lazy_deps.py.
+# The .venv MUST remain hermes-writable so lazy_deps.py can install
+# remaining optional platform packages and future pin bumps at first use.
+# Without this, `uv pip install` fails with EACCES and adapters silently
+# fail to load.  See tools/lazy_deps.py.
 USER root
 RUN chmod -R a+rX /opt/hermes && \
     chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules
@@ -119,5 +121,6 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"
+RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]

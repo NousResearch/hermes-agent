@@ -1667,7 +1667,17 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
-            
+
+            # Re-trigger typing indicator after sending a message.
+            # Telegram clears the typing state when a new message is delivered,
+            # so without this the "...typing" bubble disappears mid-response
+            # (especially noticeable when the agent sends intermediate progress
+            # messages like "Checking:" before running tools).
+            try:
+                await self.send_typing(chat_id, metadata=metadata)
+            except Exception:
+                pass  # Typing failures are non-fatal
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -3802,14 +3812,6 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._bot:
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
-                # Skip the Bot API call entirely for Hermes-created DM topic
-                # lanes: send_chat_action only accepts message_thread_id, which
-                # Telegram's Bot API 10.0 rejects for these lanes. The send
-                # path uses the reply-anchor fallback instead, but typing has
-                # no equivalent — skipping avoids noisy "thread not found"
-                # debug logs on every typing tick.
-                if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
-                    return
                 message_thread_id = self._message_thread_id_for_typing(_typing_thread)
                 # No retry-without-thread fallback here: _message_thread_id_for_typing
                 # already maps the forum General topic to None, so any non-None value

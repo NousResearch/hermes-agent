@@ -1,15 +1,19 @@
 """Tests for acp_adapter.events — callback factories for ACP notifications."""
 
 import asyncio
+import gc
+import warnings
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import acp
-from acp.schema import ToolCallStart, ToolCallProgress, AgentThoughtChunk, AgentMessageChunk
+from acp.schema import AgentPlanUpdate, ToolCallStart, ToolCallProgress, AgentThoughtChunk, AgentMessageChunk
 
 from acp_adapter.events import (
+    _build_plan_update_from_todo_result,
+    _send_update,
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
@@ -293,6 +297,54 @@ class TestStepCallback:
         }
         mock_send.assert_called_once()
 
+    def test_todo_completion_emits_native_plan_update_after_tool_completion(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        tool_call_ids = {"todo": deque(["tc-todo"])}
+        loop = event_loop_fixture
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
+        todo_result = (
+            '{"todos":['
+            '{"id":"inspect","content":"Inspect ACP","status":"completed"},'
+            '{"id":"patch","content":"Patch renderer","status":"in_progress"},'
+            '{"id":"old","content":"Drop stale task","status":"cancelled"}'
+            '],"summary":{"total":3}}'
+        )
+
+        with patch("acp_adapter.events._send_update") as mock_send:
+            cb(1, [{"name": "todo", "result": todo_result}])
+
+        updates = [call.args[3] for call in mock_send.call_args_list]
+        assert [getattr(update, "session_update", None) for update in updates] == [
+            "tool_call_update",
+            "plan",
+        ]
+        plan = updates[1]
+        assert isinstance(plan, AgentPlanUpdate)
+        assert [entry.content for entry in plan.entries] == [
+            "Inspect ACP",
+            "Patch renderer",
+            "[cancelled] Drop stale task",
+        ]
+        assert [entry.status for entry in plan.entries] == ["completed", "in_progress", "completed"]
+        assert [entry.priority for entry in plan.entries] == ["medium", "medium", "medium"]
+
+    def test_todo_plan_update_parses_json_with_trailing_hint(self):
+        result = '{"todos":[{"id":"ship","content":"Ship ACP plan","status":"pending"}]}\n\n[Hint: persisted]'
+
+        update = _build_plan_update_from_todo_result(result)
+
+        assert isinstance(update, AgentPlanUpdate)
+        assert [entry.content for entry in update.entries] == ["Ship ACP plan"]
+        assert [entry.status for entry in update.entries] == ["pending"]
+
+    def test_todo_plan_update_with_empty_todos_clears_plan(self):
+        update = _build_plan_update_from_todo_result('{"todos":[],"summary":{"total":0}}')
+
+        assert isinstance(update, AgentPlanUpdate)
+        assert update.session_update == "plan"
+        assert update.entries == []
+
 
 # ---------------------------------------------------------------------------
 # Message callback
@@ -325,3 +377,46 @@ class TestMessageCallback:
             cb("")
 
         mock_rcts.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Scheduler-failure regression
+# ---------------------------------------------------------------------------
+
+class TestSendUpdate:
+    def test_scheduler_failure_closes_update_coroutine(self, event_loop_fixture):
+        """If run_coroutine_threadsafe raises, _send_update must close the coro."""
+        created = {"coro": None}
+
+        async def _session_update(session_id, update):
+            return None
+
+        conn = MagicMock()
+
+        def _capture_update(session_id, update):
+            created["coro"] = _session_update(session_id, update)
+            return created["coro"]
+
+        conn.session_update = _capture_update
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with patch(
+                "agent.async_utils.asyncio.run_coroutine_threadsafe",
+                side_effect=RuntimeError("scheduler down"),
+            ):
+                _send_update(conn, "session-1", event_loop_fixture, {"type": "noop"})
+            gc.collect()
+
+        assert created["coro"] is not None
+        assert created["coro"].cr_frame is None
+        # Only count warnings about THIS test's coroutine; other tests in the
+        # same xdist worker (or stdlib mock internals) may emit unrelated
+        # "coroutine was never awaited" warnings that bleed through.
+        runtime_warnings = [
+            w for w in caught
+            if issubclass(w.category, RuntimeWarning)
+            and "was never awaited" in str(w.message)
+            and "_session_update" in str(w.message)
+        ]
+        assert runtime_warnings == []

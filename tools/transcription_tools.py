@@ -26,7 +26,6 @@ Usage::
         print(result["transcript"])
 """
 
-import json
 import logging
 import os
 import shlex
@@ -85,7 +84,6 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
-DEFAULT_DEEPGRAM_STT_MODEL = os.getenv("STT_DEEPGRAM_MODEL", "nova-3")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -93,23 +91,10 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
-DEEPGRAM_STT_BASE_URL = os.getenv("DEEPGRAM_STT_BASE_URL", "https://api.deepgram.com/v1")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
-AUDIO_CONTENT_TYPES = {
-    ".mp3": "audio/mpeg",
-    ".mp4": "audio/mp4",
-    ".mpeg": "audio/mpeg",
-    ".mpga": "audio/mpeg",
-    ".m4a": "audio/mp4",
-    ".wav": "audio/wav",
-    ".webm": "audio/webm",
-    ".ogg": "audio/ogg",
-    ".aac": "audio/aac",
-    ".flac": "audio/flac",
-}
 
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
@@ -149,45 +134,6 @@ def _has_openai_audio_backend() -> bool:
         return True
     except ValueError:
         return False
-
-
-def _agent_vault_config() -> Optional[Dict[str, str]]:
-    """Load Agent Vault connection metadata without exposing tokens in logs."""
-    cfg_path = Path.home() / ".hermes" / "agent-vault-agent.json"
-    if not cfg_path.exists():
-        return None
-    try:
-        data = json.loads(cfg_path.read_text())
-    except Exception:
-        return None
-    token = data.get("av_agent_token") or data.get("agent_token") or data.get("token")
-    if not token:
-        return None
-    base_url = str(data.get("base_url") or "http://100.111.37.49:14321").rstrip("/")
-    return {"base_url": base_url, "token": token}
-
-
-def _has_agent_vault_deepgram() -> bool:
-    """Return True if Agent Vault advertises Deepgram access."""
-    cfg = _agent_vault_config()
-    if not cfg:
-        return False
-    try:
-        import requests
-        response = requests.get(
-            f"{cfg['base_url']}/discover",
-            headers={"Authorization": f"Bearer {cfg['token']}", "X-Vault": "default"},
-            timeout=8,
-        )
-        if response.status_code != 200:
-            return False
-        return "api.deepgram.com" in response.text.lower() or "deepgram" in response.text.lower()
-    except Exception:
-        return False
-
-
-def _has_deepgram_backend() -> bool:
-    return bool(get_env_value("DEEPGRAM_API_KEY") or _has_agent_vault_deepgram())
 
 
 def _find_binary(binary_name: str) -> Optional[str]:
@@ -320,18 +266,12 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "xai":
-            if get_env_value("XAI_API_KEY"):
+            from tools.xai_http import resolve_xai_http_credentials
+
+            if resolve_xai_http_credentials().get("api_key"):
                 return "xai"
             logger.warning(
-                "STT provider 'xai' configured but XAI_API_KEY not set"
-            )
-            return "none"
-
-        if provider == "deepgram":
-            if _has_deepgram_backend():
-                return "deepgram"
-            logger.warning(
-                "STT provider 'deepgram' configured but neither DEEPGRAM_API_KEY nor Agent Vault Deepgram access is available"
+                "STT provider 'xai' configured but no xAI credentials are available"
             )
             return "none"
 
@@ -351,9 +291,14 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
-    if get_env_value("XAI_API_KEY"):
-        logger.info("No local STT available, using xAI Grok STT API")
-        return "xai"
+    try:
+        from tools.xai_http import resolve_xai_http_credentials
+
+        if resolve_xai_http_credentials().get("api_key"):
+            logger.info("No local STT available, using xAI Grok STT API")
+            return "xai"
+    except Exception:
+        pass
     if _has_deepgram_backend():
         logger.info("No local STT available, using Deepgram STT API")
         return "deepgram"
@@ -769,15 +714,23 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     Supports Inverse Text Normalization, diarization, and word-level timestamps.
     Requires ``XAI_API_KEY`` environment variable.
     """
-    api_key = get_env_value("XAI_API_KEY")
+    from tools.xai_http import resolve_xai_http_credentials
+
+    creds = resolve_xai_http_credentials()
+    api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
-        return {"success": False, "transcript": "", "error": "XAI_API_KEY not set"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY",
+        }
 
     stt_config = _load_stt_config()
     xai_config = stt_config.get("xai", {})
     base_url = str(
         xai_config.get("base_url")
         or get_env_value("XAI_STT_BASE_URL")
+        or creds.get("base_url")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
     language = str(
@@ -857,148 +810,6 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Provider: Deepgram (Nova STT API)
-# ---------------------------------------------------------------------------
-
-
-class _AgentVaultProxyAdapter:
-    """Factory for a requests adapter that sends X-Vault on CONNECT."""
-
-    @staticmethod
-    def create():
-        import requests
-
-        class AgentVaultHTTPAdapter(requests.adapters.HTTPAdapter):
-            def proxy_headers(self, proxy):
-                headers = super().proxy_headers(proxy)
-                headers["X-Vault"] = "default"
-                return headers
-
-        return AgentVaultHTTPAdapter()
-
-
-def _ensure_agent_vault_ca(cfg: Dict[str, str]) -> tuple[str, str]:
-    """Ensure Agent Vault CA is available; return (proxy_origin, ca_path)."""
-    import requests
-
-    ca_path = Path.home() / ".hermes" / "agent-vault-ca.pem"
-    proxy_port = "14322"
-    try:
-        response = requests.get(
-            f"{cfg['base_url']}/v1/mitm/ca.pem",
-            headers={"Authorization": f"Bearer {cfg['token']}", "X-Vault": "default"},
-            timeout=10,
-        )
-        if response.status_code == 200 and response.content:
-            ca_path.write_bytes(response.content)
-            os.chmod(ca_path, 0o600)
-            proxy_port = response.headers.get("X-MITM-Port") or proxy_port
-    except Exception:
-        pass
-    return f"https://100.111.37.49:{proxy_port}", str(ca_path)
-
-
-def _deepgram_session_and_auth() -> tuple[Any, Dict[str, str], Optional[Dict[str, str]], Optional[str]]:
-    """Return requests session, headers, proxies, and CA path for Deepgram."""
-    import requests
-
-    api_key = get_env_value("DEEPGRAM_API_KEY")
-    session = requests.Session()
-    headers: Dict[str, str] = {}
-    if api_key:
-        headers["Authorization"] = f"Token {api_key}"
-        return session, headers, None, None
-
-    cfg = _agent_vault_config()
-    if not cfg:
-        raise ValueError("DEEPGRAM_API_KEY not set and Agent Vault is not configured")
-
-    proxy_origin, ca_path = _ensure_agent_vault_ca(cfg)
-    session.mount("https://", _AgentVaultProxyAdapter.create())
-    proxy_url = proxy_origin.replace("https://", f"https://{cfg['token']}:@", 1)
-    return session, headers, {"https": proxy_url}, ca_path
-
-
-def _deepgram_transcript_from_response(payload: Any) -> str:
-    try:
-        channels = payload.get("results", {}).get("channels", [])
-        alternatives = channels[0].get("alternatives", []) if channels else []
-        transcript = alternatives[0].get("transcript", "") if alternatives else ""
-        return str(transcript).strip()
-    except Exception:
-        return ""
-
-
-def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using Deepgram Nova STT."""
-    stt_config = _load_stt_config()
-    deepgram_config = stt_config.get("deepgram", {}) if isinstance(stt_config, dict) else {}
-    base_url = str(
-        deepgram_config.get("base_url")
-        or get_env_value("DEEPGRAM_STT_BASE_URL")
-        or DEEPGRAM_STT_BASE_URL
-    ).strip().rstrip("/")
-    language = str(deepgram_config.get("language") or "").strip()
-    smart_format = is_truthy_value(deepgram_config.get("smart_format", True))
-    punctuate = is_truthy_value(deepgram_config.get("punctuate", True))
-
-    try:
-        session, headers, proxies, ca_path = _deepgram_session_and_auth()
-        params: Dict[str, str] = {"model": model_name}
-        if smart_format:
-            params["smart_format"] = "true"
-        if punctuate:
-            params["punctuate"] = "true"
-        if language:
-            params["language"] = language
-
-        audio_path = Path(file_path)
-        content_type = AUDIO_CONTENT_TYPES.get(audio_path.suffix.lower(), "application/octet-stream")
-        headers = {**headers, "Content-Type": content_type}
-
-        with open(file_path, "rb") as audio_file:
-            response = session.post(
-                f"{base_url}/listen",
-                params=params,
-                data=audio_file,
-                headers=headers,
-                proxies=proxies,
-                verify=ca_path or True,
-                timeout=120,
-            )
-
-        if response.status_code != 200:
-            detail = response.text[:300]
-            try:
-                body = response.json()
-                detail = body.get("err_msg") or body.get("message") or detail
-            except Exception:
-                pass
-            return {
-                "success": False,
-                "transcript": "",
-                "error": f"Deepgram STT API error (HTTP {response.status_code}): {detail}",
-            }
-
-        transcript_text = _deepgram_transcript_from_response(response.json())
-        if not transcript_text:
-            return {"success": False, "transcript": "", "error": "Deepgram STT returned empty transcript"}
-
-        logger.info(
-            "Transcribed %s via Deepgram STT (%s, %d chars)",
-            Path(file_path).name,
-            model_name,
-            len(transcript_text),
-        )
-        return {"success": True, "transcript": transcript_text, "provider": "deepgram"}
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except Exception as e:
-        logger.error("Deepgram transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Deepgram STT transcription failed: {e}"}
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1071,11 +882,6 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
 
-    if provider == "deepgram":
-        deepgram_cfg = stt_config.get("deepgram", {})
-        model_name = model or deepgram_cfg.get("model", DEFAULT_DEEPGRAM_STT_MODEL)
-        return _transcribe_deepgram(file_path, model_name)
-
     # No provider available
     return {
         "success": False,
@@ -1084,8 +890,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, set DEEPGRAM_API_KEY "
-            "or configure Deepgram in Agent Vault, or set VOICE_TOOLS_OPENAI_KEY "
+            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
+            "set DEEPGRAM_API_KEY or configure Deepgram in Agent Vault, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

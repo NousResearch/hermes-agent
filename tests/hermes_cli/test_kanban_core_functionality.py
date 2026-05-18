@@ -781,6 +781,33 @@ def test_worker_log_rotation_keeps_one_generation(kanban_home, tmp_path):
     assert (log_dir / "t_aaaa.log.1").exists()
 
 
+def test_worker_log_rotation_keeps_configured_generations(kanban_home):
+    log_dir = kanban_home / "kanban" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    target = log_dir / "t_multi.log"
+    target.write_text("current")
+    (log_dir / "t_multi.log.1").write_text("one")
+    (log_dir / "t_multi.log.2").write_text("two")
+
+    kb._rotate_worker_log(target, max_bytes=1, backup_count=3)
+
+    assert not target.exists()
+    assert (log_dir / "t_multi.log.1").read_text() == "current"
+    assert (log_dir / "t_multi.log.2").read_text() == "one"
+    assert (log_dir / "t_multi.log.3").read_text() == "two"
+
+
+def test_worker_log_rotation_config_defaults_and_overrides():
+    assert kb.worker_log_rotation_config({}) == (
+        kb.DEFAULT_LOG_ROTATE_BYTES,
+        kb.DEFAULT_LOG_BACKUP_COUNT,
+    )
+    assert kb.worker_log_rotation_config({
+        "worker_log_rotate_bytes": 10,
+        "worker_log_backup_count": 4,
+    }) == (10, 4)
+
+
 def test_read_worker_log_tail(kanban_home):
     log_dir = kanban_home / "kanban" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1148,7 +1175,7 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
         task = kb.get_task(conn, tid)
         # After timeout, task is back in 'ready' and will be re-spawned
         # by the same pass. That's the intended behaviour.
-        assert task.status in ("ready", "running")
+        assert task.status in {"ready", "running"}
     finally:
         conn.close()
 
@@ -2779,6 +2806,124 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     env = captured["env"]
     assert env.get("HERMES_KANBAN_TASK") == tid
     assert env.get("HERMES_PROFILE") == "some-profile"
+
+
+def test_default_spawn_raises_terminal_timeout_to_task_runtime(kanban_home, monkeypatch):
+    """A task runtime cap should raise the worker's terminal default.
+
+    This is worker-scoped env only: normal CLI/gateway terminal settings stay
+    untouched, but long kanban tasks no longer inherit a short generic
+    TERMINAL_TIMEOUT that kills their foreground command first.
+    """
+    captured = {}
+
+    class FakeProc:
+        pid = 123
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "180")
+    monkeypatch.delenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", raising=False)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="long worker",
+            assignee="ops",
+            max_runtime_seconds=3600,
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    assert captured["env"]["TERMINAL_TIMEOUT"] == "3570"
+    assert captured["env"]["TERMINAL_MAX_FOREGROUND_TIMEOUT"] == "3570"
+    assert os.environ["TERMINAL_TIMEOUT"] == "180"
+
+
+def test_default_spawn_preserves_longer_terminal_timeout(kanban_home, monkeypatch):
+    """Kanban should never lower an explicitly larger terminal timeout."""
+    captured = {}
+
+    class FakeProc:
+        pid = 124
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "7200")
+    monkeypatch.setenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "7200")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="already tuned",
+            assignee="ops",
+            max_runtime_seconds=3600,
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    assert captured["env"]["TERMINAL_TIMEOUT"] == "7200"
+    assert captured["env"]["TERMINAL_MAX_FOREGROUND_TIMEOUT"] == "7200"
+
+
+def test_default_spawn_leaves_terminal_timeout_without_runtime_cap(kanban_home, monkeypatch):
+    """Uncapped tasks keep the existing terminal timeout behavior."""
+    captured = {}
+
+    class FakeProc:
+        pid = 125
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "180")
+    monkeypatch.delenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", raising=False)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="uncapped", assignee="ops")
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    assert captured["env"]["TERMINAL_TIMEOUT"] == "180"
+    assert "TERMINAL_MAX_FOREGROUND_TIMEOUT" not in captured["env"]
+
+
+def test_build_worker_context_includes_runtime_timeout_budget(kanban_home, monkeypatch):
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "180")
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="long context",
+            assignee="ops",
+            max_runtime_seconds=3600,
+        )
+        ctx = kb.build_worker_context(conn, tid)
+    finally:
+        conn.close()
+
+    assert "Max runtime: 3600s" in ctx
+    assert "Terminal timeout: 3570s" in ctx
 
 
 

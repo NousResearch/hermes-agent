@@ -24,10 +24,12 @@ from acp.schema import (
     PromptResponse,
     ResumeSessionResponse,
     SessionModelState,
+    SessionModeState,
     SetSessionConfigOptionResponse,
     SetSessionModelResponse,
     SetSessionModeResponse,
     SessionInfo,
+    SessionInfoUpdate,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
@@ -51,6 +53,35 @@ def mock_manager():
 def agent(mock_manager):
     """HermesACPAgent backed by a mock session manager."""
     return HermesACPAgent(session_manager=mock_manager)
+
+
+@pytest.mark.asyncio
+async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
+    resp = await agent.new_session(cwd="/tmp")
+
+    assert resp.config_options is None
+    assert isinstance(resp.modes, SessionModeState)
+    assert resp.modes.current_mode_id == "default"
+    assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
+        ("default", "Default"),
+        ("accept_edits", "Accept Edits"),
+        ("dont_ask", "Don't Ask"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
+    resp = await agent.new_session(cwd="/tmp")
+    update = await agent.set_config_option(
+        "edit_approval_policy",
+        resp.session_id,
+        "workspace_session",
+    )
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert isinstance(update, SetSessionConfigOptionResponse)
+    assert update.config_options == []
+    assert getattr(state, "mode", None) == "accept_edits"
 
 
 # ---------------------------------------------------------------------------
@@ -865,11 +896,11 @@ class TestSessionConfiguration:
     @pytest.mark.asyncio
     async def test_set_session_mode_returns_response(self, agent):
         new_resp = await agent.new_session(cwd="/tmp")
-        resp = await agent.set_session_mode(mode_id="chat", session_id=new_resp.session_id)
+        resp = await agent.set_session_mode(mode_id="accept_edits", session_id=new_resp.session_id)
         state = agent.session_manager.get_session(new_resp.session_id)
 
         assert isinstance(resp, SetSessionModeResponse)
-        assert getattr(state, "mode", None) == "chat"
+        assert getattr(state, "mode", None) == "accept_edits"
 
     @pytest.mark.asyncio
     async def test_router_accepts_stable_session_config_methods(self, agent):
@@ -878,7 +909,7 @@ class TestSessionConfiguration:
 
         mode_result = await router(
             "session/set_mode",
-            {"modeId": "chat", "sessionId": new_resp.session_id},
+            {"modeId": "accept_edits", "sessionId": new_resp.session_id},
             False,
         )
         config_result = await router(
@@ -892,7 +923,7 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result == {"configOptions": []}
+        assert config_result["configOptions"] == []
 
     @pytest.mark.asyncio
     async def test_router_accepts_unstable_model_switch_when_enabled(self, agent):
@@ -1110,6 +1141,48 @@ class TestPrompt:
         assert mock_title.call_args.args[1] == new_resp.session_id
         assert mock_title.call_args.args[2] == "fix the broken ACP history"
         assert mock_title.call_args.args[3] == "Here is the fix."
+        assert callable(mock_title.call_args.kwargs["title_callback"])
+
+    @pytest.mark.asyncio
+    async def test_prompt_sends_session_info_update_after_auto_title(self, agent):
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "Done.",
+            "messages": [
+                {"role": "user", "content": "fix zed titles"},
+                {"role": "assistant", "content": "Done."},
+            ],
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+        })
+
+        def fake_auto_title(db, session_id, user_text, final_response, history, **kwargs):
+            db.set_session_title(session_id, "Fix Zed titles")
+            kwargs["title_callback"]("Fix Zed titles")
+
+        with patch("agent.title_generator.maybe_auto_title", side_effect=fake_auto_title):
+            mock_conn.session_update.reset_mock()
+            await agent.prompt(
+                session_id=resp.session_id,
+                prompt=[TextContentBlock(type="text", text="fix zed titles")],
+            )
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.await_args_list
+        ]
+        info_updates = [u for u in updates if isinstance(u, SessionInfoUpdate)]
+        assert len(info_updates) == 1
+        assert info_updates[0].session_update == "session_info_update"
+        assert info_updates[0].title == "Fix Zed titles"
 
     @pytest.mark.asyncio
     async def test_prompt_populates_usage_from_top_level_run_conversation_fields(self, agent):

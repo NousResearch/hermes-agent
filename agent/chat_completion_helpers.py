@@ -286,6 +286,28 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         )
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
+
+        # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
+        # in tool schemas (HTTP 400 "Invalid arguments passed to the model").
+        # Most commonly hit when MCP-derived tools carry JSON Schema validation
+        # keywords through. Strip them before building kwargs. See #27197.
+        # It also rejects ``enum`` values containing ``/`` (HuggingFace IDs
+        # like ``Qwen/Qwen3.5-0.8B`` shipped by MCP servers) — same 400 with
+        # the same opaque message; strip those enums too.
+        if is_xai_responses:
+            try:
+                from tools.schema_sanitizer import (
+                    strip_pattern_and_format,
+                    strip_slash_enum,
+                )
+                tools_for_api, _ = strip_pattern_and_format(tools_for_api)
+                tools_for_api, _ = strip_slash_enum(tools_for_api)
+            except Exception as exc:
+                logger.warning(
+                    "%s⚠️ Failed to sanitize tool schemas for xAI: %s",
+                    getattr(agent, "log_prefix", ""), exc,
+                )
+
         return _ct.build_kwargs(
             model=agent.model,
             messages=_msgs_for_codex,
@@ -851,9 +873,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # the fallback activation drops to 128K even when config says 204800.
         if hasattr(agent, 'context_compressor') and agent.context_compressor:
             from agent.model_metadata import get_model_context_length
+            # ``agent.api_key`` may be callable (Entra ID); the
+            # context-length resolver expects a string for live
+            # probes. Foundry typically resolves via config/static
+            # catalogs anyway, so coerce defensively.
+            _fb_ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
             fb_context_length = get_model_context_length(
                 agent.model, base_url=agent.base_url,
-                api_key=agent.api_key, provider=agent.provider,
+                api_key=_fb_ctx_api_key, provider=agent.provider,
                 config_context_length=getattr(agent, "_config_context_length", None),
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
@@ -861,7 +888,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 model=agent.model,
                 context_length=fb_context_length,
                 base_url=agent.base_url,
-                api_key=getattr(agent, "api_key", ""),
+                api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
                 provider=agent.provider,
             )
 

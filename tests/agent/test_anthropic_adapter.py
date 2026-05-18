@@ -9,6 +9,7 @@ import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
+    _is_azure_anthropic_endpoint,
     _is_oauth_token,
     _refresh_oauth_token,
     _to_plain_data,
@@ -121,6 +122,20 @@ class TestBuildAnthropicClient:
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
 
+    def test_azure_anthropic_endpoint_detection_is_host_and_path_scoped(self):
+        assert _is_azure_anthropic_endpoint(
+            "https://example.services.ai.azure.com/models/anthropic"
+        ) is True
+        assert _is_azure_anthropic_endpoint(
+            "https://example.services.ai.azure.us/anthropic"
+        ) is True
+        assert _is_azure_anthropic_endpoint(
+            "https://example.openai.azure.com/openai/v1"
+        ) is False
+        assert _is_azure_anthropic_endpoint(
+            "https://management.azure.com/anthropic"
+        ) is False
+
     def test_bedrock_client_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             mock_sdk.AnthropicBedrock = MagicMock()
@@ -154,6 +169,27 @@ class TestBuildAnthropicClient:
             assert kwargs["default_headers"] == {
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
+
+    def test_azure_foundry_anthropic_endpoint_uses_bearer_auth(self):
+        """Azure AI Foundry's /anthropic endpoint requires Authorization: Bearer.
+
+        Regression test for #26970: without this, builds set api_key (x-api-key)
+        and the endpoint returns HTTP 401. Also verifies that Azure retains the
+        1M-context beta even though it now matches `_requires_bearer_auth`.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "azure-foundry-secret-123",
+                base_url="https://my-resource.openai.azure.com/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "azure-foundry-secret-123"
+            assert "api_key" not in kwargs
+            # Azure endpoints still get the api-version query param plumbing.
+            assert kwargs.get("default_query") == {"api-version": "2025-04-15"}
+            # Azure keeps the 1M-context beta (it's not MiniMax).
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
 
 
 class TestReadClaudeCodeCredentials:

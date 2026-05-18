@@ -89,6 +89,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/vision',
             'user-guide/features/image-generation',
             'user-guide/features/tts',
+            'user-guide/features/deliverable-mode',
           ],
         },
         {

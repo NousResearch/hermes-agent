@@ -4474,6 +4474,29 @@ class GatewayRunner:
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
                             )
+                            # After delivering the text notification, surface
+                            # any artifact paths the worker referenced in
+                            # ``kanban_complete(summary=..., artifacts=[...])``
+                            # (or the legacy ``result`` field) as native
+                            # uploads. ``extract_local_files`` finds bare
+                            # absolute paths in the summary;
+                            # ``send_document`` / ``send_image_file`` uploads
+                            # them. Only fires on the ``completed`` event so
+                            # we never spam attachments on retries.
+                            if kind == "completed":
+                                try:
+                                    await self._deliver_kanban_artifacts(
+                                        adapter=adapter,
+                                        chat_id=sub["chat_id"],
+                                        metadata=metadata,
+                                        event_payload=getattr(ev, "payload", None),
+                                        task=task,
+                                    )
+                                except Exception as art_exc:
+                                    logger.debug(
+                                        "kanban notifier: artifact delivery for %s failed: %s",
+                                        sub["task_id"], art_exc,
+                                    )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
                         except Exception as exc:
@@ -4590,6 +4613,110 @@ class GatewayRunner:
             )
         finally:
             conn.close()
+
+    async def _deliver_kanban_artifacts(
+        self,
+        *,
+        adapter,
+        chat_id: str,
+        metadata: dict,
+        event_payload: Optional[dict],
+        task,
+    ) -> None:
+        """Upload artifact files referenced by a completed kanban task.
+
+        Workers passing ``kanban_complete(artifacts=[...])`` ship absolute
+        file paths through the completion event so downstream humans get
+        the deliverable as a native upload instead of a path printed in
+        chat.
+
+        Sources scanned, in priority order:
+          1. ``event_payload['artifacts']`` (explicit list — preferred)
+          2. ``event_payload['summary']`` (truncated first line)
+          3. ``task.result`` (legacy fallback)
+
+        Files are deduplicated, missing files are silently skipped (the
+        path may have been mentioned for reference only), and delivery
+        errors are logged but do not break the notifier loop.
+        """
+        from pathlib import Path as _Path
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _add(path: str) -> None:
+            if not path:
+                return
+            expanded = os.path.expanduser(path)
+            if expanded in seen:
+                return
+            if not os.path.isfile(expanded):
+                return
+            seen.add(expanded)
+            candidates.append(expanded)
+
+        # 1. Explicit artifacts list in payload.
+        if isinstance(event_payload, dict):
+            raw = event_payload.get("artifacts")
+            if isinstance(raw, (list, tuple)):
+                for item in raw:
+                    if isinstance(item, str):
+                        _add(item)
+
+            # 2. Paths embedded in the payload summary.
+            summary = event_payload.get("summary")
+            if isinstance(summary, str) and summary:
+                paths, _ = adapter.extract_local_files(summary)
+                for p in paths:
+                    _add(p)
+
+        # 3. Legacy: paths embedded in task.result.
+        if task is not None and getattr(task, "result", None):
+            result_text = str(task.result)
+            paths, _ = adapter.extract_local_files(result_text)
+            for p in paths:
+                _add(p)
+
+        if not candidates:
+            return
+
+        _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg"}
+        _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+
+        from urllib.parse import quote as _quote
+
+        # Partition images so they ride a single send_multiple_images call
+        # on platforms that support batch image uploads (Signal/Slack RPCs).
+        image_paths = [p for p in candidates if _Path(p).suffix.lower() in _IMAGE_EXTS]
+        other_paths = [p for p in candidates if _Path(p).suffix.lower() not in _IMAGE_EXTS]
+
+        if image_paths:
+            try:
+                batch = [(f"file://{_quote(p)}", "") for p in image_paths]
+                await adapter.send_multiple_images(
+                    chat_id=chat_id, images=batch, metadata=metadata,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "kanban notifier: image batch upload failed: %s", exc,
+                )
+
+        for path in other_paths:
+            ext = _Path(path).suffix.lower()
+            try:
+                if ext in _VIDEO_EXTS:
+                    await adapter.send_video(
+                        chat_id=chat_id, video_path=path, metadata=metadata,
+                    )
+                else:
+                    await adapter.send_document(
+                        chat_id=chat_id, file_path=path, metadata=metadata,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "kanban notifier: artifact upload (%s) failed: %s",
+                    path, exc,
+                )
 
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
@@ -4763,11 +4890,106 @@ class GatewayRunner:
                             pass
             return False
 
+        # Auto-decompose: turn fresh triage tasks into ready workgraphs
+        # before the dispatcher fans out workers. Gated by
+        # ``kanban.auto_decompose`` (default True). Capped by
+        # ``kanban.auto_decompose_per_tick`` (default 3) so a bulk-load
+        # of triage tasks doesn't burst-spend the aux LLM in one tick;
+        # remainder defers to subsequent ticks.
+        auto_decompose_enabled = bool(kanban_cfg.get("auto_decompose", True))
+        try:
+            auto_decompose_per_tick = int(
+                kanban_cfg.get("auto_decompose_per_tick", 3) or 3
+            )
+        except (TypeError, ValueError):
+            auto_decompose_per_tick = 3
+        if auto_decompose_per_tick < 1:
+            auto_decompose_per_tick = 1
+
+        def _auto_decompose_tick() -> int:
+            """Run the auto-decomposer for up to N triage tasks across all
+            boards. Returns the number of triage tasks that were
+            successfully decomposed or specified this tick.
+            """
+            try:
+                from hermes_cli import kanban_decompose as _decomp
+            except Exception as exc:  # pragma: no cover
+                logger.warning(
+                    "kanban auto-decompose: import failed (%s); skipping", exc,
+                )
+                return 0
+            try:
+                boards = _kb.list_boards(include_archived=False)
+            except Exception:
+                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            attempted = 0
+            successes = 0
+            for b in boards:
+                slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if attempted >= auto_decompose_per_tick:
+                    break
+                # Pin this board for the duration of the call — same
+                # pattern as the dashboard specify endpoint. The
+                # decomposer module connects with no board kwarg and
+                # relies on the env var.
+                prev_env = os.environ.get("HERMES_KANBAN_BOARD")
+                try:
+                    os.environ["HERMES_KANBAN_BOARD"] = slug
+                    try:
+                        triage_ids = _decomp.list_triage_ids()
+                    except Exception as exc:
+                        logger.debug(
+                            "kanban auto-decompose: list_triage_ids failed on board %s (%s)",
+                            slug, exc,
+                        )
+                        triage_ids = []
+                    for tid in triage_ids:
+                        if attempted >= auto_decompose_per_tick:
+                            break
+                        attempted += 1
+                        try:
+                            outcome = _decomp.decompose_task(
+                                tid, author="auto-decomposer",
+                            )
+                        except Exception:
+                            logger.exception(
+                                "kanban auto-decompose: decompose_task crashed on %s",
+                                tid,
+                            )
+                            continue
+                        if outcome.ok:
+                            successes += 1
+                            if outcome.fanout and outcome.child_ids:
+                                logger.info(
+                                    "kanban auto-decompose [%s]: %s → %d children",
+                                    slug, tid, len(outcome.child_ids),
+                                )
+                            else:
+                                logger.info(
+                                    "kanban auto-decompose [%s]: %s → single task (no fanout)",
+                                    slug, tid,
+                                )
+                        else:
+                            # Common no-op reasons (no aux client configured) shouldn't
+                            # spam logs every tick. Log at debug.
+                            logger.debug(
+                                "kanban auto-decompose [%s]: %s skipped: %s",
+                                slug, tid, outcome.reason,
+                            )
+                finally:
+                    if prev_env is None:
+                        os.environ.pop("HERMES_KANBAN_BOARD", None)
+                    else:
+                        os.environ["HERMES_KANBAN_BOARD"] = prev_env
+            return successes
+
         logger.info(
             "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
         )
         while self._running:
             try:
+                if auto_decompose_enabled:
+                    await asyncio.to_thread(_auto_decompose_tick)
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
@@ -7556,22 +7778,24 @@ class GatewayRunner:
                                         )
 
                                     # If summary generation failed, the
-                                    # compressor inserted a static fallback
-                                    # placeholder and the dropped turns are
-                                    # gone for good.  Surface a visible
-                                    # warning to the gateway user — agent.log
-                                    # alone is invisible on TG/Discord/etc.
+                                    # compressor aborts entirely and returns
+                                    # messages unchanged — nothing is dropped.
+                                    # Surface a visible warning to the gateway
+                                    # user — agent.log alone is invisible on
+                                    # TG/Discord/etc. — so they know the chat
+                                    # is "frozen" at the current size and can
+                                    # /compress to retry or /reset to start
+                                    # fresh.
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
-                                    if _comp is not None and getattr(_comp, "_last_summary_fallback_used", False):
-                                        _dropped = getattr(_comp, "_last_summary_dropped_count", 0)
+                                    if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
                                         _warn_msg = (
-                                            "⚠️ Context compression summary failed "
-                                            f"({_err}). {_dropped} historical message(s) "
-                                            "were removed and replaced with a placeholder. "
-                                            "Earlier context is no longer recoverable. "
-                                            "Consider /reset for a clean session, or check "
-                                            "your auxiliary.compression model configuration."
+                                            "⚠️ Context compression aborted "
+                                            f"({_err}). No messages were dropped — "
+                                            "conversation is unchanged. Run /compress "
+                                            "to retry, /reset for a clean session, or "
+                                            "check your auxiliary.compression model "
+                                            "configuration."
                                         )
                                         try:
                                             _adapter = self.adapters.get(source.platform)
@@ -7977,9 +8201,12 @@ class GatewayRunner:
                 # message so the next message can load a transcript that
                 # reflects what was said.  Skip the assistant error text since
                 # it's a gateway-generated hint, not model output. (#7100)
+                _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                if event.message_id:
+                    _user_entry["message_id"] = str(event.message_id)
                 self.session_store.append_to_transcript(
                     session_entry.session_id,
-                    {"role": "user", "content": message_text, "timestamp": ts},
+                    _user_entry,
                 )
             else:
                 history_len = agent_result.get("history_offset", len(history))
@@ -7987,9 +8214,12 @@ class GatewayRunner:
 
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
+                    _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                    if event.message_id:
+                        _user_entry["message_id"] = str(event.message_id)
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
-                        {"role": "user", "content": message_text, "timestamp": ts}
+                        _user_entry,
                     )
                     if response:
                         self.session_store.append_to_transcript(
@@ -8002,12 +8232,25 @@ class GatewayRunner:
                     # to prevent the duplicate-write bug (#860).  We still write
                     # to JSONL for backward compatibility and as a backup.
                     agent_persisted = self._session_db is not None
+                    # Attach the inbound platform message_id to the first user
+                    # entry written this turn so platform-level quote-resolution
+                    # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)
+                    # can find earlier @bot messages by their original message_id.
+                    _user_msg_id_attached = False
                     for msg in new_messages:
                         # Skip system messages (they're rebuilt each run)
                         if msg.get("role") == "system":
                             continue
                         # Add timestamp to each message for debugging
                         entry = {**msg, "timestamp": ts}
+                        if (
+                            not _user_msg_id_attached
+                            and msg.get("role") == "user"
+                            and event.message_id
+                            and "message_id" not in entry
+                        ):
+                            entry["message_id"] = str(event.message_id)
+                            _user_msg_id_attached = True
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
@@ -11163,7 +11406,7 @@ class GatewayRunner:
                 loop = asyncio.get_running_loop()
                 compressed, _ = await loop.run_in_executor(
                     None,
-                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
+                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
                 )
 
                 # _compress_context already calls end_session() on the old session
@@ -11192,8 +11435,11 @@ class GatewayRunner:
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compress
                 # path (otherwise the failure is silently logged).
-                _summary_failed = bool(getattr(compressor, "_last_summary_fallback_used", False))
-                _dropped_count = int(getattr(compressor, "_last_summary_dropped_count", 0) or 0)
+                # _last_compress_aborted means the aux LLM returned no
+                # usable summary and the compressor preserved messages
+                # unchanged (no drop, no placeholder).  force=True was
+                # passed above so any active cooldown is bypassed.
+                _summary_aborted = bool(getattr(compressor, "_last_compress_aborted", False))
                 _summary_err = getattr(compressor, "_last_summary_error", None)
                 # Separately: did the user's CONFIGURED aux model fail
                 # and we recovered via main?  Surface that as an info
@@ -11211,12 +11457,11 @@ class GatewayRunner:
             lines.append(summary["token_line"])
             if summary["note"]:
                 lines.append(summary["note"])
-            if _summary_failed:
+            if _summary_aborted:
                 lines.append(
                     t(
-                        "gateway.compress.summary_failed",
+                        "gateway.compress.aborted",
                         error=(_summary_err or "unknown error"),
-                        count=_dropped_count,
                     )
                 )
             elif _aux_fail_model:

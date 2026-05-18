@@ -28,7 +28,11 @@ param(
     [string]$Stage,
     [switch]$ProtocolVersion,
     [switch]$NonInteractive,
-    [switch]$Json
+    [switch]$Json,
+
+    # --- Ensure mode (dep_ensure.py entry point) ---
+    [string]$Ensure = "",
+    [switch]$PostInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -106,6 +110,105 @@ function Write-Warn {
 function Write-Err {
     param([string]$Message)
     Write-Host "[X] $Message" -ForegroundColor Red
+}
+
+# --- Ensure-mode helpers ---
+
+function Resolve-NpmCmd {
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npmCmd) { return $null }
+    $npmExe = $npmCmd.Source
+    if ($npmExe -like "*.ps1") {
+        $npmCmdSibling = Join-Path (Split-Path $npmExe -Parent) "npm.cmd"
+        if (Test-Path $npmCmdSibling) { return $npmCmdSibling }
+    }
+    return $npmExe
+}
+
+function Find-SystemBrowser {
+    $candidates = @(
+        "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+        "${env:LOCALAPPDATA}\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles}\Microsoft\Edge\Application\msedge.exe",
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+        "${env:ProgramFiles}\Chromium\Application\chrome.exe",
+        "${env:LOCALAPPDATA}\Chromium\Application\chrome.exe"
+    )
+    foreach ($p in $candidates) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+function Write-BrowserEnv {
+    param([string]$BrowserPath)
+    if (-not (Test-Path $HermesHome)) {
+        New-Item -ItemType Directory -Force -Path $HermesHome | Out-Null
+    }
+    $envFile = Join-Path $HermesHome ".env"
+    if (-not (Test-Path $envFile)) {
+        Set-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
+        return
+    }
+    $content = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
+    if ($content -and $content -match "AGENT_BROWSER_EXECUTABLE_PATH=") { return }
+    Add-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
+}
+
+function Install-AgentBrowser {
+    param([switch]$SkipChromium)
+    $npm = Resolve-NpmCmd
+    if (-not $npm) {
+        Write-Err "npm not found -- install Node.js first"
+        throw "npm not found"
+    }
+
+    Write-Info "Installing agent-browser via npm -g --prefix..."
+    $prefixDir = Join-Path $HermesHome "node"
+    if (-not (Test-Path $prefixDir)) {
+        New-Item -ItemType Directory -Path $prefixDir -Force | Out-Null
+    }
+    $npmLog = [System.IO.Path]::GetTempFileName()
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "agent-browser@^0.26.0" "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
+    $npmExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($npmExit -ne 0) {
+        $npmDetail = Get-Content $npmLog -Raw -ErrorAction SilentlyContinue
+        Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
+        Write-Err "npm install -g failed (exit $npmExit): $npmDetail"
+        throw "npm install failed"
+    }
+    Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
+
+    if (-not $SkipChromium) {
+        $sysBrowser = Find-SystemBrowser
+        if ($sysBrowser) {
+            Write-BrowserEnv -BrowserPath $sysBrowser
+            Write-Info "System browser detected -- skipping Chromium download"
+        } else {
+            $abExe = Join-Path $prefixDir "agent-browser.cmd"
+            if (Test-Path $abExe) {
+                Write-Info "Installing Chromium via agent-browser install..."
+                $abLog = [System.IO.Path]::GetTempFileName()
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                & $abExe install 2>&1 | Tee-Object -FilePath $abLog | Out-Null
+                $abExit = $LASTEXITCODE
+                $ErrorActionPreference = $prevEAP
+                if ($abExit -ne 0) {
+                    $abDetail = Get-Content $abLog -Raw -ErrorAction SilentlyContinue
+                    Write-Warn "Chromium install failed (exit $abExit): $abDetail"
+                }
+                Remove-Item $abLog -Force -ErrorAction SilentlyContinue
+            } else {
+                Write-Warn "agent-browser.cmd not found at $abExe"
+            }
+        }
+    }
+    Write-Success "Agent-browser ready"
 }
 
 # ============================================================================
@@ -2043,6 +2146,48 @@ function Invoke-AllStages {
     }
 }
 
+function Invoke-EnsureMode {
+    param([string]$Deps)
+    $depList = $Deps -split ","
+    foreach ($dep in $depList) {
+        $dep = $dep.Trim()
+        switch ($dep) {
+            "node" {
+                [void](Test-Node)
+                if (-not $script:HasNode) {
+                    Write-Err "Node.js could not be installed"
+                    exit 1
+                }
+            }
+            "browser" {
+                [void](Test-Node)
+                if ($script:HasNode) {
+                    Install-AgentBrowser
+                } else {
+                    Write-Err "Node.js is required for browser tools but could not be installed"
+                    exit 1
+                }
+            }
+            "ripgrep" {
+                Write-Info "ripgrep: install manually on Windows (scoop install ripgrep)"
+            }
+            "ffmpeg" {
+                Write-Info "ffmpeg: install manually on Windows (scoop install ffmpeg)"
+            }
+            default {
+                Write-Err "Unknown dependency: $dep"
+                exit 1
+            }
+        }
+    }
+}
+
+function Invoke-PostInstallMode {
+    Write-Info "Running post-install setup..."
+    Invoke-EnsureMode -Deps "node,browser"
+    Write-Info "Post-install complete"
+}
+
 function Main {
     Write-Banner
     Invoke-AllStages
@@ -2062,6 +2207,19 @@ function Main {
 # structured JSON error frame instead of a bare exception.
 
 try {
+    if ($Ensure -ne "") {
+        if ($PSBoundParameters.ContainsKey("Stage")) {
+            Write-Err "Cannot use -Ensure and -Stage simultaneously"
+            exit 1
+        }
+        Invoke-EnsureMode -Deps $Ensure
+        exit 0
+    }
+    if ($PostInstall) {
+        Invoke-PostInstallMode
+        exit 0
+    }
+
     if ($ProtocolVersion) {
         Write-Output $InstallStageProtocolVersion
         exit 0

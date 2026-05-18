@@ -90,6 +90,7 @@ gateway:
     nothing_to_do:         "아직 압축할 내용이 없습니다 (대화 내용이 모두 보호된 컨텍스트입니다)."
     focus_line:            "초점: \"{topic}\""
     summary_failed:        "⚠️ 요약 생성에 실패했습니다 ({error}). 과거 메시지 {count}개가 제거되어 자리표시자로 대체되었으며, 이전 컨텍스트는 더 이상 복구할 수 없습니다. auxiliary.compression 모델 설정을 확인해 보세요."
+    aborted:               "⚠️ 압축이 중단되었습니다 ({error}). 메시지가 삭제되지 않았으며 대화는 그대로 유지됩니다. 다시 시도하려면 /compress를 실행하거나, 새 세션을 시작하려면 /reset을 사용하거나, auxiliary.compression 모델 설정을 확인하세요."
     aux_failed:            "ℹ️ 구성된 압축 모델 `{model}`이(가) 실패했습니다 ({error}). 메인 모델로 복구되어 컨텍스트는 보존되었지만, config.yaml의 `auxiliary.compression.model` 설정을 확인하는 것이 좋습니다."
     failed:                "압축 실패: {error}"
 

@@ -12246,21 +12246,46 @@ class GatewayRunner:
         async def _on_confirm(choice: str) -> Optional[str]:
             if choice == "cancel":
                 return t("gateway.reload_mcp.cancelled")
+            persist_ok = False
+            persist_err: str | None = None
             if choice == "always":
-                # Persist the opt-out and run the reload.
                 try:
-                    from cli import save_config_value
-                    save_config_value("approvals.mcp_reload_confirm", False)
+                    from cli import save_config_value_detailed
+                    persist_ok, persist_err = save_config_value_detailed(
+                        "approvals.mcp_reload_confirm", False,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
+                    persist_err = f"{type(exc).__name__}: {exc}"
+                if persist_ok:
                     logger.info(
                         "User opted out of /reload-mcp confirmation (session=%s)",
                         session_key,
                     )
-                except Exception as exc:
-                    logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
-            # once / always → run the reload
+                else:
+                    # See #27660 -- pre-fix this branch never ran because
+                    # save_config_value swallowed ImportError and returned
+                    # False without raising, leaving the user with a
+                    # misleading "opted out" confirmation note.
+                    logger.warning(
+                        "Could not persist mcp_reload_confirm=false "
+                        "(session=%s): %s",
+                        session_key, persist_err,
+                    )
             result = await self._execute_mcp_reload(event)
             if choice == "always":
-                return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
+                if persist_ok:
+                    return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
+                # Save failed -- be honest about it instead of claiming
+                # the opt-out worked.
+                return (
+                    f"{result}\n\n"
+                    "⚠️ Could not save the opt-out preference, so the "
+                    "confirmation prompt will keep appearing. "
+                    f"Reason: {persist_err or 'unknown'}\n"
+                    "Fix: add `approvals.mcp_reload_confirm: false` to "
+                    "`~/.hermes/config.yaml` manually."
+                )
             return result
 
         prompt_message = t("gateway.reload_mcp.confirm_prompt")
@@ -12503,30 +12528,57 @@ class GatewayRunner:
         async def _on_confirm(choice: str):
             if choice == "cancel":
                 return f"🟡 /{command} cancelled. Conversation unchanged."
+            # Track persistence outcome so the user-visible note below
+            # reflects what actually happened.  Pre-#27660 this code
+            # always claimed "future runs no confirmation" even when the
+            # save silently failed (e.g. ruamel.yaml missing from venv),
+            # so the user would re-trigger the same prompt forever with
+            # no indication the opt-out hadn't been saved.
+            persist_ok = False
+            persist_err: str | None = None
             if choice == "always":
                 try:
-                    from cli import save_config_value
-                    save_config_value("approvals.destructive_slash_confirm", False)
-                    logger.info(
-                        "User opted out of destructive slash confirm (session=%s)",
-                        session_key,
+                    from cli import save_config_value_detailed
+                    persist_ok, persist_err = save_config_value_detailed(
+                        "approvals.destructive_slash_confirm", False,
                     )
                 except Exception as exc:
                     logger.warning(
                         "Failed to persist destructive_slash_confirm=false: %s", exc,
                     )
+                    persist_err = f"{type(exc).__name__}: {exc}"
+                if persist_ok:
+                    logger.info(
+                        "User opted out of destructive slash confirm (session=%s)",
+                        session_key,
+                    )
+                else:
+                    logger.warning(
+                        "Could not persist destructive_slash_confirm=false "
+                        "(session=%s): %s",
+                        session_key, persist_err,
+                    )
             result = await execute()
             if choice == "always":
-                note = (
-                    "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
-                    "without confirmation. Re-enable via "
-                    "`approvals.destructive_slash_confirm: true` in config.yaml."
-                )
+                if persist_ok:
+                    note = (
+                        "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
+                        "without confirmation. Re-enable via "
+                        "`approvals.destructive_slash_confirm: true` in config.yaml."
+                    )
+                else:
+                    note = (
+                        "\n\n⚠️ Could not save the opt-out preference, so the "
+                        "confirmation prompt will keep appearing. "
+                        f"Reason: {persist_err or 'unknown'}\n"
+                        "Fix: add `approvals.destructive_slash_confirm: false` "
+                        "to `~/.hermes/config.yaml` manually."
+                    )
                 if isinstance(result, str):
                     return result + note
-                # EphemeralReply or other — leave untouched; the opt-out note
-                # would otherwise mangle structured replies.  The persist itself
-                # already happened above; user gets the same UX next time.
+                # EphemeralReply or other -- leave untouched; the opt-out note
+                # would otherwise mangle structured replies.  Whether persist
+                # succeeded is already reflected in the gateway log.
                 return result
             return result
 

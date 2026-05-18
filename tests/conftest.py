@@ -173,6 +173,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
+    "HERMES_CRON_SESSION",
     "HERMES_GATEWAY_SESSION",
     "HERMES_PLATFORM",
     "HERMES_MODEL",
@@ -424,7 +425,7 @@ def _reset_module_state():
     #     the next test's get_session_env() reads stale values.
     try:
         from gateway import session_context as _sc_mod
-        for _cv in (
+        _session_vars = [
             _sc_mod._SESSION_PLATFORM,
             _sc_mod._SESSION_CHAT_ID,
             _sc_mod._SESSION_CHAT_NAME,
@@ -432,10 +433,15 @@ def _reset_module_state():
             _sc_mod._SESSION_USER_ID,
             _sc_mod._SESSION_USER_NAME,
             _sc_mod._SESSION_KEY,
+            _sc_mod._SESSION_ID,
             _sc_mod._CRON_AUTO_DELIVER_PLATFORM,
             _sc_mod._CRON_AUTO_DELIVER_CHAT_ID,
             _sc_mod._CRON_AUTO_DELIVER_THREAD_ID,
-        ):
+        ]
+        _cron_session_var = getattr(_sc_mod, "_CRON_SESSION", None)
+        if _cron_session_var is not None:
+            _session_vars.append(_cron_session_var)
+        for _cv in _session_vars:
             _cv.set(_sc_mod._UNSET)
     except Exception:
         pass

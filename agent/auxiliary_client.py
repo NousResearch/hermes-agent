@@ -1278,6 +1278,40 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
     return api_key, base_url
 
 
+def _xai_api_key_fallback_for_aux() -> Optional[Tuple[str, str]]:
+    """Return config-gated XAI_API_KEY fallback credentials for auxiliary tasks."""
+    try:
+        from hermes_cli.config import load_config as _load_aux_config
+
+        cfg = _load_aux_config()
+        fallback_enabled = cfg.get("auxiliary", {}).get("xai_fallback_to_api_key", False)
+    except Exception as exc:
+        logger.debug("Auxiliary xAI API-key fallback config lookup failed: %s", exc)
+        return None
+
+    if not fallback_enabled:
+        return None
+
+    xai_key = os.getenv("XAI_API_KEY", "").strip()
+    if not xai_key:
+        return None
+
+    from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+
+    base_url = str(
+        os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
+        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_XAI_OAUTH_BASE_URL
+    ).strip().rstrip("/")
+    logger.warning(
+        "xAI OAuth credentials unavailable, falling back to "
+        "XAI_API_KEY for auxiliary tasks. "
+        "Re-authenticate with `hermes auth add xai-oauth` "
+        "to restore OAuth-based usage."
+    )
+    return xai_key, base_url
+
+
 def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     """Resolve a fresh xAI OAuth (api_key, base_url) for auxiliary clients.
 
@@ -1321,11 +1355,17 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
         creds = resolve_xai_oauth_runtime_credentials()
     except Exception as exc:
         logger.debug("Auxiliary xAI OAuth runtime credential resolution failed: %s", exc)
+        fallback = _xai_api_key_fallback_for_aux()
+        if fallback is not None:
+            return fallback
         return None
 
     api_key = str(creds.get("api_key") or "").strip()
     base_url = str(creds.get("base_url") or "").strip().rstrip("/")
     if not api_key or not base_url:
+        fallback = _xai_api_key_fallback_for_aux()
+        if fallback is not None:
+            return fallback
         return None
     return api_key, base_url
 
@@ -1825,11 +1865,10 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
 
 
 def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
-    """Build a CodexAuxiliaryClient for an xAI Grok OAuth-authenticated session.
+    """Build an OpenAI client for an xAI Grok OAuth-authenticated session.
 
-    xAI's ``/v1/responses`` endpoint speaks the OpenAI Responses API, so we
-    wrap a plain ``OpenAI`` client in ``CodexAuxiliaryClient`` to translate
-    ``chat.completions.create()`` calls into ``responses.stream()`` requests.
+    xAI's endpoint speaks standard Chat Completions, not the Responses API,
+    so a plain ``OpenAI`` client is returned directly — no Codex adapter needed.
 
     The caller must pass an explicit model — pinning a default for Grok
     would silently rot when xAI's allowlist drifts.  Returns ``(None, None)``
@@ -1845,9 +1884,13 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     if resolved is None:
         return None, None
     api_key, base_url = resolved
-    logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
-    real_client = OpenAI(api_key=api_key, base_url=base_url)
-    return CodexAuxiliaryClient(real_client, model), model
+    logger.debug("Auxiliary client: xAI OAuth (%s via Chat Completions)", model)
+    try:
+        client = OpenAI(api_key=api_key, base_url=base_url)
+    except Exception as exc:
+        logger.warning("Failed to build xAI OAuth client: %s", exc)
+        return None, None
+    return client, model
 
 
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:

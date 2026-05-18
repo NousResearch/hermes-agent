@@ -1484,11 +1484,9 @@ def test_auxiliary_client_routes_xai_oauth_through_responses_api(tmp_path, monke
     their xAI subscription.
 
     Pin the routing contract: ``resolve_provider_client("xai-oauth", model)``
-    must return a non-None client wrapping the xAI Responses API."""
-    from agent.auxiliary_client import (
-        CodexAuxiliaryClient,
-        resolve_provider_client,
-    )
+    must return a non-None client wrapping the xAI Chat Completions."""
+    from agent.auxiliary_client import resolve_provider_client
+    from openai import OpenAI
 
     hermes_home = tmp_path / "hermes"
     fresh = _jwt_with_exp(int(time.time()) + 3600)
@@ -1499,11 +1497,11 @@ def test_auxiliary_client_routes_xai_oauth_through_responses_api(tmp_path, monke
 
     client, model = resolve_provider_client("xai-oauth", model="grok-4")
     assert client is not None, (
-        "xai-oauth must route to a Responses-API client; falling through to "
+        "xai-oauth must route to an OpenAI Chat Completions client; falling through to "
         "the generic oauth_external branch silently swaps providers for "
         "every auxiliary task."
     )
-    assert isinstance(client, CodexAuxiliaryClient)
+    assert isinstance(client, OpenAI)
     assert model == "grok-4"
     # The wrapper preserves base_url + api_key so async wrappers and cache
     # eviction can introspect them.  Pin both to the live xAI runtime.
@@ -1529,7 +1527,7 @@ def test_auxiliary_client_xai_oauth_returns_none_when_unauthenticated(tmp_path, 
 
 
 def test_auxiliary_client_xai_oauth_requires_explicit_model(tmp_path, monkeypatch):
-    """xAI's Responses API has no safe "cheap aux model" default —
+    """xAI's Chat Completions has no safe "cheap aux model" default —
     pinning one would silently rot the same way Codex's did.  Callers
     must pass an explicit model (auxiliary.<task>.model in config.yaml)."""
     from agent.auxiliary_client import resolve_provider_client

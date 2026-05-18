@@ -537,13 +537,16 @@ export default function EnvPage() {
       document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
     };
     setAfterTitle(
-      <nav className="flex items-center gap-1" aria-label="Jump to section">
+      <nav
+        className="flex shrink-0 flex-nowrap items-center gap-1"
+        aria-label="Jump to section"
+      >
         {sections.map((s) => (
           <button
             key={s.id}
             type="button"
             onClick={() => scrollTo(s.id)}
-            className="cursor-pointer px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground border border-border/50 hover:border-foreground/30 transition-colors"
+            className="shrink-0 cursor-pointer px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground border border-border/50 hover:border-foreground/30 transition-colors"
           >
             {s.label}
           </button>

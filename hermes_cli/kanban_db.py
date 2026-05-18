@@ -3707,6 +3707,20 @@ def detect_orphan_runs(
             )
             if cur.rowcount == 1:
                 closed.append(int(row["id"]))
+                # Card t_4c0bbdae acceptance (D): WARNING-level log so
+                # operators can correlate phantom-task reaping with
+                # external activity. Routes to ~/.hermes/logs/errors.log
+                # via hermes_logging.setup_logging (WARNING+).
+                _log.warning(
+                    "kanban dispatcher: phantom-task-reap closed "
+                    "run_id=%s task_id=%s (tasks row missing); "
+                    "worker_pid=%s claim_lock=%s — "
+                    "foreign DELETE FROM tasks suspected.",
+                    int(row["id"]),
+                    row["task_id"],
+                    row["worker_pid"],
+                    row["claim_lock"],
+                )
     return closed
 
 

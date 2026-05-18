@@ -540,6 +540,7 @@ def recover_with_credential_pool(
     has_retried_429: bool,
     classified_reason: Optional[FailoverReason] = None,
     error_context: Optional[Dict[str, Any]] = None,
+    model_id: str = "",
 ) -> tuple[bool, bool]:
     """Attempt credential recovery via pool rotation.
 
@@ -570,7 +571,7 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context, model_id=model_id)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (billing) — rotated to pool entry %s",
@@ -593,7 +594,7 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context, model_id=model_id)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
@@ -637,7 +638,7 @@ def recover_with_credential_pool(
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by try_refresh_current().
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context, model_id=model_id)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",

@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 import re
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -114,6 +114,8 @@ class PooledCredential:
     agent_key: Optional[str] = None
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
+    # Per-model rate limit tracking (429 only). Keys: model_id -> [reset_timestamp, consecutive_count].
+    rate_limited: Dict[str, list] = field(default_factory=dict)
     extra: Dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -161,6 +163,8 @@ class PooledCredential:
         for k, v in self.extra.items():
             if v is not None:
                 result[k] = v
+        if self.rate_limited:
+            result["rate_limited"] = self.rate_limited
         return result
 
     @property
@@ -194,6 +198,19 @@ def _next_priority(entries: List[PooledCredential]) -> int:
 def _is_manual_source(source: str) -> bool:
     normalized = (source or "").strip().lower()
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
+
+
+def _model_rate_limited_until(entry: PooledCredential, model_id: str) -> Optional[float]:
+    """Return the TTL end timestamp for this model, or None if not rate-limited.
+
+Uses ``time.monotonic()`` so callers that compare against the same clock
+get consistent per-model TTL windows regardless of wall-clock adjustments.
+"""
+    if model_id in entry.rate_limited:
+        ts = entry.rate_limited[model_id][0]
+        if time.monotonic() < ts:
+            return ts
+    return None
 
 
 def _exhausted_ttl(error_code: Optional[int]) -> int:
@@ -1131,11 +1148,11 @@ class CredentialPool:
             return False
         return False
 
-    def select(self) -> Optional[PooledCredential]:
+    def select(self, model_id: str = "") -> Optional[PooledCredential]:
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(model_id=model_id if model_id else None)
 
-    def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
+    def _available_entries(self, *, model_id: str = None, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
 
         When *clear_expired* is True, entries whose cooldown has elapsed are
@@ -1206,6 +1223,15 @@ class CredentialPool:
                     self._replace_entry(entry, cleared)
                     entry = cleared
                     cleared_any = True
+            if model_id is not None:
+                rl_until = _model_rate_limited_until(entry, model_id)
+                if rl_until is not None:
+                    continue
+                if clear_expired and model_id in entry.rate_limited:
+                    cleared = replace(entry, rate_limited={k: v for k, v in entry.rate_limited.items() if k != model_id})
+                    self._replace_entry(entry, cleared)
+                    entry = cleared
+                    cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
                 refreshed = self._refresh_entry(entry, force=False)
                 if refreshed is None:
@@ -1216,8 +1242,8 @@ class CredentialPool:
             self._persist()
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _select_unlocked(self, model_id: str = None) -> Optional[PooledCredential]:
+        available = self._available_entries(model_id=model_id, clear_expired=True, refresh=True)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1256,24 +1282,62 @@ class CredentialPool:
         available = self._available_entries()
         return available[0] if available else None
 
+    def mark_rate_limited(
+        self,
+        entry: PooledCredential,
+        model_id: str,
+        status_code: int,
+        error_context: Optional[Dict[str, Any]] = None,
+    ) -> PooledCredential:
+        """Mark per-model rate limit (429 only). Does NOT set STATUS_EXHAUSTED.
+        TTL escalates on consecutive 429s: 5min -> 10min -> 15min (capped)."""
+        now = time.monotonic()
+        existing = entry.rate_limited.get(model_id)
+        if existing and existing[0] > now:
+            consecutive = existing[1] + 1
+        else:
+            consecutive = 1
+        config = _load_config_safe() or {}
+        strategies = config.get("credential_pool_strategies", {}) or {}
+        first_ttl = strategies.get("rate_limit_ttl_first_seconds", 300)
+        step_ttl = strategies.get("rate_limit_ttl_step_seconds", 300)
+        max_ttl = strategies.get("rate_limit_ttl_max_seconds", 1800)
+        ttl = min(first_ttl + step_ttl * (consecutive - 1), max_ttl)
+        reset_at = now + ttl
+        normalized_error = _normalize_error_context(error_context)
+        updated = replace(
+            entry,
+            rate_limited={**entry.rate_limited, model_id: [reset_at, consecutive]},
+            last_error_code=status_code,
+            last_error_reason=normalized_error.get("reason"),
+            last_error_message=normalized_error.get("message"),
+            last_error_reset_at=reset_at,
+            extra=entry.extra,
+        )
+        self._replace_entry(entry, updated)
+        self._persist()
+        return updated
+
     def mark_exhausted_and_rotate(
         self,
         *,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        model_id: str = "",
     ) -> Optional[PooledCredential]:
         with self._lock:
             entry = self.current() or self._select_unlocked()
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
-            logger.info(
-                "credential pool: marking %s exhausted (status=%s), rotating",
-                _label, status_code,
-            )
-            self._mark_exhausted(entry, status_code, error_context)
+            if status_code == 429 and model_id:
+                logger.info("credential pool: marking %s rate-limited (model=%s, status=%s), rotating", _label, model_id, status_code)
+                self.mark_rate_limited(entry, model_id, status_code, error_context)
+            else:
+                logger.info("credential pool: marking %s exhausted (status=%s), rotating", _label, status_code)
+                self._mark_exhausted(entry, status_code, error_context)
             self._current_id = None
-            next_entry = self._select_unlocked()
+            next_entry = self._select_unlocked(model_id=model_id if status_code == 429 and model_id else None)
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)

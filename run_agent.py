@@ -2859,7 +2859,7 @@ class AIAgent:
     ) -> tuple[bool, bool]:
         """Forwarder — see ``agent.agent_runtime_helpers.recover_with_credential_pool``."""
         from agent.agent_runtime_helpers import recover_with_credential_pool
-        return recover_with_credential_pool(self, status_code=status_code, has_retried_429=has_retried_429, classified_reason=classified_reason, error_context=error_context)
+        return recover_with_credential_pool(self, status_code=status_code, has_retried_429=has_retried_429, classified_reason=classified_reason, error_context=error_context, model_id=self.model or "")
 
     def _credential_pool_may_recover_rate_limit(self) -> bool:
         """Whether a rate-limit retry should wait for same-provider credentials."""

@@ -763,7 +763,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     instead, bypassing MarkdownV2 conversion.
     """
     try:
-        from telegram import Bot
+        from telegram import Bot, MessageEntity
         from telegram.constants import ParseMode
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
@@ -783,6 +783,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 # Fallback: send as-is if formatting unavailable
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
+
+        # Detect @username patterns and create mention entities so
+        # require_mention on the receiving bot's Gateway can trigger.
+        _MENTION_RE = re.compile(r'@([a-zA-Z][a-zA-Z0-9_]{4,31})')
+        _entities = [
+            MessageEntity(type="mention", offset=m.start(), length=len(m.group()))
+            for m in _MENTION_RE.finditer(formatted)
+        ]
 
         bot = Bot(token=token)
         int_chat_id = int(chat_id)
@@ -821,7 +829,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 last_msg = await _send_telegram_message_with_retry(
                     bot,
                     chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **thread_kwargs
+                    parse_mode=send_parse_mode, entities=_entities, **thread_kwargs
                 )
             except Exception as md_error:
                 # Parse failed, fall back to plain text
@@ -842,7 +850,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
                         chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **thread_kwargs
+                        parse_mode=None, entities=_entities, **thread_kwargs
                     )
                 else:
                     raise

@@ -1967,8 +1967,75 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
         assert "id" not in it
 
 
-def test_preflight_codex_api_kwargs_strips_slash_enums_when_is_xai_responses(monkeypatch):
-    """xAI's /v1/responses rejects string enums containing '/' — preflight strips them when flagged."""
+def _slash_enum_chat_tool():
+    return {
+        "type": "function",
+        "function": {
+            "name": "brave_llm_context",
+            "description": "x",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "pattern": "^.+$",
+                    },
+                    "accept": {
+                        "type": "string",
+                        "format": "media-type",
+                        "enum": ["application/json", "*/*"],
+                    },
+                },
+            },
+        },
+    }
+
+
+def test_build_api_kwargs_xai_responses_strips_incompatible_tool_schema_without_mutating_registry(monkeypatch):
+    """xAI tool-schema compatibility belongs in request construction, not preflight."""
+    agent = _build_xai_oauth_agent(monkeypatch)
+    tool = _slash_enum_chat_tool()
+    agent.tools = [tool]
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    params = kwargs["tools"][0]["parameters"]
+    accept = params["properties"]["accept"]
+    query = params["properties"]["query"]
+    assert "enum" not in accept, f"slash-containing enum should be stripped: {accept}"
+    assert accept["type"] == "string"
+    assert "format" not in accept
+    assert "pattern" not in query
+
+    original_params = agent.tools[0]["function"]["parameters"]
+    assert original_params["properties"]["accept"]["enum"] == ["application/json", "*/*"]
+    assert original_params["properties"]["accept"]["format"] == "media-type"
+    assert original_params["properties"]["query"]["pattern"] == "^.+$"
+
+
+def test_build_api_kwargs_non_xai_responses_keeps_slash_enums(monkeypatch):
+    """Non-xAI Responses backends keep slash enums untouched."""
+    agent = _build_agent(monkeypatch)
+    agent.tools = [_slash_enum_chat_tool()]
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    accept = kwargs["tools"][0]["parameters"]["properties"]["accept"]
+    assert accept["enum"] == ["application/json", "*/*"]
+
+
+def test_preflight_codex_api_kwargs_keeps_slash_enums(monkeypatch):
+    """Preflight is provider-neutral validation; it does not apply xAI policy."""
     _build_agent(monkeypatch)
     kwargs = _codex_request_kwargs()
     kwargs["tools"] = [
@@ -1992,84 +2059,6 @@ def test_preflight_codex_api_kwargs_strips_slash_enums_when_is_xai_responses(mon
 
     from agent.codex_responses_adapter import _preflight_codex_api_kwargs
 
-    result = _preflight_codex_api_kwargs(kwargs, is_xai_responses=True)
-    accept = result["tools"][0]["parameters"]["properties"]["accept"]
-    assert "enum" not in accept, f"slash-containing enum should be stripped: {accept}"
-    assert accept["type"] == "string"
-
-
-def test_preflight_codex_api_kwargs_keeps_slash_enums_when_not_xai(monkeypatch):
-    """Non-xAI Responses backends (e.g. openai-codex) keep slash enums untouched."""
-    _build_agent(monkeypatch)
-    kwargs = _codex_request_kwargs()
-    kwargs["tools"] = [
-        {
-            "type": "function",
-            "name": "brave_llm_context",
-            "description": "x",
-            "strict": False,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "accept": {
-                        "type": "string",
-                        "enum": ["application/json", "*/*"],
-                    },
-                },
-            },
-        }
-    ]
-
-    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
-
     result = _preflight_codex_api_kwargs(kwargs)
     accept = result["tools"][0]["parameters"]["properties"]["accept"]
     assert accept["enum"] == ["application/json", "*/*"]
-
-
-# =============================================================================
-# agent_uses_xai_responses helper — used by conversation_loop + codex_runtime
-# =============================================================================
-
-
-class _MiniAgent:
-    """Minimal stand-in: agent_uses_xai_responses only reads two attributes."""
-
-    def __init__(self, provider=None, hostname=None):
-        self.provider = provider
-        self._base_url_hostname = hostname
-
-
-def test_agent_uses_xai_responses_matches_xai_provider():
-    from agent.codex_responses_adapter import agent_uses_xai_responses
-    assert agent_uses_xai_responses(_MiniAgent(provider="xai"))
-    assert agent_uses_xai_responses(_MiniAgent(provider="xai-oauth"))
-
-
-def test_agent_uses_xai_responses_matches_xai_hostname_with_non_xai_provider():
-    """A user with a custom provider key but base_url pointing at api.x.ai
-    still needs the strip — that path is the second arm of the predicate."""
-    from agent.codex_responses_adapter import agent_uses_xai_responses
-    assert agent_uses_xai_responses(_MiniAgent(provider="custom", hostname="api.x.ai"))
-
-
-def test_agent_uses_xai_responses_rejects_other_providers():
-    from agent.codex_responses_adapter import agent_uses_xai_responses
-    assert not agent_uses_xai_responses(_MiniAgent(provider="openai-codex", hostname="chatgpt.com"))
-    assert not agent_uses_xai_responses(_MiniAgent(provider="openrouter", hostname="openrouter.ai"))
-    # No provider and no hostname → not xAI.
-    assert not agent_uses_xai_responses(_MiniAgent())
-
-
-def test_agent_uses_xai_responses_raises_on_misconstructed_agent():
-    """Helper uses bare attribute access — agents that skipped agent_init
-    blow up loudly here rather than silently routing as non-xAI and
-    re-triggering the very bug the gating exists to avoid."""
-    import pytest
-    from agent.codex_responses_adapter import agent_uses_xai_responses
-
-    class Bare:
-        pass
-
-    with pytest.raises(AttributeError):
-        agent_uses_xai_responses(Bare())

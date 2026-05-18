@@ -287,19 +287,26 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
-        # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
-        # in tool schemas (HTTP 400 "Invalid arguments passed to the model").
-        # Most commonly hit when MCP-derived tools carry JSON Schema validation
-        # keywords through. Strip them before building kwargs. See #27197.
+        # xAI's /responses endpoint rejects some otherwise-valid JSON Schema
+        # details in tool definitions. Keep that provider compatibility
+        # transform at the request-building boundary, before converting tools
+        # to Responses format, and work on a copy so the shared tool registry
+        # remains valid for non-xAI turns served by the same process.
         if is_xai_responses:
             try:
-                from tools.schema_sanitizer import strip_pattern_and_format
+                tools_for_api = copy.deepcopy(tools_for_api)
+                from tools.schema_sanitizer import (
+                    strip_pattern_and_format,
+                    strip_xai_incompatible_enum_values,
+                )
                 tools_for_api, _ = strip_pattern_and_format(tools_for_api)
+                tools_for_api, _ = strip_xai_incompatible_enum_values(tools_for_api)
             except Exception as exc:
                 logger.warning(
                     "%s⚠️ Failed to sanitize tool schemas for xAI: %s",
                     getattr(agent, "log_prefix", ""), exc,
                 )
+                tools_for_api = agent.tools
 
         return _ct.build_kwargs(
             model=agent.model,

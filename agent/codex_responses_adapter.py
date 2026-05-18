@@ -673,32 +673,10 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
-def agent_uses_xai_responses(agent: Any) -> bool:
-    """Return True when an agent talks to xAI's Responses endpoint.
-
-    Centralizes the detection used by ``_preflight_codex_api_kwargs`` callers
-    (``conversation_loop.run_conversation`` and
-    ``codex_runtime.run_codex_create_stream_fallback``) so the predicate stays
-    in sync if the xAI provider keys or hostname ever change. Mirrors the
-    expression in ``chat_completion_helpers.py`` (kept inline there for now to
-    avoid widening this PR's surface area).
-
-    Uses bare attribute access — a missing ``provider`` or ``_base_url_hostname``
-    means the agent skipped ``agent_init`` and is genuinely broken; surfacing
-    the ``AttributeError`` is preferable to silently routing as non-xAI and
-    re-triggering the very bug this gating exists to avoid.
-    """
-    return (
-        agent.provider in {"xai", "xai-oauth"}
-        or agent._base_url_hostname == "api.x.ai"
-    )
-
-
 def _preflight_codex_api_kwargs(
     api_kwargs: Any,
     *,
     allow_stream: bool = False,
-    is_xai_responses: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
@@ -778,30 +756,7 @@ def _preflight_codex_api_kwargs(
         "store": False,
     }
     if normalized_tools is not None:
-        if is_xai_responses:
-            # xAI's Responses endpoint rejects tool-parameter string enum
-            # values containing "/" — see strip_xai_incompatible_enum_values
-            # for the failure mode. Deep-copy first because ``parameters``
-            # is aliased to the upstream tool registry and the strip mutates
-            # in place; without the copy, the sanitization would leak into
-            # non-xAI turns served by the same process.
-            import copy
-            normalized["tools"] = copy.deepcopy(normalized_tools)
-            try:
-                from tools.schema_sanitizer import strip_xai_incompatible_enum_values
-                strip_xai_incompatible_enum_values(normalized["tools"])
-            except Exception:
-                # The strip is best-effort: if a malformed schema makes it
-                # raise, fall back to sending the original tools. xAI will
-                # still reject the call, but the user gets the real error
-                # rather than a Hermes-side crash mid-preflight.
-                logger.warning(
-                    "Codex preflight: xAI enum strip failed; sending tools unmodified",
-                    exc_info=True,
-                )
-                normalized["tools"] = normalized_tools
-        else:
-            normalized["tools"] = normalized_tools
+        normalized["tools"] = normalized_tools
 
     # Pass through reasoning config
     reasoning = api_kwargs.get("reasoning")

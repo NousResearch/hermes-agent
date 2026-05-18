@@ -383,12 +383,12 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
 
 
 # =============================================================================
-# xAI Responses — strip enum values containing "/"
+# xAI Responses — strip enum constraints containing "/" values
 # =============================================================================
 
 
 def strip_xai_incompatible_enum_values(tools: list[dict]) -> tuple[list[dict], int]:
-    """Drop string ``enum`` values containing ``/`` from tool parameter schemas.
+    """Drop ``enum`` constraints containing string values with ``/``.
 
     xAI's ``/v1/responses`` schema validator rejects any tool whose parameter
     schema contains a string enum value with a ``/`` character (e.g.
@@ -402,10 +402,13 @@ def strip_xai_incompatible_enum_values(tools: list[dict]) -> tuple[list[dict], i
     compatible backends (OpenAI Codex) accept these enums fine, so the strip
     is gated by the caller on the xAI path only.
 
-    These enums describe HTTP plumbing the model has no business emitting as
-    a function-call argument, so removing them is safe — and the property
-    keeps its ``"type": "string"`` typing so any free-form value the model
-    does emit still validates.
+    These enums often describe HTTP plumbing the model has no business
+    emitting as a function-call argument, so removing the enum constraint is
+    safe — and the property keeps its ``"type": "string"`` typing so any
+    free-form value the model does emit still validates. If a mixed enum has
+    both slash and non-slash values, the whole enum is removed rather than
+    narrowed; preserving only the non-slash values would silently change the
+    accepted value space.
 
     Args:
         tools: OpenAI-format or Responses-format tool list. The list and the
@@ -415,7 +418,8 @@ def strip_xai_incompatible_enum_values(tools: list[dict]) -> tuple[list[dict], i
 
     Returns:
         ``(tools, stripped_count)`` — the same list reference (already
-        mutated) plus a count of slash-containing enum values removed.
+        mutated) plus a count of slash-containing enum values that caused an
+        enum constraint to be removed.
     """
     if not tools:
         return tools, 0
@@ -427,13 +431,13 @@ def strip_xai_incompatible_enum_values(tools: list[dict]) -> tuple[list[dict], i
         if isinstance(node, dict):
             enum_values = node.get("enum")
             if isinstance(enum_values, list):
-                kept = [v for v in enum_values if not (isinstance(v, str) and "/" in v)]
-                if len(kept) != len(enum_values):
-                    stripped += len(enum_values) - len(kept)
-                    if kept:
-                        node["enum"] = kept
-                    else:
-                        node.pop("enum", None)
+                slash_values = [
+                    v for v in enum_values
+                    if isinstance(v, str) and "/" in v
+                ]
+                if slash_values:
+                    stripped += len(slash_values)
+                    node.pop("enum", None)
             elif enum_values is not None:
                 # JSON Schema requires ``enum`` to be a list. Anything else
                 # is a malformed schema; skip but log so upstream bugs in

@@ -521,7 +521,7 @@ def test_strip_xai_enum_values_removes_slash_strings_openai_format():
     assert accept["type"] == "string"
 
 
-def test_strip_xai_enum_values_keeps_safe_values_alongside_unsafe():
+def test_strip_xai_enum_values_drops_whole_mixed_enum():
     tools = [_tool("t", {
         "type": "object",
         "properties": {
@@ -530,9 +530,7 @@ def test_strip_xai_enum_values_keeps_safe_values_alongside_unsafe():
     })]
     out, stripped = strip_xai_incompatible_enum_values(tools)
     assert stripped == 1
-    assert out[0]["function"]["parameters"]["properties"]["mode"]["enum"] == [
-        "fast", "precise",
-    ]
+    assert "enum" not in out[0]["function"]["parameters"]["properties"]["mode"]
 
 
 def test_strip_xai_enum_values_responses_format():
@@ -594,7 +592,7 @@ def test_strip_xai_enum_values_handles_empty_list():
 def test_strip_xai_enum_values_does_not_mutate_input_when_caller_copies():
     """Caller-deepcopy contract: when the caller passes a deepcopy, the
     original tool registry stays untouched. Mirrors what
-    `_preflight_codex_api_kwargs` does in the xAI branch."""
+    the xAI Responses request builder does before sanitizing."""
     import copy
 
     original = [_tool("t", {
@@ -659,8 +657,8 @@ def test_strip_xai_enum_values_handles_anyof_union():
     assert "enum" not in union[0]
 
 
-def test_strip_xai_enum_values_preserves_non_string_enum_members():
-    """Numeric / boolean enum entries must survive — only strings with `/` go."""
+def test_strip_xai_enum_values_drops_whole_enum_with_non_string_members():
+    """If any string enum member contains `/`, the whole enum constraint goes."""
     tools = [_tool("t", {
         "type": "object",
         "properties": {
@@ -670,7 +668,7 @@ def test_strip_xai_enum_values_preserves_non_string_enum_members():
     out, stripped = strip_xai_incompatible_enum_values(tools)
     assert stripped == 1
     mixed = out[0]["function"]["parameters"]["properties"]["mixed"]
-    assert mixed["enum"] == [1, 2, True, None, "ok"]
+    assert "enum" not in mixed
 
 
 def test_strip_xai_enum_values_leaves_default_alone_when_all_enum_stripped():

@@ -6,9 +6,9 @@ files. In Hermes the equivalent isolation is:
 
 * ``--ignore-user-config`` → skip ``~/.hermes/config.yaml`` in ``load_cli_config()``
   (credentials in ``.env`` are still loaded).
-* ``--ignore-rules`` → skip AGENTS.md / SOUL.md / .cursorrules auto-injection
-  and persistent memory (maps to ``AIAgent(skip_context_files=True,
-  skip_memory=True)``).
+* ``--ignore-rules`` → skip cwd/project rules plus persistent memory while
+  keeping the global ``~/.hermes/SOUL.md`` identity (maps to
+  ``AIAgent(skip_context_files=True, skip_memory=True)`` with SOUL still on).
 
 Both flags are wired via env vars so they work cleanly across the
 argparse → cmd_chat → cli.main() → HermesCLI → AIAgent call chain.
@@ -110,7 +110,7 @@ class TestIgnoreUserConfigEnvGate:
 class TestIgnoreRulesEnvGate:
     """The constructor / env var must propagate to ``HermesCLI.ignore_rules``
     so ``AIAgent`` is built with ``skip_context_files=True`` and
-    ``skip_memory=True``.
+    ``skip_memory=True`` while global SOUL identity loading remains enabled.
     """
 
     def test_env_var_enables_ignore_rules(self, monkeypatch):

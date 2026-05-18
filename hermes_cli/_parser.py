@@ -208,7 +208,7 @@ def build_top_level_parser():
         "--ignore-rules",
         action="store_true",
         default=False,
-        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills",
+        help="Skip cwd/project rules, memory, and preloaded skills while still keeping ~/.hermes/SOUL.md loaded",
     )
     _inherited_flag(
         parser,

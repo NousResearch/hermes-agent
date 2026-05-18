@@ -387,7 +387,7 @@ TIPS = [
     "display.tool_progress_command: true exposes /verbose on messaging platforms; it's CLI-only by default.",
     'HERMES_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs all/error/off).',
     'HERMES_WRITE_SAFE_ROOT restricts write_file and patch to a directory prefix; writes outside require approval.',
-    'HERMES_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.',
+    'HERMES_IGNORE_RULES skips cwd/project rules, memory, and preloaded skills, but still keeps ~/.hermes/SOUL.md loaded.',
     'HERMES_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.',
     'auxiliary.goal_judge.model routes the /goal judge to a cheap fast model to keep loop cost near zero.',
     'Checkpoints skip directories with more than 50,000 files to avoid slow git operations on massive monorepos.',

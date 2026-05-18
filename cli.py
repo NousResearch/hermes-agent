@@ -2705,8 +2705,8 @@ class HermesCLI:
         self.pass_session_id = pass_session_id
         # --ignore-rules: honor either the constructor flag or the env var set
         # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we
-        # pass skip_context_files=True and skip_memory=True to AIAgent so
-        # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
+        # strip cwd/project rules plus persistent memory, but still retain the
+        # global ~/.hermes/SOUL.md operator identity.
         self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
         
         # Ephemeral system prompt: env var takes precedence, then config
@@ -4506,6 +4506,7 @@ class HermesCLI:
                 checkpoint_max_file_size_mb=self.checkpoint_max_file_size_mb,
                 pass_session_id=self.pass_session_id,
                 skip_context_files=self.ignore_rules,
+                load_soul_identity=True,
                 skip_memory=self.ignore_rules,
                 tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,

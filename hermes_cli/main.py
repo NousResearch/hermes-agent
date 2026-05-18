@@ -1424,8 +1424,9 @@ def cmd_chat(args):
     if getattr(args, "ignore_user_config", False):
         os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
 
-    # --ignore-rules: skip auto-injection of AGENTS.md/SOUL.md/.cursorrules
-    # (rules), memory entries, and any preloaded skills coming from user config.
+    # --ignore-rules: skip auto-injection of cwd/project rules plus memory
+    # entries and any preloaded skills coming from user config. The global
+    # ~/.hermes/SOUL.md operator identity still loads.
     # Maps to AIAgent(skip_context_files=True, skip_memory=True).
     if getattr(args, "ignore_rules", False):
         os.environ["HERMES_IGNORE_RULES"] = "1"

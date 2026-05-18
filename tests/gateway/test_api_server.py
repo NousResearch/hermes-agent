@@ -304,6 +304,7 @@ class TestAdapterInit:
 
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+        assert captured["load_soul_identity"] is True
 
 
 # ---------------------------------------------------------------------------

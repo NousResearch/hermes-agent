@@ -400,7 +400,7 @@ class AIAgent:
         thread_id: str = None,
         gateway_session_key: str = None,
         skip_context_files: bool = False,
-        load_soul_identity: bool = False,
+        load_soul_identity: Optional[bool] = None,
         skip_memory: bool = False,
         session_db=None,
         parent_session_id: str = None,

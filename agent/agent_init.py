@@ -125,7 +125,7 @@ def init_agent(
     thread_id: str = None,
     gateway_session_key: str = None,
     skip_context_files: bool = False,
-    load_soul_identity: bool = False,
+    load_soul_identity: Optional[bool] = None,
     skip_memory: bool = False,
     session_db=None,
     parent_session_id: str = None,
@@ -179,12 +179,13 @@ def init_agent(
             output_config.format instead of a trailing-assistant prefill.
         platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
             Used to inject platform-specific formatting hints into the system prompt.
-        skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
-            into the system prompt. Use this for batch processing and data generation to avoid
-            polluting trajectories with user-specific persona or project instructions.
-        load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
-            identity even when skip_context_files=True. Project context files from the cwd
-            remain skipped.
+        skip_context_files (bool): If True, skip cwd/project context files (AGENTS.md,
+            CLAUDE.md, .cursorrules) and any other context-file discovery. The global
+            ~/.hermes/SOUL.md identity still loads by default unless explicitly disabled.
+        load_soul_identity (Optional[bool]): Controls whether ~/.hermes/SOUL.md is loaded
+            as the primary identity. None (default) and True both load it, including when
+            skip_context_files=True. Pass False only for documented emergency/system-level
+            sterile runs where the operator profile must be intentionally excluded.
     """
     _install_safe_stdio()
 
@@ -213,7 +214,7 @@ def init_agent(
     agent._print_fn = None
     agent.background_review_callback = None  # Optional sync callback for gateway delivery
     agent.skip_context_files = skip_context_files
-    agent.load_soul_identity = load_soul_identity
+    agent.load_soul_identity = True if load_soul_identity is None else bool(load_soul_identity)
     agent.pass_session_id = pass_session_id
     agent._credential_pool = credential_pool
     agent.log_prefix_chars = log_prefix_chars

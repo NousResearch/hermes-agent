@@ -1080,6 +1080,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
             credential_pool=runtime_kwargs.get("credential_pool"),
             quiet_mode=True,
             skip_context_files=True,
+            load_soul_identity=True,
             skip_memory=True,
             max_iterations=15,
             enabled_toolsets=["feishu_doc", "feishu_drive"],

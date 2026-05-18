@@ -391,6 +391,29 @@ class TestDelegateTask(unittest.TestCase):
 
         self.assertIs(mock_child._print_fn, sink)
 
+    def test_child_forces_soul_identity_when_context_files_are_skipped(self):
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Retain operator identity",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIs(kwargs["skip_context_files"], True)
+        self.assertIs(kwargs["load_soul_identity"], True)
+        self.assertIs(kwargs["skip_memory"], True)
+
     def test_child_uses_thinking_callback_when_progress_callback_available(self):
         parent = _make_mock_parent(depth=0)
         parent.tool_progress_callback = MagicMock()

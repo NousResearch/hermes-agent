@@ -137,6 +137,7 @@ def test_make_agent_honors_tui_launch_env_flags():
         assert kwargs["checkpoints_enabled"] is True
         assert kwargs["pass_session_id"] is True
         assert kwargs["skip_context_files"] is True
+        assert kwargs["load_soul_identity"] is True
         assert kwargs["skip_memory"] is True
 
 

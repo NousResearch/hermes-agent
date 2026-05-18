@@ -749,6 +749,126 @@ def test_dispatch_reclaims_stale_before_spawning(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Orphan run reaping (card t_44c9eb37)
+#
+# Defends against the case where the ``tasks`` row gets hard-DELETEd out
+# from under a still-running ``task_runs`` row (manual sqlite poking, or
+# any future code path that bypasses :func:`archive_task`). Without
+# ``detect_orphan_runs`` the run row sits ``status='running'`` forever
+# because every other reclaim path joins through ``tasks``.
+# ---------------------------------------------------------------------------
+
+def test_detect_orphan_runs_closes_run_when_task_row_missing(kanban_home):
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="will-be-deleted", assignee="alice")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+
+        run_id = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (t,),
+        ).fetchone()["current_run_id"]
+        assert run_id is not None
+
+        # Simulate the bug: someone hard-DELETEs the tasks row. The
+        # task_runs row keeps its status='running' / ended_at=NULL.
+        conn.execute("DELETE FROM tasks WHERE id = ?", (t,))
+        conn.commit()
+
+        killed: list[int] = []
+        closed = kb.detect_orphan_runs(
+            conn, signal_fn=lambda _p, sig: killed.append(sig),
+        )
+
+        run_row = conn.execute(
+            "SELECT status, outcome, error, metadata, ended_at, "
+            "       worker_pid, claim_lock "
+            "  FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+
+    assert closed == [int(run_id)]
+    assert run_row["status"] == "reclaimed"
+    assert run_row["outcome"] == "reclaimed"
+    assert run_row["ended_at"] is not None
+    assert run_row["worker_pid"] is None
+    assert run_row["claim_lock"] is None
+    assert "orphan" in (run_row["error"] or "")
+    # Host-local pid 12345 should have been SIGTERMed (via injected
+    # signal_fn — we don't actually kill processes in tests).
+    import signal as _signal
+    assert killed == [_signal.SIGTERM]
+
+
+def test_detect_orphan_runs_is_idempotent(kanban_home):
+    """Second call returns [] because the orphan rows are no longer
+    ``status='running'`` once closed."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="alice")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute("DELETE FROM tasks WHERE id = ?", (t,))
+        conn.commit()
+
+        first = kb.detect_orphan_runs(
+            conn, signal_fn=lambda _p, _s: None,
+        )
+        second = kb.detect_orphan_runs(
+            conn, signal_fn=lambda _p, _s: None,
+        )
+
+    assert len(first) == 1
+    assert second == []
+
+
+def test_detect_orphan_runs_ignores_runs_whose_task_still_exists(kanban_home):
+    """Sanity: a healthy running task is never touched."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="healthy", assignee="alice")
+        kb.claim_task(conn, t)
+        # tasks row still present — must be ignored.
+        closed = kb.detect_orphan_runs(conn)
+        assert closed == []
+        assert kb.get_task(conn, t).status == "running"
+
+
+def test_dispatch_once_reaps_orphan_runs(kanban_home, monkeypatch):
+    """End-to-end: ``dispatch_once`` should populate
+    ``DispatchResult.orphan_runs`` and close the underlying run row."""
+    import hermes_cli.kanban_db as _kb
+
+    # Skip the per-tick reap loop / spawn — we just want the orphan
+    # detector to fire. Patch _pid_alive so the SIGTERM wait loop in
+    # _terminate_reclaimed_worker doesn't sleep.
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="orphan-me", assignee="alice")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        run_id = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (t,),
+        ).fetchone()["current_run_id"]
+
+        conn.execute("DELETE FROM tasks WHERE id = ?", (t,))
+        conn.commit()
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *a, **kw: None,
+            dry_run=False,
+        )
+
+    assert int(run_id) in res.orphan_runs
+
+
+# ---------------------------------------------------------------------------
 # Workspace resolution
 # ---------------------------------------------------------------------------
 

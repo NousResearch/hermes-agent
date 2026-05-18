@@ -3092,6 +3092,15 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    orphan_runs: list[int] = field(default_factory=list)
+    """task_runs.id values for orphan runs reaped by
+    ``detect_orphan_runs`` — runs marked ``status='running'`` whose
+    parent ``tasks`` row has been hard-deleted out from under them.
+    The Hermes codebase never DELETEs from ``tasks`` (it sets
+    ``status='archived'`` instead), so a non-empty list here means
+    someone touched the SQLite file directly. Defense in depth: if
+    a manual ``DELETE FROM tasks`` happens, the orphaned run no
+    longer wedges the dispatcher's bookkeeping forever."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -3591,6 +3600,95 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     return crashed
 
 
+def detect_orphan_runs(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+) -> list[int]:
+    """Reap ``task_runs`` rows whose owning ``tasks`` row has vanished.
+
+    Defense in depth for a class of bug seen 2026-05-17 (kanban card
+    ``t_44c9eb37``): a worker was spawned for ``t_0281fae4``, but the
+    ``tasks`` row had been hard-deleted between the dispatcher's claim
+    and worker boot (~3s window). The worker's ``kanban_show`` returned
+    "task not found", so it could neither complete nor block — and
+    nothing else in the dispatcher would ever notice, because every
+    other reclaim path (``release_stale_claims`` /
+    ``detect_crashed_workers``) joins through ``tasks`` and skips runs
+    whose task row is gone.
+
+    The Hermes codebase itself never ``DELETE``s from ``tasks`` — it
+    sets ``status='archived'`` instead (see :func:`archive_task`). So a
+    non-empty result here means *someone touched the SQLite file
+    directly* (manual ``sqlite3`` session, errant migration, foreign
+    process). The fix is twofold:
+
+    1. Document/socialise "never DELETE from ``tasks``" — handled via
+       the kanban-worker skill and operator memory.
+    2. This function: scan for orphan runs, SIGTERM the worker pid when
+       host-local + alive, close the ``task_runs`` row with
+       ``status='reclaimed'`` + ``outcome='reclaimed'`` +
+       ``error='orphan: task row gone'``. Synthetic ``task_events`` are
+       NOT emitted because the event row would be orphaned too
+       (``task_events.task_id`` references the missing task).
+
+    Returns the list of ``task_runs.id`` values closed by this call.
+    Idempotent: subsequent calls return ``[]`` once the rows are
+    closed (the ``status='running'`` filter excludes already-reaped
+    runs).
+    """
+    closed: list[int] = []
+    now = int(time.time())
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, task_id, worker_pid, claim_lock "
+            "FROM task_runs "
+            "WHERE status = 'running' "
+            "  AND ended_at IS NULL "
+            "  AND task_id NOT IN (SELECT id FROM tasks)"
+        ).fetchall()
+        for row in rows:
+            # Best-effort SIGTERM the worker (host-local only) before
+            # closing the run row, mirroring the contract used by
+            # ``release_stale_claims`` and ``reclaim_task``.
+            termination = _terminate_reclaimed_worker(
+                row["worker_pid"],
+                row["claim_lock"],
+                signal_fn=signal_fn,
+            )
+            metadata = {
+                "reason": "orphan_task_row",
+                "prev_task_id": row["task_id"],
+                "prev_lock": row["claim_lock"],
+            }
+            metadata.update(termination)
+            cur = conn.execute(
+                """
+                UPDATE task_runs
+                   SET status        = 'reclaimed',
+                       outcome       = 'reclaimed',
+                       error         = ?,
+                       metadata      = ?,
+                       ended_at      = ?,
+                       claim_lock    = NULL,
+                       claim_expires = NULL,
+                       worker_pid    = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND ended_at IS NULL
+                """,
+                (
+                    f"orphan: task row {row['task_id']} missing",
+                    json.dumps(metadata, ensure_ascii=False),
+                    now,
+                    int(row["id"]),
+                ),
+            )
+            if cur.rowcount == 1:
+                closed.append(int(row["id"]))
+    return closed
+
+
 def _record_task_failure(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3853,8 +3951,11 @@ def dispatch_once(
     Steps:
       1. Reclaim stale running tasks (TTL expired).
       2. Reclaim crashed running tasks (host-local PID no longer alive).
-      3. Promote todo -> ready where all parents are done.
-      4. For each ready task with an assignee, atomically claim and call
+      3. Reap orphan ``task_runs`` rows whose owning ``tasks`` row is
+         gone (defense in depth against manual ``DELETE FROM tasks`` —
+         see :func:`detect_orphan_runs`).
+      4. Promote todo -> ready where all parents are done.
+      5. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
@@ -3920,6 +4021,12 @@ def dispatch_once(
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
+    # Defense in depth (card t_44c9eb37): if the ``tasks`` row got
+    # hard-deleted out from under a running worker, the existing
+    # crashed/stale paths would never notice (they JOIN through tasks
+    # and so skip orphaned task_runs rows). Reap them here so the
+    # bookkeeping doesn't strand a "running" run row forever.
+    result.orphan_runs = detect_orphan_runs(conn)
     result.promoted = recompute_ready(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather

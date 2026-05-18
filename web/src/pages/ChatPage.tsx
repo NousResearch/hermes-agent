@@ -4,7 +4,7 @@
  *   <div host> (dashboard chrome)                                         .
  *     └─ <div wrapper> (rounded, dark bg, padded — the "terminal window"  .
  *         look that gives the page a distinct visual identity)            .
- *         └─ @xterm/xterm Terminal (WebGL renderer, Unicode 11 widths)    .
+ *         └─ @xterm/xterm Terminal (DOM/canvas renderer, Unicode 11 widths).
  *              │ onData      keystrokes → WebSocket → PTY master          .
  *              │ onResize    terminal resize → `\x1b[RESIZE:cols;rows]`   .
  *              │ write(data) PTY output bytes → VT100 parser              .
@@ -19,7 +19,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -36,6 +35,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
+import { useTheme } from "@/themes";
 
 function buildWsUrl(
   token: string,
@@ -59,17 +59,48 @@ function generateChannelId(): string {
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 }
 
-// Colors for the terminal body.  Matches the dashboard's dark teal canvas
-// with cream foreground — we intentionally don't pick monokai or a loud
-// theme, because the TUI's skin engine already paints the content; the
-// terminal chrome just needs to sit quietly inside the dashboard.
-const TERMINAL_THEME = {
-  background: "#0d2626",
-  foreground: "#f0e6d2",
-  cursor: "#f0e6d2",
-  cursorAccent: "#0d2626",
-  selectionBackground: "#f0e6d244",
-};
+interface XtermTheme {
+  background: string;
+  foreground: string;
+  cursor: string;
+  cursorAccent: string;
+  selectionBackground: string;
+}
+
+function terminalThemeForDashboardTheme(
+  themeName: string,
+  theme: ReturnType<typeof useTheme>["theme"],
+): XtermTheme {
+  if (themeName === "chaos-goblin") {
+    return {
+      background: "#05070a",
+      foreground: "#d9ffb7",
+      cursor: "#ff4fd8",
+      cursorAccent: "#05070a",
+      selectionBackground: "#b8ff2f33",
+    };
+  }
+
+  const background = theme.colorOverrides?.card ?? theme.palette.background.hex;
+  const foreground =
+    theme.colorOverrides?.cardForeground ?? theme.palette.midground.hex;
+
+  return {
+    background,
+    foreground,
+    cursor: foreground,
+    cursorAccent: background,
+    selectionBackground: `${foreground}44`,
+  };
+}
+
+// Keep JetBrains Mono for ordinary terminal text, but explicitly include
+// browser/OS emoji and symbol fonts. Without these fallbacks, glyphs like 🔘,
+// ✓, →, box-drawing, and other "TUI spice" can render as tofu/black boxes in
+// the dashboard embed — especially when the renderer builds a narrow font
+// atlas from the bundled JetBrains font only.
+const TERMINAL_FONT_FAMILY =
+  "'JetBrains Mono', 'Symbols Nerd Font Mono', 'Symbols Nerd Font', 'Noto Sans Mono', 'Noto Sans Symbols 2', 'Noto Sans Symbols', 'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', 'Twemoji Mozilla', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace";
 
 /**
  * CSS width for xterm font tiers.
@@ -134,6 +165,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
   const { setEnd } = usePageHeader();
+  const { theme, themeName } = useTheme();
+  const terminalTheme = useMemo(
+    () => terminalThemeForDashboardTheme(themeName, theme),
+    [themeName, theme],
+  );
+  const terminalThemeRef = useRef<XtermTheme>(terminalTheme);
   const { t } = useI18n();
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
@@ -149,6 +186,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : false,
   );
 
+  useEffect(() => {
+    terminalThemeRef.current = terminalTheme;
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = terminalTheme;
+    if (term.rows > 0) {
+      try {
+        term.refresh(0, term.rows - 1);
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [terminalTheme]);
+
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
   // param changes do NOT remount the component. Resume-in-chat from the
@@ -156,7 +207,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const channel = useMemo(() => {
+    const resumeScope = resumeParam ?? "new";
+    return `${resumeScope}-${generateChannelId()}`;
+  }, [resumeParam]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -279,8 +333,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const term = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
-      fontFamily:
-        "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
+      fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: terminalFontSizeForWidth(tierW0),
       lineHeight: terminalLineHeightForWidth(tierW0),
       letterSpacing: 0,
@@ -302,7 +355,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // let the inner Hermes TUI own transcript history/scroll behavior.
       // The outer browser xterm should act as a display/input bridge only.
       scrollback: 0,
-      theme: TERMINAL_THEME,
+      theme: terminalThemeRef.current,
     });
     termRef.current = term;
 
@@ -345,7 +398,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -446,24 +499,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
-    // WebGL draws from a texture atlas sized with device pixels. On phones and
-    // in DevTools device mode that often produces *visually* much larger cells
-    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
-    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
-    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
-    if (useWebgl) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (err) {
-        console.warn(
-          "[hermes-chat] WebGL renderer unavailable; falling back to default",
-          err,
-        );
-      }
-    }
+    // Do NOT enable @xterm/addon-webgl here.
+    //
+    // The dashboard chat is glyph-heavy because the Ink TUI uses status
+    // symbols, arrows, checkmarks, the Max 🔘 motif, and occasionally emoji.
+    // The WebGL renderer is fast, but its texture-atlas path is much less
+    // forgiving with font fallback; missing glyphs commonly show up as solid
+    // black tofu boxes in Chrome/Edge. The default renderer is plenty fast for
+    // this chat surface and respects browser font fallback much better.
+    // Crisp boxes are nice. Legible text is nicer. Revolutionary, I know.
 
     // Initial fit + resize observer.  fit.fit() reads the container's
     // current bounding box and resizes the terminal grid to match.
@@ -825,7 +869,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "p-2 sm:p-3",
           )}
           style={{
-            backgroundColor: TERMINAL_THEME.background,
+            backgroundColor: terminalTheme.background,
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
@@ -848,7 +892,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
               "lg:bottom-4 lg:right-4",
             )}
-            style={{ color: TERMINAL_THEME.foreground }}
+            style={{ color: terminalTheme.foreground }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />

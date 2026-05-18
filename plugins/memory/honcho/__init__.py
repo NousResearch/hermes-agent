@@ -191,6 +191,12 @@ ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCH
 class HonchoMemoryProvider(MemoryProvider):
     """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
 
+    # First-turn dialectic is opportunistic context enrichment, not a hard
+    # dependency for answering the user. Keep it tightly bounded so a broad
+    # Honcho HTTP timeout (e.g. 300s for explicit tool calls) cannot stall
+    # Hermes before the first model request.
+    _FIRST_TURN_DIALECTIC_TIMEOUT = 8.0
+
     def __init__(self):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig
@@ -616,9 +622,7 @@ class HonchoMemoryProvider(MemoryProvider):
             self._last_dialectic_turn = self._turn_count
 
         if self._last_dialectic_turn == -999 and query:
-            _first_turn_timeout = (
-                self._config.timeout if self._config and self._config.timeout else 8.0
-            )
+            _first_turn_timeout = self._first_turn_dialectic_timeout()
             _fired_at = self._turn_count
 
             def _run_first_turn() -> None:
@@ -993,9 +997,28 @@ class HonchoMemoryProvider(MemoryProvider):
     # stale user-model context from derailing one-word replies.
     _TRIVIAL_PROMPT_RE = re.compile(
         r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
+        r'hi|hallo|moin|hoi|salut|ciao|yo|'
         r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)$',
         re.IGNORECASE,
     )
+
+    def _first_turn_dialectic_timeout(self) -> float:
+        """Return bounded wait for first-turn dialectic prefetch.
+
+        Honcho's configured HTTP timeout applies to explicit Honcho tools and
+        backend calls, where a long wait can be intentional. The first-turn
+        dialectic prefetch is different: it runs before Hermes sends the first
+        model request, so letting a 300s backend timeout through makes the CLI
+        look frozen. Use the lower of the configured timeout and a small cap.
+        """
+        configured = None
+        if self._config is not None:
+            configured = getattr(self._config, "timeout", None)
+        try:
+            configured_timeout = float(configured) if configured else self._FIRST_TURN_DIALECTIC_TIMEOUT
+        except (TypeError, ValueError):
+            configured_timeout = self._FIRST_TURN_DIALECTIC_TIMEOUT
+        return max(0.1, min(configured_timeout, self._FIRST_TURN_DIALECTIC_TIMEOUT))
 
     @classmethod
     def _is_trivial_prompt(cls, text: str) -> bool:
@@ -1014,6 +1037,27 @@ class HonchoMemoryProvider(MemoryProvider):
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""
         self._turn_count = turn_number
+
+    @staticmethod
+    def _coerce_content_for_memory(content: Any) -> str:
+        """Normalize provider turn content to text before sanitization.
+
+        Some model/gateway paths represent multimodal user content as OpenAI-style
+        content parts (a list of text/image dicts). sanitize_context expects a
+        string, so coerce structured content here instead of letting a background
+        memory sync thread fail with "expected string or bytes-like object, got
+        'list'".
+        """
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (list, dict)):
+            try:
+                return json.dumps(content, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                return str(content)
+        return str(content)
 
     @staticmethod
     def _chunk_message(content: str, limit: int) -> list[str]:
@@ -1129,8 +1173,12 @@ class HonchoMemoryProvider(MemoryProvider):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
-        clean_user_content = sanitize_context(user_content or "").strip()
-        clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        clean_user_content = sanitize_context(
+            self._coerce_content_for_memory(user_content)
+        ).strip()
+        clean_assistant_content = sanitize_context(
+            self._coerce_content_for_memory(assistant_content)
+        ).strip()
 
         def _sync():
             try:

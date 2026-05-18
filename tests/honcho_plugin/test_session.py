@@ -569,6 +569,25 @@ class TestConcludeToolDispatch:
 # ---------------------------------------------------------------------------
 
 
+class TestHonchoPrefetchGuardrails:
+    def test_first_turn_dialectic_timeout_is_capped_below_global_timeout(self):
+        provider = HonchoMemoryProvider()
+        provider._config = SimpleNamespace(timeout=300)
+
+        assert provider._first_turn_dialectic_timeout() == 8.0
+
+    def test_first_turn_dialectic_timeout_respects_smaller_global_timeout(self):
+        provider = HonchoMemoryProvider()
+        provider._config = SimpleNamespace(timeout=2)
+
+        assert provider._first_turn_dialectic_timeout() == 2.0
+
+    def test_greeting_prompts_are_trivial_and_skip_prefetch(self):
+        for prompt in ("hi", "hallo", "moin", "hoi", "salut", "ciao", "yo"):
+            assert HonchoMemoryProvider._is_trivial_prompt(prompt)
+            assert HonchoMemoryProvider._is_trivial_prompt(prompt.upper())
+
+
 class TestToolsModeInitBehavior:
     """Verify initOnSessionStart controls session init timing in tools mode."""
 

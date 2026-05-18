@@ -2278,6 +2278,27 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
 
+    # Azure Foundry deployment IDs are per-resource and can't be hardcoded
+    # (``_PROVIDER_MODELS["azure-foundry"]`` is intentionally ``[]``). The
+    # resource's ``{base}/openai/v1/models`` endpoint does return the catalog
+    # for the configured API key — same probe used by the setup wizard. Without
+    # this branch the runtime ``/model`` picker shows 0 models for users who
+    # have multiple Azure Foundry deployments accessible to their key.
+    if normalized == "azure-foundry":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            from hermes_cli.azure_detect import azure_foundry_model_ids_or_none
+
+            creds = resolve_api_key_provider_credentials("azure-foundry")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                ids = azure_foundry_model_ids_or_none(base_url, api_key)
+                if ids:
+                    return ids
+        except Exception:
+            pass
+
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".
     # Replaces per-provider copy-paste blocks (stepfun, gmi, zai, etc.).

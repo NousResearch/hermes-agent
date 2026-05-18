@@ -297,4 +297,32 @@ def lookup_context_length(model: str, base_url: str, api_key: str) -> Optional[i
     return None
 
 
-__all__ = ["DetectionResult", "detect", "lookup_context_length"]
+def azure_foundry_model_ids_or_none(
+    base_url: str, api_key: str
+) -> Optional[list[str]]:
+    """Return Azure Foundry deployment IDs visible to ``api_key`` at
+    ``base_url``, or ``None`` when the resource's ``/models`` endpoint
+    is unreachable / does not accept us as an OpenAI-style caller.
+
+    Thin public wrapper over :func:`_probe_openai_models` for callers
+    (e.g. the runtime ``/model`` picker) that need a live deployment list
+    without running the slower Anthropic-path probe from :func:`detect`.
+
+    Mirrors :func:`agent.bedrock_adapter.bedrock_model_ids_or_none` so the
+    picker can fall through to ``_PROVIDER_MODELS`` when discovery fails.
+    """
+    if not base_url or not api_key:
+        return None
+    try:
+        ok, ids = _probe_openai_models(base_url.strip().rstrip("/"), api_key.strip())
+    except Exception:
+        return None
+    return ids if ok else None
+
+
+__all__ = [
+    "DetectionResult",
+    "detect",
+    "lookup_context_length",
+    "azure_foundry_model_ids_or_none",
+]

@@ -479,8 +479,16 @@ class EmailAdapter(BasePlatformAdapter):
             "message_id": msg_data["message_id"],
         }
 
+        # Build a subject-scoped chat_id so each unique email subject gets its
+        # own isolated session. Strip "Re:" prefixes so replies stay in the
+        # same thread as the original message (issue #27804).
+        import re as _re
+        _normalized_subject = _re.sub(r"^(Re:\s*)+", "", subject, flags=_re.IGNORECASE).strip().lower()
+        _normalized_subject = _re.sub(r"[^a-z0-9]+", "_", _normalized_subject)[:64]
+        _session_chat_id = f"{sender_addr}:{_normalized_subject}" if _normalized_subject else sender_addr
+
         source = self.build_source(
-            chat_id=sender_addr,
+            chat_id=_session_chat_id,
             chat_name=msg_data["sender_name"] or sender_addr,
             chat_type="dm",
             user_id=sender_addr,
@@ -500,6 +508,20 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
 
+    # Progress/status message throttling — suppress intermediate "still working"
+    # emails and only send the final response. Without this, a single agent
+    # turn can generate 100-200 status emails (issue #27804).
+    _PROGRESS_PATTERNS = (
+        "still working", "looking", "searching", "thinking",
+        "processing", "analyzing", "checking", "fetching",
+        "⏳", "🔍", "💭", "⚙️",
+    )
+
+    def _is_progress_message(self, content: str) -> bool:
+        """Return True if content looks like an intermediate progress update."""
+        content_lower = content.lower().strip()
+        return any(pat in content_lower for pat in self._PROGRESS_PATTERNS)
+
     async def send(
         self,
         chat_id: str,
@@ -507,7 +529,18 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an email reply to the given address."""
+        """Send an email reply to the given address.
+
+        Intermediate progress/status messages are suppressed to avoid inbox
+        flooding — only final responses are delivered (issue #27804).
+        """
+        # Suppress intermediate progress messages for email — unlike chat
+        # platforms, email cannot be edited in-place, so progress updates
+        # create separate emails that flood the inbox.
+        if self._is_progress_message(content):
+            logger.debug("[Email] Suppressing progress message to %s", chat_id)
+            return SendResult(success=True, message_id=None)
+
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(

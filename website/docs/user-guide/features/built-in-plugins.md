@@ -59,6 +59,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
+| `build-macos-apps` | standalone | Inspect local Xcode projects, build/test schemes, manage local app run loops, and collect diagnostics |
 | `image_gen/openai` | image backend | OpenAI `gpt-image-2` image generation backend (alternative to FAL) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
@@ -199,6 +200,44 @@ The agent kicks off the meeting join, streams the transcription back into its co
 **When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
 
 **Disabling:** `hermes plugins disable google_meet`. Any cached transcripts and recordings stay in `~/.hermes/cache/google_meet/` until you remove them.
+
+### build-macos-apps
+
+Bundled standalone plugin for local macOS app build workflows. Phase 4 adds diagnostics tools and plugin skills on top of the existing inspection, build, test, and local run-loop flow.
+
+**Included toolset:** `macos-dev`
+
+**Included tools:**
+
+- `macos_inspect_project` — inspect a repo for `.xcworkspace`, `.xcodeproj`, and `Package.swift`
+- `macos_list_schemes` — run `xcodebuild -list -json` for a selected workspace or project
+- `macos_build_project` — run an unsigned `xcodebuild build` for a chosen scheme
+- `macos_test_project` — run `xcodebuild test` for a chosen scheme with optional test filtering
+- `macos_find_app_bundle` — find built `.app` bundles under DerivedData and common local build output roots
+- `macos_run_app` — launch a local `.app` bundle with `open`
+- `macos_stop_app` — stop a local app via AppleScript quit with `pkill` fallback
+- `macos_read_recent_logs` — read recent unified logs with `log show`
+- `macos_collect_crash_reports` — collect recent crash and hang reports from `DiagnosticReports`
+- `macos_show_build_settings` — inspect `xcodebuild -showBuildSettings` output for a scheme
+
+**Availability gate:** only exposed when Hermes is running on macOS and `xcodebuild` is available in `PATH`.
+
+**Current exclusions:**
+
+- no signing or notarization
+- no GUI automation or computer-use
+- no live log streaming
+
+**Build/test/run/diagnostics behavior:** `macos_build_project` and `macos_test_project` disable signing with `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, and `CODE_SIGN_IDENTITY=` so the plugin stays focused on local unsigned workflows. `macos_test_project` also supports optional `test_plan`, `only_testing`, `skip_testing`, and `result_bundle_path` arguments. `macos_run_app` launches via `open`, `macos_stop_app` attempts a graceful AppleScript quit before falling back to process termination, `macos_read_recent_logs` reads a bounded snapshot via `log show`, `macos_collect_crash_reports` reads from `~/Library/Logs/DiagnosticReports`, and `macos_show_build_settings` parses `xcodebuild -showBuildSettings`.
+
+**Plugin skills:**
+
+- `build-macos-apps:diagnose-build-failure`
+- `build-macos-apps:local-run-loop-check`
+
+**Enabling:** `hermes plugins enable build-macos-apps`
+
+**Recommended flow:** inspect the repo, list schemes, then build/test the target scheme, use the run-loop tools against the produced `.app` bundle, and pull structured diagnostics when failures move beyond a plain build/test error.
 
 ### hermes-achievements
 

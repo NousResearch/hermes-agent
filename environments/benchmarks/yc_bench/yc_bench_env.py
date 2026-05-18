@@ -47,6 +47,8 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import asyncio
+import aiofiles
 import time
 import uuid
 from collections import defaultdict
@@ -422,24 +424,23 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         os.makedirs(log_dir, exist_ok=True)
         run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self._streaming_path = os.path.join(log_dir, f"samples_{run_ts}.jsonl")
-        loop = asyncio.get_running_loop()
-        self._streaming_file = await loop.run_in_executor(None, lambda: open(self._streaming_path, "w", encoding="utf-8"))
-        self._streaming_lock = threading.Lock()
+        self._streaming_file = await aiofiles.open(self._streaming_path, "w", encoding="utf-8")
+        self._streaming_lock = asyncio.Lock()
 
         print(f"\nYC-Bench eval matrix: {len(self.all_eval_items)} runs")
         for item in self.all_eval_items:
             print(f"  preset={item['preset']!r}  seed={item['seed']}")
         print(f"Streaming results to: {self._streaming_path}\n")
 
-    def _save_result_sync(self, result: Dict[str, Any]):
-        """Write a single run result to the streaming JSONL file synchronously."""
+    async def _save_result(self, result: Dict[str, Any]):
+        """Write a single run result to the streaming JSONL file immediately."""
         if not hasattr(self, "_streaming_file") or self._streaming_file.closed:
             return
-        # CPU-bound JSON serialization outside the lock
-        data = json.dumps(result, ensure_ascii=False, default=str) + "\n"
-        with self._streaming_lock:
-            self._streaming_file.write(data)
-            self._streaming_file.flush()
+        async with self._streaming_lock:
+            await self._streaming_file.write(
+                json.dumps(result, ensure_ascii=False, default=str) + "\n"
+            )
+            await self._streaming_file.flush()
 
     async def _save_result(self, result: Dict[str, Any]):
         """Offload the synchronous file write to a thread pool."""
@@ -720,7 +721,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             except Exception:
                 pass
             if hasattr(self, "_streaming_file") and not self._streaming_file.closed:
-                self._streaming_file.close()
+                await self._streaming_file.close()
             return
 
         pbar.close()
@@ -821,7 +822,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
 
         # --- Cleanup (TB2 pattern) ---
         if hasattr(self, "_streaming_file") and not self._streaming_file.closed:
-            self._streaming_file.close()
+            await self._streaming_file.close()
             print(f"Results saved to: {self._streaming_path}")
 
         try:

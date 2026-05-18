@@ -325,18 +325,22 @@ class TestResolveStream:
 
 
 class TestConcurrentSameSessionRegression:
-    """Two overlapping ``_on_prompt`` calls sharing a ``chat_id`` each
-    fire a send helper; each send must land on its own stream.
+    """Two ``_on_prompt`` calls sharing an ``x-session`` must each deliver
+    their send to their OWN stream, not the other handler's.
 
-    Pre-T5.0, ``_active_streams[chat_id] = stream`` would be overwritten
-    by the second handler so the first handler's send would route to
-    the second handler's reply subject. Post-T5.0, the handler-scoped
-    contextvar ensures each send stays on its own stream regardless of
-    dict overwrite order.
+    Phase 6 follow-up: we now serialize same-session handlers via a
+    per-``chat_id`` ``asyncio.Lock`` so there is never more than one
+    active handler per session at any instant. This test therefore
+    verifies the *serialized* property — handler B only starts when
+    handler A has released the lock — and that after serialization each
+    handler's send lands on its own stream. The earlier "overlap and
+    interleave" variant of this test would deadlock under serialization
+    by design; the race we were guarding against is now structurally
+    impossible.
     """
 
     @pytest.mark.asyncio
-    async def test_two_handlers_one_session_send_to_own_streams(
+    async def test_two_handlers_one_session_serialize_and_send_to_own_streams(
         self, monkeypatch, tmp_file
     ):
         adapter = _build_adapter()
@@ -357,48 +361,36 @@ class TestConcurrentSameSessionRegression:
         stream_a._request.data = b'{"prompt":"prompt A","x-session":"shared"}'
         stream_b._request.data = b'{"prompt":"prompt B","x-session":"shared"}'
 
-        # Gate both handlers so they overlap — handler A blocks while B
-        # starts, then B's send fires, then A's send fires, then both
-        # unblock. This proves the handler-scoped contextvar doesn't
-        # depend on strict ordering.
-        start_a = asyncio.Event()
-        start_b = asyncio.Event()
-        a_sent_image = asyncio.Event()
-        b_sent_image = asyncio.Event()
-        release_a = asyncio.Event()
-
         path_a = tmp_file("a.png", b"\x89PNGfakeA")
         path_b = tmp_file("b.png", b"\x89PNGfakeB")
 
+        # Record the order handlers enter/leave the critical section so
+        # we can assert strict serialization.
+        timeline: list[str] = []
+        release_a = asyncio.Event()
+
         async def _run_a(event, s, chat_id):
-            start_a.set()
-            # Wait until B has registered + sent its chunk so both
-            # streams are live in _active_streams at once.
-            await start_b.wait()
-            await b_sent_image.wait()
-            # Now from handler A's context, fire a send. If the
-            # contextvar lookup is correct, this lands on stream_a.
+            timeline.append("A enter")
+            # Pause inside the lock so we can prove B cannot interleave.
+            await release_a.wait()
+            # While A still holds the lock, its send must land on stream_a.
             result = await adapter.send_image_file(
                 chat_id="shared", image_path=str(path_a), caption="A"
             )
             assert result.success is True
-            a_sent_image.set()
-            await release_a.wait()
+            timeline.append("A leave")
 
         async def _run_b(event, s, chat_id):
-            start_b.set()
-            # Ensure A is already in flight before we send — otherwise
-            # there's no race to test.
-            await start_a.wait()
+            timeline.append("B enter")
+            # B runs only after A released the lock. Its send must
+            # therefore land on stream_b — the only currently-active
+            # stream in _active_streams — regardless of dict ordering.
             result = await adapter.send_image_file(
                 chat_id="shared", image_path=str(path_b), caption="B"
             )
             assert result.success is True
-            b_sent_image.set()
+            timeline.append("B leave")
 
-        # Flip the branch — _on_prompt dispatches text prompts through
-        # _run_text_prompt; we swap in our per-handler runners. We have
-        # to swap globally, so key on the stream identity passed in.
         dispatch = {id(stream_a): _run_a, id(stream_b): _run_b}
 
         async def _fake_run(event, s, chat_id):
@@ -406,29 +398,96 @@ class TestConcurrentSameSessionRegression:
 
         monkeypatch.setattr(adapter, "_run_text_prompt", _fake_run)
 
-        # Launch both handlers concurrently.
+        # Launch both handlers concurrently. The per-chat_id lock should
+        # queue B behind A.
         task_a = asyncio.create_task(adapter._on_prompt(envelope_a, stream_a))
         task_b = asyncio.create_task(adapter._on_prompt(envelope_b, stream_b))
 
-        # B completes once its image send lands; then release A.
-        await asyncio.wait_for(task_b, timeout=3.0)
+        # Let the loop scheduler advance both tasks up to their first
+        # suspend point. A will be inside the lock (awaiting release_a);
+        # B will be queued on the lock (no "B enter" yet).
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if "A enter" in timeline:
+                break
+        assert "A enter" in timeline, "handler A never started"
+        assert "B enter" not in timeline, \
+            "handler B interleaved — serialization broke"
+
+        # Release A; both handlers should now drain to completion.
         release_a.set()
         await asyncio.wait_for(task_a, timeout=3.0)
+        await asyncio.wait_for(task_b, timeout=3.0)
 
-        # Now the regression assertion: each stream received exactly ONE
-        # ResponseChunk (its own image), NOT the other handler's image.
+        # Strict serialization: A entered, A left, THEN B entered, B left.
+        assert timeline == ["A enter", "A leave", "B enter", "B leave"], (
+            f"serialization timeline violated: {timeline}"
+        )
+
+        # Each stream received exactly ONE ResponseChunk — its own image.
         assert stream_a.send.await_count == 1
         assert stream_b.send.await_count == 1
-
         chunk_a = stream_a.send.await_args.args[0]
         chunk_b = stream_b.send.await_args.args[0]
         assert getattr(chunk_a, "text", None) == "A"
         assert getattr(chunk_b, "text", None) == "B"
 
-        # Registration cleanup — both compound keys are popped.
+        # Registration cleanup — both compound keys popped.
         assert adapter._active_streams == {}
-        # And the contextvar is reset on both handlers' exits.
+        # Contextvar is reset on both handlers' exits.
         assert _current_stream.get() is None
+
+    @pytest.mark.asyncio
+    async def test_distinct_sessions_run_in_parallel(
+        self, monkeypatch, tmp_file
+    ):
+        """Serialization is per-``chat_id``, not global — distinct
+        ``x-session`` values MUST still run concurrently. Guards against
+        an accidental global lock regression.
+        """
+        adapter = _build_adapter()
+
+        stream_a = _fake_stream()
+        stream_b = _fake_stream()
+        stream_a._request.data = b'{"prompt":"A","x-session":"alice"}'
+        stream_b._request.data = b'{"prompt":"B","x-session":"bob"}'
+
+        envelope_a = MagicMock()
+        envelope_a.prompt = "A"
+        envelope_a.attachments = None
+        envelope_b = MagicMock()
+        envelope_b.prompt = "B"
+        envelope_b.attachments = None
+
+        both_inside = asyncio.Event()
+        a_inside = asyncio.Event()
+        b_inside = asyncio.Event()
+
+        async def _run_a(event, s, chat_id):
+            a_inside.set()
+            # Wait for B to also land inside its lock — proves no global
+            # lock is serializing distinct sessions.
+            await asyncio.wait_for(b_inside.wait(), timeout=2.0)
+            both_inside.set()
+
+        async def _run_b(event, s, chat_id):
+            b_inside.set()
+            await asyncio.wait_for(a_inside.wait(), timeout=2.0)
+            both_inside.set()
+
+        dispatch = {id(stream_a): _run_a, id(stream_b): _run_b}
+
+        async def _fake_run(event, s, chat_id):
+            await dispatch[id(s)](event, s, chat_id)
+
+        monkeypatch.setattr(adapter, "_run_text_prompt", _fake_run)
+
+        task_a = asyncio.create_task(adapter._on_prompt(envelope_a, stream_a))
+        task_b = asyncio.create_task(adapter._on_prompt(envelope_b, stream_b))
+
+        await asyncio.wait_for(both_inside.wait(), timeout=2.0)
+        await asyncio.wait_for(task_a, timeout=2.0)
+        await asyncio.wait_for(task_b, timeout=2.0)
 
 
 # ---------------------------------------------------------------------------

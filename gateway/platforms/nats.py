@@ -400,6 +400,24 @@ class NatsAdapter(BasePlatformAdapter):
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._in_flight_handlers: Set[asyncio.Task] = set()
 
+        # Per-``x-session`` serialization. Concurrent ``_on_prompt``
+        # invocations for the same chat_id queue on this lock so only one
+        # handler is active per session at a time. Prevents the
+        # stacking-race documented in the Phase 6 shortcomings:
+        #   - ``register_gateway_notify(session_key, cb)`` is per-session
+        #     overwrite — without this lock, handler B's notify cb
+        #     replaces handler A's (different captured streams), so A's
+        #     dangerous-command approvals would route to B's stream.
+        #   - ``_current_stream`` contextvar doesn't propagate through
+        #     ``asyncio.run_coroutine_threadsafe``, so the dict fallback
+        #     in ``_resolve_stream`` is ambiguous when multiple
+        #     ``(chat_id, *)`` entries exist.
+        # Both concerns vanish when only one handler per chat_id runs at
+        # a time. Distinct chat_ids still run in parallel. The lock dict
+        # grows with every distinct x-session seen; ``_teardown_handles``
+        # clears it on disconnect so adapter restarts reset the pool.
+        self._session_locks: Dict[str, asyncio.Lock] = {}
+
         try:
             self._settings = NatsAdapterSettings.from_extra(config.extra or {})
         except NatsConfigError as exc:
@@ -575,6 +593,10 @@ class NatsAdapter(BasePlatformAdapter):
         # Clear any lingering stream handles so a late send() fails fast
         # rather than publishing onto a socket that's about to close.
         self._active_streams.clear()
+        # Drop the per-session lock pool so a subsequent ``connect()``
+        # starts from a clean slate — Locks held by cancelled tasks
+        # wouldn't release cleanly otherwise and could deadlock a retry.
+        self._session_locks.clear()
 
         if self._agent is not None:
             try:
@@ -616,18 +638,21 @@ class NatsAdapter(BasePlatformAdapter):
           1. Extract ``x-session`` → ``chat_id`` (raw envelope bytes
              because the SDK's pydantic model drops unknown fields).
           2. Decode any ``attachments`` into the hermes media cache so the
-             downstream agent can read them via local paths (§8.1).
-          3. Build the normalized :class:`MessageEvent` with a
-             ``SessionSource`` that ``build_session_key`` can key on.
-          4. Register the stream in ``_active_streams`` so tool outputs
-             like ``send_image_file`` can publish onto the same reply
-             subject, and spin up the keep-alive task (§6.4).
-          5. For slash commands, reuse the gateway runner's dispatch via
-             ``self._message_handler`` — it returns the rendered response
-             string, which we wrap in a :class:`ResponseChunk`. For text
-             prompts, build an adapter-owned :class:`AIAgent` with a
-             stream_delta_callback that pumps deltas through an
-             ``asyncio.Queue`` onto the stream (§6.3).
+             downstream agent can read them via local paths (§8.1). Done
+             *before* the session lock so attachment errors fail fast
+             without blocking another same-session handler.
+          3. Start the keep-alive task BEFORE acquiring the session lock
+             — a queued handler still needs to emit acks so the caller
+             doesn't timeout waiting its turn (§6.4).
+          4. Acquire the per-``chat_id`` session lock. Queues concurrent
+             same-session handlers so only one runs at a time — which is
+             what eliminates the notify-cb-overwrite + stream-resolution
+             races documented as Phase 6 shortcomings.
+          5. Inside the lock: register the stream, build the MessageEvent,
+             dispatch. For slash commands, reuse the gateway runner's
+             dispatch via ``self._message_handler``. For text prompts,
+             run the adapter-owned :class:`AIAgent` via
+             ``_run_text_prompt`` (§6.3).
           6. Always unwind the stream, keep-alive, and task-tracking in
              the ``finally`` block so the SDK's terminator runs on a
              clean slate whether we succeeded, raised, or got cancelled
@@ -648,49 +673,64 @@ class NatsAdapter(BasePlatformAdapter):
         _context_token = _current_stream.set(stream)
 
         try:
+            # Unpack envelope OUTSIDE the session lock so a malformed
+            # attachment from handler B fails fast even while handler A
+            # is still running — otherwise a bad attachment could block
+            # behind a long-running earlier prompt for no reason.
             prompt_text, media_urls, media_types, message_type = self._unpack_envelope(envelope)
-
-            # Register under a compound key so overlapping prompts with
-            # the same ``x-session`` don't overwrite each other.
-            stream_key = (chat_id, id(stream))
-            self._active_streams[stream_key] = stream
-
-            source = self.build_source(
-                chat_id=chat_id,
-                chat_name=chat_id,
-                chat_type="dm",
-                user_id=chat_id,
-                user_name=chat_id,
-            )
-            is_command = self._looks_like_command(prompt_text)
-            # ``_looks_like_command`` lstrips before matching so ``"  /help"``
-            # is still classified as a command. ``MessageEvent.is_command``
-            # / ``get_command()`` in base.py, by contrast, require the
-            # literal ``/`` at index 0 — leading whitespace would cause the
-            # gateway's command registry to miss the dispatch and fall
-            # through to the agent path. Canonicalize the text here when
-            # we've decided it's a command so the two heuristics agree.
-            event_text = prompt_text.lstrip() if is_command else prompt_text
-            event = MessageEvent(
-                text=event_text,
-                message_type=MessageType.COMMAND if is_command else message_type,
-                source=source,
-                media_urls=media_urls,
-                media_types=media_types,
-            )
 
             # Keep-alive emission keeps callers (§6.6 recommends 60 s
             # inactivity timeout) from dropping the subscription while
-            # the model is silent mid-reasoning.
+            # we're queued behind an earlier same-session handler OR
+            # while the model is silent mid-reasoning inside the lock.
             keepalive_task = asyncio.create_task(
                 self._run_keepalive(stream),
                 name=f"nats-keepalive-{chat_id}",
             )
 
-            if is_command:
-                await self._dispatch_command(event, stream)
-            else:
-                await self._run_text_prompt(event, stream, chat_id)
+            # Per-session serialization. ``setdefault`` is safe on a
+            # single event loop — there's no await between the dict
+            # lookup and the insert, so two coroutines for the same
+            # chat_id can't both insert a fresh Lock. The acquire below
+            # is the yield point; the second handler sees the first's
+            # Lock in the dict and awaits on it.
+            session_lock = self._session_locks.setdefault(chat_id, asyncio.Lock())
+            async with session_lock:
+                # Register under a compound key so overlapping prompts
+                # with the same ``x-session`` still don't collide in the
+                # registry — belt-and-braces defense since the lock
+                # should prevent overlap in the first place.
+                stream_key = (chat_id, id(stream))
+                self._active_streams[stream_key] = stream
+
+                source = self.build_source(
+                    chat_id=chat_id,
+                    chat_name=chat_id,
+                    chat_type="dm",
+                    user_id=chat_id,
+                    user_name=chat_id,
+                )
+                is_command = self._looks_like_command(prompt_text)
+                # ``_looks_like_command`` lstrips before matching so ``"  /help"``
+                # is still classified as a command. ``MessageEvent.is_command``
+                # / ``get_command()`` in base.py, by contrast, require the
+                # literal ``/`` at index 0 — leading whitespace would cause the
+                # gateway's command registry to miss the dispatch and fall
+                # through to the agent path. Canonicalize the text here when
+                # we've decided it's a command so the two heuristics agree.
+                event_text = prompt_text.lstrip() if is_command else prompt_text
+                event = MessageEvent(
+                    text=event_text,
+                    message_type=MessageType.COMMAND if is_command else message_type,
+                    source=source,
+                    media_urls=media_urls,
+                    media_types=media_types,
+                )
+
+                if is_command:
+                    await self._dispatch_command(event, stream)
+                else:
+                    await self._run_text_prompt(event, stream, chat_id)
 
         except asyncio.CancelledError:
             # Gateway shutdown cancelled this handler. Propagate so the

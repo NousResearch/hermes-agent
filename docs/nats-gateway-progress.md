@@ -323,16 +323,38 @@ The design doc was ambiguous on this. `NotImplementedError` means the capability
 
 `_nats_approval_notify` reads the return value of `dispatch_approval_via_request_interaction` and, when it's False (scheduling on `loop` raised — only happens during a shutdown race where the loop is already closed), immediately calls `resolve_gateway_approval(session_key, "deny")`. Without this, the agent thread blocked on `entry.event.wait()` would hang for the full `gateway_timeout` (default 300 s) before the framework's timeout surfaces with "deny" anyway. Same outcome, but 300 s → ~0 ms. Regression test: `test_notify_callback_resolves_as_deny_when_dispatch_fails`.
 
+### 2026-04-22 — Phase 6 — Per-`x-session` serialization eliminates the stacked stream/notify races
+
+The first-pass Phase 6 implementation documented a "stacking of two races" for concurrent same-`x-session` handlers:
+
+1. `register_gateway_notify(session_key, cb)` overwrites — handler B's registration replaces handler A's, so agent A's dangerous commands route through B's captured stream (wrong reply subject).
+2. `_current_stream` contextvar doesn't propagate through `asyncio.run_coroutine_threadsafe`, so the fallback dict lookup in `_resolve_stream` is ambiguous when multiple `(chat_id, *)` entries exist.
+
+User review flagged these as unacceptable correctness bugs. Resolution: **serialize same-session handlers** via a per-`chat_id` `asyncio.Lock` (new `NatsAdapter._session_locks`). Only one `_on_prompt` is active per `chat_id` at any instant — both races become structurally impossible because there's never more than one notify cb / one current stream / one handler context for a given session at a time.
+
+Design choices in the serialization:
+
+- **Keep-alive starts BEFORE the lock.** A queued handler still emits `status:ack` chunks so the caller doesn't hit the §6.6 inactivity timeout while waiting for the previous handler to finish. Phase 4 already decoupled keep-alive from the main body; this reorder is cheap.
+- **`_unpack_envelope` runs BEFORE the lock.** Attachment decode errors (bad base64, non-image bytes with `.jpg` extension) now fail fast with an SDK 500 even if another same-session handler is busy — otherwise a malformed attachment would sit waiting for the queue before the caller finds out.
+- **`setdefault` for lock creation is safe on a single event loop** — one atomic dict op under the GIL, no await between check and insert, so two coroutines for the same `chat_id` can't both insert a fresh Lock.
+- **Distinct `chat_id`s still run in parallel** — the lock is per-session, not global. Guard test: `test_distinct_sessions_run_in_parallel`.
+- **`_teardown_handles` clears `_session_locks`** so a reconnect doesn't inherit Locks held by cancelled tasks (which wouldn't release cleanly and could deadlock a retry).
+
+Regression test: `TestConcurrentSameSessionRegression::test_two_handlers_one_session_serialize_and_send_to_own_streams` asserts strict timeline ordering (A enter → A leave → B enter → B leave). The earlier "handlers interleave and each send lands on its own stream via contextvar" test from the Phase 5 T5.0 decision is now structurally impossible — the interleaved variant would deadlock under serialization — and has been rewritten to test the stronger serialization property instead.
+
+### 2026-04-22 — Phase 6 — Pre-existing test failures re-confirmed
+
+`scripts/run_tests.sh tests/gateway/` shows the same two Phase 1 failures plus a third pre-existing flake (`tests/tools/test_approval_heartbeat.py::TestApprovalHeartbeat::test_heartbeat_import_failure_does_not_break_wait`), plus a sporadic `tests/gateway/test_whatsapp_connect.py::TestBridgeRuntimeFailure` ordering flake under the 4-worker xdist setup. All fail identically with Phase 6 changes stashed, so not regressions introduced by this phase. Flagged here so a future Claude doesn't waste cycles blaming them on NATS.
+
+### 2026-04-22 — Phase 6 — Dispatch-failure fallback resolves as "deny"
+
+`_nats_approval_notify` reads the return value of `dispatch_approval_via_request_interaction` and, when it's False (scheduling on `loop` raised — only happens during a shutdown race where the loop is already closed), immediately calls `resolve_gateway_approval(session_key, "deny")`. Without this, the agent thread blocked on `entry.event.wait()` would hang for the full `gateway_timeout` (default 300 s) before the framework's timeout surfaces with "deny" anyway. Same outcome, but 300 s → ~0 ms. Regression test: `test_notify_callback_resolves_as_deny_when_dispatch_fails`.
+
 ### 2026-04-22 — Phase 6 — Known shortcomings (NOT fixed; carry forward)
 
-1. **Concurrent same-`x-session` approvals are racy.** Two concerns stack here:
-   - `register_gateway_notify(session_key, cb)` is a per-session *overwrite* — two concurrent `_on_prompt` handlers sharing a session_key race on registration; whichever registers second wins, so the first handler's `_nats_approval_notify` (closure capturing its own `stream`) is replaced by the second's. Dangerous commands from either handler route through the second handler's stream.
-   - Even without the overwrite, `_current_stream` contextvar does NOT propagate through `asyncio.run_coroutine_threadsafe`. The coroutine scheduled by `dispatch_approval_via_request_interaction` starts with a fresh context, so `request_interaction`'s `_resolve_stream` falls back to the `_active_streams` dict, which is ambiguous for same-chat_id entries (returns whichever was registered first).
-   This is an inherent limitation of the framework's per-session notify + queue design plus Python's contextvar-cross-thread behavior — not NATS-specific and not trivial to fix. Practically narrow (NATS callers usually await one prompt's response before sending another on the same `x-session`), but real. Documented here for the next phase that cares about parallel subagent approvals. Fix would require either threading stream identity through `request_interaction`'s signature or a per-handler notify registration keyed on something finer than `session_key`.
+1. **Entry-pop is FIFO, not reply-keyed.** `resolve_gateway_approval(session_key, choice)` pops the OLDEST entry from `_gateway_queues[session_key]`, not "the one matching this query reply". Session serialization eliminates the concurrent same-`x-session` case, but parallel subagents *inside one handler* still share a single `session_key` and can hit dangerous commands simultaneously. If the caller replies to query 2 before query 1, coroutine 2's `resolve_gateway_approval` pops entry 1 (FIFO oldest) with query 2's choice; entry 2 then resolves with query 1's choice → cross-routed approvals. Narrow (requires `delegate_tool` parallel execution + concurrent dangerous commands within one handler), framework-level root cause. Fix would require extending `tools/approval.py` with a `_current_entry` contextvar + a `resolve_approval_entry(entry_obj, choice)` function that matches by object identity — surgical but touches gateway-wide code. Defer to post-MVP.
 
-2. **Entry-pop is FIFO, not reply-keyed.** `resolve_gateway_approval(session_key, choice)` pops the OLDEST entry from `_gateway_queues[session_key]`, not "the one matching this query reply". If two dangerous commands fire concurrently in the same session (parallel subagents) and the caller replies to query 2 before query 1, coroutine 2 completes first and resolves entry 1 with query 2's choice. Entry 2 then resolves with query 1's choice. Cross-routing. Same limitation as above; same framework root cause. Fix would track per-entry correlation ids and resolve by id, not FIFO.
-
-3. **Approval reply "a" maps to "always", not "approve once".** Consistent with the CLI's `[o]nce | [s]ession | [a]lways | [d]eny` shortcuts, but users who type "a" thinking "approve" get permanent allowlisting instead of one-time. Mitigated by the prompt text explicitly listing `once | session | always | deny` as the four options. Full words are unambiguous; only the single-letter form has this footgun.
+2. **Approval reply "a" maps to "always", not "approve once".** Consistent with the CLI's `[o]nce | [s]ession | [a]lways | [d]eny` shortcuts, but users who type "a" thinking "approve" get permanent allowlisting instead of one-time. Mitigated by the prompt text explicitly listing `once | session | always | deny` as the four options. Full words are unambiguous; only the single-letter form has this footgun.
 
 ---
 

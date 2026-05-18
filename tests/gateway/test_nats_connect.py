@@ -496,6 +496,26 @@ class TestDisconnect:
         assert observed["shutdown_event_set_at_stop"] is True
 
     @pytest.mark.asyncio
+    async def test_disconnect_clears_session_locks_dict(
+        self, mock_natsagent, lock_granted
+    ):
+        # The per-chat_id session-lock pool accumulates one entry per
+        # distinct x-session seen. ``disconnect()`` must reset it so a
+        # subsequent ``connect()`` doesn't inherit Locks from the prior
+        # session — Locks held by cancelled tasks wouldn't release
+        # cleanly and could deadlock a retry.
+        adapter = _build_adapter()
+        await adapter.connect()
+        # Simulate two handlers having registered locks.
+        adapter._session_locks["alice"] = asyncio.Lock()
+        adapter._session_locks["bob"] = asyncio.Lock()
+        assert len(adapter._session_locks) == 2
+
+        await adapter.disconnect()
+
+        assert adapter._session_locks == {}
+
+    @pytest.mark.asyncio
     async def test_connect_clears_shutdown_event_on_retry(
         self, mock_natsagent, lock_granted
     ):

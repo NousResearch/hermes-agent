@@ -60,6 +60,30 @@ _PROVIDER_ENV_HINTS = (
 from hermes_constants import is_termux as _is_termux
 
 
+def _venv_base_python_issue() -> str | None:
+    """Warn when pyvenv.cfg home points at a removed uv-managed base Python."""
+    if sys.prefix == sys.base_prefix:
+        return None
+    cfg = Path(sys.prefix) / "pyvenv.cfg"
+    if not cfg.is_file():
+        return None
+    home = None
+    for line in cfg.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("home ="):
+            home = line.split("=", 1)[1].strip()
+            break
+    if not home:
+        return None
+    base_exe = Path(home) / "python.exe"
+    if base_exe.is_file():
+        return None
+    return (
+        f"Venv base interpreter missing ({base_exe}); "
+        "fix: uv python install 3.13  OR  uv venv --python 3.13 .venv"
+    )
+
+
 def _python_install_cmd() -> str:
     return "python -m pip install" if _is_termux() else "uv pip install"
 
@@ -450,6 +474,9 @@ def run_doctor(args):
     in_venv = sys.prefix != sys.base_prefix
     if in_venv:
         check_ok("Virtual environment active")
+        venv_base_issue = _venv_base_python_issue()
+        if venv_base_issue:
+            check_warn(venv_base_issue)
     else:
         check_warn("Not in virtual environment", "(recommended)")
     

@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [GitHub, Code-Review, Automation, Pull-Requests, Cron, review]
-    related_skills: [github-code-review, cronjob]
+    related_skills: [github-code-review]
 ---
 
 # Automated PR Reviewer Workflow

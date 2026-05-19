@@ -5876,6 +5876,67 @@ def _clear_bytecode_cache(root: Path) -> int:
     return removed
 
 
+# Critical files that every ``hermes`` invocation imports at startup. If any
+# of these fail to parse after a pull, the CLI is bricked — the user can't
+# even run ``hermes update`` again to roll forward. The post-pull syntax
+# guard validates these and auto-rolls-back on failure.
+_UPDATE_CRITICAL_FILES = (
+    "hermes_cli/main.py",
+    "hermes_cli/config.py",
+    "hermes_cli/__init__.py",
+    "cli.py",
+    "run_agent.py",
+    "model_tools.py",
+    "toolsets.py",
+    "hermes_constants.py",
+)
+
+
+def _capture_head_sha(git_cmd, cwd) -> str | None:
+    """Return the current HEAD SHA, or None if it can't be resolved."""
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip() or None
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
+def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
+    """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
+
+    These are the files imported on every ``hermes`` startup; if any of them
+    has a syntax error (orphan merge-conflict markers, bad ref to a name
+    that no longer exists, etc.) the CLI can't bootstrap at all. We validate
+    them after a successful ``git pull`` so we can auto-roll-back instead of
+    leaving the user with a bricked install.
+
+    Returns ``(ok, failing_path, error_message)``. ``ok=True`` means every
+    file parsed cleanly.
+    """
+    import py_compile
+
+    root = Path(root)
+    for relpath in _UPDATE_CRITICAL_FILES:
+        path = root / relpath
+        if not path.exists():
+            # Missing file is suspicious but not necessarily fatal — a future
+            # refactor may legitimately remove one of these. Skip and move on.
+            continue
+        try:
+            py_compile.compile(str(path), doraise=True)
+        except py_compile.PyCompileError as exc:
+            return False, str(path), str(exc)
+        except OSError as exc:
+            return False, str(path), f"could not read: {exc}"
+    return True, None, None
+
+
 def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0) -> str:
     """File-based IPC prompt for gateway mode.
 
@@ -8137,6 +8198,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print("→ Pulling updates...")
         update_succeeded = False
+        # Capture the pre-pull SHA so we can auto-roll-back if the new code
+        # has a syntax error in a critical-path file (PR #28452 incident:
+        # orphan merge-conflict markers in hermes_cli/config.py bricked
+        # every user who ran ``hermes update`` for the 7 minutes between
+        # the bad commit and the fix landing).
+        pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
             pull_result = subprocess.run(
                 git_cmd + ["pull", "--ff-only", "origin", branch],
@@ -8165,6 +8232,48 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         "  Try manually: git fetch origin && git reset --hard origin/main"
                     )
                     sys.exit(1)
+
+            # Post-pull syntax guard: validate critical-path files actually
+            # parse before declaring the update successful. If a bad commit
+            # made it through CI (e.g. admin-merge bypass of a failing
+            # ruff check), this catches it on the user side and rolls back
+            # so the CLI stays bootable. The user can then retry ``hermes
+            # update`` later once a fix lands upstream.
+            syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(
+                PROJECT_ROOT
+            )
+            if not syntax_ok:
+                print()
+                print("✗ Pulled code has a syntax error in a critical file:")
+                print(f"  {failing_path}")
+                if syntax_error:
+                    # py_compile errors can be multi-line; show the first
+                    # ~6 lines so the user sees the actual SyntaxError text.
+                    for line in str(syntax_error).splitlines()[:6]:
+                        print(f"    {line}")
+                if pre_pull_sha:
+                    print()
+                    print(f"→ Rolling back to {pre_pull_sha[:10]}...")
+                    rollback_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", pre_pull_sha],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if rollback_result.returncode == 0:
+                        print("  ✓ Rollback complete — your install is unchanged.")
+                        print("  Try ``hermes update`` again later once a fix lands.")
+                    else:
+                        print("  ✗ Rollback failed. Recover manually with:")
+                        print(f"    cd {PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
+                        if rollback_result.stderr.strip():
+                            print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
+                else:
+                    print()
+                    print("  Could not capture pre-pull SHA — recover manually with:")
+                    print(f"    cd {PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
+                sys.exit(1)
+
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:

@@ -42,7 +42,7 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 
 Если вы предпочитаете WSL2, Linux-установщик выше работает и там; native и WSL-установки могут сосуществовать без конфликтов (нативные данные живут в `%LOCALAPPDATA%\hermes`, данные WSL — в `~/.hermes`).
 
-**Альтернатива: Desktop installer.** Для Hermes Desktop также доступен тонкий GUI-установщик: скачайте Hermes Desktop, запустите `.exe`, и при первом старте он сам вызовет `install.ps1`, чтобы подготовить Python (через `uv`), Node, PortableGit и остальные зависимости. Desktop-приложение и CLI, установленный через PowerShell, используют одни и те же папки установки и данных, так что можно пользоваться любым вариантом или обоими сразу. Подробности см. в [руководстве по нативному Windows](/user-guide/windows-native#desktop-installer-alternative).
+**Альтернатива: графический установщик.** Для Hermes Desktop также доступен тонкий GUI-установщик: скачайте Hermes Desktop, запустите `.exe`, и при первом старте он сам вызовет `install.ps1`, чтобы подготовить Python (через `uv`), Node, PortableGit и остальные зависимости. Desktop-приложение и CLI, установленный через PowerShell, используют одни и те же папки установки и данных, так что можно пользоваться любым вариантом или обоими сразу. Подробности см. в [руководстве по Windows (нативный режим)](/user-guide/windows-native).
 
 ### Android / Termux
 

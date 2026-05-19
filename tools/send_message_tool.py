@@ -15,6 +15,13 @@ import time
 from email.utils import formatdate
 from typing import Dict, Optional
 
+# Load .env file to make TELEGRAM_PROXY and other env vars available
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.expanduser("~/.hermes/.env"), override=True)
+except ImportError:
+    pass  # python-dotenv not required at module level
+
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -813,6 +820,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     try:
         from telegram import Bot
         from telegram.constants import ParseMode
+        from telegram.request import HTTPXRequest
+
+        # Resolve proxy from TELEGRAM_PROXY env var (same logic as gateway adapter)
+        from gateway.platforms.base import resolve_proxy_url
+        fallback_ips = ["149.154.167.220"]  # Last-resort Telegram fallback IP
+        proxy_targets = ["api.telegram.org", *fallback_ips]
+        proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
         # Inspired by github.com/ashaney — PR #1568.
@@ -832,30 +846,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
-        # Honour a configured proxy (telegram.proxy_url in config.yaml, exported
-        # as TELEGRAM_PROXY env var by load_gateway_config). Without this, the
-        # standalone send path bypasses the proxy and times out in regions
-        # where api.telegram.org is blocked. The in-gateway adapter does the
-        # same thing in gateway/platforms/telegram.py.
-        try:
-            from gateway.platforms.base import resolve_proxy_url
-            _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
-        except Exception:
-            _tg_proxy = None
-        if _tg_proxy:
-            try:
-                from telegram.request import HTTPXRequest
-                logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
-                bot = Bot(
-                    token=token,
-                    request=HTTPXRequest(proxy=_tg_proxy),
-                    get_updates_request=HTTPXRequest(proxy=_tg_proxy),
-                )
-            except Exception as _proxy_err:
-                logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
-                bot = Bot(token=token)
-        else:
-            bot = Bot(token=token)
+        # Create Bot with proxy support via HTTPXRequest
+        request_kwargs = {}
+        if proxy_url:
+            request_kwargs["proxy"] = proxy_url
+        bot_request = HTTPXRequest(**request_kwargs)
+        bot = Bot(token=token, request=bot_request)
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}

@@ -14,6 +14,7 @@ import os
 import tempfile
 import html as _html
 import re
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ try:
         CommandHandler,
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
+        MessageReactionHandler,
         ContextTypes,
         filters,
     )
@@ -47,6 +49,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    MessageReactionHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -68,6 +71,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     ProcessingOutcome,
+    ReactionEvent,
     SendResult,
     cache_image_from_bytes,
     cache_audio_from_bytes,
@@ -1292,6 +1296,12 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Inbound message reactions. Telegram only delivers these to bots
+            # that explicitly subscribe via allowed_updates (already set to
+            # ALL_TYPES below) AND are group/channel administrators. The handler
+            # is always registered; if no consumer has called set_reaction_handler,
+            # incoming reactions are dropped quietly.
+            self._app.add_handler(MessageReactionHandler(self._handle_message_reaction))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -4756,6 +4766,104 @@ class TelegramAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )
+
+    # ── Inbound message reactions (from users) ───────────────────────────
+
+    async def _handle_message_reaction(self, update: Any, context: Any) -> None:
+        """Convert a Telegram MessageReactionUpdated to a normalized
+        ReactionEvent and dispatch to the registered reaction handler.
+
+        Telegram delivers one update per (user, message) change, with the
+        full new/old reaction lists attached. We emit one ReactionEvent per
+        emoji that appears in new_reaction (added=True) or old_reaction but
+        not new_reaction (added=False). Custom premium emojis are passed
+        through as their custom_emoji_id.
+
+        Drops silently if no reaction handler has been registered.
+        """
+        if self._reaction_handler is None:
+            return
+        mr = getattr(update, "message_reaction", None)
+        if mr is None:
+            return
+        chat = getattr(mr, "chat", None)
+        if chat is None:
+            return
+
+        new_list = list(getattr(mr, "new_reaction", None) or [])
+        old_list = list(getattr(mr, "old_reaction", None) or [])
+
+        def _key(r: Any) -> Optional[str]:
+            # ReactionTypeEmoji has `.emoji`; ReactionTypeCustomEmoji has
+            # `.custom_emoji_id`. ReactionTypePaid (rare) has `.type` = "paid".
+            return (
+                getattr(r, "emoji", None)
+                or getattr(r, "custom_emoji_id", None)
+                or getattr(r, "type", None)
+            )
+
+        new_keys = {k for k in (_key(r) for r in new_list) if k}
+        old_keys = {k for k in (_key(r) for r in old_list) if k}
+
+        added = new_keys - old_keys
+        removed = old_keys - new_keys
+        if not added and not removed:
+            return
+
+        # Build a SessionSource for the reactor. In channels mr.user is None,
+        # so fall back to actor_chat per the PTB API.
+        user = getattr(mr, "user", None)
+        actor_chat = getattr(mr, "actor_chat", None)
+        chat_type = "group"
+        if getattr(chat, "type", None) == ChatType.CHANNEL:
+            chat_type = "channel"
+        elif getattr(chat, "type", None) == ChatType.PRIVATE:
+            chat_type = "dm"  # Reactions in DM aren't delivered, but be safe.
+
+        from gateway.session import SessionSource
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(chat.id),
+            chat_name=getattr(chat, "title", None) or getattr(chat, "full_name", None),
+            chat_type=chat_type,
+            user_id=str(user.id) if user else (str(actor_chat.id) if actor_chat else None),
+            user_name=(
+                user.full_name if user else (getattr(actor_chat, "title", None) if actor_chat else None)
+            ),
+            message_id=str(mr.message_id),
+        )
+
+        timestamp = getattr(mr, "date", None) or datetime.now()
+        message_id_str = str(mr.message_id)
+
+        for emoji in added:
+            try:
+                await self._reaction_handler(
+                    ReactionEvent(
+                        emoji=emoji,
+                        added=True,
+                        message_id=message_id_str,
+                        source=source,
+                        raw_update=mr,
+                        timestamp=timestamp,
+                    )
+                )
+            except Exception as e:
+                logger.warning("[%s] reaction handler raised on add %s: %s", self.name, emoji, e)
+        for emoji in removed:
+            try:
+                await self._reaction_handler(
+                    ReactionEvent(
+                        emoji=emoji,
+                        added=False,
+                        message_id=message_id_str,
+                        source=source,
+                        raw_update=mr,
+                        timestamp=timestamp,
+                    )
+                )
+            except Exception as e:
+                logger.warning("[%s] reaction handler raised on remove %s: %s", self.name, emoji, e)
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 

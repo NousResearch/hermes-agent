@@ -874,6 +874,41 @@ must be **cache-aware**: default to deferred invalidation (change takes
 effect next session), with an opt-in `--now` flag for immediate
 invalidation. See `/skills install --now` for the canonical pattern.
 
+### Inbound Message Reactions (Gateway)
+
+The gateway can consume user reactions (emoji set on messages by users in
+chats the bot is in), not just emit them. Telegram is the only adapter that
+implements inbound delivery today; Discord, Slack, etc. currently still only
+support outbound lifecycle reactions.
+
+Flow:
+
+1. The adapter receives a platform-native reaction update (Telegram's
+   `MessageReactionUpdated`).
+2. It diffs `new_reaction` vs `old_reaction` and emits one
+   `ReactionEvent` (`gateway/platforms/base.py`) per emoji that was added
+   or removed.
+3. The event is dispatched to `BasePlatformAdapter._reaction_handler`,
+   set via `set_reaction_handler()`. Default consumer in
+   `GatewayRunner._handle_reaction` appends a JSON line to
+   `$HERMES_HOME/reactions/inbound.jsonl` for downstream agent tools to tail.
+
+Platform caveats (worth re-reading before building on this):
+
+- **Telegram only delivers reactions to bots that are group/channel
+  administrators.** Bots in non-admin roles will see nothing. Promote the
+  bot first.
+- Telegram never delivers reactions in DMs; expect reaction events only
+  from groups and channels.
+- The Telegram adapter already passes `allowed_updates=Update.ALL_TYPES`
+  to `start_polling`, so no subscription wiring is needed.
+- In channels, `MessageReactionUpdated.user` is None and the reactor is
+  `actor_chat` instead. The adapter handles this fallback already.
+
+If you're building an agent-side consumer (e.g. "👎 on a Post Log message
+deletes the scheduled post"), tail the JSONL log or register your own
+`ReactionHandler` and replace the gateway default at a per-agent level.
+
 ### Background Process Notifications (Gateway)
 
 When `terminal(background=true, notify_on_complete=true)` is used, the gateway runs a watcher that

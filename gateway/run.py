@@ -645,6 +645,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    ReactionEvent,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -3577,7 +3578,8 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            
+            adapter.set_reaction_handler(self._handle_reaction)
+
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
             self._update_platform_runtime_status(
@@ -5184,6 +5186,7 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    adapter.set_reaction_handler(self._handle_reaction)
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
@@ -6084,6 +6087,41 @@ class GatewayRunner:
                 )
 
         await adapter.send(source.chat_id, content, metadata=metadata)
+
+    async def _handle_reaction(self, event: ReactionEvent) -> None:
+        """Default consumer for inbound message reactions from any platform.
+
+        Appends one JSON line per reaction to
+        ``$HERMES_HOME/reactions/inbound.jsonl``. Agent tools can tail this
+        file to react to user thumbs-up/down on prior agent posts.
+
+        Best-effort: any error is logged and swallowed so a flaky filesystem
+        can't kill the gateway loop. Reactions are advisory signals, not
+        delivery-critical state.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            log_dir = get_hermes_home() / "reactions"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / "inbound.jsonl"
+
+            source = event.source
+            entry = {
+                "ts": event.timestamp.isoformat(),
+                "platform": source.platform.value if source and source.platform else None,
+                "chat_id": source.chat_id if source else None,
+                "chat_type": source.chat_type if source else None,
+                "thread_id": source.thread_id if source else None,
+                "user_id": source.user_id if source else None,
+                "user_name": source.user_name if source else None,
+                "message_id": event.message_id,
+                "emoji": event.emoji,
+                "added": event.added,
+            }
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.debug("Failed to log inbound reaction: %s", e)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """

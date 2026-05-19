@@ -1180,6 +1180,42 @@ _RETRYABLE_ERROR_PATTERNS = (
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
 
 
+@dataclass
+class ReactionEvent:
+    """Inbound emoji reaction on a prior message.
+
+    Distinct from MessageEvent because reactions are not user turns — they
+    are passive feedback signals and shouldn't enter the normal agent loop
+    unless an adapter consumer explicitly routes them there.
+    """
+
+    # The emoji string that was added or removed (e.g. "👍", "👎"). For
+    # custom Telegram premium emojis, this is the custom_emoji_id.
+    emoji: str
+
+    # Whether the reaction was added or removed. Telegram delivers both add
+    # and remove events; consumers can ignore removes if they only want adds.
+    added: bool
+
+    # Identifier of the message that was reacted to.
+    message_id: str
+
+    # Who reacted, and where. Reuses SessionSource so reactions inherit the
+    # same chat/thread/user shape as messages.
+    source: SessionSource
+
+    # Original platform payload (e.g. PTB MessageReactionUpdated). Adapters
+    # may use this for advanced filtering; consumers should treat it as opaque.
+    raw_update: Any = None
+
+    timestamp: datetime = field(default_factory=datetime.now)
+
+
+# Type for reaction handlers. Fire-and-forget — reactions don't expect a
+# reply the way messages do. Return None.
+ReactionHandler = Callable[[ReactionEvent], Awaitable[None]]
+
+
 def resolve_channel_prompt(
     config_extra: dict,
     channel_id: str,
@@ -1280,6 +1316,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._reaction_handler: Optional[ReactionHandler] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -1527,6 +1564,19 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_reaction_handler(self, handler: Optional[ReactionHandler]) -> None:
+        """Set the handler for incoming message reactions.
+
+        Adapters that support inbound reactions (currently Telegram) call
+        this handler whenever a user reacts to a message in a chat/group
+        the bot is in. Default is None — when unset, reactions are dropped.
+
+        Reactions in DMs are never delivered by most platforms (Telegram
+        explicitly skips them); expect reaction events to come only from
+        groups, channels, or threads.
+        """
+        self._reaction_handler = handler
     
     def set_session_store(self, session_store: Any) -> None:
         """

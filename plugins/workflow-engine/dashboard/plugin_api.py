@@ -171,6 +171,31 @@ async def list_runs(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Runs — GET /runs/active  (?scope_path=...)   MUST be before /runs/{run_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/runs/active")
+async def get_active_run(request: Request) -> JSONResponse:
+    scope_path = request.query_params.get("scope_path") or ""
+    run = await _engine.get_active_run_by_path(scope_path)
+    return _json({"run": run})
+
+
+# ---------------------------------------------------------------------------
+# Runs — GET /runs/by-conversation/{conv_id}   MUST be before /runs/{run_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/runs/by-conversation/{conv_id}")
+async def find_run_by_conversation(conv_id: str) -> JSONResponse:
+    run = await _engine.find_run_by_conversation_id(conv_id)
+    if run is None:
+        return _json({"run": None})
+    return _json({"run": run})
+
+
+# ---------------------------------------------------------------------------
 # Runs — POST /runs
 # ---------------------------------------------------------------------------
 
@@ -349,3 +374,175 @@ async def events(request: Request) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Definitions — DELETE /definitions/{id}
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/definitions/{def_id}")
+async def delete_definition(def_id: str) -> JSONResponse:
+    defn = await _engine.get_definition(def_id)
+    if defn is None:
+        return _json({"error": "not found"}, 404)
+    if defn.get("source") == "bundled":
+        return _json({"error": "bundled definitions are read-only"}, 403)
+    rows = await _engine.delete_definition(def_id)
+    if rows == 0:
+        return _json({"error": "not found"}, 404)
+    return _json({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Runs — POST /runs/{run_id}/resume
+# ---------------------------------------------------------------------------
+
+
+@router.post("/runs/{run_id}/resume")
+async def resume_run(run_id: str) -> JSONResponse:
+    run = await _engine.get_run(run_id)
+    if run is None:
+        return _json({"error": "not found"}, 404)
+    updated = await _engine.resume_run(run_id)
+    return _json({"run": updated})
+
+
+# ---------------------------------------------------------------------------
+# Node runs — GET /runs/{run_id}/nodes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/runs/{run_id}/nodes")
+async def list_node_runs(run_id: str) -> JSONResponse:
+    run = await _engine.get_run(run_id)
+    if run is None:
+        return _json({"error": "not found"}, 404)
+    node_runs = await _engine.list_node_runs(run_id)
+    return _json({"nodeRuns": node_runs})
+
+
+# ---------------------------------------------------------------------------
+# Node runs — GET /node-runs/{node_run_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/node-runs/{node_run_id}")
+async def find_node_run_by_id(node_run_id: str) -> JSONResponse:
+    nr = await _engine.find_node_run_by_id(node_run_id)
+    if nr is None:
+        return _json({"error": "not found"}, 404)
+    return _json({"nodeRun": nr})
+
+
+# ---------------------------------------------------------------------------
+# Events — POST /runs/{run_id}/events  (append, non-SSE)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/runs/{run_id}/events")
+async def append_event(run_id: str, request: Request) -> JSONResponse:
+    run = await _engine.get_run(run_id)
+    if run is None:
+        return _json({"error": "not found"}, 404)
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        return _json({"error": "Invalid JSON body"}, 400)
+    if not isinstance(body.get("event_type"), str) or not body["event_type"]:
+        return _json({"error": "event_type is required"}, 400)
+    body["workflow_run_id"] = run_id
+    await _engine.append_workflow_event(body)
+    return _json({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Events — GET /runs/{run_id}/events  (JSON array, non-SSE)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/runs/{run_id}/events")
+async def list_run_events(run_id: str, request: Request) -> JSONResponse:
+    run = await _engine.get_run(run_id)
+    if run is None:
+        return _json({"error": "not found"}, 404)
+    try:
+        limit = int(request.query_params.get("limit", "200"))
+    except ValueError:
+        limit = 200
+    limit = max(1, min(limit, 1000))
+    events_list = await _engine.list_recent_workflow_events(run_id, limit=limit)
+    return _json({"events": events_list})
+
+
+# ---------------------------------------------------------------------------
+# Phase transitions — POST /runs/{run_id}/phase-transitions
+# ---------------------------------------------------------------------------
+
+
+@router.post("/runs/{run_id}/phase-transitions")
+async def record_phase_transition(run_id: str, request: Request) -> JSONResponse:
+    run = await _engine.get_run(run_id)
+    if run is None:
+        return _json({"error": "not found"}, 404)
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        return _json({"error": "Invalid JSON body"}, 400)
+    to_phase = body.get("toPhase") or body.get("to_phase")
+    decided_by = body.get("decidedBy") or body.get("decided_by")
+    if not isinstance(to_phase, str) or not to_phase:
+        return _json({"error": "toPhase is required"}, 400)
+    if not isinstance(decided_by, str) or not decided_by:
+        return _json({"error": "decidedBy is required"}, 400)
+    try:
+        result = await _engine.record_phase_transition(
+            run_id=run_id,
+            to_phase=to_phase,
+            decided_by=decided_by,
+            decision_data=body.get("decisionData") or body.get("decision_data"),
+        )
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 422)
+    return _json(result)
+
+
+# ---------------------------------------------------------------------------
+# Phase transitions — GET /runs/{run_id}/phase-transitions
+# ---------------------------------------------------------------------------
+
+
+@router.get("/runs/{run_id}/phase-transitions")
+async def list_phase_transitions(run_id: str) -> JSONResponse:
+    run = await _engine.get_run(run_id)
+    if run is None:
+        return _json({"error": "not found"}, 404)
+    transitions = await _engine.list_phase_transitions(run_id)
+    return _json({"phaseTransitions": transitions})
+
+
+# ---------------------------------------------------------------------------
+# Approval claim — POST /runs/{run_id}/approval-claim
+# ---------------------------------------------------------------------------
+
+
+@router.post("/runs/{run_id}/approval-claim")
+async def try_claim_approval_for_resume(run_id: str, request: Request) -> JSONResponse:
+    run = await _engine.get_run(run_id)
+    if run is None:
+        return _json({"error": "not found"}, 404)
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        return _json({"error": "Invalid JSON body"}, 400)
+    node_run_id = body.get("nodeRunId") or body.get("node_run_id")
+    decision = body.get("decision")
+    approval_response = body.get("approvalResponse") or body.get("approval_response") or ""
+    if not isinstance(node_run_id, str) or not node_run_id:
+        return _json({"error": "nodeRunId is required"}, 400)
+    if decision not in ("approved", "rejected"):
+        return _json({"error": "decision must be 'approved' or 'rejected'"}, 400)
+    result = await _engine.try_claim_approval_for_resume(
+        node_run_id, decision, approval_response  # type: ignore[arg-type]
+    )
+    return _json(result)

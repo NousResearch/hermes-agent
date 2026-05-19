@@ -147,6 +147,19 @@ class DefinitionStore:
         return self.get_definition(workflow.id)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
+    # delete
+    # ------------------------------------------------------------------
+
+    def delete_definition(self, definition_id: str) -> int:
+        """Delete a non-bundled definition. Returns rows deleted (0 or 1)."""
+        result = self._conn.execute(
+            "DELETE FROM workflow_definitions WHERE id = ? AND source != 'bundled'",
+            (definition_id,),
+        )
+        self._conn.commit()
+        return result.rowcount
+
+    # ------------------------------------------------------------------
     # seed bundled
     # ------------------------------------------------------------------
 

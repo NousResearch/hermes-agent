@@ -189,6 +189,96 @@ class WorkflowEngine:
             )
 
     # ------------------------------------------------------------------ #
+    # Extended definitions                                                #
+    # ------------------------------------------------------------------ #
+
+    async def delete_definition(self, definition_id: str) -> int:
+        """Delete a non-bundled definition. Returns rows deleted."""
+        rows = self._def_store.delete_definition(definition_id)
+        if rows > 0:
+            self._manifest_writer.write()
+        return rows
+
+    # ------------------------------------------------------------------ #
+    # Extended runs                                                        #
+    # ------------------------------------------------------------------ #
+
+    async def find_run_by_conversation_id(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        return self._run_store.find_run_by_conversation_id(conversation_id)
+
+    async def get_active_run_by_path(self, scope_path: str) -> Optional[Dict[str, Any]]:
+        return self._run_store.get_active_run_by_path(scope_path)
+
+    async def resume_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        self._run_store.resume_workflow_run(run_id)
+        return self._run_store.get_workflow_run(run_id)
+
+    # ------------------------------------------------------------------ #
+    # Extended node runs                                                  #
+    # ------------------------------------------------------------------ #
+
+    async def list_node_runs(self, run_id: str) -> List[Dict[str, Any]]:
+        return self._run_store.list_node_runs(run_id)
+
+    async def find_node_run_by_id(self, node_run_id: str) -> Optional[Dict[str, Any]]:
+        return self._run_store.find_node_run_by_id(node_run_id)
+
+    # ------------------------------------------------------------------ #
+    # Extended events                                                      #
+    # ------------------------------------------------------------------ #
+
+    async def append_workflow_event(self, event: Dict[str, Any]) -> None:
+        self._run_store.append_workflow_event(
+            workflow_run_id=event["workflow_run_id"],
+            event_type=event["event_type"],
+            node_run_id=event.get("node_run_id"),
+            step_index=event.get("step_index"),
+            step_name=event.get("step_name"),
+            data=event.get("data"),
+            event_id=event.get("id"),
+            created_at=event.get("created_at"),
+        )
+
+    async def list_recent_workflow_events(self, run_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+        return self._run_store.list_recent_events(run_id, limit=limit)
+
+    # ------------------------------------------------------------------ #
+    # Extended phase transitions                                           #
+    # ------------------------------------------------------------------ #
+
+    async def record_phase_transition(
+        self,
+        *,
+        run_id: str,
+        to_phase: str,
+        decided_by: str,
+        decision_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return self._run_store.record_phase_transition(
+            run_id=run_id,
+            to_phase=to_phase,
+            decided_by=decided_by,
+            decision_data=decision_data,
+        )
+
+    async def list_phase_transitions(self, run_id: str) -> List[Dict[str, Any]]:
+        return self._run_store.list_phase_transitions(run_id)
+
+    # ------------------------------------------------------------------ #
+    # Extended approvals                                                   #
+    # ------------------------------------------------------------------ #
+
+    async def try_claim_approval_for_resume(
+        self,
+        node_run_id: str,
+        decision: Literal["approved", "rejected"],
+        approval_response: str,
+    ) -> Dict[str, Any]:
+        return self._run_store.try_claim_approval_for_resume(
+            node_run_id, decision, approval_response
+        )
+
+    # ------------------------------------------------------------------ #
     # Events / SSE                                                        #
     # ------------------------------------------------------------------ #
 

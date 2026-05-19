@@ -417,3 +417,158 @@ class RunStore:
                 (limit,),
             ).fetchall()
         return [_row_to_event(r) for r in rows]
+
+    # ------------------------------------------------------------------ #
+    # Phase Transitions                                                    #
+    # ------------------------------------------------------------------ #
+
+    def record_phase_transition(
+        self,
+        *,
+        run_id: str,
+        to_phase: str,
+        decided_by: str,
+        decision_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record a phase transition for a run. Returns {from, to}."""
+        row = self._conn.execute(
+            "SELECT current_phase FROM workflow_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"WorkflowRun not found: {run_id}")
+        from_phase = row["current_phase"]
+        if from_phase == to_phase:
+            return {"from": from_phase, "to": to_phase}
+        tid = str(uuid.uuid4())
+        now = _now_ms()
+        self._conn.execute(
+            "UPDATE workflow_runs SET current_phase = ? WHERE id = ?",
+            (to_phase, run_id),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO phase_transitions
+              (id, workflow_run_id, from_phase, to_phase, decided_by, decision_data, at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tid,
+                run_id,
+                from_phase,
+                to_phase,
+                decided_by,
+                json.dumps(decision_data) if decision_data else None,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return {"from": from_phase, "to": to_phase}
+
+    def list_phase_transitions(self, run_id: str) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT id, from_phase, to_phase, decided_by, decision_data, at
+              FROM phase_transitions
+             WHERE workflow_run_id = ?
+             ORDER BY at ASC
+            """,
+            (run_id,),
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if d.get("decision_data"):
+                try:
+                    d["decision_data"] = json.loads(d["decision_data"])
+                except Exception:
+                    d["decision_data"] = None
+            result.append(d)
+        return result
+
+    # ------------------------------------------------------------------ #
+    # Extended lookups                                                     #
+    # ------------------------------------------------------------------ #
+
+    def find_run_by_conversation_id(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM workflow_runs WHERE conversation_id = ? LIMIT 1",
+            (conversation_id,),
+        ).fetchone()
+        return _row_to_run(row) if row else None
+
+    def get_active_run_by_path(self, scope_path: str) -> Optional[Dict[str, Any]]:
+        """Return the most recent active run for scope_path (pending/running/paused)."""
+        STALE_MS = 5 * 60 * 1000
+        stale_threshold = _now_ms() - STALE_MS
+        row = self._conn.execute(
+            """
+            SELECT * FROM workflow_runs
+             WHERE working_path = ?
+               AND status IN ('pending', 'running', 'paused')
+               AND (status != 'pending' OR last_heartbeat >= ?)
+             ORDER BY started_at ASC, id ASC
+             LIMIT 1
+            """,
+            (scope_path, stale_threshold),
+        ).fetchone()
+        return _row_to_run(row) if row else None
+
+    def find_node_run_by_id(self, node_run_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM node_runs WHERE id = ? LIMIT 1", (node_run_id,)
+        ).fetchone()
+        return _row_to_node_run(row) if row else None
+
+    def append_workflow_event(
+        self,
+        *,
+        workflow_run_id: str,
+        event_type: str,
+        node_run_id: Optional[str] = None,
+        step_index: Optional[int] = None,
+        step_name: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
+        event_id: Optional[str] = None,
+        created_at: Optional[int] = None,
+    ) -> None:
+        """Alias for insert_event with extended fields matching TS appendWorkflowEvent."""
+        eid = event_id or str(uuid.uuid4())
+        now = created_at or _now_ms()
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO workflow_events
+              (id, workflow_run_id, node_run_id, event_type, step_index, step_name, data, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                eid,
+                workflow_run_id,
+                node_run_id,
+                event_type,
+                step_index,
+                step_name,
+                json.dumps(data) if data else None,
+                now,
+            ),
+        )
+        self._conn.commit()
+
+    def try_claim_approval_for_resume(
+        self,
+        node_run_id: str,
+        decision: Literal["approved", "rejected"],
+        approval_response: str,
+    ) -> Dict[str, Any]:
+        """Atomic CAS matching TS tryClaimApprovalForResume. Returns {claimed, terminalStatus}."""
+        terminal_status = "completed" if decision == "approved" else "failed"
+        now = _now_ms()
+        result = self._conn.execute(
+            """
+            UPDATE node_runs
+               SET status = ?, approval_response = ?, completed_at = ?
+             WHERE id = ? AND status = 'paused'
+            """,
+            (terminal_status, approval_response, now, node_run_id),
+        )
+        self._conn.commit()
+        return {"claimed": result.rowcount > 0, "terminalStatus": terminal_status}

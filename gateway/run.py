@@ -2692,10 +2692,12 @@ class GatewayRunner:
         except Exception as exc:
             logger.debug("loop dispatch: schedule failed: %s", exc)
 
+    @staticmethod
     def _is_loop_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /loop continuation turns."""
         text = getattr(event_or_text, "text", event_or_text) or ""
         return str(text).startswith("[Loop check]")
+
     def _clear_loop_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /loop continuations for one session."""
         removed = 0
@@ -2721,6 +2723,7 @@ class GatewayRunner:
                 else:
                     queued_events.pop(session_key, None)
         return removed
+
     def _loop_still_active_for_session(self, session_id: str) -> bool:
         """Best-effort fresh DB check before running a queued loop continuation."""
         if not session_id:
@@ -2751,6 +2754,7 @@ class GatewayRunner:
         if not sid:
             return None, None
         return LoopManager(session_id=sid), session_entry
+
     async def _send_loop_status_notice(self, source: Any, message: str) -> None:
         """Send a /loop status line back to the originating chat/thread."""
         adapter = self.adapters.get(source.platform)
@@ -2804,6 +2808,7 @@ class GatewayRunner:
                 logger.debug("loop continuation: post-delivery callback registration failed: %s", exc)
 
         await _deliver()
+
     async def _post_turn_loop_continuation(
         self,
         *,

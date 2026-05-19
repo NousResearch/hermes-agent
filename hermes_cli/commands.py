@@ -171,7 +171,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
-    CommandDef("loop", "Run a prompt repeatedly on a schedule", "Tools & Skills",
+    CommandDef("loop", "Run a prompt repeatedly on a schedule", "Session",
                aliases=("repeat",), args_hint="<schedule> <prompt>",
                subcommands=("list", "pause", "resume", "remove")),
     CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",

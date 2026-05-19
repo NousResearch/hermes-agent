@@ -653,6 +653,7 @@ export const de: Translations = {
     columnLabels: {
       triage: "Triage",
       todo: "Zu erledigen",
+      scheduled: "Geplant",
       ready: "Bereit",
       running: "In Bearbeitung",
       blocked: "Blockiert",
@@ -662,6 +663,7 @@ export const de: Translations = {
     columnHelp: {
       triage: "Rohe Ideen — ein Specifier wird die Spezifikation ausarbeiten",
       todo: "Wartet auf Abhängigkeiten oder ist nicht zugewiesen",
+      scheduled: "Wartet auf eine bekannte Verzögerung oder eine geplante Nachverfolgung",
       ready: "Abhängigkeiten erfüllt; Profil zum Dispatch zuweisen",
       running: "Von einem Worker übernommen — in Bearbeitung",
       blocked: "Worker hat um menschliche Eingabe gebeten",

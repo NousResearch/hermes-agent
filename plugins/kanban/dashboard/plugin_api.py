@@ -129,8 +129,14 @@ def _conn(board: Optional[str] = None):
 
 # Columns shown by the dashboard, in left-to-right order. "archived" is
 # available via a filter toggle rather than a visible column.
+#
+# Keep this in sync with kanban_db.VALID_STATUSES.  In particular,
+# ``scheduled`` is a first-class waiting column used for time-based follow-ups;
+# if it is omitted here, the board-level fallback below mis-buckets scheduled
+# tasks into ``todo`` and makes the dashboard look like the Scheduled column
+# disappeared.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "ready", "running", "blocked", "done",
+    "triage", "todo", "scheduled", "ready", "running", "blocked", "done",
 ]
 
 

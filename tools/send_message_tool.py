@@ -1503,11 +1503,14 @@ async def _send_email(extra, chat_id, message):
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=ssl.create_default_context())
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
+        def _smtp_send():
+            server = smtplib.SMTP(smtp_host, smtp_port)
+            server.starttls(context=ssl.create_default_context())
+            server.login(address, password)
+            server.send_message(msg)
+            server.quit()
+
+        await asyncio.to_thread(_smtp_send)
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         return _error(f"Email send failed: {e}")

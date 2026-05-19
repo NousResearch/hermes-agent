@@ -79,12 +79,15 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -2622,7 +2625,70 @@ def complete_task(
     _clear_failure_counter(conn, task_id)
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
+    # Clean up the scratch workspace and any stale tmux session for the worker.
+    _cleanup_workspace(conn, task_id)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Workspace / tmux cleanup
+# ---------------------------------------------------------------------------
+
+def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
+    """Remove a task's scratch workspace dir and kill its stale tmux session.
+
+    Called from :func:`complete_task` after the DB transaction commits.
+    Best-effort — any error is swallowed so cleanup never blocks task completion.
+    Only ``scratch`` workspaces are removed; ``worktree`` and ``dir`` workspaces
+    are intentionally preserved.
+    """
+    try:
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return
+        kind: Optional[str] = row["workspace_kind"]
+        path: Optional[str] = row["workspace_path"]
+        if kind != "scratch" or not path:
+            return
+        import shutil
+        wp = Path(path)
+        if wp.is_dir():
+            shutil.rmtree(wp, ignore_errors=True)
+            _log.debug("Removed scratch workspace: %s", wp)
+        # Also kill the tmux session for the worker that owned this task,
+        # if the tmux session is now dead (worker process exited).
+        _cleanup_worker_tmux(conn, task_id)
+    except Exception:
+        pass  # best-effort — never block completion
+
+
+def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
+    """Kill the tmux session associated with a task's assignee, if dead."""
+    try:
+        row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row or not row["assignee"]:
+            return
+        assignee: str = row["assignee"]
+        # Workers named swarm1-12 use tmux sessions named swarm-swarm1 etc.
+        session = f"swarm-{assignee}"
+        # Check if session exists and pane is dead before killing
+        out = subprocess.run(
+            ["tmux", "list-panes", "-t", session, "-F", "#{pane_dead}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.stdout.strip() == "1":
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session],
+                capture_output=True, timeout=5,
+            )
+            _log.debug("Killed stale tmux session: %s", session)
+    except Exception:
+        pass  # best-effort — never block completion
 
 
 def edit_completed_task_result(

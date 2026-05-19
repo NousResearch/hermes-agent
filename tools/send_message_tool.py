@@ -774,7 +774,14 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
-            result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
+            # When send_message is called from inside a running BlueBubbles gateway,
+            # re-use the live adapter. Creating a fresh BlueBubblesAdapter calls
+            # connect(), which tries to bind the webhook listener port again and
+            # fails with EADDRINUSE. If live adapter access fails, fall back to
+            # one-shot REST, which does not bind the webhook port.
+            result = await _send_via_adapter(platform, pconfig, chat_id, chunk)
+            if isinstance(result, dict) and result.get("error"):
+                result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
@@ -1589,31 +1596,64 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
 
 
 async def _send_bluebubbles(extra, chat_id, message):
-    """Send via BlueBubbles iMessage server using the adapter's REST API."""
-    try:
-        from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
-        if not check_bluebubbles_requirements():
-            return {"error": "BlueBubbles requirements not met (need aiohttp + httpx)."}
-    except ImportError:
-        return {"error": "BlueBubbles adapter not available."}
+    """Send via BlueBubbles iMessage server using one-shot REST only.
 
+    Do not instantiate/connect BlueBubblesAdapter here: connect() starts the
+    webhook listener and will collide with a running gateway on port 8645. This
+    tool path only needs outbound REST: resolve the chat, then POST message/text.
+    """
     try:
-        from gateway.config import PlatformConfig
-        pconfig = PlatformConfig(extra=extra)
-        adapter = BlueBubblesAdapter(pconfig)
-        connected = await adapter.connect()
-        if not connected:
-            return _error("BlueBubbles: failed to connect to server")
-        try:
-            result = await adapter.send(chat_id, message)
-            if not result.success:
-                return _error(f"BlueBubbles send failed: {result.error}")
-            return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
-        finally:
-            await adapter.disconnect()
+        import httpx
+        from urllib.parse import quote
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        server_url = (extra.get("server_url") or extra.get("url") or os.getenv("BLUEBUBBLES_SERVER_URL", "")).rstrip("/")
+        password = extra.get("password") or os.getenv("BLUEBUBBLES_PASSWORD", "")
+        if not server_url or not password:
+            return _error("BlueBubbles: BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required")
+
+        def api_url(path: str) -> str:
+            sep = chr(38) if "?" in path else "?"
+            return f"{server_url}{path}{sep}password={quote(password, safe='')}"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            guid = chat_id if ";-;" in str(chat_id) or ";+;" in str(chat_id) else None
+            if not guid:
+                resp = await client.post(api_url("/api/v1/chat/query"), json={"limit": 200, "offset": 0, "with": ["participants"]})
+                resp.raise_for_status()
+                chats = (resp.json() or {}).get("data") or []
+                wanted = str(chat_id).strip()
+                variants = {wanted}
+                digits = "".join(ch for ch in wanted if ch.isdigit())
+                if digits:
+                    variants.update({digits, "1" + digits[-10:], "+1" + digits[-10:]})
+                for chat in chats:
+                    candidates = {str(chat.get("guid") or ""), str(chat.get("chatIdentifier") or "")}
+                    for participant in chat.get("participants") or []:
+                        if isinstance(participant, dict):
+                            candidates.add(str(participant.get("address") or ""))
+                    if variants & {c.strip() for c in candidates if c}:
+                        guid = chat.get("guid")
+                        break
+            if not guid:
+                return _error(f"BlueBubbles chat not found for target: {chat_id}")
+
+            chunks = []
+            for para in [p.strip() for p in re.split(r'\n\s*\n', message) if p.strip()] or [message]:
+                if len(para) <= BlueBubblesAdapter.MAX_MESSAGE_LENGTH:
+                    chunks.append(para)
+                else:
+                    chunks.extend(BlueBubblesAdapter.truncate_message(para, max_length=BlueBubblesAdapter.MAX_MESSAGE_LENGTH))
+
+            last_id = None
+            for chunk in chunks:
+                resp = await client.post(api_url("/api/v1/message/text"), json={"chatGuid": guid, "tempGuid": f"temp-{time.time()}", "message": chunk})
+                resp.raise_for_status()
+                data = (resp.json() or {}).get("data") or {}
+                last_id = data.get("guid") or data.get("messageGuid") or "ok"
+            return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": str(last_id or "ok")}
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
-
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Send via Feishu/Lark using the adapter's send pipeline."""

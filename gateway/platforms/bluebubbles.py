@@ -223,8 +223,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _webhook_url(self) -> str:
         """Compute the external webhook URL for BlueBubbles registration."""
         host = self.webhook_host
-        if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
-            host = "localhost"
+        # BlueBubbles Server/Electron on macOS can resolve localhost to ::1,
+        # while Hermes aiohttp listener is bound to IPv4 127.0.0.1 by default.
+        # Register the literal IPv4 loopback address so real inbound iMessage
+        # webhooks hit the listener deterministically.
+        if host in {"0.0.0.0", "::", "localhost"}:
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property

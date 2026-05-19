@@ -12672,7 +12672,7 @@ Examples:
 
             discover_plugins()
         except Exception:
-            logger.debug(
+            logger.warning(
                 "plugin discovery failed at CLI startup",
                 exc_info=True,
             )

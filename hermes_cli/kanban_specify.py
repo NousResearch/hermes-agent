@@ -142,6 +142,7 @@ def specify_task(
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
+    board: Optional[str] = None,
 ) -> SpecifyOutcome:
     """Specify a single triage task and promote it to ``todo``.
 
@@ -150,7 +151,7 @@ def specify_task(
     error, malformed response) — those surface via ``ok=False`` so the
     ``--all`` sweep can continue past individual failures.
     """
-    with kb.connect() as conn:
+    with kb.connect(board=board) as conn:
         task = kb.get_task(conn, task_id)
     if task is None:
         return SpecifyOutcome(task_id, False, "unknown task id")
@@ -239,7 +240,7 @@ def specify_task(
                 task_id, False, "LLM response missing title and body"
             )
 
-    with kb.connect() as conn:
+    with kb.connect(board=board) as conn:
         ok = kb.specify_triage_task(
             conn,
             task_id,
@@ -256,12 +257,16 @@ def specify_task(
     return SpecifyOutcome(task_id, True, "specified", new_title=new_title)
 
 
-def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
+def list_triage_ids(
+    *,
+    tenant: Optional[str] = None,
+    board: Optional[str] = None,
+) -> list[str]:
     """Return task ids currently in the triage column.
 
     ``tenant`` narrows the sweep; ``None`` returns every triage task.
     """
-    with kb.connect() as conn:
+    with kb.connect(board=board) as conn:
         tasks = kb.list_tasks(
             conn,
             status="triage",

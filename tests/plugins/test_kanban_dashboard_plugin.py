@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -1672,6 +1673,69 @@ def test_home_channels_empty_when_no_homes_configured(client, monkeypatch):
     r = client.get("/api/plugins/kanban/home-channels")
     assert r.status_code == 200
     assert r.json()["home_channels"] == []
+
+
+def test_specify_endpoint_passes_board_without_mutating_env(client, monkeypatch):
+    kb.create_board("alpha")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "sticky-board")
+    seen: dict[str, object] = {}
+
+    def _fake_specify(task_id, *, author=None, timeout=None, board=None):
+        seen["task_id"] = task_id
+        seen["author"] = author
+        seen["board"] = board
+        seen["env_board"] = os.environ.get("HERMES_KANBAN_BOARD")
+        return SimpleNamespace(ok=True, task_id=task_id, reason="ok", new_title="retitled")
+
+    monkeypatch.setattr("hermes_cli.kanban_specify.specify_task", _fake_specify)
+
+    r = client.post(
+        "/api/plugins/kanban/tasks/t_alpha/specify?board=alpha",
+        json={"author": "dash"},
+    )
+    assert r.status_code == 200
+    assert seen == {
+        "task_id": "t_alpha",
+        "author": "dash",
+        "board": "alpha",
+        "env_board": "sticky-board",
+    }
+    assert os.environ.get("HERMES_KANBAN_BOARD") == "sticky-board"
+
+
+def test_decompose_endpoint_passes_board_without_mutating_env(client, monkeypatch):
+    kb.create_board("alpha")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "sticky-board")
+    seen: dict[str, object] = {}
+
+    def _fake_decompose(task_id, *, author=None, timeout=None, board=None):
+        seen["task_id"] = task_id
+        seen["author"] = author
+        seen["board"] = board
+        seen["env_board"] = os.environ.get("HERMES_KANBAN_BOARD")
+        return SimpleNamespace(
+            ok=True,
+            task_id=task_id,
+            reason="ok",
+            fanout=True,
+            child_ids=["t_child"],
+            new_title=None,
+        )
+
+    monkeypatch.setattr("hermes_cli.kanban_decompose.decompose_task", _fake_decompose)
+
+    r = client.post(
+        "/api/plugins/kanban/tasks/t_alpha/decompose?board=alpha",
+        json={"author": "dash"},
+    )
+    assert r.status_code == 200
+    assert seen == {
+        "task_id": "t_alpha",
+        "author": "dash",
+        "board": "alpha",
+        "env_board": "sticky-board",
+    }
+    assert os.environ.get("HERMES_KANBAN_BOARD") == "sticky-board"
 
 
 # ---------------------------------------------------------------------------

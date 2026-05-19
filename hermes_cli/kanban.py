@@ -2386,6 +2386,7 @@ def _cmd_specify(args: argparse.Namespace) -> int:
     tenant = getattr(args, "tenant", None)
     author = getattr(args, "author", None) or _profile_author()
     want_json = bool(getattr(args, "json", False))
+    board = getattr(args, "board", None)
 
     if args.task_id and all_flag:
         print(
@@ -2395,7 +2396,7 @@ def _cmd_specify(args: argparse.Namespace) -> int:
         return 2
 
     if all_flag:
-        ids = spec.list_triage_ids(tenant=tenant)
+        ids = spec.list_triage_ids(tenant=tenant, board=board)
         if not ids:
             msg = (
                 "No triage tasks"
@@ -2419,7 +2420,7 @@ def _cmd_specify(args: argparse.Namespace) -> int:
     ok_count = 0
     fail_count = 0
     for tid in ids:
-        outcome = spec.specify_task(tid, author=author)
+        outcome = spec.specify_task(tid, author=author, board=board)
         if outcome.ok:
             ok_count += 1
         else:
@@ -2460,6 +2461,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
     tenant = getattr(args, "tenant", None)
     author = getattr(args, "author", None) or _profile_author()
     want_json = bool(getattr(args, "json", False))
+    board = getattr(args, "board", None)
 
     if args.task_id and all_flag:
         print(
@@ -2469,7 +2471,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
         return 2
 
     if all_flag:
-        ids = decomp.list_triage_ids(tenant=tenant)
+        ids = decomp.list_triage_ids(tenant=tenant, board=board)
         if not ids:
             msg = (
                 "No triage tasks"
@@ -2492,7 +2494,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
 
     ok_count = 0
     for tid in ids:
-        outcome = decomp.decompose_task(tid, author=author)
+        outcome = decomp.decompose_task(tid, author=author, board=board)
         if outcome.ok:
             ok_count += 1
         if want_json:

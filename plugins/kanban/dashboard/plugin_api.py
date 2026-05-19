@@ -1376,24 +1376,15 @@ def specify_task_endpoint(
     ``async def`` without an explicit ``run_in_executor``.
     """
     board = _resolve_board(board)
-    # Pin the board for the duration of this call so the specifier module
-    # (which calls ``kb.connect()`` with no args) hits the right DB.
-    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
-    try:
-        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
-        # Import lazily so a missing auxiliary client at import time
-        # doesn't break plugin load.
-        from hermes_cli import kanban_specify  # noqa: WPS433 (intentional)
+    # Import lazily so a missing auxiliary client at import time
+    # doesn't break plugin load.
+    from hermes_cli import kanban_specify  # noqa: WPS433 (intentional)
 
-        outcome = kanban_specify.specify_task(
-            task_id,
-            author=(payload.author or None),
-        )
-    finally:
-        if prev_env is None:
-            os.environ.pop("HERMES_KANBAN_BOARD", None)
-        else:
-            os.environ["HERMES_KANBAN_BOARD"] = prev_env
+    outcome = kanban_specify.specify_task(
+        task_id,
+        author=(payload.author or None),
+        board=board,
+    )
 
     return {
         "ok": bool(outcome.ok),
@@ -1990,19 +1981,12 @@ def decompose_task_endpoint(
     can take minutes on reasoning models.
     """
     board = _resolve_board(board)
-    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
-    try:
-        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
-        from hermes_cli import kanban_decompose  # noqa: WPS433 (intentional)
-        outcome = kanban_decompose.decompose_task(
-            task_id,
-            author=(payload.author or None),
-        )
-    finally:
-        if prev_env is None:
-            os.environ.pop("HERMES_KANBAN_BOARD", None)
-        else:
-            os.environ["HERMES_KANBAN_BOARD"] = prev_env
+    from hermes_cli import kanban_decompose  # noqa: WPS433 (intentional)
+    outcome = kanban_decompose.decompose_task(
+        task_id,
+        author=(payload.author or None),
+        board=board,
+    )
 
     return {
         "ok": bool(outcome.ok),

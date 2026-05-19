@@ -347,3 +347,37 @@ def test_decompose_no_aux_client_configured(kanban_home):
 
     assert outcome.ok is False
     assert "no auxiliary client" in outcome.reason
+
+
+def test_decompose_task_respects_explicit_board_over_env(kanban_home, monkeypatch):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    with kb.connect(board="alpha") as conn:
+        tid = kb.create_task(conn, title="alpha root", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "alpha child", "body": "do it", "assignee": "engineer", "parents": []},
+        ],
+    })
+
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me", board="alpha")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is True, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 1
+    with kb.connect(board="alpha") as conn:
+        root = kb.get_task(conn, tid)
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert root is not None and root.status == "todo"
+    assert child is not None and child.assignee == "engineer"

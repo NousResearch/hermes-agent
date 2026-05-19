@@ -214,6 +214,29 @@ def test_list_triage_ids(kanban_home):
     assert ids_tenant == [b]
 
 
+def test_specify_task_respects_explicit_board_over_env(kanban_home, monkeypatch):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    with kb.connect(board="alpha") as conn:
+        tid = kb.create_task(conn, title="alpha rough", triage=True)
+
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+    content = jsonlib.dumps({
+        "title": "Alpha refined",
+        "body": "**Goal**\nScoped to alpha.",
+    })
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace", board="alpha")
+
+    assert outcome.ok is True
+    with kb.connect(board="alpha") as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "ready"
+    assert task.title == "Alpha refined"
+
+
 # ---------------------------------------------------------------------------
 # CLI wiring — argparse + _cmd_specify
 # ---------------------------------------------------------------------------

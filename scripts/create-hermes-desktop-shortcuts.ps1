@@ -4,8 +4,10 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-hermes-desktop-shortcuts.ps1
 #   powershell ... -File scripts/create-hermes-desktop-shortcuts.ps1 -IncludePublicDesktop
 #   powershell ... -File scripts/create-hermes-desktop-shortcuts.ps1 -CreateVenv
+#   powershell ... -File scripts/create-hermes-desktop-shortcuts.ps1 -DesktopRoot
 #
 # All Hermes shortcuts land in:  %USERPROFILE%\Desktop\Hermes Agent\
+# Optional -DesktopRoot: one explorer shortcut on the Desktop root that opens that folder.
 # Legacy .lnk files on the Desktop root (and optional public desktop) are removed.
 #
 # Console shortcuts use cmd.exe /k with pause-on-error so tracebacks stay visible.
@@ -16,7 +18,8 @@ param(
     [switch]$IncludePublicDesktop,
     [switch]$CreateVenv,
     [switch]$RecreateSo8tLlamaShortcut,
-    [switch]$KeepLegacyDesktopRootShortcuts
+    [switch]$KeepLegacyDesktopRootShortcuts,
+    [switch]$DesktopRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -447,6 +450,35 @@ else {
     $results += [PSCustomObject]@{
         Path   = $startStackScript
         Status = "skipped-missing-stack-script"
+    }
+}
+
+if ($DesktopRoot) {
+    $folderOpenerName = "Hermes Agent (open folder).lnk"
+    $folderOpenerLnk = Join-Path $userDesktop $folderOpenerName
+    try {
+        $row = New-HermesShortcut `
+            -LinkPath $folderOpenerLnk `
+            -TargetPath "$env:SystemRoot\explorer.exe" `
+            -Arguments "`"$shortcutDir`"" `
+            -WorkingDirectory $userDesktop `
+            -Description "Open Desktop\Hermes Agent shortcut folder" `
+            -IconLocation "$env:SystemRoot\System32\imageres.dll,3"
+        $results += [PSCustomObject]@{
+            Path             = $row.Path
+            Status           = "created-desktop-root"
+            TargetPath       = $row.TargetPath
+            Arguments        = $row.Arguments
+            WorkingDirectory = $row.WorkingDirectory
+            LauncherSource   = "explorer-folder-opener"
+        }
+    }
+    catch {
+        $results += [PSCustomObject]@{
+            Path   = $folderOpenerLnk
+            Status = "error"
+            Error  = $_.Exception.Message
+        }
     }
 }
 

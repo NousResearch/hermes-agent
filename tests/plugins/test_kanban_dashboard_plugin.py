@@ -341,6 +341,18 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     )
     assert r.status_code == 409
 
+    # The 409 detail must name the blocking parent so the dashboard can
+    # render an actionable toast instead of a silent no-op (#26744).
+    detail = r.json()["detail"]
+    assert "Cannot move to 'ready'" in detail
+    assert parent["id"] in detail
+    assert "'p'" in detail
+    assert "status=" in detail
+    # Whatever non-``done`` status the parent currently has must show up
+    # so the operator knows what to fix.
+    assert f"status={parent['status']}" in detail
+    assert parent["status"] != "done"
+
     # Complete the parent.
     r = client.patch(
         f"/api/plugins/kanban/tasks/{parent['id']}",
@@ -916,6 +928,34 @@ def test_dashboard_done_actions_prompt_for_completion_summary():
     assert "result: summary" in bundle
     assert "body: JSON.stringify(patch)" in bundle
     assert "body: JSON.stringify(finalPatch)" in bundle
+
+
+def test_dashboard_surfaces_ready_blocked_error_inline():
+    """Regression for #26744: failed status transitions must be surfaced
+    inline, not swallowed.  The drag/drop banner and the drawer's action
+    row each render the parsed API ``detail`` so operators see *why*
+    their click did nothing.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Helper that strips ``"409: {\"detail\":\"…\"}"`` down to the
+    # human-readable message before it lands in any banner.
+    assert "function parseApiErrorMessage(err)" in bundle
+    assert "parsed.detail" in bundle
+
+    # Drag/drop banner now uses the parsed message instead of raw
+    # ``err.message`` so it no longer leaks HTTP plumbing.
+    assert "setError(tx(t, \"moveFailed\", \"Move failed: \") + parseApiErrorMessage(err))" in bundle
+
+    # Drawer action row has its own visible error surface and clears it
+    # on success/refresh so stale failures don't follow the operator
+    # around.
+    assert "const [patchErr, setPatchErr] = useState(null);" in bundle
+    assert "setPatchErr(parseApiErrorMessage(e))" in bundle
+    assert "setPatchErr(null)" in bundle
 
 
 def test_dashboard_dependency_selects_use_value_change_handler():

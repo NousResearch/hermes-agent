@@ -49,6 +49,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli import kanban_diagnostics as kd
 
 log = logging.getLogger(__name__)
 
@@ -1001,7 +1002,7 @@ def list_diagnostics(
         if severity:
             filtered: dict[str, list[dict]] = {}
             for tid, dl in diags_by_task.items():
-                keep = [d for d in dl if d.get("severity") == severity]
+                keep = [d for d in dl if kd.severity_at_or_above(d.get("severity"), severity)]
                 if keep:
                     filtered[tid] = keep
             diags_by_task = filtered

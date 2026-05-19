@@ -55,7 +55,7 @@ CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
 
-def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None, allowed_channels=None):
+def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None, allowed_channels=None, inbound_task_routes=None):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
@@ -65,6 +65,8 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
         extra["free_response_channels"] = free_response_channels
     if allowed_channels is not None:
         extra["allowed_channels"] = allowed_channels
+    if inbound_task_routes is not None:
+        extra["inbound_task_routes"] = inbound_task_routes
 
     adapter = object.__new__(SlackAdapter)
     adapter.platform = Platform.SLACK
@@ -687,3 +689,245 @@ def test_config_bridges_slack_allowed_channels_env_takes_precedence(monkeypatch,
     import os as _os
     # env var must not be overwritten by config.yaml
     assert _os.environ["SLACK_ALLOWED_CHANNELS"] == OTHER_CHANNEL_ID
+
+
+# ---------------------------------------------------------------------------
+# Tests: inbound task routing
+# ---------------------------------------------------------------------------
+
+def test_inbound_task_route_accepts_dict_config():
+    adapter = _make_adapter(
+        inbound_task_routes={
+            CHANNEL_ID: {
+                "board": "ai-frontend",
+                "assignee": "frontend-engineer",
+                "flow": ["frontend-engineer", "accessibility-reviewer", "frontend"],
+            }
+        }
+    )
+
+    route = adapter._slack_inbound_task_route(CHANNEL_ID)
+
+    assert route["channel_id"] == CHANNEL_ID
+    assert route["board"] == "ai-frontend"
+    assert route["assignee"] == "frontend-engineer"
+    assert route["flow"] == ["frontend-engineer", "accessibility-reviewer", "frontend"]
+
+
+def test_inbound_task_body_includes_collaboration_contract():
+    adapter = _make_adapter(
+        inbound_task_routes={
+            CHANNEL_ID: {
+                "board": "ai-frontend",
+                "assignee": "frontend-engineer",
+                "flow": "frontend-engineer -> accessibility-reviewer -> frontend",
+            }
+        }
+    )
+    route = adapter._slack_inbound_task_route(CHANNEL_ID)
+    source = MagicMock()
+    source.chat_id = CHANNEL_ID
+    source.user_name = "Dana"
+    source.user_id = "U_DANA"
+    event = MagicMock()
+    event.source = source
+    event.message_id = "171.1"
+    event.text = "버튼 focus state와 live region을 점검해 주세요."
+
+    body = adapter._build_slack_inbound_task_body(event, route)
+
+    assert "Thread summary:" in body
+    assert "Open questions:" in body
+    assert "Reaction rules:" in body
+    assert "frontend-engineer -> accessibility-reviewer -> frontend" in body
+    assert "보고서 덤프" in body
+
+
+def test_inbound_task_route_accepts_list_config():
+    adapter = _make_adapter(
+        inbound_task_routes=[
+            {
+                "id": CHANNEL_ID,
+                "board": "ai-data",
+                "assignee": "data-engineer",
+            }
+        ]
+    )
+
+    route = adapter._slack_inbound_task_route(CHANNEL_ID)
+
+    assert route["board"] == "ai-data"
+    assert route["assignee"] == "data-engineer"
+
+
+def test_inbound_task_route_requires_board_and_assignee():
+    adapter = _make_adapter(
+        inbound_task_routes={
+            CHANNEL_ID: {"board": "ai-frontend"},
+            OTHER_CHANNEL_ID: {"assignee": "frontend-engineer"},
+        }
+    )
+
+    assert adapter._slack_inbound_task_route(CHANNEL_ID) is None
+    assert adapter._slack_inbound_task_route(OTHER_CHANNEL_ID) is None
+
+
+def test_should_route_inbound_task_only_for_top_level_channel_messages():
+    adapter = _make_adapter(
+        inbound_task_routes={
+            CHANNEL_ID: {"board": "ai-frontend", "assignee": "frontend-engineer"}
+        }
+    )
+    route = adapter._slack_inbound_task_route(CHANNEL_ID)
+
+    assert adapter._should_route_inbound_task(
+        channel_id=CHANNEL_ID,
+        is_dm=False,
+        is_thread_reply=False,
+        text="please implement this",
+        route=route,
+    ) is True
+    assert adapter._should_route_inbound_task(
+        channel_id=CHANNEL_ID,
+        is_dm=False,
+        is_thread_reply=True,
+        text="follow-up in the existing task thread",
+        route=route,
+    ) is False
+    assert adapter._should_route_inbound_task(
+        channel_id=CHANNEL_ID,
+        is_dm=True,
+        is_thread_reply=False,
+        text="dm should stay conversational",
+        route=route,
+    ) is False
+    assert adapter._should_route_inbound_task(
+        channel_id=CHANNEL_ID,
+        is_dm=False,
+        is_thread_reply=False,
+        text="/kanban list",
+        route=route,
+    ) is False
+
+
+def test_should_route_inbound_task_blocks_bot_messages():
+    adapter = _make_adapter(
+        inbound_task_routes={
+            CHANNEL_ID: {"board": "ai-frontend", "assignee": "frontend-engineer"}
+        }
+    )
+    route = adapter._slack_inbound_task_route(CHANNEL_ID)
+
+    assert adapter._should_route_inbound_task(
+        channel_id=CHANNEL_ID,
+        is_dm=False,
+        is_thread_reply=False,
+        text="bot-authored operational note",
+        route=route,
+        is_bot_message=True,
+    ) is False
+
+
+def test_should_route_inbound_task_respects_allowed_users(monkeypatch):
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_ALLOWED")
+    adapter = _make_adapter(
+        inbound_task_routes={
+            CHANNEL_ID: {"board": "ai-frontend", "assignee": "frontend-engineer"}
+        }
+    )
+    route = adapter._slack_inbound_task_route(CHANNEL_ID)
+
+    assert adapter._should_route_inbound_task(
+        channel_id=CHANNEL_ID,
+        is_dm=False,
+        is_thread_reply=False,
+        text="allowed intake",
+        route=route,
+        user_id="U_ALLOWED",
+    ) is True
+    assert adapter._should_route_inbound_task(
+        channel_id=CHANNEL_ID,
+        is_dm=False,
+        is_thread_reply=False,
+        text="blocked intake",
+        route=route,
+        user_id="U_BLOCKED",
+    ) is False
+
+
+def test_should_route_inbound_task_route_allowlist_overrides_env(monkeypatch):
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_ENV")
+    adapter = _make_adapter(
+        inbound_task_routes={
+            CHANNEL_ID: {
+                "board": "ai-frontend",
+                "assignee": "frontend-engineer",
+                "allowed_user_ids": ["U_ROUTE"],
+            }
+        }
+    )
+    route = adapter._slack_inbound_task_route(CHANNEL_ID)
+
+    assert adapter._should_route_inbound_task(
+        channel_id=CHANNEL_ID,
+        is_dm=False,
+        is_thread_reply=False,
+        text="route allowlist wins",
+        route=route,
+        user_id="U_ROUTE",
+    ) is True
+    assert adapter._should_route_inbound_task(
+        channel_id=CHANNEL_ID,
+        is_dm=False,
+        is_thread_reply=False,
+        text="env user no longer enough",
+        route=route,
+        user_id="U_ENV",
+    ) is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: Slack persona display customization
+# ---------------------------------------------------------------------------
+
+def test_slack_persona_customization_from_string():
+    adapter = _make_adapter()
+
+    result = adapter._slack_persona_customization({"slack_persona": "frontend-engineer"})
+
+    assert result == {
+        "username": "frontend-engineer",
+        "icon_emoji": ":computer:",
+    }
+
+
+def test_slack_persona_customization_from_dict():
+    adapter = _make_adapter()
+
+    result = adapter._slack_persona_customization(
+        {
+            "slack_persona": {
+                "username": "security-reviewer",
+                "icon_emoji": ":lock:",
+            }
+        }
+    )
+
+    assert result == {
+        "username": "security-reviewer",
+        "icon_emoji": ":lock:",
+    }
+
+
+def test_slack_persona_customization_sanitizes_username():
+    adapter = _make_adapter()
+
+    result = adapter._slack_persona_customization({"slack_persona": "@<@U123> bad/name!"})
+
+    assert result["username"] == "badname"
+
+
+def test_slack_persona_customization_can_be_disabled():
+    adapter = _make_adapter()
+
+    assert adapter._slack_persona_customization({"slack_persona": False}) == {}

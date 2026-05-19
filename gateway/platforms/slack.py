@@ -797,13 +797,27 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": chunk,
                     "mrkdwn": True,
                 }
+                persona_kwargs = self._slack_persona_customization(metadata)
+                if persona_kwargs:
+                    kwargs.update(persona_kwargs)
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
                     # Only broadcast the first chunk of the first reply
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                try:
+                    last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                except Exception as exc:
+                    if persona_kwargs and self._is_slack_customize_scope_error(exc):
+                        logger.warning(
+                            "[Slack] chat:write.customize missing; retrying without persona override"
+                        )
+                        for key in ("username", "icon_emoji", "icon_url"):
+                            kwargs.pop(key, None)
+                        last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                    else:
+                        raise
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1775,7 +1789,12 @@ class SlackAdapter(BasePlatformAdapter):
         #   "none"     — ignore all bot messages (default, backward-compatible)
         #   "mentions" — accept bot messages only when they @mention us
         #   "all"      — accept all bot messages (except our own)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        is_bot_message = bool(
+            event.get("bot_id")
+            or event.get("subtype") == "bot_message"
+            or event.get("bot_profile")
+        )
+        if is_bot_message:
             allow_bots = self.config.extra.get("allow_bots", "")
             if not allow_bots:
                 allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
@@ -1961,6 +1980,16 @@ class SlackAdapter(BasePlatformAdapter):
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        inbound_task_route = self._slack_inbound_task_route(channel_id)
+        should_route_inbound_task = self._should_route_inbound_task(
+            channel_id=channel_id,
+            is_dm=is_dm,
+            is_thread_reply=is_thread_reply,
+            text=text,
+            route=inbound_task_route,
+            user_id=user_id,
+            is_bot_message=is_bot_message,
+        )
 
         if not is_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
@@ -1992,7 +2021,8 @@ class SlackAdapter(BasePlatformAdapter):
                     )
                 )
                 if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
-                    return
+                    if not should_route_inbound_task:
+                        return
 
         if is_mentioned:
             # Strip the bot mention from the text
@@ -2227,6 +2257,10 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=_auto_skill,
         )
+
+        if should_route_inbound_task and msg_type != MessageType.COMMAND:
+            if await self._route_slack_inbound_task(msg_event, inbound_task_route):
+                return
 
         # Only react when bot is directly addressed (DM or @mention).
         # In listen-all channels (require_mention=false), reacting to every
@@ -3025,3 +3059,392 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+    def _slack_persona_customization(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        """Build Slack username/icon overrides for an agent persona."""
+        metadata = metadata or {}
+        if metadata.get("slack_persona") is False:
+            return {}
+
+        raw = (
+            metadata.get("slack_persona")
+            or metadata.get("persona")
+            or metadata.get("agent_profile")
+            or metadata.get("author")
+        )
+        if not raw:
+            return {}
+
+        username = ""
+        icon_emoji = ""
+        icon_url = ""
+        if isinstance(raw, dict):
+            username = str(
+                raw.get("username")
+                or raw.get("name")
+                or raw.get("profile")
+                or raw.get("persona")
+                or ""
+            ).strip()
+            icon_emoji = str(raw.get("icon_emoji") or "").strip()
+            icon_url = str(raw.get("icon_url") or "").strip()
+        else:
+            username = str(raw).strip()
+
+        if not username:
+            return {}
+        username = self._sanitize_slack_persona_username(username)
+        if not username:
+            return {}
+
+        configured = (self.config.extra or {}).get("persona_icons") or {}
+        if not icon_emoji and isinstance(configured, dict):
+            icon_emoji = str(configured.get(username) or "").strip()
+        if not icon_emoji:
+            icon_emoji = self._default_slack_persona_icon(username)
+
+        result = {"username": username}
+        if icon_url:
+            result["icon_url"] = icon_url
+        elif icon_emoji:
+            result["icon_emoji"] = icon_emoji
+        return result
+
+    def _sanitize_slack_persona_username(self, username: str) -> str:
+        username = re.sub(r"<@[A-Z0-9]+>", "", username)
+        username = re.sub(r"\s+", " ", username).strip()
+        username = username.lstrip("@")
+        username = re.sub(r"[^A-Za-z0-9_.\- ]+", "", username).strip()
+        return username[:80]
+
+    def _default_slack_persona_icon(self, username: str) -> str:
+        normalized = username.lower().replace("_", "-").replace(" ", "-")
+        icon_map = {
+            "announcement": ":mega:",
+            "release-editor": ":memo:",
+            "comms-reviewer": ":speech_balloon:",
+            "policy": ":scroll:",
+            "policy-guardian": ":scroll:",
+            "process-auditor": ":clipboard:",
+            "planning": ":dart:",
+            "product-manager": ":triangular_ruler:",
+            "project-manager": ":spiral_calendar_pad:",
+            "frontend": ":computer:",
+            "frontend-engineer": ":computer:",
+            "accessibility-reviewer": ":wheelchair:",
+            "backend": ":gear:",
+            "backend-engineer": ":gear:",
+            "api-architect": ":electric_plug:",
+            "devops-engineer": ":wrench:",
+            "security": ":shield:",
+            "security-reviewer": ":shield:",
+            "threat-modeler": ":mag:",
+            "data": ":bar_chart:",
+            "data-engineer": ":bar_chart:",
+            "data-quality": ":white_check_mark:",
+            "design": ":art:",
+            "product-designer": ":art:",
+            "ux-researcher": ":mag_right:",
+            "marketing": ":chart_with_upwards_trend:",
+            "growth-strategist": ":chart_with_upwards_trend:",
+            "copywriter": ":writing_hand:",
+            "qa-reviewer": ":test_tube:",
+            "orchestrator": ":robot_face:",
+            "memory-curator": ":brain:",
+            "ops-monitor": ":satellite:",
+        }
+        return icon_map.get(normalized, ":robot_face:")
+
+    def _is_slack_customize_scope_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                text = f"{text} {response.get('error', '')} {response.get('needed', '')}".lower()
+            except Exception:
+                pass
+        return "chat:write.customize" in text or "missing_scope" in text
+
+    def _slack_inbound_task_route(self, channel_id: str) -> Optional[Dict[str, Any]]:
+        """Return the Kanban route for a Slack channel, if configured.
+
+        Supported config shapes:
+
+        inbound_task_routes:
+          C0123:
+            board: ai-frontend
+            assignee: frontend-engineer
+          - id: C0456
+            board: ai-security
+            assignee: security-reviewer
+        """
+        if not channel_id:
+            return None
+        raw = (self.config.extra or {}).get("inbound_task_routes")
+        if not raw:
+            raw = (self.config.extra or {}).get("org_task_routes")
+        if not raw:
+            return None
+
+        route: Optional[Dict[str, Any]] = None
+        if isinstance(raw, dict):
+            candidate = raw.get(channel_id)
+            if isinstance(candidate, dict):
+                route = dict(candidate)
+                route.setdefault("channel_id", channel_id)
+        elif isinstance(raw, list):
+            for entry in raw:
+                if not isinstance(entry, dict):
+                    continue
+                entry_id = str(
+                    entry.get("id")
+                    or entry.get("channel_id")
+                    or entry.get("channel")
+                    or ""
+                ).strip()
+                if entry_id == channel_id:
+                    route = dict(entry)
+                    route["channel_id"] = channel_id
+                    break
+
+        if not route:
+            return None
+
+        board = str(route.get("board") or "").strip()
+        assignee = str(route.get("assignee") or "").strip()
+        if not board or not assignee:
+            return None
+        route["board"] = board
+        route["assignee"] = assignee
+
+        flow = route.get("flow") or route.get("collaboration_flow") or []
+        if isinstance(flow, str):
+            if "->" in flow:
+                flow = [part.strip() for part in flow.split("->")]
+            else:
+                flow = [part.strip() for part in flow.split(",")]
+        if isinstance(flow, list):
+            route["flow"] = [str(part).strip() for part in flow if str(part).strip()]
+        else:
+            route["flow"] = []
+        return route
+
+    def _should_route_inbound_task(
+        self,
+        *,
+        channel_id: str,
+        is_dm: bool,
+        is_thread_reply: bool,
+        text: str,
+        route: Optional[Dict[str, Any]],
+        user_id: str = "",
+        is_bot_message: bool = False,
+    ) -> bool:
+        """Only top-level messages in configured Slack channels become tasks."""
+        if not route or not channel_id:
+            return False
+        if is_bot_message:
+            return False
+        if not self._is_slack_inbound_task_user_allowed(user_id, route):
+            return False
+        if is_dm or is_thread_reply:
+            return False
+        text = (text or "").strip()
+        if not text:
+            return False
+        if text.startswith("/"):
+            return False
+        return True
+
+    def _is_slack_inbound_task_user_allowed(
+        self,
+        user_id: str,
+        route: Dict[str, Any],
+    ) -> bool:
+        """Apply the Slack user allowlist to inbound task creation.
+
+        If no allowlist is configured, Slack keeps the current unrestricted
+        behavior. When present, `*` allows any user.
+        """
+        raw = (
+            route.get("allowed_user_ids")
+            or route.get("allowed_users")
+            or (self.config.extra or {}).get("inbound_task_allowed_users")
+            or os.getenv("SLACK_ALLOWED_USERS", "")
+        )
+        if raw is None:
+            return True
+        if isinstance(raw, str):
+            allowed = {part.strip() for part in raw.split(",") if part.strip()}
+        elif isinstance(raw, list):
+            allowed = {str(part).strip() for part in raw if str(part).strip()}
+        else:
+            allowed = {str(raw).strip()} if str(raw).strip() else set()
+        if not allowed or "*" in allowed:
+            return True
+        return bool(user_id and user_id in allowed)
+
+    def _build_slack_inbound_task_title(
+        self,
+        text: str,
+        route: Dict[str, Any],
+    ) -> str:
+        summary = ""
+        for line in (text or "").splitlines():
+            line = re.sub(r"<@[A-Z0-9]+>", "", line).strip()
+            if line:
+                summary = line
+                break
+        if not summary:
+            summary = "Slack inbound request"
+        summary = re.sub(r"\s+", " ", summary)
+        if len(summary) > 96:
+            summary = summary[:93].rstrip() + "..."
+        prefix = str(route.get("title_prefix") or "[slack-inbound]").strip()
+        return f"{prefix} {summary}"
+
+    def _build_slack_inbound_task_body(
+        self,
+        event: MessageEvent,
+        route: Dict[str, Any],
+    ) -> str:
+        source = event.source
+        flow = route.get("flow") or []
+        flow_text = " -> ".join(flow) if flow else route["assignee"]
+        user_name = str(getattr(source, "user_name", "") or "").strip()
+        user_id = str(getattr(source, "user_id", "") or "").strip()
+        user_label = user_name or user_id or "unknown"
+        lines = [
+            "Slack inbound request",
+            "",
+            f"- board: {route['board']}",
+            f"- assignee: {route['assignee']}",
+            f"- collaboration_flow: {flow_text}",
+            f"- slack_channel: {getattr(source, 'chat_id', '')}",
+            f"- slack_user: {user_label}" + (f" ({user_id})" if user_id and user_id != user_label else ""),
+            f"- slack_message_ts: {event.message_id or ''}",
+            "",
+            "Thread summary:",
+            "- 사용자가 이 Slack thread에서 요청한 실제 작업을 한 문장으로 요약합니다.",
+            "- 필요한 경우 다음 agent가 바로 이어받을 수 있도록 맥락을 보존합니다.",
+            "",
+            "Open questions:",
+            "- 모호한 요구사항, 승인 필요 사항, 검증 결과가 없으면 질문으로 남깁니다.",
+            "",
+            "Reaction rules:",
+            "- 보고서 덤프 대신 짧은 판단, 근거, 다음 액션을 남깁니다.",
+            "- 다른 agent에게 넘길 때는 `@next-agent 다음 액션: ...` 형식을 사용합니다.",
+            "",
+            "Request:",
+            (event.text or "").strip(),
+        ]
+        return "\n".join(lines).strip()
+
+    async def _route_slack_inbound_task(
+        self,
+        event: MessageEvent,
+        route: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Create and subscribe a Kanban task for a routed Slack message."""
+        if not route:
+            return False
+        source = event.source
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        if not chat_id:
+            return False
+
+        title = self._build_slack_inbound_task_title(event.text or "", route)
+        body = self._build_slack_inbound_task_body(event, route)
+        task_id = ""
+
+        try:
+            def _create_and_subscribe() -> str:
+                from hermes_cli import kanban_db as _kb
+                try:
+                    from hermes_cli.profiles import get_active_profile_name
+                    active_profile = get_active_profile_name() or None
+                except Exception:
+                    active_profile = None
+                notifier_profile = route.get("notifier_profile") or active_profile
+
+                conn = _kb.connect(board=route["board"])
+                try:
+                    team_id = ""
+                    if isinstance(event.raw_message, dict):
+                        team_id = str(
+                            event.raw_message.get("team")
+                            or event.raw_message.get("team_id")
+                            or ""
+                        ).strip()
+                    if not team_id:
+                        team_id = "unknown-team"
+                    created = _kb.create_task(
+                        conn,
+                        title=title,
+                        body=body,
+                        assignee=route["assignee"],
+                        created_by="slack-inbound",
+                        workspace_kind=str(route.get("workspace_kind") or "scratch"),
+                        priority=int(route.get("priority") or 0),
+                        triage=bool(route.get("triage") or False),
+                        idempotency_key=f"slack:{team_id}:{chat_id}:{event.message_id or ''}",
+                    )
+                    platform = getattr(source, "platform", None)
+                    platform_str = (
+                        platform.value if hasattr(platform, "value") else str(platform or "slack")
+                    ).lower()
+                    _kb.add_notify_sub(
+                        conn,
+                        task_id=created,
+                        platform=platform_str or "slack",
+                        chat_id=chat_id,
+                        thread_id=str(event.message_id or getattr(source, "thread_id", "") or "") or None,
+                        user_id=str(getattr(source, "user_id", "") or "") or None,
+                        notifier_profile=str(notifier_profile) if notifier_profile else None,
+                    )
+                    return created
+                finally:
+                    conn.close()
+
+            task_id = await asyncio.to_thread(_create_and_subscribe)
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            logger.warning("Slack inbound Kanban task creation failed: %s", exc, exc_info=True)
+            try:
+                await self.send(
+                    chat_id,
+                    (
+                        "*작업 접수 실패*\n"
+                        "• 상태: Kanban task를 만들지 못했습니다.\n"
+                        "• 다음 액션: gateway log를 확인해 주세요."
+                    ),
+                    reply_to=event.message_id,
+                )
+            except Exception:
+                logger.debug("Slack inbound failure notice failed", exc_info=True)
+            return True
+
+        assignee = route["assignee"]
+        board = route["board"]
+        flow = route.get("flow") or [assignee]
+        try:
+            await self.send(
+                chat_id,
+                (
+                    f"*작업 접수* `{task_id}`\n"
+                    f"• board: `{board}`\n"
+                    f"• 담당: `{assignee}`\n"
+                    f"• 흐름: {' -> '.join(flow)}\n"
+                    "• 상태: Kanban에 등록했고 이 thread로 진행 상황을 이어서 알립니다."
+                ),
+                reply_to=event.message_id,
+                metadata={"slack_persona": assignee},
+            )
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            logger.warning(
+                "Slack inbound Kanban ack failed after task %s was created: %s",
+                task_id, exc, exc_info=True,
+            )
+        return True

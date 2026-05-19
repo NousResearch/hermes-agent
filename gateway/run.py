@@ -4085,6 +4085,12 @@ class GatewayRunner:
         # simply don't use kanban; this loop becomes a no-op.
         asyncio.create_task(self._kanban_dispatcher_watcher())
 
+        # Start background Kanban handoff automation. Comments like
+        # `@next-agent 다음 액션: ...` create the next agent's task and copy
+        # the source task's notification subscriptions so the Slack thread
+        # stays connected across the collaboration flow.
+        asyncio.create_task(self._kanban_handoff_watcher())
+
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
             logger.info(
@@ -4103,6 +4109,686 @@ class GatewayRunner:
         logger.info("Press Ctrl+C to stop")
         
         return True
+
+    def _parse_kanban_handoff_comment(self, body: str) -> Optional[dict[str, str]]:
+        """Parse a Korean/English agent handoff comment.
+
+        Supported examples:
+        - `@accessibility-reviewer 다음 액션: 버튼 focus state를 검토해 주세요.`
+        - `@security-reviewer next action: review the threat model.`
+        """
+        text = (body or "").strip()
+        if not text:
+            return None
+        pattern = re.compile(
+            r"@(?P<agent>[A-Za-z0-9][A-Za-z0-9_.-]{1,80})\s+"
+            r"(?:(?:다음\s*액션)|(?:next\s+action))\s*[:：]\s*"
+            r"(?P<action>.+)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        match = pattern.search(text)
+        if not match:
+            return None
+        agent = match.group("agent").strip().lstrip("@")
+        action = match.group("action").strip()
+        if not agent or not action:
+            return None
+        return {"agent": agent, "action": action}
+
+    def _kanban_handoff_title(
+        self,
+        *,
+        source_title: str,
+        target_agent: str,
+        action: str,
+    ) -> str:
+        first = " ".join((action or "").splitlines()[0].split())
+        if len(first) > 96:
+            first = first[:93].rstrip() + "..."
+        source = " ".join((source_title or "handoff").split())
+        if len(source) > 60:
+            source = source[:57].rstrip() + "..."
+        return f"[handoff] {target_agent}: {first or source}"
+
+    def _kanban_handoff_body(
+        self,
+        *,
+        board: str,
+        source_task_id: str,
+        source_title: str,
+        author: str,
+        target_agent: str,
+        comment_id: Any,
+        action: str,
+    ) -> str:
+        return (
+            "자동 handoff task입니다.\n\n"
+            f"- board: {board}\n"
+            f"- source_task: {source_task_id} - {source_title}\n"
+            f"- handoff_author: {author}\n"
+            f"- next_agent: {target_agent}\n"
+            f"- comment_id: {comment_id or ''}\n\n"
+            "다음 액션:\n"
+            f"{action.strip()}\n\n"
+            f"{self._kanban_thread_collaboration_contract(flow_hint=f'{author} -> {target_agent}')}"
+        ).strip()
+
+    def _kanban_owner_for_board(self, board: str) -> Optional[str]:
+        owners = {
+            "ai-announcements": "announcement",
+            "ai-policy": "policy",
+            "ai-planning": "planning",
+            "ai-frontend": "frontend",
+            "ai-backend": "backend",
+            "ai-security": "security",
+            "ai-data": "data",
+            "ai-design": "design",
+            "ai-marketing": "marketing",
+        }
+        return owners.get((board or "").strip())
+
+    def _kanban_thread_collaboration_contract(self, *, flow_hint: str = "") -> str:
+        lines = [
+            "Thread summary:",
+            "- 지금까지의 thread 맥락을 한 문장으로 요약하고, 다음 agent가 이어받을 결정 지점을 남깁니다.",
+            "",
+            "Open questions:",
+            "- 모호한 요구사항, 승인 필요 사항, 검증 공백이 있으면 질문으로 남깁니다.",
+            "",
+            "Reaction rules:",
+            "- 보고서 덤프 대신 짧은 판단, 근거, 다음 액션을 남깁니다.",
+            "- handoff가 필요하면 `@next-agent 다음 액션: ...` 형식으로 요청합니다.",
+        ]
+        if flow_hint:
+            lines.insert(1, f"- flow: {flow_hint}")
+        return "\n".join(lines)
+
+    def _parse_kanban_handoff_task_body(self, body: str) -> dict[str, str]:
+        """Extract source metadata from an auto-created handoff task body."""
+        text = body or ""
+        if "자동 handoff task입니다." not in text:
+            return {}
+        meta: dict[str, str] = {}
+        board_match = re.search(r"(?m)^-\s*board:\s*(?P<board>\S+)\s*$", text)
+        if board_match:
+            meta["board"] = board_match.group("board").strip()
+        source_match = re.search(
+            r"(?m)^-\s*source_task:\s*(?P<task>\S+)(?:\s*-\s*(?P<title>.*))?$",
+            text,
+        )
+        if source_match:
+            meta["source_task_id"] = source_match.group("task").strip()
+            meta["source_title"] = (source_match.group("title") or "").strip()
+        next_match = re.search(r"(?m)^-\s*next_agent:\s*(?P<agent>\S+)\s*$", text)
+        if next_match:
+            meta["next_agent"] = next_match.group("agent").strip()
+        author_match = re.search(r"(?m)^-\s*handoff_author:\s*(?P<author>\S+)\s*$", text)
+        if author_match:
+            meta["handoff_author"] = author_match.group("author").strip()
+        return meta
+
+    def _kanban_owner_closeout_title(
+        self,
+        *,
+        owner: str,
+        specialist_title: str,
+    ) -> str:
+        title = " ".join((specialist_title or "handoff result").split())
+        if len(title) > 86:
+            title = title[:83].rstrip() + "..."
+        return f"[closeout] {owner}: {title}"
+
+    def _kanban_owner_closeout_body(
+        self,
+        *,
+        board: str,
+        owner: str,
+        specialist_task_id: str,
+        specialist_agent: str,
+        specialist_title: str,
+        source_task_id: str,
+        source_title: str,
+        summary: str,
+    ) -> str:
+        return (
+            "자동 owner closeout task입니다.\n\n"
+            f"- board: {board}\n"
+            f"- owner: {owner}\n"
+            f"- specialist_task: {specialist_task_id} - {specialist_title}\n"
+            f"- specialist_agent: {specialist_agent}\n"
+            f"- source_task: {source_task_id or ''} - {source_title or ''}\n\n"
+            "specialist 결과:\n"
+            f"{(summary or '요약 없음').strip()}\n\n"
+            "다음 액션:\n"
+            "위 specialist 결과를 검토하고, 채널에 남길 최종 결정/상태를 한국어로 정리해 주세요. "
+            "필요하면 memory-curator에게 durable learning을 남기도록 요청하세요.\n\n"
+            f"{self._kanban_thread_collaboration_contract(flow_hint=f'{specialist_agent} -> {owner}')}"
+        ).strip()
+
+    def _parse_kanban_owner_closeout_task_body(self, body: str) -> dict[str, str]:
+        """Extract metadata from an auto owner-closeout task body."""
+        text = body or ""
+        if "자동 owner closeout task입니다." not in text:
+            return {}
+        meta: dict[str, str] = {}
+        for key in ("board", "owner", "specialist_agent"):
+            match = re.search(rf"(?m)^-\s*{key}:\s*(?P<value>.+?)\s*$", text)
+            if match:
+                meta[key] = match.group("value").strip()
+        specialist_match = re.search(
+            r"(?m)^-\s*specialist_task:\s*(?P<task>\S+)(?:\s*-\s*(?P<title>.*))?$",
+            text,
+        )
+        if specialist_match:
+            meta["specialist_task_id"] = specialist_match.group("task").strip()
+            meta["specialist_title"] = (specialist_match.group("title") or "").strip()
+        source_match = re.search(
+            r"(?m)^-\s*source_task:\s*(?P<task>\S+)(?:\s*-\s*(?P<title>.*))?$",
+            text,
+        )
+        if source_match:
+            meta["source_task_id"] = source_match.group("task").strip()
+            meta["source_title"] = (source_match.group("title") or "").strip()
+        return meta
+
+    def _kanban_closeout_is_memory_candidate(
+        self,
+        *,
+        title: str,
+        body: str,
+        summary: str,
+    ) -> bool:
+        text = f"{title}\n{body}\n{summary}".lower()
+        noisy_markers = (
+            "smoke",
+            "test",
+            "테스트",
+            "스모크",
+            "검증용",
+            "owner closeout smoke",
+        )
+        if any(marker in text for marker in noisy_markers):
+            return False
+        durable_markers = (
+            "정책",
+            "결정",
+            "기준",
+            "규칙",
+            "운영",
+            "워크플로",
+            "workflow",
+            "policy",
+            "decision",
+            "rule",
+            "standard",
+            "process",
+            "owner",
+            "channel",
+        )
+        return any(marker in text for marker in durable_markers)
+
+    def _kanban_memory_evolution_title(
+        self,
+        *,
+        board: str,
+        owner: str,
+        closeout_title: str,
+    ) -> str:
+        title = " ".join((closeout_title or "owner closeout").split())
+        if len(title) > 82:
+            title = title[:79].rstrip() + "..."
+        return f"[memory] {board}/{owner}: {title}"
+
+    def _kanban_memory_evolution_body(
+        self,
+        *,
+        board: str,
+        owner: str,
+        closeout_task_id: str,
+        closeout_title: str,
+        source_task_id: str,
+        source_title: str,
+        specialist_task_id: str,
+        specialist_agent: str,
+        summary: str,
+    ) -> str:
+        return (
+            "자동 memory evolution task입니다.\n\n"
+            f"- board: {board}\n"
+            f"- owner: {owner}\n"
+            f"- closeout_task: {closeout_task_id} - {closeout_title}\n"
+            f"- source_task: {source_task_id or ''} - {source_title or ''}\n"
+            f"- specialist_task: {specialist_task_id or ''}\n"
+            f"- specialist_agent: {specialist_agent or ''}\n\n"
+            "owner closeout 요약:\n"
+            f"{(summary or '요약 없음').strip()}\n\n"
+            "다음 액션:\n"
+            "이 closeout이 durable memory로 남길 가치가 있는지 판단하세요. "
+            "저장할 경우 project rule, decision, workflow learning만 짧게 남기고, "
+            "smoke/test/noise는 저장하지 마세요. Slack/Kanban에는 한국어로 판단 결과를 남기세요.\n\n"
+            f"{self._kanban_thread_collaboration_contract(flow_hint=f'{owner} -> memory-curator')}"
+        ).strip()
+
+    def _copy_kanban_notify_subs(
+        self,
+        kb_module,
+        conn,
+        *,
+        from_task_id: str,
+        to_task_id: str,
+    ) -> None:
+        if not from_task_id:
+            return
+        for sub in kb_module.list_notify_subs(conn, from_task_id):
+            kb_module.add_notify_sub(
+                conn,
+                task_id=to_task_id,
+                platform=sub["platform"],
+                chat_id=sub["chat_id"],
+                thread_id=sub.get("thread_id") or None,
+                user_id=sub.get("user_id") or None,
+                notifier_profile=sub.get("notifier_profile") or None,
+            )
+
+    def _kanban_process_handoff_events_once(self, kb_module=None) -> list[dict[str, Any]]:
+        """Process new Kanban handoff comments once.
+
+        This intentionally uses task idempotency instead of a hard persistent
+        cursor. On gateway restart, re-seeing a handoff comment returns the
+        same task id without duplicating tasks.
+        """
+        if kb_module is None:
+            from hermes_cli import kanban_db as kb_module
+
+        created: list[dict[str, Any]] = []
+        seen_db_paths: set[str] = set()
+        try:
+            boards = kb_module.list_boards(include_archived=False)
+        except Exception:
+            boards = [kb_module.read_board_metadata(kb_module.DEFAULT_BOARD)]
+
+        for board_meta in boards:
+            board = board_meta.get("slug") or kb_module.DEFAULT_BOARD
+            db_path = board_meta.get("db_path")
+            try:
+                resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb_module.kanban_db_path(board).resolve())
+            except Exception:
+                resolved_db_path = f"slug:{board}"
+            if resolved_db_path in seen_db_paths:
+                continue
+            seen_db_paths.add(resolved_db_path)
+
+            conn = kb_module.connect(board=board)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT e.id AS event_id, e.task_id, e.payload, e.created_at
+                    FROM task_events e
+                    WHERE e.kind = 'commented'
+                    ORDER BY e.id ASC
+                    """
+                ).fetchall()
+                for row in rows:
+                    payload = {}
+                    if row["payload"]:
+                        try:
+                            payload = json.loads(row["payload"]) or {}
+                        except Exception:
+                            payload = {}
+                    comment_id = payload.get("comment_id")
+                    body = ""
+                    author = str(payload.get("author") or "").strip()
+                    if comment_id:
+                        c_row = conn.execute(
+                            "SELECT author, body FROM task_comments WHERE id = ?",
+                            (comment_id,),
+                        ).fetchone()
+                        if c_row:
+                            author = str(c_row["author"] or author).strip()
+                            body = str(c_row["body"] or "")
+                    if not body:
+                        body = str(payload.get("excerpt") or "")
+
+                    parsed = self._parse_kanban_handoff_comment(body)
+                    if not parsed:
+                        continue
+
+                    target_agent = parsed["agent"]
+                    action = parsed["action"]
+                    source_task = kb_module.get_task(conn, row["task_id"])
+                    source_title = source_task.title if source_task else str(row["task_id"])
+                    idempotency_key = f"kanban-handoff:{board}:{row['event_id']}:{target_agent}"
+                    title = self._kanban_handoff_title(
+                        source_title=source_title,
+                        target_agent=target_agent,
+                        action=action,
+                    )
+                    existing = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    inserted = existing is None
+                    if existing:
+                        child_id = existing["id"]
+                    else:
+                        child_id = kb_module.create_task(
+                            conn,
+                            title=title,
+                            body=self._kanban_handoff_body(
+                                board=board,
+                                source_task_id=row["task_id"],
+                                source_title=source_title,
+                                author=author or "unknown",
+                                target_agent=target_agent,
+                                comment_id=comment_id,
+                                action=action,
+                            ),
+                            assignee=target_agent,
+                            created_by=f"handoff:{author or 'unknown'}",
+                            workspace_kind="scratch",
+                            idempotency_key=idempotency_key,
+                        )
+
+                    self._copy_kanban_notify_subs(
+                        kb_module, conn,
+                        from_task_id=row["task_id"],
+                        to_task_id=child_id,
+                    )
+                    if inserted:
+                        created.append({
+                            "board": board,
+                            "source_task_id": row["task_id"],
+                            "task_id": child_id,
+                            "target_agent": target_agent,
+                        })
+            finally:
+                conn.close()
+        return created
+
+    def _kanban_process_owner_closeout_events_once(self, kb_module=None) -> list[dict[str, Any]]:
+        """Create board-owner closeout tasks after handoff child completion."""
+        if kb_module is None:
+            from hermes_cli import kanban_db as kb_module
+
+        created: list[dict[str, Any]] = []
+        seen_db_paths: set[str] = set()
+        try:
+            boards = kb_module.list_boards(include_archived=False)
+        except Exception:
+            boards = [kb_module.read_board_metadata(kb_module.DEFAULT_BOARD)]
+
+        for board_meta in boards:
+            board_slug = board_meta.get("slug") or kb_module.DEFAULT_BOARD
+            db_path = board_meta.get("db_path")
+            try:
+                resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb_module.kanban_db_path(board_slug).resolve())
+            except Exception:
+                resolved_db_path = f"slug:{board_slug}"
+            if resolved_db_path in seen_db_paths:
+                continue
+            seen_db_paths.add(resolved_db_path)
+
+            conn = kb_module.connect(board=board_slug)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT e.id AS event_id, e.task_id, e.payload, e.created_at
+                    FROM task_events e
+                    WHERE e.kind = 'completed'
+                    ORDER BY e.id ASC
+                    """
+                ).fetchall()
+                for row in rows:
+                    task = kb_module.get_task(conn, row["task_id"])
+                    if not task or "자동 handoff task입니다." not in (task.body or ""):
+                        continue
+
+                    handoff_meta = self._parse_kanban_handoff_task_body(task.body or "")
+                    board = handoff_meta.get("board") or board_slug
+                    owner = self._kanban_owner_for_board(board)
+                    if not owner:
+                        continue
+                    source_task_id = handoff_meta.get("source_task_id", "")
+                    source_title = handoff_meta.get("source_title", "")
+
+                    payload = {}
+                    if row["payload"]:
+                        try:
+                            payload = json.loads(row["payload"]) or {}
+                        except Exception:
+                            payload = {}
+                    summary = str(payload.get("summary") or "").strip()
+                    if not summary:
+                        try:
+                            summary = (kb_module.latest_summary(conn, row["task_id"]) or "").strip()
+                        except Exception:
+                            summary = ""
+                    if not summary and task.result:
+                        summary = str(task.result).strip().splitlines()[0][:400]
+
+                    idempotency_key = f"kanban-owner-closeout:{board}:{row['event_id']}:{row['task_id']}"
+                    existing = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    inserted = existing is None
+                    if existing:
+                        closeout_id = existing["id"]
+                    else:
+                        closeout_id = kb_module.create_task(
+                            conn,
+                            title=self._kanban_owner_closeout_title(
+                                owner=owner,
+                                specialist_title=task.title,
+                            ),
+                            body=self._kanban_owner_closeout_body(
+                                board=board,
+                                owner=owner,
+                                specialist_task_id=row["task_id"],
+                                specialist_agent=task.assignee or handoff_meta.get("next_agent", ""),
+                                specialist_title=task.title,
+                                source_task_id=source_task_id,
+                                source_title=source_title,
+                                summary=summary,
+                            ),
+                            assignee=owner,
+                            created_by=f"owner-closeout:{task.assignee or 'unknown'}",
+                            workspace_kind="scratch",
+                            idempotency_key=idempotency_key,
+                        )
+
+                    self._copy_kanban_notify_subs(
+                        kb_module, conn,
+                        from_task_id=row["task_id"],
+                        to_task_id=closeout_id,
+                    )
+                    if source_task_id:
+                        self._copy_kanban_notify_subs(
+                            kb_module, conn,
+                            from_task_id=source_task_id,
+                            to_task_id=closeout_id,
+                        )
+                    if inserted:
+                        created.append({
+                            "board": board,
+                            "task_id": closeout_id,
+                            "owner": owner,
+                            "specialist_task_id": row["task_id"],
+                        })
+            finally:
+                conn.close()
+        return created
+
+    def _kanban_process_memory_evolution_events_once(self, kb_module=None) -> list[dict[str, Any]]:
+        """Create memory-curator tasks after durable owner closeouts."""
+        if kb_module is None:
+            from hermes_cli import kanban_db as kb_module
+
+        created: list[dict[str, Any]] = []
+        seen_db_paths: set[str] = set()
+        try:
+            boards = kb_module.list_boards(include_archived=False)
+        except Exception:
+            boards = [kb_module.read_board_metadata(kb_module.DEFAULT_BOARD)]
+
+        for board_meta in boards:
+            board_slug = board_meta.get("slug") or kb_module.DEFAULT_BOARD
+            db_path = board_meta.get("db_path")
+            try:
+                resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb_module.kanban_db_path(board_slug).resolve())
+            except Exception:
+                resolved_db_path = f"slug:{board_slug}"
+            if resolved_db_path in seen_db_paths:
+                continue
+            seen_db_paths.add(resolved_db_path)
+
+            conn = kb_module.connect(board=board_slug)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT e.id AS event_id, e.task_id, e.payload, e.created_at
+                    FROM task_events e
+                    WHERE e.kind = 'completed'
+                    ORDER BY e.id ASC
+                    """
+                ).fetchall()
+                for row in rows:
+                    closeout = kb_module.get_task(conn, row["task_id"])
+                    if not closeout or "자동 owner closeout task입니다." not in (closeout.body or ""):
+                        continue
+
+                    meta = self._parse_kanban_owner_closeout_task_body(closeout.body or "")
+                    board = meta.get("board") or board_slug
+                    owner = meta.get("owner") or closeout.assignee or ""
+
+                    payload = {}
+                    if row["payload"]:
+                        try:
+                            payload = json.loads(row["payload"]) or {}
+                        except Exception:
+                            payload = {}
+                    summary = str(payload.get("summary") or "").strip()
+                    if not summary:
+                        try:
+                            summary = (kb_module.latest_summary(conn, row["task_id"]) or "").strip()
+                        except Exception:
+                            summary = ""
+                    if not self._kanban_closeout_is_memory_candidate(
+                        title=closeout.title,
+                        body=closeout.body or "",
+                        summary=summary,
+                    ):
+                        continue
+
+                    idempotency_key = f"kanban-memory-evolution:{board}:{row['event_id']}:{row['task_id']}"
+                    existing = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    inserted = existing is None
+                    if existing:
+                        memory_id = existing["id"]
+                    else:
+                        memory_id = kb_module.create_task(
+                            conn,
+                            title=self._kanban_memory_evolution_title(
+                                board=board,
+                                owner=owner,
+                                closeout_title=closeout.title,
+                            ),
+                            body=self._kanban_memory_evolution_body(
+                                board=board,
+                                owner=owner,
+                                closeout_task_id=row["task_id"],
+                                closeout_title=closeout.title,
+                                source_task_id=meta.get("source_task_id", ""),
+                                source_title=meta.get("source_title", ""),
+                                specialist_task_id=meta.get("specialist_task_id", ""),
+                                specialist_agent=meta.get("specialist_agent", ""),
+                                summary=summary,
+                            ),
+                            assignee="memory-curator",
+                            created_by=f"memory-evolution:{owner or 'owner'}",
+                            workspace_kind="scratch",
+                            idempotency_key=idempotency_key,
+                        )
+
+                    self._copy_kanban_notify_subs(
+                        kb_module, conn,
+                        from_task_id=row["task_id"],
+                        to_task_id=memory_id,
+                    )
+                    source_task_id = meta.get("source_task_id", "")
+                    if source_task_id:
+                        self._copy_kanban_notify_subs(
+                            kb_module, conn,
+                            from_task_id=source_task_id,
+                            to_task_id=memory_id,
+                        )
+                    if inserted:
+                        created.append({
+                            "board": board,
+                            "task_id": memory_id,
+                            "owner": owner,
+                            "closeout_task_id": row["task_id"],
+                        })
+            finally:
+                conn.close()
+        return created
+
+    async def _kanban_handoff_watcher(self, interval: float = 5.0) -> None:
+        """Create next-agent and owner-closeout tasks from Kanban events."""
+        try:
+            from hermes_cli import kanban_db as _kb
+        except Exception:
+            logger.warning("kanban handoff: kanban_db not importable; watcher disabled")
+            return
+
+        await asyncio.sleep(7)
+        while self._running:
+            try:
+                created = await asyncio.to_thread(
+                    self._kanban_process_handoff_events_once,
+                    _kb,
+                )
+                closeouts = await asyncio.to_thread(
+                    self._kanban_process_owner_closeout_events_once,
+                    _kb,
+                )
+                memories = await asyncio.to_thread(
+                    self._kanban_process_memory_evolution_events_once,
+                    _kb,
+                )
+                for item in created:
+                    logger.info(
+                        "kanban handoff: created %s on board %s for %s from %s",
+                        item.get("task_id"),
+                        item.get("board"),
+                        item.get("target_agent"),
+                        item.get("source_task_id"),
+                    )
+                for item in closeouts:
+                    logger.info(
+                        "kanban closeout: created %s on board %s for owner %s from %s",
+                        item.get("task_id"),
+                        item.get("board"),
+                        item.get("owner"),
+                        item.get("specialist_task_id"),
+                    )
+                for item in memories:
+                    logger.info(
+                        "kanban memory: created %s on board %s from closeout %s",
+                        item.get("task_id"),
+                        item.get("board"),
+                        item.get("closeout_task_id"),
+                    )
+            except Exception as exc:
+                logger.warning("kanban handoff watcher tick failed: %s", exc, exc_info=True)
+
+            for _ in range(int(max(1, interval))):
+                if not self._running:
+                    return
+                await asyncio.sleep(1)
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.
@@ -4493,11 +5179,12 @@ class GatewayRunner:
             return "default"
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
-        """Poll ``kanban_notify_subs`` and deliver terminal events to users.
+        """Poll ``kanban_notify_subs`` and deliver task events to users.
 
         For each subscription row, fetches ``task_events`` newer than the
-        stored cursor with kind in the terminal set (``completed``,
-        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``). Sends one
+        stored cursor with kind in the notify set (``commented``,
+        ``completed``, ``blocked``, ``gave_up``, ``crashed``,
+        ``timed_out``). Sends one
         message per new event to ``(platform, chat_id, thread_id)``,
         then advances the cursor. When a task reaches a terminal state
         (``completed`` / ``archived``), the subscription is removed.
@@ -4518,7 +5205,14 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        NOTIFY_KINDS = (
+            "commented",
+            "completed",
+            "blocked",
+            "gave_up",
+            "crashed",
+            "timed_out",
+        )
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -4626,7 +5320,7 @@ class GatewayRunner:
                                     platform=sub["platform"],
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
+                                    kinds=NOTIFY_KINDS,
                                 )
                                 if not events:
                                     continue
@@ -4677,13 +5371,14 @@ class GatewayRunner:
                         )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
+                    delivered_cursor = int(d.get("old_cursor", 0) or 0)
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
-                        tag = f"@{who} " if who else ""
+                        persona = who
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
                             # intentional human-facing handoff, carried
@@ -4696,53 +5391,105 @@ class GatewayRunner:
                                 payload_summary = str(ev.payload["summary"])
                             if payload_summary:
                                 h = payload_summary.strip().splitlines()[0][:200]
-                                handoff = f"\n{h}"
+                                handoff = h
                             elif task and task.result:
                                 r = task.result.strip().splitlines()[0][:160]
-                                handoff = f"\n{r}"
+                                handoff = r
                             msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
+                                f"*작업 완료* `{sub['task_id']}`\n"
+                                f"• board: `{board_slug}`\n"
+                                f"• 담당: `{who or 'unknown'}`\n"
+                                f"• 작업: {title}"
+                            )
+                            if handoff:
+                                msg += f"\n• 요약: {handoff}"
+                        elif kind == "commented":
+                            author = who or "unknown"
+                            excerpt = ""
+                            if ev.payload:
+                                if ev.payload.get("author"):
+                                    author = str(ev.payload["author"])[:80]
+                                if ev.payload.get("excerpt"):
+                                    excerpt = " ".join(str(ev.payload["excerpt"]).split())[:240]
+                            persona = author
+                            for prefix in ("Status:", "Status："):
+                                if excerpt.startswith(prefix):
+                                    excerpt = excerpt[len(prefix):].strip()
+                                    break
+                            msg = (
+                                f"*새 코멘트* `{sub['task_id']}`\n"
+                                f"• board: `{board_slug}`\n"
+                                f"• 작성: `{author}`\n"
+                                f"• 작업: {title}\n"
+                                f"\n{excerpt or '(내용 없음)'}"
                             )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                                reason = str(ev.payload["reason"])[:200]
+                            msg = (
+                                f"*작업 차단* `{sub['task_id']}`\n"
+                                f"• board: `{board_slug}`\n"
+                                f"• 담당: `{who or 'unknown'}`\n"
+                                f"• 작업: {title}"
+                            )
+                            if reason:
+                                msg += f"\n• 이유: {reason}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
+                                err = str(ev.payload["error"])[:240]
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
+                                f"*작업 중단* `{sub['task_id']}`\n"
+                                f"• board: `{board_slug}`\n"
+                                f"• 담당: `{who or 'unknown'}`\n"
+                                f"• 작업: {title}\n"
+                                "• 상태: 반복 실패로 자동 재시도 한도에 도달했습니다."
                             )
+                            if err:
+                                msg += f"\n• 오류: {err}"
                         elif kind == "crashed":
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
+                                f"*작업 오류* `{sub['task_id']}`\n"
+                                f"• board: `{board_slug}`\n"
+                                f"• 담당: `{who or 'unknown'}`\n"
+                                f"• 작업: {title}\n"
+                                "• 상태: worker process가 종료되어 dispatcher가 재시도합니다."
                             )
                         elif kind == "timed_out":
-                            limit = 0
+                            limit = "unknown"
                             if ev.payload and ev.payload.get("limit_seconds"):
-                                limit = int(ev.payload["limit_seconds"])
+                                try:
+                                    limit = f"{int(ev.payload['limit_seconds'])}s"
+                                except Exception:
+                                    limit = str(ev.payload["limit_seconds"])[:40]
                             msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
+                                f"*작업 시간 초과* `{sub['task_id']}`\n"
+                                f"• board: `{board_slug}`\n"
+                                f"• 담당: `{who or 'unknown'}`\n"
+                                f"• 작업: {title}\n"
+                                f"• 제한: {limit}\n"
+                                "• 상태: dispatcher가 재시도합니다."
                             )
                         else:
                             continue
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
+                        if persona:
+                            metadata["slack_persona"] = persona
                         sub_key = (
-                            sub["task_id"], sub["platform"],
+                            board_slug, sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
+                            send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            if getattr(send_result, "success", True) is False:
+                                raise RuntimeError(
+                                    getattr(send_result, "error", "send returned success=False")
+                                )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -4772,6 +5519,7 @@ class GatewayRunner:
                                     )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
+                            delivered_cursor = max(delivered_cursor, int(ev.id))
                         except Exception as exc:
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails
@@ -4790,16 +5538,25 @@ class GatewayRunner:
                                 await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
                                 sub_fail_counts.pop(sub_key, None)
                             else:
-                                await asyncio.to_thread(
-                                    self._kanban_rewind,
-                                    sub,
-                                    d["cursor"],
-                                    d.get("old_cursor", 0),
-                                    board_slug,
-                                )
-                            # Rewind the pre-send claim on transient failure so
-                            # a later tick can retry. After too many failures,
-                            # dropping the subscription is the terminal action.
+                                if delivered_cursor > int(d.get("old_cursor", 0) or 0):
+                                    await asyncio.to_thread(
+                                        self._kanban_advance,
+                                        sub,
+                                        delivered_cursor,
+                                        board_slug,
+                                    )
+                                else:
+                                    await asyncio.to_thread(
+                                        self._kanban_rewind,
+                                        sub,
+                                        d["cursor"],
+                                        d.get("old_cursor", 0),
+                                        board_slug,
+                                    )
+                            # On transient failure, preserve already delivered
+                            # events and retry from the first failed event.
+                            # After too many failures, dropping the
+                            # subscription is the terminal action.
                             break
                     else:
                         # All events delivered; advance cursor. The cursor

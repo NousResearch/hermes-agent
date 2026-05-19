@@ -13,6 +13,7 @@ import re
 import ssl
 import time
 from email.utils import formatdate
+from pathlib import Path
 from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
@@ -70,6 +71,150 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+_SLACK_AGENT_STANDARD_DOC = "docs/slack-agent-operating-standard.md"
+_SLACK_INTRO_CHANNEL = "ai-announcements"
+_SLACK_INTRO_MARKER = "Hermes agent operating standard"
+_SLACK_ORG_CHANNEL_SPECS = [
+    {
+        "name": "ai-announcements",
+        "owner": "announcement",
+        "flow": ["release-editor", "comms-reviewer", "announcement"],
+        "topic": "Agent introduction, owner-visible decisions, and operating standards.",
+        "purpose": "Agent introduction channel, operating standard source, release notes, decision summaries, and broadcast-ready updates.",
+    },
+    {
+        "name": "ai-policy",
+        "owner": "policy",
+        "flow": ["policy-guardian", "process-auditor", "policy"],
+        "topic": "Policy, approval gates, and durable operating rules.",
+        "purpose": "Operating policy, approval gates, governance, risk boundaries, and standards.",
+    },
+    {
+        "name": "ai-planning",
+        "owner": "planning",
+        "flow": ["product-manager", "project-manager", "qa-reviewer", "planning"],
+        "topic": "Planning, specs, roadmap, and cross-team orchestration.",
+        "purpose": "Roadmap, specs, prioritization, cross-team coordination, and owner decision framing.",
+    },
+    {
+        "name": "ai-frontend",
+        "owner": "frontend",
+        "flow": ["frontend-engineer", "accessibility-reviewer", "frontend"],
+        "topic": "Frontend, UI, accessibility, and browser-facing work.",
+        "purpose": "Frontend implementation, UX flows, accessibility, browser-facing performance, and UI verification.",
+    },
+    {
+        "name": "ai-backend",
+        "owner": "backend",
+        "flow": ["api-architect", "backend-engineer", "devops-engineer", "backend"],
+        "topic": "Backend services, APIs, integrations, and runtime operations.",
+        "purpose": "APIs, services, jobs, persistence, integrations, reliability, and runtime operations.",
+    },
+    {
+        "name": "ai-security",
+        "owner": "security",
+        "flow": ["threat-modeler", "security-reviewer", "security"],
+        "topic": "Security, permissions, secrets policy, and release risk.",
+        "purpose": "Security review, secrets policy, auth, permissions, abuse cases, and release risk.",
+    },
+    {
+        "name": "ai-data",
+        "owner": "data",
+        "flow": ["data-engineer", "data-quality", "data"],
+        "topic": "Data sources, pipelines, memory, analytics, and graph quality.",
+        "purpose": "Data sources, collection quality, analytics, memory, entities, and knowledge graph.",
+    },
+    {
+        "name": "ai-design",
+        "owner": "design",
+        "flow": ["product-designer", "ux-researcher", "design"],
+        "topic": "Design, interaction quality, information architecture, and usability.",
+        "purpose": "Product design, visual system, interaction quality, information architecture, and usability.",
+    },
+    {
+        "name": "ai-marketing",
+        "owner": "marketing",
+        "flow": ["growth-strategist", "copywriter", "marketing"],
+        "topic": "Marketing, positioning, launches, growth, and external narrative.",
+        "purpose": "Positioning, messaging, launch narratives, growth experiments, and external communication.",
+    },
+]
+
+
+def _discover_hermes_profile_names(profiles_root: str | os.PathLike | None = None) -> list[str]:
+    """Return live Hermes profile names so channel intros track new agents."""
+    if profiles_root is not None:
+        root = Path(profiles_root)
+    else:
+        try:
+            from hermes_constants import get_default_hermes_root
+            root = Path(get_default_hermes_root()) / "profiles"
+        except Exception:
+            root = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes") / "profiles"
+    try:
+        names = [
+            p.name
+            for p in root.iterdir()
+            if p.is_dir() and not p.name.startswith(".")
+        ]
+    except Exception:
+        return []
+    return sorted(set(names))
+
+
+def _slack_org_channel_specs(profile_names: list[str] | None = None) -> list[dict]:
+    """Return channel specs with a stable standard-doc pointer.
+
+    `profile_names` is accepted so callers can generate an updated intro
+    whenever a profile directory is added, without changing the channel list.
+    """
+    specs = []
+    known_agents = set(profile_names or [])
+    for raw in _SLACK_ORG_CHANNEL_SPECS:
+        spec = dict(raw)
+        spec["flow"] = list(raw.get("flow") or [])
+        spec["standard_doc"] = _SLACK_AGENT_STANDARD_DOC
+        spec["known_live_agents"] = sorted(known_agents.intersection(spec["flow"]))
+        specs.append(spec)
+    return specs
+
+
+def _build_slack_org_intro_message(spec: dict, profile_names: list[str] | None = None) -> str:
+    """Build the Korean operating-standard intro for an org Slack channel."""
+    flow = [str(x).strip() for x in spec.get("flow", []) if str(x).strip()]
+    owner = str(spec.get("owner") or "").strip()
+    profiles = sorted(set(profile_names or []))
+    assigned = set()
+    for channel in _slack_org_channel_specs(profile_names=profiles):
+        assigned.update(channel.get("flow") or [])
+    unassigned = [name for name in profiles if name not in assigned]
+    roster = ", ".join(flow) if flow else owner or "unassigned"
+    lines = [
+        f"*#{spec['name']} 운영 기준*",
+        f"• owner: `{owner or 'unknown'}`",
+        f"• flow: `{roster}`",
+        f"• standard: `{spec.get('standard_doc') or _SLACK_AGENT_STANDARD_DOC}`",
+        "",
+        "운영 기준:",
+        "• 이 채널은 agent introduction과 운영 기준의 기준점입니다.",
+        "• Slack thread는 보고서 덤프가 아니라 agent 간 협업 기록으로 남깁니다.",
+        "• 각 답변은 thread summary, open questions, next action을 짧게 남깁니다.",
+        "• handoff는 `@next-agent 다음 액션: ...` 형식을 사용합니다.",
+        "",
+        f"Agent roster: {', '.join(profiles) if profiles else '(profile scan unavailable)'}",
+        f"marker: `{_SLACK_INTRO_MARKER}`",
+    ]
+    if unassigned:
+        lines.append(f"New/unassigned profiles: {', '.join(unassigned)}")
+    return "\n".join(lines)
+
+
+_SLACK_ORG_CHANNELS = [
+    (spec["name"], spec["topic"], spec["purpose"])
+    for spec in _slack_org_channel_specs()
+]
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -130,8 +275,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "ensure_slack_org_channels"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts. 'ensure_slack_org_channels' creates/updates the AI organization Slack channels when apply=true."
             },
             "target": {
                 "type": "string",
@@ -140,6 +285,19 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+            },
+            "apply": {
+                "type": "boolean",
+                "description": "For action='ensure_slack_org_channels', create/update channels when true; otherwise dry-run only."
+            },
+            "post_intro": {
+                "type": "boolean",
+                "description": "For action='ensure_slack_org_channels', post a short intro message to each channel after create/update."
+            },
+            "invite_users": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "For action='ensure_slack_org_channels', Slack user IDs to invite to every org channel."
             }
         },
         "required": []
@@ -154,6 +312,9 @@ def send_message_tool(args, **kw):
     if action == "list":
         return _handle_list()
 
+    if action == "ensure_slack_org_channels":
+        return _handle_slack_org_channels(args)
+
     return _handle_send(args)
 
 
@@ -164,6 +325,186 @@ def _handle_list():
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
+
+
+async def _slack_api(token: str, method: str, payload: dict | None = None) -> dict:
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    url = f"https://slack.com/api/{method}"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=payload or {}) as resp:
+            data = await resp.json()
+    if not data.get("ok"):
+        return _error(f"{method} failed: {data.get('error', 'unknown_error')}")
+    return data
+
+
+async def _list_slack_public_channels(token: str) -> list[dict]:
+    out: list[dict] = []
+    cursor = ""
+    while True:
+        payload = {
+            "types": "public_channel",
+            "exclude_archived": True,
+            "limit": 200,
+        }
+        if cursor:
+            payload["cursor"] = cursor
+        data = await _slack_api(token, "conversations.list", payload)
+        if data.get("error"):
+            raise RuntimeError(data["error"])
+        out.extend(data.get("channels", []))
+        cursor = data.get("response_metadata", {}).get("next_cursor") or ""
+        if not cursor:
+            return out
+
+
+async def _find_slack_org_intro_ts(token: str, channel_id: str, channel_name: str) -> str:
+    data = await _slack_api(
+        token,
+        "conversations.history",
+        {"channel": channel_id, "limit": 50},
+    )
+    if data.get("error"):
+        return ""
+    channel_header = f"*#{channel_name} 운영 기준*"
+    for message in data.get("messages", []):
+        text = str(message.get("text") or "")
+        if _SLACK_INTRO_MARKER in text or (
+            channel_header in text and _SLACK_AGENT_STANDARD_DOC in text
+        ):
+            return str(message.get("ts") or "")
+    return ""
+
+
+async def _post_or_update_slack_org_intro(
+    token: str,
+    *,
+    channel_id: str,
+    spec: dict,
+    profile_names: list[str],
+) -> dict:
+    text = _build_slack_org_intro_message(spec, profile_names=profile_names)
+    existing_ts = await _find_slack_org_intro_ts(token, channel_id, spec["name"])
+    if existing_ts:
+        result = await _slack_api(
+            token,
+            "chat.update",
+            {"channel": channel_id, "ts": existing_ts, "text": text},
+        )
+        if not result.get("error"):
+            result["updated_existing_intro"] = True
+        return result
+    result = await _slack_api(
+        token,
+        "chat.postMessage",
+        {"channel": channel_id, "text": text},
+    )
+    if not result.get("error"):
+        result["posted_new_intro"] = True
+    return result
+
+
+async def _ensure_slack_org_channels_async(token: str, apply: bool, post_intro: bool, invite_users: list[str] | None = None) -> dict:
+    auth = await _slack_api(token, "auth.test")
+    if auth.get("error"):
+        return auth
+    existing = await _list_slack_public_channels(token)
+    existing_by_name = {c.get("name"): c for c in existing}
+    results = []
+    profile_names = _discover_hermes_profile_names()
+    for spec in _slack_org_channel_specs(profile_names=profile_names):
+        name = spec["name"]
+        topic = spec["topic"]
+        purpose = spec["purpose"]
+        row = {
+            "name": name,
+            "id": existing_by_name.get(name, {}).get("id"),
+            "existed": name in existing_by_name,
+            "created": False,
+            "joined": False,
+            "topic_set": False,
+            "purpose_set": False,
+            "intro_posted": False,
+            "errors": [],
+        }
+        if apply:
+            if not row["id"]:
+                created = await _slack_api(token, "conversations.create", {"name": name, "is_private": False})
+                if created.get("error"):
+                    row["errors"].append(created["error"])
+                    results.append(row)
+                    continue
+                row["id"] = created.get("channel", {}).get("id")
+                row["created"] = True
+            joined = await _slack_api(token, "conversations.join", {"channel": row["id"]})
+            if joined.get("error") and "already_in_channel" not in joined["error"]:
+                row["errors"].append(joined["error"])
+            else:
+                row["joined"] = True
+            topic_result = await _slack_api(token, "conversations.setTopic", {"channel": row["id"], "topic": topic})
+            row["topic_set"] = not bool(topic_result.get("error"))
+            if topic_result.get("error"):
+                row["errors"].append(topic_result["error"])
+            purpose_result = await _slack_api(token, "conversations.setPurpose", {"channel": row["id"], "purpose": purpose})
+            row["purpose_set"] = not bool(purpose_result.get("error"))
+            if purpose_result.get("error"):
+                row["errors"].append(purpose_result["error"])
+            if post_intro:
+                intro = await _post_or_update_slack_org_intro(
+                    token,
+                    channel_id=row["id"],
+                    spec=spec,
+                    profile_names=profile_names,
+                )
+                row["intro_posted"] = not bool(intro.get("error"))
+                row["intro_updated"] = bool(intro.get("updated_existing_intro"))
+                if intro.get("error"):
+                    row["errors"].append(intro["error"])
+            if invite_users:
+                invite = await _slack_api(
+                    token,
+                    "conversations.invite",
+                    {"channel": row["id"], "users": ",".join(invite_users)},
+                )
+                if invite.get("error") and invite["error"] not in {"already_in_channel", "cant_invite_self"}:
+                    row["errors"].append(invite["error"])
+                else:
+                    row["invited_users"] = invite_users
+        results.append(row)
+    return {"success": True, "apply": apply, "channels": results}
+
+
+def _handle_slack_org_channels(args):
+    """Create/update the AI organization Slack channels using configured Slack credentials."""
+    try:
+        from gateway.config import Platform, load_gateway_config
+        config = load_gateway_config()
+    except Exception as e:
+        return json.dumps(_error(f"Failed to load gateway config: {e}"))
+    pconfig = config.platforms.get(Platform.SLACK)
+    token = getattr(pconfig, "token", None) if pconfig else None
+    if not token:
+        return json.dumps(_error("Slack platform token is not available in this Hermes tool runtime."))
+    try:
+        from model_tools import _run_async
+        invite_users = args.get("invite_users") or []
+        if isinstance(invite_users, str):
+            invite_users = [u.strip() for u in invite_users.split(",") if u.strip()]
+        result = _run_async(
+            _ensure_slack_org_channels_async(
+                token,
+                apply=bool(args.get("apply", False)),
+                post_intro=bool(args.get("post_intro", False)),
+                invite_users=invite_users,
+            )
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps(_error(f"Slack org channel admin failed: {e}"))
 
 
 def _handle_send(args):

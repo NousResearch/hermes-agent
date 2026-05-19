@@ -22,9 +22,13 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
+    _build_slack_org_intro_message,
+    _discover_hermes_profile_names,
     _derive_forum_thread_name,
     _is_telegram_thread_not_found,
     _parse_target_ref,
+    _post_or_update_slack_org_intro,
+    _slack_org_channel_specs,
     _send_discord,
     _send_matrix_via_adapter,
     _send_signal,
@@ -82,6 +86,71 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_slack_org_intro_channel_includes_live_agent_roster(self, tmp_path):
+        profiles_root = tmp_path / "profiles"
+        for name in ("frontend-engineer", "accessibility-reviewer", "new-specialist"):
+            (profiles_root / name).mkdir(parents=True)
+
+        profiles = _discover_hermes_profile_names(profiles_root)
+        specs = _slack_org_channel_specs(profile_names=profiles)
+        intro = next(spec for spec in specs if spec["name"] == "ai-announcements")
+        message = _build_slack_org_intro_message(intro, profile_names=profiles)
+
+        assert "운영 기준" in message
+        assert "Agent roster" in message
+        assert "frontend-engineer" in message
+        assert "accessibility-reviewer" in message
+        assert "new-specialist" in message
+        assert "보고서 덤프" in message
+
+    def test_discover_hermes_profile_names_honors_hermes_home(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "custom-hermes"
+        for name in ("policy-guardian", "process-auditor"):
+            (hermes_home / "profiles" / name).mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert _discover_hermes_profile_names() == ["policy-guardian", "process-auditor"]
+
+    def test_slack_org_channel_specs_keep_intro_channel_as_standard_source(self):
+        intro = next(spec for spec in _slack_org_channel_specs() if spec["name"] == "ai-announcements")
+
+        assert intro["owner"] == "announcement"
+        assert "agent introduction" in intro["purpose"].lower()
+        assert intro["standard_doc"] == "docs/slack-agent-operating-standard.md"
+
+    def test_slack_org_intro_updates_existing_message(self, monkeypatch):
+        calls = []
+
+        async def fake_slack_api(token, method, payload=None):
+            calls.append((method, payload or {}))
+            if method == "conversations.history":
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "171.123",
+                            "text": "*#ai-announcements 운영 기준*\nstandard: `docs/slack-agent-operating-standard.md`",
+                        }
+                    ],
+                }
+            return {"ok": True}
+
+        monkeypatch.setattr("tools.send_message_tool._slack_api", fake_slack_api)
+        spec = next(spec for spec in _slack_org_channel_specs() if spec["name"] == "ai-announcements")
+
+        result = asyncio.run(
+            _post_or_update_slack_org_intro(
+                "xoxb-test",
+                channel_id="C_ANN",
+                spec=spec,
+                profile_names=["announcement"],
+            )
+        )
+
+        assert result["updated_existing_intro"] is True
+        assert [method for method, _payload in calls] == ["conversations.history", "chat.update"]
+        assert calls[-1][1]["ts"] == "171.123"
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

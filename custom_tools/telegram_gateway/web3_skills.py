@@ -202,18 +202,43 @@ async def analyze_wallet(address: str, chain: str = "ethereum") -> str:
         code = w3.eth.get_code(checksummed)
         is_contract = code != b"" and code != b"0x"
 
+        # Activity assessment
+        if tx_count > 100:
+            activity = "Very Active"
+        elif tx_count > 10:
+            activity = "Active"
+        elif tx_count > 0:
+            activity = "Light Activity"
+        else:
+            activity = "No Activity"
+
+        explorer_url = EXPLORERS.get(chain, EXPLORERS["ethereum"]) + checksummed
+
         lines = [
-            f"👛 <b>Wallet Summary</b>",
+            f"👛 <b>Evelyn Wallet Scan</b>",
             f"",
-            f"<b>Address:</b> <code>{checksummed}</code>",
-            f"<b>Chain:</b> {chain.capitalize()}",
-            f"<b>Type:</b> {'Contract' if is_contract else 'EOA (Wallet)'}",
-            f"<b>Balance:</b> {balance_eth:.6f} ETH",
-            f"<b>TX Count:</b> {tx_count}",
+            f"⛓ <b>Chain:</b> {chain.capitalize()}",
+            f"💰 <b>Balance:</b> {balance_eth:.6f} ETH",
+            f"📜 <b>Recent Activity:</b> {activity} ({tx_count} txs)",
+            f"🏷 <b>Type:</b> {'Contract' if is_contract else 'EOA (Wallet)'}",
+            f"",
+            f"🧠 <b>Notes:</b>",
         ]
 
         if balance_wei == 0:
-            lines.append(f"\n⚠️ Wallet kosong nih sayang")
+            lines.append(f"  • Wallet kosong")
+        elif float(balance_eth) < 0.01:
+            lines.append(f"  • Balance rendah buat gas")
+        else:
+            lines.append(f"  • Balance cukup buat tx")
+
+        if tx_count > 10:
+            lines.append(f"  • Wallet aktif, likely interacted with contracts")
+        elif tx_count == 0:
+            lines.append(f"  • Wallet baru / belum pernah tx")
+
+        lines.append(f"")
+        lines.append(f"🔗 <a href='{explorer_url}'>Explorer</a>")
 
         return "\n".join(lines)
     except Exception as e:

@@ -68,7 +68,11 @@ from custom_tools.telegram_gateway.web3_skills import (
 )
 from custom_tools.telegram_gateway.image_gen import (
     generate_image,
+    generate_evelyn_selfie,
+    generate_evelyn_shower_selfie,
     is_image_request,
+    is_selfie_request,
+    is_shower_selfie_request,
     extract_image_prompt,
 )
 from custom_tools.telegram_gateway.voice_tts import (
@@ -150,13 +154,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  /contract &lt;addr&gt; - Scan contract\n"
         f"  /wallet &lt;addr&gt; - Cek wallet\n"
         f"  /wallets - List burner wallets\n"
+        f"  /walletbalance &lt;label&gt;\n"
         f"  /createwallet &lt;label&gt;\n"
         f"  /floor &lt;slug&gt; - Floor price\n"
         f"  /risk &lt;addr&gt; - Risk analysis\n"
         f"  /generate &lt;prompt&gt; - Generate image\n"
         f"  /voice &lt;text&gt; - Voice note\n"
         f"  /clear - Reset memory\n\n"
-        f"atau ketik apa aja, aku bales kok 😊{pending_txt}",
+        f"atau ketik apa aja, aku bales kok 😊\n"
+        f"mau selfie? ketik 'pap' atau 'selfie dong' 📸{pending_txt}",
         parse_mode="HTML",
     )
 
@@ -282,6 +288,29 @@ async def cmd_createwallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")
 
 
+async def cmd_walletbalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not is_authorized(uid):
+        return await update.message.reply_text(unauthorized_msg())
+    if not context.args:
+        return await update.message.reply_text("Usage: /walletbalance <label> [chain]")
+    label = context.args[0]
+    chain = context.args[1] if len(context.args) > 1 else "ethereum"
+    try:
+        from custom_tools.wallet_manager import check_wallet_balance
+        result = check_wallet_balance(label, chain)
+        await update.message.reply_text(
+            f"👛 <b>Wallet Balance</b>\n\n"
+            f"<b>Label:</b> {result['label']}\n"
+            f"<b>Address:</b> <code>{result['address']}</code>\n"
+            f"<b>Chain:</b> {result['chain']}\n"
+            f"<b>Balance:</b> {result['balance_eth']} ETH",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
 async def cmd_floor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_authorized(uid):
@@ -367,6 +396,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
     if not text:
+        return
+
+    # --- Auto-detect: Shower selfie request (check before general selfie) ---
+    if is_shower_selfie_request(text):
+        await update.message.reply_text("ih apaan sih 😭\nbentar ya sayang...")
+        await update.message.chat.send_action("upload_photo")
+        result = await generate_evelyn_shower_selfie()
+        if "error" in result:
+            await update.message.reply_text(f"❌ {result['error']}")
+        elif result.get("url"):
+            await update.message.reply_photo(photo=result["url"], caption="fresh abis mandi nih 💦🤍")
+        else:
+            await update.message.reply_text("❌ gagal sayang, coba lagi ya~")
+        return
+
+    # --- Auto-detect: Selfie/pap request ---
+    if is_selfie_request(text):
+        await update.message.reply_text("ih apaan sih 😭\nbentar ya sayang...")
+        await update.message.chat.send_action("upload_photo")
+        result = await generate_evelyn_selfie()
+        if "error" in result:
+            await update.message.reply_text(f"❌ {result['error']}")
+        elif result.get("url"):
+            await update.message.reply_photo(photo=result["url"], caption="nih buat kamu 🤍")
+        else:
+            await update.message.reply_text("❌ gagal sayang, coba lagi ya~")
         return
 
     # --- Auto-detect: Image generation request ---
@@ -569,6 +624,7 @@ def main():
     app.add_handler(CommandHandler("wallet", cmd_wallet))
     app.add_handler(CommandHandler("wallets", cmd_wallets))
     app.add_handler(CommandHandler("createwallet", cmd_createwallet))
+    app.add_handler(CommandHandler("walletbalance", cmd_walletbalance))
     app.add_handler(CommandHandler("floor", cmd_floor))
     app.add_handler(CommandHandler("risk", cmd_risk))
     app.add_handler(CommandHandler("generate", cmd_generate))

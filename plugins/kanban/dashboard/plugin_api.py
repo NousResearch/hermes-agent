@@ -913,7 +913,17 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
-                    elif s in {"todo", "running", "triage"}:
+                    elif s == "running":
+                        entry.update(
+                            ok=False,
+                            error=(
+                                "Cannot set status to 'running' directly; "
+                                "use the dispatcher/claim path"
+                            ),
+                        )
+                        results.append(entry)
+                        continue
+                    elif s in {"todo", "triage"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:
                         entry.update(ok=False, error=f"unknown status {s!r}")

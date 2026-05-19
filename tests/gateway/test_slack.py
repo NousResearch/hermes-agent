@@ -72,15 +72,29 @@ _slack_mod.SLACK_AVAILABLE = True
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 
-def _fake_create_task(coro):
-    """Test helper: consume coroutine and return a lightweight task mock."""
-    if asyncio.iscoroutine(coro):
-        coro.close()
+async def _pending_for_fake_task():
+    # Stay pending so done-callbacks attached by the adapter (which would
+    # otherwise schedule a reconnect) don't fire during the test. The pytest
+    # event loop will cancel us at teardown, which the adapter's
+    # ``_on_socket_mode_task_done`` already treats as intentional shutdown.
+    await asyncio.Event().wait()
 
-    task = MagicMock(name="socket-mode-task")
-    task.done.return_value = False
-    task.cancelled.return_value = False
-    return task
+
+def _fake_create_task(coro):
+    """Test helper: consume the real coroutine and return a real awaitable Task.
+
+    Returning an actual ``asyncio.Task`` (built via ``loop.create_task`` so the
+    ``asyncio.create_task`` patch doesn't recurse) keeps the substitute usable
+    by code that later cancels, awaits, or attaches ``add_done_callback`` —
+    so future tests that exercise ``disconnect()`` after patching
+    ``asyncio.create_task`` won't trip over a non-awaitable MagicMock.
+    """
+    assert asyncio.iscoroutine(coro), (
+        f"_fake_create_task expected a coroutine, got {type(coro).__name__}"
+    )
+    coro.close()
+    loop = asyncio.get_event_loop()
+    return loop.create_task(_pending_for_fake_task())
 
 
 # ---------------------------------------------------------------------------
@@ -205,11 +219,14 @@ class TestAppMentionHandler:
             }
         )
 
+        socket_mode_handler = MagicMock()
+        socket_mode_handler.start_async = AsyncMock(return_value=None)
+
         with (
             patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
             patch.object(
-                _slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()
+                _slack_mod, "AsyncSocketModeHandler", return_value=socket_mode_handler
             ),
             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}),
             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
@@ -307,6 +324,10 @@ class TestSlackConnectCleanup:
         )
 
         second_handler = MagicMock()
+        # _start_socket_mode_handler awaits the result of start_async via
+        # asyncio.create_task — so the stub must return a real coroutine, not a
+        # bare MagicMock.
+        second_handler.start_async = AsyncMock(return_value=None)
 
         with (
             patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
@@ -713,7 +734,7 @@ class TestSlackProxyBehavior:
                 self.proxy = proxy
                 self.client = MagicMock(proxy="constructor-default")
 
-            def start_async(self):
+            async def start_async(self):
                 return None
 
             async def close_async(self):
@@ -807,7 +828,7 @@ class TestSlackProxyBehavior:
                 self.proxy = proxy
                 self.client = MagicMock(proxy="constructor-default")
 
-            def start_async(self):
+            async def start_async(self):
                 return None
 
             async def close_async(self):

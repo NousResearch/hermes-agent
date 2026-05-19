@@ -1063,7 +1063,21 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         else:
             popen_kwargs["start_new_session"] = True
 
-        proc = subprocess.Popen(cmd, **popen_kwargs)
+        try:
+            proc = subprocess.Popen(cmd, **popen_kwargs)
+        except (OSError, ValueError) as exc:
+            # Record the failure in the action log so the dashboard's status
+            # endpoint surfaces something useful, then close the file handle
+            # before re-raising so we don't leak it.
+            try:
+                log_file.write(
+                    f"=== {name} spawn failed: {exc} ===\n".encode()
+                )
+            except Exception:  # pragma: no cover - defensive logging
+                pass
+            log_file.close()
+            raise
+
         _ACTION_PROCS[name] = proc
         return proc
 

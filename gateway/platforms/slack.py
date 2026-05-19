@@ -1020,6 +1020,13 @@ class SlackAdapter(BasePlatformAdapter):
                 await watchdog_task
             except asyncio.CancelledError:
                 pass
+            except Exception:  # pragma: no cover - defensive logging
+                # Watchdog may have lost the cancellation race and exited with
+                # an unrelated exception. Log and continue so handler cleanup
+                # and lock release still happen.
+                logger.debug(
+                    "[Slack] Watchdog task raised during disconnect", exc_info=True
+                )
 
         await self._stop_socket_mode_handler()
         self._app = None

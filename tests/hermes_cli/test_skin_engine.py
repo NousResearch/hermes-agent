@@ -100,6 +100,18 @@ class TestBuiltinSkins:
         assert skin.get_color("banner_text") == "#2C1810"
         assert skin.get_color("completion_menu_bg") == "#F5EFE0"
 
+    def test_charizard_skin_has_dark_ember_completion_menu(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("charizard")
+        assert skin.name == "charizard"
+        assert skin.get_color("banner_dim") == "#C58A45"
+        assert skin.get_color("completion_menu_bg") == "#0B0503"
+        assert skin.get_color("completion_menu_current_bg") == "#4A1B07"
+        assert skin.get_color("completion_menu_meta_bg") == "#120806"
+        assert skin.get_color("completion_menu_meta_current_bg") == "#5A260D"
+        assert skin.get_color("selection_bg") == "#5A260D"
+
     def test_unknown_skin_falls_back_to_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("nonexistent_skin_xyz")

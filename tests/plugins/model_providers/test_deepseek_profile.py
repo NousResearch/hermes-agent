@@ -182,3 +182,26 @@ class TestDeepSeekFullKwargsIntegration:
         )
         assert "reasoning_effort" not in kwargs
         assert "extra_body" not in kwargs or "thinking" not in kwargs.get("extra_body", {})
+
+
+class TestDeepSeekAuxModel:
+    """DeepSeek aux model is set on the profile so users stop seeing the
+    bogus 'No auxiliary LLM provider configured' warning (#26924).
+
+    Pinned at the profile layer rather than the legacy
+    `_API_KEY_PROVIDER_AUX_MODELS_FALLBACK` dict — new providers are
+    expected to set `default_aux_model` on `ProviderProfile`, and the
+    fallback dict only exists for providers that predate the profiles
+    system.
+    """
+
+    def test_profile_advertises_deepseek_chat(self, deepseek_profile):
+        assert deepseek_profile.default_aux_model == "deepseek-chat"
+
+    def test_consumer_api_returns_deepseek_chat(self):
+        from agent.auxiliary_client import _get_aux_model_for_provider
+        assert _get_aux_model_for_provider("deepseek") == "deepseek-chat"
+
+    def test_consumer_api_returns_non_empty(self):
+        from agent.auxiliary_client import _get_aux_model_for_provider
+        assert _get_aux_model_for_provider("deepseek") != ""

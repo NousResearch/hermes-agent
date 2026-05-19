@@ -2193,6 +2193,9 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/deny" not in pairs
     assert "/sethome" not in pairs
 
+    assert "/update" in pairs
+    assert canon["/update"] == "/update"
+
     assert "/topic" not in canon
     assert "/approve" not in canon
     assert "/deny" not in canon
@@ -3718,7 +3721,7 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     assert payload.get("status") == "complete"
     # Text stays empty — we did NOT fabricate an "Error:" string
     text = payload.get("text", "")
-    assert text in ("", None), f"expected empty text, got {text!r}"
+    assert text in {"", None}, f"expected empty text, got {text!r}"
 
 
 # ── session.most_recent ──────────────────────────────────────────────

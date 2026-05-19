@@ -107,6 +107,35 @@ platforms: [macos, linux]     # macOS and Linux
 
 When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted, the skill loads on all platforms.
 
+## Skill output and media delivery
+
+When a skill response (or any agent response) includes a bare absolute path to a media file — for example `/home/user/screenshots/diagram.png` — the gateway auto-detects it, strips it from the visible text, and delivers the file natively to the user's chat (Telegram photo, Discord attachment, etc.) instead of leaving the raw path in the message.
+
+For audio specifically, the `[[audio_as_voice]]` directive promotes audio files to native voice-message bubbles on platforms that support them (Telegram, WhatsApp).
+
+### Forcing document-style delivery: `[[as_document]]`
+
+Sometimes you want the **opposite** of inline preview: you want the file delivered as a downloadable attachment, not a re-compressed image bubble. The classic example is a high-resolution screenshot or chart — Telegram's `sendPhoto` recompresses it to ~200 KB at 1280 px, destroying readability. A 1-2 MB PNG sent via `sendDocument` keeps the original bytes intact.
+
+If a response (or any text inside it — typically the last line) contains the literal directive `[[as_document]]`, every media path extracted from that response is delivered as a document/file attachment rather than an image bubble:
+
+```
+Here is your rendered chart:
+
+/home/user/.hermes/cache/chart-q4-2025.png
+
+[[as_document]]
+```
+
+The directive is stripped before delivery, so users never see it. Granularity is intentionally all-or-nothing per response: emit `[[as_document]]` once and every image path in the same response is delivered as a document. This mirrors the scope of `[[audio_as_voice]]`.
+
+Use it from a skill when:
+
+- You produce screenshots or charts the user needs as files (for editing in another tool, archiving, sharing intact).
+- The default lossy preview would obscure detail (small text, pixel-accurate diagrams, color-sensitive renders).
+
+Platforms without a separate document path (e.g. SMS) fall back to whatever attachment mechanism they have.
+
 ### Conditional Activation (Fallback Skills)
 
 Skills can automatically show or hide themselves based on which tools are available in the current session. This is most useful for **fallback skills** — free or local alternatives that should only appear when a premium tool is unavailable.
@@ -229,6 +258,91 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 ```
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
+
+## Skill Bundles
+
+Skill bundles are tiny YAML files that group several skills under a single slash command. When you run `/<bundle-name>`, every skill listed in the bundle loads at once — useful when a particular task always benefits from the same set of skills together.
+
+### Quick example
+
+```bash
+# Create a bundle for backend feature work
+hermes bundles create backend-dev \
+  --skill github-code-review \
+  --skill test-driven-development \
+  --skill github-pr-workflow \
+  -d "Backend feature work — review, test, PR workflow"
+```
+
+Then in the CLI or any gateway platform:
+
+```
+/backend-dev refactor the auth middleware
+```
+
+The agent receives all three skills loaded into one user message, with any text after the slash command attached as a user instruction.
+
+### YAML schema
+
+Bundles live in **`~/.hermes/skill-bundles/<slug>.yaml`** and look like this:
+
+```yaml
+name: backend-dev
+description: Backend feature work — review, test, PR workflow.
+skills:
+  - github-code-review
+  - test-driven-development
+  - github-pr-workflow
+instruction: |
+  Always start by writing failing tests, then implement.
+  Open the PR through the standard workflow with co-author tags.
+```
+
+Fields:
+- `name` (optional — defaults to the filename stem) — the bundle's display name. Normalized to a hyphen slug for the slash command (`Backend Dev` → `/backend-dev`).
+- `description` (optional) — short text shown in `/bundles` and `hermes bundles list`.
+- `skills` (required, non-empty list) — skill names or paths relative to your skills directory. Use the same identifier you'd pass to `/<skill-name>`.
+- `instruction` (optional) — extra guidance prepended to the loaded skill content. Useful for codifying "how we always use these together."
+
+### Managing bundles
+
+```bash
+# List all installed bundles
+hermes bundles list
+
+# Inspect one bundle
+hermes bundles show backend-dev
+
+# Create a bundle interactively (omit --skill flags to enter them one per line)
+hermes bundles create research
+
+# Overwrite an existing bundle
+hermes bundles create backend-dev --skill ... --force
+
+# Delete a bundle
+hermes bundles delete backend-dev
+
+# Re-scan ~/.hermes/skill-bundles/ and report changes
+hermes bundles reload
+```
+
+From inside a chat session, `/bundles` lists every installed bundle and its skills.
+
+### Behavior
+
+- **Bundles take precedence over individual skills** when slugs collide. If you name a bundle `research` and you also have a skill called `research`, `/research` invokes the bundle. This is intentional — you opted into the bundle by naming it.
+- **Missing skills are skipped, not fatal.** If a bundle lists `skill-foo` and you haven't installed it, the bundle still loads the skills that do resolve, and the agent gets a note listing what was skipped.
+- **Bundles work in every surface** — interactive CLI, TUI, dashboard chat, and every gateway platform (Telegram, Discord, Slack, …) — because dispatch is centralized in the same place as individual skill commands.
+- **Bundles do not invalidate the prompt cache.** They generate a fresh user message at invocation time, the same way `/<skill-name>` does — no system prompt mutation.
+
+### When bundles beat installing each skill manually
+
+Use a bundle when:
+- You always pair the same skills for a recurring task (`/backend-dev`, `/release-prep`, `/incident-response`).
+- You want a one-character-shorter mental model than typing several `/skill` invocations in a row.
+- You want to ship a team-wide "task profile" by checking the bundle YAML into a shared dotfiles repo and symlinking it into `~/.hermes/skill-bundles/`.
+
+A bundle is just a YAML alias — it doesn't install skills for you. The skills themselves must already be present (in `~/.hermes/skills/` or an external skill directory). Otherwise the bundle invocation just skips the missing ones.
 
 ## Agent-Managed Skills (skill_manage tool)
 

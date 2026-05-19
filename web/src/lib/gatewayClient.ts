@@ -13,6 +13,8 @@
  *   await gw.request("prompt.submit", { session_id, text: "hi" })
  */
 
+import { HERMES_BASE_PATH } from "@/lib/api";
+
 export type GatewayEventName =
   | "gateway.ready"
   | "session.info"
@@ -117,7 +119,7 @@ export class GatewayClient {
 
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(
-      `${scheme}//${location.host}/api/ws?token=${encodeURIComponent(resolved)}`,
+      `${scheme}//${location.host}${HERMES_BASE_PATH}/api/ws?token=${encodeURIComponent(resolved)}`,
     );
     this.ws = ws;
 

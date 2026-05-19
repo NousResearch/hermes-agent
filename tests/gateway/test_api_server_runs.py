@@ -336,6 +336,28 @@ class TestRunEvents:
                 }
 
     @pytest.mark.asyncio
+    async def test_approval_string_false_does_not_resolve_all(self, adapter):
+        """Quoted false must not fan out approval resolution across the queue."""
+        app = _create_runs_app(adapter)
+        run_id = "run_bool_parse"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        adapter._run_approval_sessions[run_id] = "session-123"
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                approval_resp = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once", "all": "false"},
+                )
+
+        assert approval_resp.status == 200
+        mock_resolve.assert_called_once_with(
+            "session-123",
+            "once",
+            resolve_all=False,
+        )
+
+    @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

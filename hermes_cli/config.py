@@ -477,6 +477,11 @@ def _ensure_hermes_home_managed(home: Path):
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    "acp": {
+        # ACP clients can provide MCP server definitions per session. Stdio
+        # transports execute local commands, so only operator config can opt in.
+        "allow_client_stdio_mcp_servers": False,
+    },
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],

@@ -43,7 +43,6 @@ AUTHOR_MAP = {
     "teknium1@gmail.com": "teknium1",
     "geoffplymale@gmail.com": "badMade",
     "0x.badfriend@gmail.com": "discodirector",
-    "geoffplymale@gmail.com": "badMade",
     "altriatree@gmail.com": "TruaShamu",
     "m@mobrienv.dev": "mikeyobrien",
     "qiyin.zuo@pcitc.com": "qiyin-code",

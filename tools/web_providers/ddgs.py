@@ -138,4 +138,3 @@ class DDGSSearchProvider(WebSearchProvider):
             "DDGS search '%s': %d results (limit %d)", query, len(web_results), limit
         )
         return {"success": True, "data": {"web": web_results}}
-

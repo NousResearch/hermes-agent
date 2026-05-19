@@ -818,6 +818,68 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_run_stdio_terminates_tracked_process_on_exit(self):
+        """Tracked stdio children are torn down immediately on exit."""
+        from tools.mcp_tool import MCPServerTask, _orphan_stdio_pids, _stdio_pids
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock(return_value={})
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+        server = MCPServerTask("test_srv")
+
+        _stdio_pids.clear()
+        _orphan_stdio_pids.clear()
+        terminated_pids = []
+
+        async def _test():
+            with patch("tools.osv_check.check_package_for_malware", return_value=None), \
+                 patch("tools.mcp_tool._snapshot_child_pids", side_effect=[set(), {4321}]), \
+                 patch("tools.mcp_tool._terminate_stdio_subprocess", side_effect=lambda pid: terminated_pids.append(pid) or True), \
+                 patch("tools.mcp_tool._write_stderr_log_header"), \
+                 patch("tools.mcp_tool._get_mcp_stderr_log", return_value=MagicMock()), \
+                 patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()), \
+                 patch.object(MCPServerTask, "_wait_for_lifecycle_event", new=AsyncMock(return_value="shutdown")), \
+                 p_stdio, p_cs:
+                await server._run_stdio({"command": "npx", "args": ["-y", "fake"]})
+
+        asyncio.run(_test())
+
+        assert terminated_pids == [4321]
+        assert _stdio_pids == {}
+        assert _orphan_stdio_pids == set()
+        _stdio_pids.clear()
+        _orphan_stdio_pids.clear()
+
+    def test_run_stdio_marks_process_orphan_if_teardown_fails(self):
+        """Surviving stdio children stay tracked for the later orphan sweep."""
+        from tools.mcp_tool import MCPServerTask, _orphan_stdio_pids, _stdio_pids
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock(return_value={})
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+        server = MCPServerTask("test_srv")
+
+        _stdio_pids.clear()
+        _orphan_stdio_pids.clear()
+
+        async def _test():
+            with patch("tools.osv_check.check_package_for_malware", return_value=None), \
+                 patch("tools.mcp_tool._snapshot_child_pids", side_effect=[set(), {4321}]), \
+                 patch("tools.mcp_tool._terminate_stdio_subprocess", return_value=False), \
+                 patch("tools.mcp_tool._write_stderr_log_header"), \
+                 patch("tools.mcp_tool._get_mcp_stderr_log", return_value=MagicMock()), \
+                 patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()), \
+                 patch.object(MCPServerTask, "_wait_for_lifecycle_event", new=AsyncMock(return_value="shutdown")), \
+                 p_stdio, p_cs:
+                await server._run_stdio({"command": "npx", "args": ["-y", "fake"]})
+
+        asyncio.run(_test())
+
+        assert _stdio_pids == {}
+        assert _orphan_stdio_pids == {4321}
+        _stdio_pids.clear()
+        _orphan_stdio_pids.clear()
+
     def test_refresh_tools_deregisters_removed_tools(self):
         """Dynamic refresh removes stale registry entries for deleted tools."""
         from tools.registry import ToolRegistry

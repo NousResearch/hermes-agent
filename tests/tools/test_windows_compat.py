@@ -13,6 +13,7 @@ GUARDED_FILES = [
     "tools/environments/local.py",
     "tools/process_registry.py",
     "tools/code_execution_tool.py",
+    "tools/mcp_tool.py",
     "gateway/platforms/whatsapp.py",
 ]
 

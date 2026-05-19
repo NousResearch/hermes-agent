@@ -3979,20 +3979,6 @@ class MessageSender:
 
     # -- Direct send (text + media, used by send_message tool) -------------
 
-    def _validate_direct_access(self, chat_id: str) -> Optional[str]:
-        """Return an error when an outbound direct target violates access policy."""
-        policy = self._adapter._access_policy
-        if chat_id.startswith("group:"):
-            group_code = chat_id[len("group:"):].strip()
-            if not policy.is_group_allowed(group_code):
-                return "Yuanbao group access denied for this group"
-            return None
-
-        user_id = chat_id.removeprefix("direct:").strip()
-        if not policy.is_dm_allowed(user_id):
-            return "Yuanbao DM access denied for this user"
-        return None
-
     async def send_direct(
         self,
         chat_id: str,
@@ -4007,10 +3993,6 @@ class MessageSender:
         extension.
         """
         adapter = self._adapter
-        access_error = self._validate_direct_access(chat_id)
-        if access_error:
-            return {"error": access_error}
-
         last_result: Optional["SendResult"] = None
 
         # 1. Send text

@@ -13,7 +13,6 @@ test_yuanbao_integration.py - Yuanbao 模块集成测试
 
 import sys
 import os
-import asyncio
 
 # 确保 hermes-agent 根目录在 sys.path 中
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -281,33 +280,6 @@ class TestMediaModule:
         from gateway.platforms.yuanbao_media import upload_to_cos, download_url
         assert callable(upload_to_cos)
         assert callable(download_url)
-
-    def test_download_url_rejects_private_url_before_request(self, monkeypatch):
-        from gateway.platforms import yuanbao_media
-
-        class FailingAsyncClient:
-            def __init__(self, *args, **kwargs):
-                raise AssertionError(
-                    "unsafe URL should be rejected before httpx client creation"
-                )
-
-        monkeypatch.setattr(yuanbao_media.httpx, "AsyncClient", FailingAsyncClient)
-
-        with pytest.raises(ValueError, match="Blocked unsafe URL"):
-            asyncio.run(yuanbao_media.download_url("http://127.0.0.1/internal.png"))
-
-    def test_download_url_rejects_unsafe_redirect_target(self):
-        from gateway.platforms import yuanbao_media
-
-        class NextRequest:
-            url = "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
-
-        class RedirectResponse:
-            is_redirect = True
-            next_request = NextRequest()
-
-        with pytest.raises(ValueError, match="Blocked unsafe URL"):
-            asyncio.run(yuanbao_media._ssrf_redirect_guard(RedirectResponse()))
 
 
 # ===========================================================

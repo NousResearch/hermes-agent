@@ -133,6 +133,15 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._notification_scheduler = scheduler
 
     async def connect(self) -> bool:
+        if self._client_state is None:
+            message = (
+                "msgraph_webhook requires a non-empty client_state secret; "
+                "set MSGRAPH_WEBHOOK_CLIENT_STATE or platforms.msgraph_webhook.extra.client_state"
+            )
+            logger.error("[msgraph_webhook] %s", message)
+            self._set_fatal_error("missing_client_state", message, retryable=False)
+            return False
+
         app = web.Application()
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_validation)
@@ -310,7 +319,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         """
         expected = self._client_state
         if expected is None:
-            return True
+            return False
         provided = self._string_or_none(notification.get("clientState"))
         if provided is None:
             return False

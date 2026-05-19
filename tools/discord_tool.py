@@ -28,7 +28,6 @@ actionable guidance the model can relay to the user.
 import json
 import logging
 import os
-import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -187,13 +186,9 @@ def _reset_capability_cache() -> None:
 # Action implementations
 # ---------------------------------------------------------------------------
 
-def _list_guilds(token: str, guild_id: str = "", **_kwargs: Any) -> str:
-    """List guilds, scoped to the current guild when session context is present."""
-    if guild_id:
-        guild = _discord_request("GET", f"/guilds/{guild_id}", token)
-        guilds = [guild]
-    else:
-        guilds = _discord_request("GET", "/users/@me/guilds", token)
+def _list_guilds(token: str, **_kwargs: Any) -> str:
+    """List all guilds the bot is a member of."""
+    guilds = _discord_request("GET", "/users/@me/guilds", token)
     result = []
     for g in guilds:
         result.append({
@@ -540,125 +535,6 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
 }
-
-_PERMISSION_ADMINISTRATOR = 1 << 3
-_PERMISSION_SEND_MESSAGES = 1 << 11
-_PERMISSION_MANAGE_MESSAGES = 1 << 13
-_PERMISSION_MANAGE_CHANNELS = 1 << 4
-_PERMISSION_MANAGE_ROLES = 1 << 28
-_PERMISSION_CREATE_PUBLIC_THREADS = 1 << 35
-
-_GUILD_PERMISSION_REQUIREMENTS: Dict[str, int] = {
-    "list_channels": _PERMISSION_MANAGE_CHANNELS,
-    "pin_message": _PERMISSION_MANAGE_MESSAGES,
-    "unpin_message": _PERMISSION_MANAGE_MESSAGES,
-    "delete_message": _PERMISSION_MANAGE_MESSAGES,
-    "create_thread": _PERMISSION_SEND_MESSAGES | _PERMISSION_CREATE_PUBLIC_THREADS,
-    "add_role": _PERMISSION_MANAGE_ROLES,
-    "remove_role": _PERMISSION_MANAGE_ROLES,
-}
-
-_CHANNEL_SCOPED_ACTIONS = frozenset({
-    "channel_info", "fetch_messages", "list_pins", "pin_message",
-    "unpin_message", "delete_message", "create_thread",
-})
-_GUILD_SCOPED_ACTIONS = frozenset({
-    "server_info", "list_channels", "list_roles", "member_info",
-    "search_members", "add_role", "remove_role",
-})
-
-
-def _read_discord_session_context() -> Dict[str, str]:
-    """Return the current gateway session context relevant to Discord authz."""
-    session_context = sys.modules.get("gateway.session_context")
-    get_session_env = getattr(session_context, "get_session_env", os.getenv)
-    return {
-        "platform": get_session_env("HERMES_SESSION_PLATFORM", ""),
-        "guild_id": get_session_env("HERMES_SESSION_GUILD_ID", ""),
-        "chat_id": get_session_env("HERMES_SESSION_CHAT_ID", ""),
-        "parent_chat_id": get_session_env("HERMES_SESSION_PARENT_CHAT_ID", ""),
-        "user_id": get_session_env("HERMES_SESSION_USER_ID", ""),
-    }
-
-
-def _parse_permissions(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _load_member_permissions(
-    token: str, guild_id: str, user_id: str,
-) -> Tuple[int, Dict[str, int], List[str]]:
-    """Compute guild-level permissions and role positions for the invoking member."""
-    member = _discord_request("GET", f"/guilds/{guild_id}/members/{user_id}", token)
-    roles = _discord_request("GET", f"/guilds/{guild_id}/roles", token)
-    role_by_id = {str(role.get("id")): role for role in roles}
-    permissions = _parse_permissions(role_by_id.get(str(guild_id), {}).get("permissions"))
-    positions: Dict[str, int] = {
-        str(role.get("id")): int(role.get("position", 0) or 0)
-        for role in roles
-    }
-    for role_id in member.get("roles", []):
-        permissions |= _parse_permissions(role_by_id.get(str(role_id), {}).get("permissions"))
-    return permissions, positions, [str(role_id) for role_id in member.get("roles", [])]
-
-
-def _has_permissions(permissions: int, required: int) -> bool:
-    return bool(permissions & _PERMISSION_ADMINISTRATOR) or (permissions & required) == required
-
-
-def _authorize_discord_tool_call(args: Dict[str, Any], token: str) -> Optional[str]:
-    """Bind registry-dispatched Discord tools to the invoking Discord session."""
-    ctx = _read_discord_session_context()
-    action = str(args.get("action") or "")
-    platform = ctx.get("platform") or ""
-    if platform != "discord":
-        return "Discord tools are available only inside a Discord gateway session."
-
-    current_guild_id = ctx.get("guild_id") or ""
-    current_channel_ids = {v for v in (ctx.get("chat_id"), ctx.get("parent_chat_id")) if v}
-    requester_id = ctx.get("user_id") or ""
-    if not current_guild_id or not requester_id:
-        return "Discord tools require a server message with a known invoking user."
-
-    target_guild_id = str(args.get("guild_id") or "")
-    if action == "list_guilds":
-        args["guild_id"] = current_guild_id
-        target_guild_id = current_guild_id
-    elif action in _GUILD_SCOPED_ACTIONS:
-        if not target_guild_id:
-            args["guild_id"] = current_guild_id
-            target_guild_id = current_guild_id
-        if target_guild_id != current_guild_id:
-            return "Discord tool access is limited to the current server."
-
-    target_channel_id = str(args.get("channel_id") or "")
-    if action in _CHANNEL_SCOPED_ACTIONS:
-        if not target_channel_id:
-            return f"Missing required parameters for '{action}': channel_id"
-        if target_channel_id not in current_channel_ids:
-            return "Discord channel actions are limited to the current channel or its parent channel."
-
-    required = _GUILD_PERMISSION_REQUIREMENTS.get(action, 0)
-    if required:
-        permissions, role_positions, requester_role_ids = _load_member_permissions(
-            token, current_guild_id, requester_id,
-        )
-        if not _has_permissions(permissions, required):
-            return "The invoking Discord user lacks the permissions required for this action."
-        if action in {"add_role", "remove_role"} and not (permissions & _PERMISSION_ADMINISTRATOR):
-            role_id = str(args.get("role_id") or "")
-            requester_positions = [
-                role_positions.get(str(role_id), 0)
-                for role_id in requester_role_ids
-            ]
-            requester_top = max(requester_positions or [0])
-            if requester_top <= role_positions.get(role_id, 0):
-                return "The invoking Discord user cannot manage that role due to role hierarchy."
-
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1051,17 +927,10 @@ _HANDLER_DEFAULTS = {
 
 
 def _make_handler(handler_fn):
-    """Create a registry-compatible handler that enforces Discord session scope."""
-    def _handler(args, **kw):
-        call_args = {k: args.get(k, v) for k, v in _HANDLER_DEFAULTS.items()}
-        token = _get_bot_token()
-        if not token:
-            return json.dumps({"error": "DISCORD_BOT_TOKEN not configured."})
-        auth_error = _authorize_discord_tool_call(call_args, token)
-        if auth_error:
-            return json.dumps({"error": auth_error})
-        return handler_fn(**call_args)
-    return _handler
+    """Create a registry-compatible handler lambda for a discord handler."""
+    return lambda args, **kw: handler_fn(
+        **{k: args.get(k, v) for k, v in _HANDLER_DEFAULTS.items()},
+    )
 
 
 _STATIC_CORE_SCHEMA = _build_schema(

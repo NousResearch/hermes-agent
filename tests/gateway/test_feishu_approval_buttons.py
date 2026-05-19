@@ -80,6 +80,15 @@ def _close_submitted_coro(coro, _loop):
     return SimpleNamespace(add_done_callback=lambda *_args, **_kwargs: None)
 
 
+def _seed_approval(adapter: FeishuAdapter, approval_id: int, chat_id: str = "oc_12345") -> None:
+    """Seed pending approval state for card callback tests."""
+    adapter._approval_state[approval_id] = {
+        "session_key": f"sess-{approval_id}",
+        "message_id": f"msg_{approval_id:03d}",
+        "chat_id": chat_id,
+    }
+
+
 # ===========================================================================
 # send_exec_approval — interactive card with buttons
 # ===========================================================================
@@ -376,6 +385,29 @@ class TestResolveApproval:
 
         mock_resolve.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_resolve_rejects_unauthorized_operator(self):
+        adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_allowed"}
+        _seed_approval(adapter, 12)
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._resolve_approval(12, "always", "Attacker", open_id="ou_attacker")
+
+        assert 12 in adapter._approval_state
+        mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resolve_rejects_wrong_chat(self):
+        adapter = _make_adapter()
+        _seed_approval(adapter, 13, chat_id="oc_expected")
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._resolve_approval(13, "once", "User", chat_id="oc_other")
+
+        assert 13 in adapter._approval_state
+        mock_resolve.assert_not_called()
+
 # ===========================================================================
 # _handle_card_action_event — non-approval card actions
 # ===========================================================================
@@ -448,6 +480,7 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        _seed_approval(adapter, 1)
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 1},
             open_id="ou_bob",
@@ -469,6 +502,7 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        _seed_approval(adapter, 2)
         data = _make_card_action_data(
             {"hermes_action": "deny", "approval_id": 2},
         )
@@ -494,6 +528,43 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
+    def test_rejects_unauthorized_approval_click(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_allowed"}
+        _seed_approval(adapter, 10)
+        data = _make_card_action_data(
+            {"hermes_action": "approve_always", "approval_id": 10},
+            open_id="ou_attacker",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        assert 10 in adapter._approval_state
+        mock_submit.assert_not_called()
+
+    def test_rejects_approval_click_from_wrong_chat(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        _seed_approval(adapter, 11, chat_id="oc_expected")
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 11},
+            chat_id="oc_other",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        assert 11 in adapter._approval_state
+        mock_submit.assert_not_called()
+
     def test_no_card_for_non_approval_action(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
@@ -510,6 +581,7 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        _seed_approval(adapter, 3)
         data = _make_card_action_data(
             {"hermes_action": "approve_session", "approval_id": 3},
             open_id="ou_unknown",
@@ -525,6 +597,7 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        _seed_approval(adapter, 4)
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 4},
             open_id="ou_expired",

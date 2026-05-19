@@ -20,20 +20,20 @@ pip install youtube-transcript-api
 
 ## Helper Script
 
-`SKILL_DIR` is the directory containing this SKILL.md file. The script accepts any standard YouTube URL format, short links (youtu.be), shorts, embeds, live links, or a raw 11-character video ID.
+`SKILL_DIR` is the directory containing this SKILL.md file. Before running terminal commands, extract only the 11-character YouTube video ID from the user's link (characters `A-Z`, `a-z`, `0-9`, `_`, `-`). Do not paste a raw user-provided URL into a shell command; shell command substitution such as `$()` and backticks can execute even inside double quotes.
 
 ```bash
 # JSON output with metadata
-python3 SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
+python3 SKILL_DIR/scripts/fetch_transcript.py 'VIDEO_ID'
 
 # Plain text (good for piping into further processing)
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
+python3 SKILL_DIR/scripts/fetch_transcript.py 'VIDEO_ID' --text-only
 
 # With timestamps
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
+python3 SKILL_DIR/scripts/fetch_transcript.py 'VIDEO_ID' --timestamps
 
 # Specific language with fallback chain
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
+python3 SKILL_DIR/scripts/fetch_transcript.py 'VIDEO_ID' --language tr,en
 ```
 
 ## Output Formats
@@ -59,11 +59,12 @@ After fetching the transcript, format it based on what the user asks for:
 
 ## Workflow
 
-1. **Fetch** the transcript using the helper script with `--text-only --timestamps`.
-2. **Validate**: confirm the output is non-empty and in the expected language. If empty, retry without `--language` to get any available transcript. If still empty, tell the user the video likely has transcripts disabled.
-3. **Chunk if needed**: if the transcript exceeds ~50K characters, split into overlapping chunks (~40K with 2K overlap) and summarize each chunk before merging.
-4. **Transform** into the requested output format. If the user did not specify a format, default to a summary.
-5. **Verify**: re-read the transformed output to check for coherence, correct timestamps, and completeness before presenting.
+1. **Extract** the 11-character video ID from the user's link. If you cannot identify exactly one valid ID, ask the user to provide a standard YouTube URL or the video ID.
+2. **Fetch** the transcript by passing only that video ID to the helper script with `--text-only --timestamps`.
+3. **Validate**: confirm the output is non-empty and in the expected language. If empty, retry without `--language` to get any available transcript. If still empty, tell the user the video likely has transcripts disabled.
+4. **Chunk if needed**: if the transcript exceeds ~50K characters, split into overlapping chunks (~40K with 2K overlap) and summarize each chunk before merging.
+5. **Transform** into the requested output format. If the user did not specify a format, default to a summary.
+6. **Verify**: re-read the transformed output to check for coherence, correct timestamps, and completeness before presenting.
 
 ## Error Handling
 

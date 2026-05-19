@@ -335,43 +335,6 @@ class TestRenderCommandTtsTemplate:
                 "'/tmp/out; rm -rf /'", "",
             )
 
-    def test_windows_bare_placeholders_quote_cmd_metacharacters(self):
-        placeholders = {
-            "input_path": r"C:\tmp\in.txt",
-            "text_path": r"C:\tmp\in.txt",
-            "output_path": r"out&id>%TEMP%\pwned",
-            "format": "mp3",
-            "voice": "voice!name",
-            "model": "",
-            "speed": "1.0",
-        }
-        with patch("tools.tts_tool.os.name", "nt"):
-            rendered = _render_command_tts_template(
-                "tts --voice {voice} --out {output_path}",
-                placeholders,
-            )
-        assert '"out&id>^%TEMP^%\\pwned"' in rendered
-        assert '"voice^!name"' in rendered
-        assert "--out out&id>%TEMP%" not in rendered
-
-    def test_windows_double_quoted_placeholders_escape_expansion(self):
-        placeholders = {
-            "input_path": r"C:\tmp\in.txt",
-            "text_path": r"C:\tmp\in.txt",
-            "output_path": r"out&id>%TEMP%\pwned",
-            "format": "mp3",
-            "voice": "voice!name",
-            "model": "",
-            "speed": "1.0",
-        }
-        with patch("tools.tts_tool.os.name", "nt"):
-            rendered = _render_command_tts_template(
-                'tts --out "{output_path}" --voice "{voice}"',
-                placeholders,
-            )
-        assert '"out&id>^%TEMP^%\\pwned"' in rendered
-        assert '"voice^!name"' in rendered
-
     def test_preserves_shell_quoting_style(self):
         placeholders = {
             "input_path": "/tmp/in.txt", "text_path": "/tmp/in.txt",

@@ -361,21 +361,24 @@ async def _noop_callback() -> tuple[str, str | None]:
 
 
 # ---------------------------------------------------------------------------
-# Cold-load OAuth metadata trust boundary
+# Pre-flight OAuth metadata discovery
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_initialize_skips_untrusted_prefetch_when_metadata_missing(
+async def test_initialize_prefetches_oauth_metadata_when_missing(
     tmp_path, monkeypatch
 ):
-    """Cold-load must not rediscover OAuth metadata with cached tokens.
+    """Cold-load must pre-flight PRM + ASM discovery so ``_refresh_token``
+    has the correct ``token_endpoint`` before the first refresh attempt.
 
-    Cached refresh tokens are scoped to the authorization server that issued
-    them. If Hermes rediscovers metadata from the MCP resource server just
-    before refresh, a malicious resource server could advertise an
-    attacker-controlled token endpoint and receive the refresh token. Only
-    metadata persisted from a prior SDK auth flow is trusted on cold-load.
+    Without this, the SDK's ``_refresh_token`` falls back to
+    ``{server_url}/token`` which is wrong for providers whose AS is at
+    a different origin. BetterStack specifically: MCP at
+    ``mcp.betterstack.com`` but token_endpoint at
+    ``betterstack.com/oauth/token``. Without pre-flight the refresh 404s
+    and we drop into full browser re-auth — visible to the user as an
+    unwanted OAuth browser prompt every time the process restarts.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -412,20 +415,43 @@ async def test_initialize_skips_untrusted_prefetch_when_metadata_missing(
         )
     )
 
-    requests: list[str] = []
-
+    # Route the AsyncClient used inside _prefetch_oauth_metadata through a
+    # MockTransport that mimics BetterStack's split-origin discovery:
+    #   PRM at mcp.example.com/.well-known/oauth-protected-resource -> points to auth.example.com
+    #   ASM at auth.example.com/.well-known/oauth-authorization-server -> token_endpoint at auth.example.com/oauth/token
     def mock_handler(request: httpx.Request) -> httpx.Response:
-        requests.append(str(request.url))
-        return httpx.Response(
-            200,
-            json={
-                "resource": "https://mcp.example.com",
-                "authorization_servers": ["https://attacker.example.com"],
-            },
-        )
+        url = str(request.url)
+        if url.endswith("/.well-known/oauth-protected-resource"):
+            return httpx.Response(
+                200,
+                json={
+                    "resource": "https://mcp.example.com",
+                    "authorization_servers": ["https://auth.example.com"],
+                    "scopes_supported": ["read", "write"],
+                    "bearer_methods_supported": ["header"],
+                },
+            )
+        if url.endswith("/.well-known/oauth-authorization-server"):
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": "https://auth.example.com",
+                    "authorization_endpoint": "https://auth.example.com/oauth/authorize",
+                    "token_endpoint": "https://auth.example.com/oauth/token",
+                    "registration_endpoint": "https://auth.example.com/oauth/register",
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code", "refresh_token"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "token_endpoint_auth_methods_supported": ["none"],
+                    "scopes_supported": ["read", "write"],
+                },
+            )
+        return httpx.Response(404)
 
     transport = httpx.MockTransport(mock_handler)
 
+    # Patch the AsyncClient constructor used by _prefetch_oauth_metadata so
+    # it uses our mock transport instead of the real network.
     import httpx as real_httpx
 
     original_async_client = real_httpx.AsyncClient
@@ -451,13 +477,26 @@ async def test_initialize_skips_untrusted_prefetch_when_metadata_missing(
 
     await provider._initialize()
 
-    assert requests == []
-    assert provider.context.oauth_metadata is None
+    assert provider.context.protected_resource_metadata is not None, (
+        "Pre-flight must cache PRM for the SDK to reference later."
+    )
+    assert provider.context.oauth_metadata is not None, (
+        "Pre-flight must cache ASM so _refresh_token builds the correct "
+        "token_endpoint URL."
+    )
+    assert str(provider.context.oauth_metadata.token_endpoint) == (
+        "https://auth.example.com/oauth/token"
+    )
 
 
 @pytest.mark.asyncio
-async def test_initialize_skips_metadata_fetch_when_no_tokens(tmp_path, monkeypatch):
-    """Cold-load initialization must not fetch metadata without tokens."""
+async def test_initialize_skips_prefetch_when_no_tokens(tmp_path, monkeypatch):
+    """Pre-flight must not run when there are no stored tokens yet.
+
+    Without this guard, every fresh-install ``_initialize`` would do two
+    extra network roundtrips that gain nothing (the SDK's 401-branch
+    discovery will run on the first real request anyway).
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     import httpx
     from mcp.shared.auth import OAuthClientMetadata
@@ -503,5 +542,5 @@ async def test_initialize_skips_metadata_fetch_when_no_tokens(tmp_path, monkeypa
     await provider._initialize()
 
     assert calls == [], (
-        f"Metadata fetch must not fire when no tokens are stored, but got {calls}"
+        f"Pre-flight must not fire when no tokens are stored, but got {calls}"
     )

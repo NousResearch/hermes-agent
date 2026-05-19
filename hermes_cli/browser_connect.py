@@ -34,11 +34,6 @@ _LINUX_BIN_NAMES = (
     "chromium", "brave-browser", "microsoft-edge",
 )
 
-_WINDOWS_BIN_NAMES = (
-    "chrome.exe", "msedge.exe", "brave.exe", "chromium.exe",
-    "chrome", "msedge", "brave", "chromium",
-)
-
 
 def get_chrome_debug_candidates(system: str) -> list[str]:
     candidates: list[str] = []
@@ -64,8 +59,9 @@ def get_chrome_debug_candidates(system: str) -> list[str]:
         return candidates
 
     if system == "Windows":
-        for name in _WINDOWS_BIN_NAMES:
-            add(shutil.which(name))
+        # Avoid PATH-based browser discovery on Windows.  The Windows process
+        # search order can prefer the current directory or another
+        # attacker-controlled PATH entry over the real browser install.
         add_install_paths((
             os.environ.get("ProgramFiles"),
             os.environ.get("ProgramFiles(x86)"),

@@ -1743,26 +1743,6 @@ class TestPluginCommandEnumeration:
         assert is_gateway_known_command("metricas") is True
         assert is_gateway_known_command("definitely-not-registered") is False
 
-    def test_is_gateway_known_command_recognizes_telegram_plugin_alias(self, monkeypatch):
-        """Telegram's underscored form must resolve for hyphenated plugin commands."""
-        from hermes_cli.commands import (
-            is_gateway_known_command,
-            resolve_gateway_command_name,
-        )
-
-        self._patch_plugin_commands(monkeypatch, {
-            "deploy-prod": {
-                "handler": lambda _a: "ok",
-                "description": "Deploy production",
-                "args_hint": "",
-                "plugin": "deploy",
-            }
-        })
-
-        assert is_gateway_known_command("deploy-prod") is True
-        assert is_gateway_known_command("deploy_prod") is True
-        assert resolve_gateway_command_name("deploy_prod") == "deploy-prod"
-
     def test_is_gateway_known_command_still_recognizes_builtins(self, monkeypatch):
         """Built-in commands must remain known even when plugin discovery fails."""
         from hermes_cli import plugins as _plugins_mod

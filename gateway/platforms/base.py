@@ -1083,6 +1083,23 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+def _same_message_sender(first: MessageEvent, second: MessageEvent) -> bool:
+    """Return True when two message events came from the same platform sender."""
+    first_source = getattr(first, "source", None)
+    second_source = getattr(second, "source", None)
+    first_identity = (
+        getattr(first_source, "platform", None),
+        getattr(first_source, "user_id_alt", None),
+        getattr(first_source, "user_id", None),
+    )
+    second_identity = (
+        getattr(second_source, "platform", None),
+        getattr(second_source, "user_id_alt", None),
+        getattr(second_source, "user_id", None),
+    )
+    return first_identity == second_identity
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -1103,6 +1120,10 @@ def merge_pending_message_event(
     """
     existing = pending_messages.get(session_key)
     if existing:
+        if not _same_message_sender(existing, event):
+            pending_messages[session_key] = event
+            return
+
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)

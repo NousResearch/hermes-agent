@@ -249,14 +249,7 @@ def test_tool_add_resource_rejects_missing_local_path(tmp_path):
 
     result = json.loads(provider._tool_add_resource({"url": str(missing)}))
 
-<<<<<<< HEAD
-    assert result["error"] == (
-        "Local filesystem paths are not allowed for viking_add_resource; "
-        "provide a remote URL instead."
-    )
-=======
     assert result["error"] == f"Local resource path does not exist: {missing}"
->>>>>>> fff93d5380c0ca5c30f611c1a8a151015ad5aff2
     provider._client.upload_temp_file.assert_not_called()
     provider._client.post.assert_not_called()
 

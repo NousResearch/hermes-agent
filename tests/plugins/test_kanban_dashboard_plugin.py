@@ -1939,7 +1939,8 @@ def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
 
 
 def test_diagnostics_endpoint_severity_filter(client):
-    """Warning-severity filter excludes error-severity entries."""
+    """Severity filter is at-or-above: warning includes warning+error+critical,
+    error includes error+critical, critical is exact (no higher level)."""
     conn = kb.connect()
     try:
         # A warning-severity diagnostic (prose phantom) on one task.
@@ -1958,12 +1959,15 @@ def test_diagnostics_endpoint_severity_filter(client):
     finally:
         conn.close()
 
+    # warning filter is at-or-above → both the warning AND the error pass.
     r = client.get("/api/plugins/kanban/diagnostics?severity=warning")
     assert r.status_code == 200
     data = r.json()
-    assert data["count"] == 1
-    assert data["diagnostics"][0]["task_id"] == p1
+    assert data["count"] == 2
+    task_ids = {row["task_id"] for row in data["diagnostics"]}
+    assert task_ids == {p1, p2}
 
+    # error filter is at-or-above → only the error passes (warning is below).
     r = client.get("/api/plugins/kanban/diagnostics?severity=error")
     data = r.json()
     assert data["count"] == 1

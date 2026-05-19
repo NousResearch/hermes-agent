@@ -4112,6 +4112,7 @@ def dispatch_once(
     ttl_seconds: Optional[int] = None,
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
+    max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     board: Optional[str] = None,
 ) -> DispatchResult:
@@ -4209,6 +4210,20 @@ def dispatch_once(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    # Honour kanban.max_in_progress: if the board already has enough running
+    # tasks, skip spawning this tick so slow workers (local LLMs,
+    # resource-constrained hosts) can finish what they have before more tasks
+    # pile up and time out.
+    if max_in_progress is not None and ready_rows:
+        in_progress = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+        ).fetchone()[0]
+        if in_progress >= max_in_progress:
+            return result
+        # Only spawn enough to reach the cap, respecting max_spawn too.
+        remaining = max_in_progress - in_progress
+        if max_spawn is None or max_spawn > remaining:
+            max_spawn = remaining
     spawned = 0
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:

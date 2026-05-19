@@ -1890,3 +1890,64 @@ def test_create_task_with_explicit_workspace_ignores_board_default(kanban_home):
     assert t is not None
     assert t.workspace_path == explicit
     assert t.workspace_path != "/board/default"
+
+
+# ---------------------------------------------------------------------------
+# dispatch_once — max_in_progress
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_max_in_progress_skips_when_at_limit(kanban_home, all_assignees_spawnable):
+    """When max_in_progress=N and N tasks are already running, spawn nothing."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        # Two running tasks.
+        t1 = kb.create_task(conn, title="a", assignee="alice")
+        t2 = kb.create_task(conn, title="b", assignee="bob")
+        kb.claim_task(conn, t1)
+        kb.claim_task(conn, t2)
+        # Two more ready to spawn — but cap is 2 so none should fire.
+        kb.create_task(conn, title="c", assignee="bob")
+        kb.create_task(conn, title="d", assignee="alice")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=2)
+
+    assert len(spawns) == 0, f"expected 0 spawns, got {len(spawns)}"
+
+
+def test_dispatch_max_in_progress_spawns_up_to_cap(kanban_home, all_assignees_spawnable):
+    """When max_in_progress=3 and only 1 is running, spawn up to 2 more."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        # One running task.
+        t1 = kb.create_task(conn, title="a", assignee="alice")
+        kb.claim_task(conn, t1)
+        # Three ready tasks — only the first 2 should be spawned.
+        kb.create_task(conn, title="b", assignee="bob")
+        kb.create_task(conn, title="c", assignee="bob")
+        kb.create_task(conn, title="d", assignee="bob")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=3)
+
+    assert len(spawns) == 2, f"expected 2 spawns (cap 3 - 1 running), got {len(spawns)}"
+
+
+def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_spawnable):
+    """Default None means no limit — all ready tasks are spawned."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        for title in ["a", "b", "c", "d"]:
+            kb.create_task(conn, title=title, assignee="alice")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=None)
+
+    assert len(spawns) == 4, f"expected 4 spawns (unlimited), got {len(spawns)}"

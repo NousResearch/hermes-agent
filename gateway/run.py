@@ -4776,6 +4776,31 @@ class GatewayRunner:
         if max_spawn is not None:
             logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
 
+        # Cap the number of simultaneously running tasks so slow workers
+        # (local LLMs, resource-constrained hosts) don't pile up and time
+        # out. When set, the dispatcher skips spawning when the board
+        # already has this many tasks in 'running' status.
+        raw_max_in_progress = kanban_cfg.get("max_in_progress", None)
+        max_in_progress = None
+        if raw_max_in_progress is not None:
+            try:
+                max_in_progress = int(raw_max_in_progress)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.max_in_progress=%r; ignoring",
+                    raw_max_in_progress,
+                )
+                max_in_progress = None
+            else:
+                if max_in_progress < 1:
+                    logger.warning(
+                        "kanban dispatcher: kanban.max_in_progress=%r is below 1; ignoring",
+                        raw_max_in_progress,
+                    )
+                    max_in_progress = None
+                else:
+                    logger.info(f"kanban dispatcher: max_in_progress={max_in_progress}")
+
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:
             failure_limit = int(raw_failure_limit)
@@ -4828,6 +4853,7 @@ class GatewayRunner:
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
+                    max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                 )
             except Exception:

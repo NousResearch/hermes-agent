@@ -911,18 +911,23 @@ class DingTalkAdapter(BasePlatformAdapter):
             resp = await self._http_client.post(
                 session_webhook, json=payload, timeout=15.0
             )
-            if resp.status_code < 300:
+            status_code_raw = getattr(resp, "status_code", None)
+            if isinstance(status_code_raw, int):
+                status_code = status_code_raw
+            else:
+                status_code = 500
+            if resp.status_code < 300 if isinstance(resp.status_code, int) else False:
                 # Webhook path: fire Done only for final replies, same as
                 # the card path.
                 if is_final_reply:
                     self._fire_done_reaction(chat_id)
                 return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
-            body = resp.text
+            body = str(getattr(resp, "text", "") or "")
             logger.warning(
-                "[%s] Send failed HTTP %d: %s", self.name, resp.status_code, body[:200]
+                "[%s] Send failed HTTP %d: %s", self.name, status_code, body[:200]
             )
             return SendResult(
-                success=False, error=f"HTTP {resp.status_code}: {body[:200]}"
+                success=False, error=f"HTTP {status_code}: {body[:200]}"
             )
         except httpx.TimeoutException:
             return SendResult(

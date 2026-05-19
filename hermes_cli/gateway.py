@@ -561,40 +561,10 @@ def find_profile_gateway_processes(
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
     args = [get_python_path(), "-m", "hermes_cli.main"]
-    args.extend(["--profile", profile])
+    if profile != "default":
+        args.extend(["--profile", profile])
     args.extend(["gateway", "run", "--replace"])
     return args
-
-
-def _profile_gateway_restart_env(profile: str) -> dict[str, str]:
-    """Build a clean environment for a detached profile gateway restart."""
-    from hermes_cli.profiles import get_profile_dir
-
-    allowed_keys = {
-        "CONDA_PREFIX",
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "PATH",
-        "PATHEXT",
-        "PYTHONIOENCODING",
-        "PYTHONPATH",
-        "SSL_CERT_DIR",
-        "SSL_CERT_FILE",
-        "SYSTEMROOT",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "VIRTUAL_ENV",
-        "WINDIR",
-    }
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key.upper() in allowed_keys
-    }
-    env["HERMES_HOME"] = str(get_profile_dir(profile))
-    return env
 
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
@@ -655,7 +625,7 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
             )
         else:
             _popen_kwargs["start_new_session"] = True
-        subprocess.Popen(cmd, env=os.environ.copy(), **_popen_kwargs)
+        subprocess.Popen(cmd, **_popen_kwargs)
         """
     ).strip()
 
@@ -663,16 +633,9 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         # Same platform-aware detach for the watcher process itself — so
         # closing the user's terminal doesn't kill the watcher.
         subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                watcher,
-                str(old_pid),
-                *_gateway_run_args_for_profile(profile),
-            ],
+            [sys.executable, "-c", watcher, str(old_pid), *_gateway_run_args_for_profile(profile)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            env=_profile_gateway_restart_env(profile),
             **windows_detach_popen_kwargs(),
         )
     except OSError:
@@ -4003,15 +3966,11 @@ def _setup_dingtalk():
         client_id, client_secret = result
         save_env_value("DINGTALK_CLIENT_ID", client_id)
         save_env_value("DINGTALK_CLIENT_SECRET", client_secret)
-        save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
         print()
         print_success(f"{emoji} {label} configured via QR scan!")
     else:
         # ── Manual entry ──
         _setup_standard_platform(dingtalk_platform)
-        # Also enable allow-all by default for convenience
-        if get_env_value("DINGTALK_CLIENT_ID"):
-            save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
 
 
 def _setup_wecom():

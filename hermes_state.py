@@ -1684,7 +1684,10 @@ class SessionDB:
         return session_id
 
     def get_messages_as_conversation(
-        self, session_id: str, include_ancestors: bool = False
+        self,
+        session_id: str,
+        include_ancestors: bool = False,
+        source: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -1696,13 +1699,24 @@ class SessionDB:
 
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
-            rows = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name, "
-                "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items "
-                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
-                tuple(session_ids),
-            ).fetchall()
+            if source is None:
+                rows = self._conn.execute(
+                    "SELECT role, content, tool_call_id, tool_calls, tool_name, "
+                    "finish_reason, reasoning, reasoning_content, reasoning_details, "
+                    "codex_reasoning_items, codex_message_items "
+                    f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
+                    tuple(session_ids),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT m.role, m.content, m.tool_call_id, m.tool_calls, m.tool_name, "
+                    "m.finish_reason, m.reasoning, m.reasoning_content, m.reasoning_details, "
+                    "m.codex_reasoning_items, m.codex_message_items "
+                    "FROM messages m JOIN sessions s ON s.id = m.session_id "
+                    f"WHERE m.session_id IN ({placeholders}) AND s.source = ? "
+                    "ORDER BY m.timestamp, m.id",
+                    (*session_ids, source),
+                ).fetchall()
 
         messages = []
         for row in rows:

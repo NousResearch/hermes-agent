@@ -1252,6 +1252,7 @@ AUTHOR_MAP = {
     "120500656+ooovenenoso@users.noreply.github.com": "ooovenenoso",  # PR #28256 salvage (tool loop recovery hints)
     "120500656+oooindefatigable@users.noreply.github.com": "ooovenenoso",
     "vanthinh6886@gmail.com": "vanthinh6886",  # PR #28018 salvage (yaml/flock/atomic write guards)
+    "saisanjay7660@gmail.com": "sanjay7178", # PR #31561 salvage (feat(tts) : Add Murf AI as a TTS provider to Hermes Agent )
 }
 
 

@@ -88,7 +88,7 @@ matrix = ["mautrix[encryption]==0.21.0", "Markdown==3.10.2", "aiosqlite==0.22.1"
 cli = ["simple-term-menu==1.6.6"]
 tts-premium = [
   "elevenlabs==1.59.0",
-  "murf>=2.3.0",
+  "murf==2.3.0",
 ]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime),

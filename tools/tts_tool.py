@@ -51,7 +51,7 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from hermes_constants import display_hermes_home
 
@@ -127,6 +127,7 @@ def _import_murf_sdk():
     from murf import Murf
     from murf.region import MurfRegion
     return Murf, MurfRegion
+
 
 def _import_sounddevice():
     """Lazy import sounddevice. Returns the module or raises ImportError/OSError."""
@@ -1322,6 +1323,19 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 # ===========================================================================
 # Provider: Murf TTS (Gen2 + Falcon)
 # ===========================================================================
+def _validate_murf_audio_url(audio_url: str) -> str:
+    """Validate Murf audio URL before fetching to reduce SSRF risk."""
+    candidate = str(audio_url).strip()
+    parsed = urlparse(candidate)
+    scheme = (parsed.scheme or "").lower()
+    if scheme != "https":
+        raise RuntimeError("Murf audio URL fetch blocked: only https URLs are allowed")
+    host = (parsed.hostname or "").lower()
+    if host != "murf.ai" and not host.endswith(".murf.ai"):
+        raise RuntimeError(f"Murf audio URL fetch blocked: untrusted host '{host}'")
+    return candidate
+
+
 def _generate_murf_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate audio using Murf TTS.
 
@@ -1329,7 +1343,7 @@ def _generate_murf_tts(text: str, output_path: str, tts_config: Dict[str, Any]) 
     - ``GEN2`` via ``client.text_to_speech.generate``
     - ``FALCON`` via ``client.text_to_speech.stream``
     """
-    import urllib.request
+    import requests
 
     api_key = (get_env_value("MURF_API_KEY") or "").strip()
     if not api_key:
@@ -1341,7 +1355,6 @@ def _generate_murf_tts(text: str, output_path: str, tts_config: Dict[str, Any]) 
     if model == "GEN_FALCON":
         model = "FALCON"
     voice_id = str(murf_config.get("voice_id", DEFAULT_MURF_VOICE_ID)).strip() or DEFAULT_MURF_VOICE_ID
-    locale = str(murf_config.get("locale", DEFAULT_MURF_LOCALE)).strip() or DEFAULT_MURF_LOCALE
     region_name = str(murf_config.get("region") or get_env_value("MURF_REGION") or "default").strip().upper()
     region = getattr(MurfRegion, region_name, MurfRegion.DEFAULT)
     # Gen2 only supports DEFAULT region
@@ -1368,7 +1381,6 @@ def _generate_murf_tts(text: str, output_path: str, tts_config: Dict[str, Any]) 
     shared_kwargs: Dict[str, Any] = {
         "text": text,
         "voice_id": voice_id,
-        "locale": locale,
         "format": output_format,
     }
     if murf_config.get("style") is not None:
@@ -1407,9 +1419,9 @@ def _generate_murf_tts(text: str, output_path: str, tts_config: Dict[str, Any]) 
     audio_url = getattr(response, "audio_file", None)
     if not isinstance(audio_url, str) or not audio_url.strip():
         raise RuntimeError("Murf TTS response contained no audio output")
-
-    with urllib.request.urlopen(audio_url, timeout=60) as url_resp:
-        audio_bytes = url_resp.read()
+    url_response = requests.get(_validate_murf_audio_url(audio_url), timeout=60)
+    url_response.raise_for_status()
+    audio_bytes = url_response.content
     with open(output_path, "wb") as f:
         f.write(audio_bytes)
     return output_path

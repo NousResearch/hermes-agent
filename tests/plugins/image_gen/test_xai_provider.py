@@ -72,10 +72,13 @@ class TestXAIImageGenProvider:
 
         provider = XAIImageGenProvider()
         schema = provider.get_setup_schema()
-        assert schema["name"] == "xAI (Grok)"
+        assert schema["name"] == "xAI Grok Imagine (image)"
         assert schema["badge"] == "paid"
-        assert len(schema["env_vars"]) == 1
-        assert schema["env_vars"][0]["key"] == "XAI_API_KEY"
+        # Auth resolution is delegated to the shared "xai_grok" post_setup
+        # hook so the picker doesn't blindly prompt for XAI_API_KEY when the
+        # user is already signed in via xAI Grok OAuth.
+        assert schema["env_vars"] == []
+        assert schema["post_setup"] == "xai_grok"
 
 
 # ---------------------------------------------------------------------------

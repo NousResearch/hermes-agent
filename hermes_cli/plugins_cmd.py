@@ -708,55 +708,85 @@ def _plugin_exists(name: str) -> bool:
 
 
 def _discover_all_plugins() -> list:
-    """Return a list of (name, version, description, source, dir_path) for
-    every plugin the loader can see — user + bundled + project.
+    """Return a list of (key, version, description, source, dir_path) for
+    every plugin the loader can see — user + bundled.
 
-    Matches the ordering/dedup of ``PluginManager.discover_and_load``:
-    bundled first, then user, then project; user overrides bundled on
-    name collision.
+    Mirrors :meth:`PluginManager._scan_directory_level` so category-namespaced
+    plugins (``observability/langfuse``, ``image_gen/openai``) surface here
+    just like flat ones (``disk-cleanup``). A subdirectory with no
+    ``plugin.yaml`` of its own is treated as a category and recursed into
+    one level deeper (depth capped at 2, same as the loader).
+
+    The returned ``key`` is the path-derived registry key — the value the
+    user types into ``hermes plugins enable <key>``. For category-namespaced
+    plugins that's ``<category>/<dirname>``; for flat plugins it's the
+    manifest's ``name`` (or the directory name if the manifest omits it).
+
+    User entries override bundled on key collision, matching
+    ``PluginManager.discover_and_load``.
     """
     try:
         import yaml
     except ImportError:
         yaml = None
 
-    seen: dict = {}  # name -> (name, version, description, source, path)
+    seen: dict = {}  # key -> (key, version, description, source, path)
 
-    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
-    from hermes_cli.plugins import get_bundled_plugins_dir
-    repo_plugins = get_bundled_plugins_dir()
-    for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
+    def _scan(base: Path, source: str, prefix: str, depth: int) -> None:
         if not base.is_dir():
-            continue
+            return
         for d in sorted(base.iterdir()):
             if not d.is_dir():
                 continue
-            if source == "bundled" and d.name in {"memory", "context_engine"}:
+            if (
+                depth == 0
+                and source == "bundled"
+                and d.name in {"memory", "context_engine"}
+            ):
                 continue
             manifest_file = d / "plugin.yaml"
             if not manifest_file.exists():
                 manifest_file = d / "plugin.yml"
-            if not manifest_file.exists():
+
+            if manifest_file.exists():
+                manifest_name = d.name
+                version = ""
+                description = ""
+                if yaml:
+                    try:
+                        with open(manifest_file, encoding="utf-8") as f:
+                            manifest = yaml.safe_load(f) or {}
+                        manifest_name = manifest.get("name", d.name)
+                        version = manifest.get("version", "")
+                        description = manifest.get("description", "")
+                    except Exception:
+                        pass
+                # Path-derived key, intentionally ignoring the manifest
+                # ``name:`` field for category-namespaced plugins — mirrors
+                # ``PluginManager._parse_manifest`` in plugins.py:1027-1028
+                # so renaming a directory (without touching plugin.yaml) shifts
+                # the registry key in both places consistently.
+                key = f"{prefix}/{d.name}" if prefix else manifest_name
+                src_label = source
+                if source == "user" and (d / ".git").exists():
+                    src_label = "git"
+                # Bundled is scanned before user, so the user pass overwrites
+                # bundled entries with the same key — matches
+                # PluginManager.discover_and_load's "user wins" semantics.
+                seen[key] = (key, version, description, src_label, d)
                 continue
-            name = d.name
-            version = ""
-            description = ""
-            if yaml:
-                try:
-                    with open(manifest_file, encoding="utf-8") as f:
-                        manifest = yaml.safe_load(f) or {}
-                    name = manifest.get("name", d.name)
-                    version = manifest.get("version", "")
-                    description = manifest.get("description", "")
-                except Exception:
-                    pass
-            # User plugins override bundled on name collision.
-            if name in seen and source == "bundled":
+
+            # No manifest at this level — treat as a category namespace and
+            # recurse one level deeper. Cap at depth 2 (same as the loader).
+            if depth >= 1:
                 continue
-            src_label = source
-            if source == "user" and (d / ".git").exists():
-                src_label = "git"
-            seen[name] = (name, version, description, src_label, d)
+            sub_prefix = f"{prefix}/{d.name}" if prefix else d.name
+            _scan(d, source, sub_prefix, depth + 1)
+
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    _scan(get_bundled_plugins_dir(), "bundled", "", 0)
+    _scan(_plugins_dir(), "user", "", 0)
+
     return list(seen.values())
 
 

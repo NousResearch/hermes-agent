@@ -200,44 +200,288 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/(?<!\$)\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?!\$)/g, '$1')
     .replace(/\\\(([^\n]+?)\\\)/g, '$1')
 
-const renderTable = (k: number, rows: string[][], t: Theme) => {
-  // Column widths in *display cells*, not UTF-16 code units.  CJK
-  // glyphs and most emoji render as two cells but `String#length`
-  // counts them as one, which collapses Chinese / Japanese / Korean
-  // tables into drift across rows.  `stringWidth` (Bun.stringWidth
-  // fast path + an East-Asian-width-aware fallback, memoised in
-  // @hermes/ink) returns the actual cell count.
-  const cellWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
+const SAFETY_MARGIN = 4
+const MIN_COL_WIDTH = 3
+const COL_GAP = 2 // the '  ' between columns
+const TABLE_PADDING_LEFT = 2 // paddingLeft={2} on the outer <Box>
 
-  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => cellWidth(r[ci] ?? ''))))
+const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
+  // Guard: empty table
+  if (rows.length === 0 || rows[0]!.length === 0) return null
 
-  // Thin divider under the header.  Without it tables look like prose
-  // with extra spacing because the header is just accent-coloured text
-  // (#15534).  We avoid full borders on purpose — column widths come
-  // from `stringWidth(...)`, so the dividers and the row content stay
-  // in sync on CJK / emoji tables; tab-style column gaps still read
-  // cleanly without the boxed look.
-  const sep = widths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
+  const cellDisplayWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
 
-  return (
-    <Box flexDirection="column" key={k} paddingLeft={2}>
-      {rows.map((row, ri) => (
-        <Fragment key={ri}>
-          <Box>
-            {widths.map((w, ci) => (
-              <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} key={ci}>
-                <MdInline t={t} text={row[ci] ?? ''} />
-                {' '.repeat(Math.max(0, w - cellWidth(row[ci] ?? '')))}
-                {ci < widths.length - 1 ? '  ' : ''}
-              </Text>
-            ))}
-          </Box>
-          {ri === 0 && rows.length > 1 ? (
-            <Text color={t.color.muted} dimColor>
-              {sep}
+  // Minimum width: longest word in a cell (to avoid breaking words)
+  const minCellWidth = (raw: string) => {
+    const text = stripInlineMarkup(raw)
+    const words = text.split(/\s+/).filter(w => w.length > 0)
+    if (words.length === 0) return MIN_COL_WIDTH
+    return Math.max(...words.map(w => stringWidth(w)), MIN_COL_WIDTH)
+  }
+
+  const numCols = rows[0]!.length
+
+  // Normalize ragged rows: ensure every row has exactly numCols cells
+  const normalizedRows = rows.map(row => {
+    if (row.length >= numCols) return row.slice(0, numCols)
+    return [...row, ...Array<string>(numCols - row.length).fill('')]
+  })
+
+  // Ideal widths: max cell content per column
+  const idealWidths = normalizedRows[0]!.map((_, ci) =>
+    Math.max(...normalizedRows.map(r => cellDisplayWidth(r[ci] ?? '')), MIN_COL_WIDTH)
+  )
+
+  // Min widths: longest word per column
+  const minWidths = normalizedRows[0]!.map((_, ci) =>
+    Math.max(...normalizedRows.map(r => minCellWidth(r[ci] ?? '')), MIN_COL_WIDTH)
+  )
+
+  // Available width: cols minus table padding minus column gaps minus safety.
+  // transcriptBodyWidth (source of cols) subtracts message gutter + scrollbar,
+  // but NOT this table's paddingLeft — we subtract it here.
+  const gapOverhead = (numCols - 1) * COL_GAP
+  const availableWidth = cols
+    ? Math.max(cols - TABLE_PADDING_LEFT - gapOverhead - SAFETY_MARGIN, numCols * MIN_COL_WIDTH)
+    : Infinity
+
+  const totalIdeal = idealWidths.reduce((a, b) => a + b, 0)
+  const totalMin = minWidths.reduce((a, b) => a + b, 0)
+
+  let columnWidths: number[]
+  let needsWrap = false
+
+  if (totalIdeal <= availableWidth) {
+    // Tier 1: everything fits at ideal widths
+    columnWidths = idealWidths
+  } else if (totalMin <= availableWidth) {
+    // Tier 2: proportional shrink — distribute extra space beyond minimums
+    needsWrap = true
+    const extraSpace = availableWidth - totalMin
+    const overflows = idealWidths.map((ideal, i) => ideal - minWidths[i]!)
+    const totalOverflow = overflows.reduce((a, b) => a + b, 0)
+    if (totalOverflow === 0) {
+      columnWidths = [...minWidths]
+    } else {
+      const rawAlloc = minWidths.map((min, i) =>
+        min + (overflows[i]! / totalOverflow) * extraSpace
+      )
+      columnWidths = rawAlloc.map(v => Math.floor(v))
+      // Distribute rounding remainders to columns with largest fractional part
+      let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
+      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
+        .sort((a, b) => b.frac - a.frac)
+      for (const { i } of fracs) {
+        if (remainder <= 0) break
+        columnWidths[i]!++
+        remainder--
+      }
+    }
+  } else {
+    // Tier 3: even min-widths don't fit — scale proportionally, allow hard breaks.
+    // NOTE: Math.max(..., MIN_COL_WIDTH) can push total above availableWidth when
+    // many columns are scaled below 3. This is caught by safetyOverflow → vertical fallback.
+    needsWrap = true
+    const scaleFactor = availableWidth / totalMin
+    const rawAlloc = minWidths.map(w => w * scaleFactor)
+    columnWidths = rawAlloc.map(v => Math.max(Math.floor(v), MIN_COL_WIDTH))
+    let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
+    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
+      .sort((a, b) => b.frac - a.frac)
+    for (const { i } of fracs) {
+      if (remainder <= 0) break
+      columnWidths[i]!++
+      remainder--
+    }
+  }
+
+  // Grapheme-safe hard-break: prefer Intl.Segmenter, fall back to code-point split
+  const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl
+    ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
+    : null
+
+  const graphemes = (s: string): string[] =>
+    segmenter
+      ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment)
+      : [...s]
+
+  // Word-wrap plain text to fit within `width` display columns.
+  // Operates on stripped text for correct width measurement.
+  const wrapCell = (raw: string, width: number, hard: boolean): string[] => {
+    const text = stripInlineMarkup(raw)
+    if (width <= 0) return [text]
+    if (stringWidth(text) <= width) return [text]
+
+    const words = text.split(/\s+/).filter(w => w.length > 0)
+    const lines: string[] = []
+    let current = ''
+    let currentWidth = 0
+
+    for (const word of words) {
+      const w = stringWidth(word)
+      if (currentWidth === 0) {
+        if (hard && w > width) {
+          for (const ch of graphemes(word)) {
+            const cw = stringWidth(ch)
+            if (currentWidth + cw > width && current) {
+              lines.push(current)
+              current = ''
+              currentWidth = 0
+            }
+            current += ch
+            currentWidth += cw
+          }
+        } else {
+          current = word
+          currentWidth = w
+        }
+      } else if (currentWidth + 1 + w <= width) {
+        current += ' ' + word
+        currentWidth += 1 + w
+      } else {
+        lines.push(current)
+        current = word
+        currentWidth = w
+      }
+    }
+    if (current) lines.push(current)
+    return lines.length > 0 ? lines : ['']
+  }
+
+  const isHard = totalMin > availableWidth // tier 3 needs hard word breaks
+  const sep = columnWidths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
+
+  // When wrapping isn't needed, build single-line strings per row.
+  // All cells render as plain text via stripInlineMarkup.
+  // TODO: follow-up — format to ANSI then wrap with wrapAnsi for inline markdown preservation.
+  // See free-code/src/components/MarkdownTable.tsx L44-L62 for approach.
+  if (!needsWrap) {
+    const buildRowString = (row: string[]): string =>
+      row.map((cell, ci) => {
+        const text = stripInlineMarkup(cell)
+        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
+        const gap = ci < numCols - 1 ? '  ' : ''
+        return text + pad + gap
+      }).join('')
+
+    return (
+      <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
+        {normalizedRows.map((row, ri) => (
+          <Fragment key={ri}>
+            <Text
+              bold={ri === 0}
+              color={ri === 0 ? t.color.accent : undefined}
+              wrap="truncate-end"
+            >
+              {buildRowString(row)}
             </Text>
-          ) : null}
-        </Fragment>
+            {ri === 0 && normalizedRows.length > 1 ? (
+              <Text color={t.color.muted} dimColor wrap="truncate-end">{sep}</Text>
+            ) : null}
+          </Fragment>
+        ))}
+      </Box>
+    )
+  }
+
+  // Wrapping path: build multi-line rows as complete strings.
+  type LineEntry = { text: string; kind: 'header' | 'separator' | 'body' }
+
+  const buildRowLines = (row: string[]): string[] => {
+    const cellLines = row.map((cell, ci) =>
+      wrapCell(cell, columnWidths[ci]!, isHard)
+    )
+    const maxLines = Math.max(...cellLines.map(l => l.length), 1)
+
+    const result: string[] = []
+    for (let li = 0; li < maxLines; li++) {
+      let line = ''
+      for (let ci = 0; ci < numCols; ci++) {
+        const cl = cellLines[ci] ?? ['']
+        const cellText = li < cl.length ? cl[li]! : ''
+        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(cellText)))
+        line += cellText + pad
+        if (ci < numCols - 1) line += '  '
+      }
+      result.push(line)
+    }
+    return result
+  }
+
+  // Build all lines with metadata for styling, tracking tallest body row
+  const allEntries: LineEntry[] = []
+  let tallestBodyRow = 0
+  normalizedRows.forEach((row, ri) => {
+    const kind = ri === 0 ? 'header' as const : 'body' as const
+    const rowLines = buildRowLines(row)
+    rowLines.forEach(text => allEntries.push({ text, kind }))
+    if (ri > 0) tallestBodyRow = Math.max(tallestBodyRow, rowLines.length)
+    if (ri === 0 && normalizedRows.length > 1) {
+      allEntries.push({ text: sep, kind: 'separator' })
+    }
+  })
+
+  // Post-render safety condition: compute max line width.
+  const maxLineWidth = Math.max(...allEntries.map(e => stringWidth(e.text)))
+  const safetyOverflow = cols != null && maxLineWidth > cols - TABLE_PADDING_LEFT - SAFETY_MARGIN
+
+  // Scaled vertical threshold — 2-3 col tables stay tabular even with tall cells
+  const maxRowLinesThreshold = numCols <= 3 ? 8 : numCols <= 6 ? 5 : 4
+
+  const useVertical = tallestBodyRow > maxRowLinesThreshold || safetyOverflow
+
+  if (useVertical) {
+    // Edge case: header-only table
+    if (normalizedRows.length <= 1) {
+      return (
+        <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
+          <Text bold color={t.color.accent} wrap="wrap-trim">
+            {normalizedRows[0]!.map(h => stripInlineMarkup(h)).join(' · ')}
+          </Text>
+        </Box>
+      )
+    }
+
+    const headers = normalizedRows[0]!
+    const dataRows = normalizedRows.slice(1)
+    const sepWidth = Math.max(1, cols ? Math.min(cols - TABLE_PADDING_LEFT - 1, 40) : 40)
+
+    return (
+      <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
+        {dataRows.map((row, ri) => (
+          <Fragment key={ri}>
+            {ri > 0 ? (
+              <Text color={t.color.muted} dimColor>{'─'.repeat(sepWidth)}</Text>
+            ) : null}
+            {headers.map((header, ci) => {
+              const cell = row[ci] ?? ''
+              const label = stripInlineMarkup(header) || `Col ${ci + 1}`
+              return (
+                <Text key={ci} wrap="wrap-trim">
+                  <Text bold color={t.color.accent}>{label}:</Text>
+                  {' '}{stripInlineMarkup(cell)}
+                </Text>
+              )
+            })}
+          </Fragment>
+        ))}
+      </Box>
+    )
+  }
+
+  // Render wrapped horizontal rows — one <Text> per visual line.
+  return (
+    <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
+      {allEntries.map((entry, i) => (
+        <Text
+          bold={entry.kind === 'header'}
+          color={entry.kind === 'header' ? t.color.accent : entry.kind === 'separator' ? t.color.muted : undefined}
+          dimColor={entry.kind === 'separator'}
+          key={i}
+          wrap="truncate-end"
+        >
+          {entry.text}
+        </Text>
       ))}
     </Box>
   )
@@ -395,10 +639,10 @@ const cacheSet = (b: Map<string, ReactNode[]>, key: string, v: ReactNode[]) => {
   }
 }
 
-function MdImpl({ compact, t, text }: MdProps) {
+function MdImpl({ cols, compact, t, text }: MdProps) {
   const nodes = useMemo(() => {
     const bucket = cacheBucket(t)
-    const cacheKey = `${compact ? '1' : '0'}|${text}`
+    const cacheKey = `${compact ? '1' : '0'}|${cols ?? ''}|${text}`
     const cached = cacheGet(bucket, cacheKey)
 
     if (cached) {
@@ -490,7 +734,7 @@ function MdImpl({ compact, t, text }: MdProps) {
 
         if (['md', 'markdown'].includes(lang)) {
           start('paragraph')
-          nodes.push(<Md compact={compact} key={key} t={t} text={block.join('\n')} />)
+          nodes.push(<Md cols={cols} compact={compact} key={key} t={t} text={block.join('\n')} />)
 
           continue
         }
@@ -785,7 +1029,7 @@ function MdImpl({ compact, t, text }: MdProps) {
           rows.push(splitRow(lines[i]!))
         }
 
-        nodes.push(renderTable(key, rows, t))
+        nodes.push(renderTable(key, rows, t, cols))
 
         continue
       }
@@ -838,7 +1082,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         }
 
         if (rows.length) {
-          nodes.push(renderTable(key, rows, t))
+          nodes.push(renderTable(key, rows, t, cols))
         }
 
         continue
@@ -852,7 +1096,7 @@ function MdImpl({ compact, t, text }: MdProps) {
     cacheSet(bucket, cacheKey, nodes)
 
     return nodes
-  }, [compact, t, text])
+  }, [cols, compact, t, text])
 
   return <Box flexDirection="column">{nodes}</Box>
 }
@@ -862,6 +1106,7 @@ export const Md = memo(MdImpl)
 type Kind = 'blank' | 'code' | 'heading' | 'list' | 'paragraph' | 'quote' | 'rule' | 'table' | null
 
 interface MdProps {
+  cols?: number
   compact?: boolean
   t: Theme
   text: string

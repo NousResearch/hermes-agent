@@ -663,7 +663,7 @@ export const hu: Translations = {
     columnHelp: {
       triage: "Nyers ötletek — egy specifier kidolgozza a specifikációt",
       todo: "Függőségekre vár vagy nincs felelőse",
-      ready: "Kiosztva, dispatcher tickre vár",
+      ready: "A függőségek teljesültek; rendelj hozzá profilt az indításhoz",
       running: "Worker felvette — folyamatban",
       blocked: "A worker emberi beavatkozást kért",
       done: "Befejezve",

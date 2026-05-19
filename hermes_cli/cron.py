@@ -98,6 +98,9 @@ def cron_list(show_all: bool = False):
         workdir = job.get("workdir")
         if workdir:
             print(f"    Workdir:   {workdir}")
+        profile = job.get("profile")
+        if profile:
+            print(f"    Profile:   {profile}")
 
         # Execution history
         last_status = job.get("last_status")
@@ -174,6 +177,7 @@ def cron_create(args):
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
+        profile=getattr(args, "profile", None),
         no_agent=getattr(args, "no_agent", False) or None,
     )
     if not result.get("success"):
@@ -191,14 +195,22 @@ def cron_create(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
+    if job_data.get("profile"):
+        print(f"  Profile: {job_data['profile']}")
     print(f"  Next run: {result['next_run_at']}")
     return 0
 
 
 def cron_edit(args):
-    from cron.jobs import get_job
+    from cron.jobs import AmbiguousJobReference, resolve_job_ref
 
-    job = get_job(args.job_id)
+    try:
+        job = resolve_job_ref(args.job_id)
+    except AmbiguousJobReference as exc:
+        print(color(str(exc), Colors.RED))
+        for m in exc.matches:
+            print(f"  {m['id']}  (name: {m.get('name')!r})")
+        return 1
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
         return 1
@@ -230,6 +242,7 @@ def cron_edit(args):
         skills=final_skills,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
+        profile=getattr(args, "profile", None),
         no_agent=getattr(args, "no_agent", None),
     )
     if not result.get("success"):
@@ -250,6 +263,8 @@ def cron_edit(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
+    if updated.get("profile"):
+        print(f"  Profile: {updated['profile']}")
     return 0
 
 

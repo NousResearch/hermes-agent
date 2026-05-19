@@ -368,6 +368,13 @@ BROWSERBASE_SESSION_TIMEOUT=600000
 
 # Inactivity timeout before auto-cleanup in seconds (default: 120)
 BROWSER_INACTIVITY_TIMEOUT=120
+
+# Extra Chromium launch flags (comma- or newline-separated). Hermes auto-injects
+# `--no-sandbox,--disable-dev-shm-usage` when it detects root or AppArmor-restricted
+# unprivileged user namespaces (Ubuntu 23.10+, DGX Spark, many container images),
+# so most users don't need to set this. Set it manually only if you need a flag
+# Hermes doesn't add automatically; setting it disables the auto-injection.
+AGENT_BROWSER_ARGS=--no-sandbox
 ```
 
 ### Install agent-browser CLI

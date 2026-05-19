@@ -147,6 +147,9 @@ _YB_RES_REF_RE = re.compile(
     r"\[(image|voice|video|file(?::[^|\]]*)?)\|ybres:([A-Za-z0-9_\-]+)\]"
 )
 
+# Media kinds that can be resolved and injected into the model context
+_RESOLVABLE_MEDIA_KINDS = frozenset({"image", "file"})
+
 # Strip page indicators like (1/3) appended by BasePlatformAdapter
 _INDICATOR_RE = re.compile(r'\s*\(\d+/\d+\)$')
 
@@ -925,6 +928,7 @@ class InboundContext:
     # Populated by QuoteContextMiddleware
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None
+    quote_media_refs: list = dc_field(default_factory=list)  # List of (rid, kind, filename)
 
     # Populated by MediaResolveMiddleware
     media_urls: list = dc_field(default_factory=list)
@@ -1645,6 +1649,25 @@ class ExtractContentMiddleware(InboundMiddleware):
             return None
         return f"[link: {link} | visit link for full content]"
 
+    @staticmethod
+    def _parse_resource_id(url: str) -> str:
+        """Extract resourceId from Yuanbao resource URL query parameters.
+
+        Args:
+            url: Resource URL (e.g., https://...?resourceId=abc123)
+
+        Returns:
+            Resource ID string, or empty string if not found
+        """
+        if not url:
+            return ""
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            ids = query.get("resourceId") or query.get("resourceid") or []
+            return str(ids[0]).strip() if ids else ""
+        except Exception:
+            return ""
+
     @classmethod
     def _extract_text(cls, msg_body: list) -> str:
         """Extract plain text content from MsgBody.
@@ -1668,14 +1691,35 @@ class ExtractContentMiddleware(InboundMiddleware):
                 if text:
                     parts.append(text)
             elif elem_type == "TIMImageElem":
-                parts.append("[image]")
+                # Extract resourceId from image_info_array URL
+                image_info_array = content.get("image_info_array")
+                if not isinstance(image_info_array, list):
+                    image_info_array = []
+                image_info = None
+                # Prefer medium image (index 1), fallback to index 0
+                if len(image_info_array) > 1 and isinstance(image_info_array[1], dict):
+                    image_info = image_info_array[1]
+                elif len(image_info_array) > 0 and isinstance(image_info_array[0], dict):
+                    image_info = image_info_array[0]
+                image_url = str((image_info or {}).get("url") or "").strip()
+                rid = cls._parse_resource_id(image_url)
+                parts.append(f"[image|ybres:{rid}]" if rid else "[image]")
             elif elem_type == "TIMFileElem":
                 filename = content.get("file_name", content.get("fileName", content.get("filename", "")))
-                parts.append(f"[file: {filename}]" if filename else "[file]")
+                file_url = str(content.get("url") or "").strip()
+                rid = cls._parse_resource_id(file_url)
+                if rid:
+                    parts.append(f"[file:{filename}|ybres:{rid}]" if filename else f"[file|ybres:{rid}]")
+                else:
+                    parts.append(f"[file: {filename}]" if filename else "[file]")
             elif elem_type == "TIMSoundElem":
-                parts.append("[voice]")
+                sound_url = str(content.get("url") or "").strip()
+                rid = cls._parse_resource_id(sound_url)
+                parts.append(f"[voice|ybres:{rid}]" if rid else "[voice]")
             elif elem_type == "TIMVideoFileElem":
-                parts.append("[video]")
+                video_url = str(content.get("url") or "").strip()
+                rid = cls._parse_resource_id(video_url)
+                parts.append(f"[video|ybres:{rid}]" if rid else "[video]")
             elif elem_type == "TIMCustomElem":
                 data_val = content.get("data", "")
                 if data_val:
@@ -2132,22 +2176,23 @@ class QuoteContextMiddleware(InboundMiddleware):
     name = "quote-context"
 
     @staticmethod
-    def _extract_quote_context(cloud_custom_data: str) -> Tuple[Optional[str], Optional[str]]:
+    def _extract_quote_context(cloud_custom_data: str) -> Tuple[Optional[str], Optional[str], list]:
         """Extract quote context, mapping to MessageEvent.reply_to_*.
 
         Returns:
-          (reply_to_message_id, reply_to_text)
+          (reply_to_message_id, reply_to_text, quote_media_refs)
+          where quote_media_refs is a list of (rid, kind, filename) tuples
         """
         if not cloud_custom_data:
-            return None, None
+            return None, None, []
         try:
             parsed = json.loads(cloud_custom_data)
         except (json.JSONDecodeError, TypeError):
-            return None, None
+            return None, None, []
 
         quote = parsed.get("quote") if isinstance(parsed, dict) else None
         if not isinstance(quote, dict):
-            return None, None
+            return None, None, []
 
         # type=2 corresponds to image reference; desc may be empty, provide a placeholder.
         quote_type = int(quote.get("type") or 0)
@@ -2155,15 +2200,26 @@ class QuoteContextMiddleware(InboundMiddleware):
         if quote_type == 2 and not desc:
             desc = "[image]"
         if not desc:
-            return None, None
+            return None, None, []
 
         quote_id = str(quote.get("id") or "").strip() or None
         sender = str(quote.get("sender_nickname") or quote.get("sender_id") or "").strip()
         quote_text = f"{sender}: {desc}" if sender else desc
-        return quote_id, quote_text
+
+        # Extract media references from desc using _YB_RES_REF_RE regex
+        media_refs: list = []
+        for m in _YB_RES_REF_RE.finditer(desc):
+            head = m.group(1)  # "image" | "file:<name>" | "voice" | "video"
+            rid = m.group(2)
+            kind, _, filename = head.partition(":")
+            kind = kind.strip()
+            media_refs.append((rid, kind, filename.strip()))
+
+        return quote_id, quote_text, media_refs
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
-        ctx.reply_to_message_id, ctx.reply_to_text = self._extract_quote_context(ctx.cloud_custom_data)
+        ctx.reply_to_message_id, ctx.reply_to_text, ctx.quote_media_refs = self._extract_quote_context(ctx.cloud_custom_data)
+
         await next_fn()
 
 
@@ -2332,7 +2388,7 @@ class MediaResolveMiddleware(InboundMiddleware):
         for ref in media_refs:
             kind = str(ref.get("kind") or "").strip().lower()
             url = str(ref.get("url") or "").strip()
-            if kind not in {"image", "file"} or not url:
+            if kind not in _RESOLVABLE_MEDIA_KINDS or not url:
                 continue
 
             try:
@@ -2391,7 +2447,7 @@ class MediaResolveMiddleware(InboundMiddleware):
                 rid = m.group(2)
                 kind, _, filename = head.partition(":")
                 kind = kind.strip()
-                if kind not in {"image", "file"}:
+                if kind not in _RESOLVABLE_MEDIA_KINDS:
                     continue
                 if rid in seen:
                     continue
@@ -2458,26 +2514,82 @@ class DispatchMiddleware(InboundMiddleware):
             media_urls = list(ctx.media_urls)
             media_types = list(ctx.media_types)
 
-            # Backfill observed media from recent transcript history
-            extra_img_urls: List[str] = []
-            extra_img_mimes: List[str] = []
-            try:
-                extra_img_urls, extra_img_mimes = await MediaResolveMiddleware._collect_observed_media(
-                    adapter, ctx.source,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[%s] observed-image hydration raised, continuing anyway: %s",
-                    adapter.name, exc,
-                )
-            if extra_img_urls:
-                current = set(media_urls)
-                for u, m in zip(extra_img_urls, extra_img_mimes):
-                    if u in current:
+            # If user quoted a message (reply_to_message_id is set), resolve only
+            # quote_media_refs to avoid injecting unrelated history media.
+            # Otherwise, backfill observed media from recent transcript history.
+            if ctx.reply_to_message_id is not None:
+                # Fallback: if desc didn't contain ybres refs, look up transcript
+                if not ctx.quote_media_refs:
+                    try:
+                        store = getattr(adapter, "_session_store", None)
+                        if store:
+                            session_entry = store.get_or_create_session(ctx.source)
+                            history = store.load_transcript(session_entry.session_id)
+                            for msg in reversed(history or []):
+                                mid = msg.get("message_id", "")
+                                if mid and mid == ctx.reply_to_message_id:
+                                    _content = msg.get("content", "")
+                                    if isinstance(_content, str) and "|ybres:" in _content:
+                                        for m in _YB_RES_REF_RE.finditer(_content):
+                                            head = m.group(1)
+                                            rid = m.group(2)
+                                            kind, _, filename = head.partition(":")
+                                            kind = kind.strip()
+                                            if kind in _RESOLVABLE_MEDIA_KINDS:
+                                                ctx.quote_media_refs.append((rid, kind, filename.strip()))
+                                    break
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] quote transcript lookup failed: %s",
+                            adapter.name, exc,
+                        )
+                # User quoted a message — resolve only media from the quote
+                for rid, kind, filename in ctx.quote_media_refs:
+                    if kind not in _RESOLVABLE_MEDIA_KINDS:
                         continue
-                    media_urls.append(u)
-                    media_types.append(m)
-                    current.add(u)
+                    try:
+                        fresh_url = await MediaResolveMiddleware._resolve_by_resource_id(adapter, rid)
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] quote media resolve failed: rid=%s kind=%s err=%s",
+                            adapter.name, rid, kind, exc,
+                        )
+                        continue
+                    cached = await MediaResolveMiddleware._download_and_cache(
+                        adapter,
+                        fetch_url=fresh_url,
+                        kind=kind,
+                        file_name=filename or None,
+                        log_tag=f"quote rid={rid}",
+                    )
+                    if cached is None:
+                        continue
+                    path, mime = cached
+                    # Avoid duplicates
+                    if path not in media_urls:
+                        media_urls.append(path)
+                        media_types.append(mime)
+            else:
+                # No quote — backfill observed media from recent transcript history
+                extra_img_urls: List[str] = []
+                extra_img_mimes: List[str] = []
+                try:
+                    extra_img_urls, extra_img_mimes = await MediaResolveMiddleware._collect_observed_media(
+                        adapter, ctx.source,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] observed-image hydration raised, continuing anyway: %s",
+                        adapter.name, exc,
+                    )
+                if extra_img_urls:
+                    current = set(media_urls)
+                    for u, m in zip(extra_img_urls, extra_img_mimes):
+                        if u in current:
+                            continue
+                        media_urls.append(u)
+                        media_types.append(m)
+                        current.add(u)
 
             # Replace [kind|ybres:xxx] anchors with local cache paths so
             # the transcript records usable paths for the model.
@@ -2506,7 +2618,11 @@ class DispatchMiddleware(InboundMiddleware):
 
             event = MessageEvent(
                 text=_patched_event_text,
-                message_type=ctx.msg_type,
+                message_type=(
+                    MessageType.DOCUMENT
+                    if any(mt.startswith(("application/", "text/")) for mt in media_types)
+                    else ctx.msg_type
+                ),
                 source=ctx.source,
                 message_id=ctx.msg_id or None,
                 raw_message=ctx.push,

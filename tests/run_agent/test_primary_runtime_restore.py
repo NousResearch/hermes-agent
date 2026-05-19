@@ -123,6 +123,26 @@ class TestRestorePrimaryRuntime:
         assert agent._fallback_activated is False
         assert agent._restore_primary_runtime() is False
 
+    def test_resets_index_when_fallback_not_activated(self):
+        """Regression for #20465: failed activation leaves _fallback_index advanced
+        with _fallback_activated=False; the next turn's restore must reset the index."""
+        fbs = [{"provider": "custom", "model": "gpt-oss:20b",
+                "base_url": "http://host.docker.internal:11434/v1", "api_key": "ollama"}]
+        agent = _make_agent(fallback_model=fbs)
+
+        # resolve_provider_client returns None → _try_activate_fallback returns False
+        # but _fallback_index has already been incremented to 1
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)):
+            assert agent._try_activate_fallback() is False
+
+        assert agent._fallback_activated is False
+        assert agent._fallback_index == 1  # advanced past the only entry
+
+        # _restore_primary_runtime must reset the index so the next turn can retry
+        result = agent._restore_primary_runtime()
+        assert result is False  # still no-op (primary was never left)
+        assert agent._fallback_index == 0  # chain available again
+
     def test_restores_model_and_provider(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},

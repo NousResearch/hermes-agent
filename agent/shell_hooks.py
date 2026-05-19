@@ -83,6 +83,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 300
 ALLOWLIST_FILENAME = "shell-hooks-allowlist.json"
+_DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 
 # (event, matcher, command) triples that have been wired to the plugin
 # manager in the current process.  Matcher is part of the key because
@@ -481,6 +482,17 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
+def _block_message(primary: Any, secondary: Any) -> str:
+    """Return a validated string block message, falling back to the default.
+
+    Accepts two candidate fields (primary wins over secondary) so callers
+    can express field-priority differences between the two hook wire formats
+    without duplicating the type-check logic.
+    """
+    raw = primary or secondary
+    return raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
+
+
 def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     """Translate stdout JSON into a Hermes wire-shape dict.
 
@@ -515,13 +527,9 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
 
     if event == "pre_tool_call":
         if data.get("action") == "block":
-            message = data.get("message") or data.get("reason") or ""
-            if isinstance(message, str) and message:
-                return {"action": "block", "message": message}
+            return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
         if data.get("decision") == "block":
-            message = data.get("reason") or data.get("message") or ""
-            if isinstance(message, str) and message:
-                return {"action": "block", "message": message}
+            return {"action": "block", "message": _block_message(data.get("reason"), data.get("message"))}
         return None
 
     context = data.get("context")

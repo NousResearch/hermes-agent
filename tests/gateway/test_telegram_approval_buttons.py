@@ -196,6 +196,29 @@ class TestTelegramExecApproval:
         )
 
     @pytest.mark.asyncio
+    async def test_send_update_prompt_escapes_dynamic_prompt(self):
+        adapter = _make_adapter()
+        sent = {}
+
+        async def mock_send_message(**kwargs):
+            sent.update(kwargs)
+            return SimpleNamespace(message_id=55)
+
+        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
+
+        result = await adapter.send_update_prompt(
+            chat_id="12345",
+            prompt="Fix [issue]_1 and verify *markdown*",
+            default="alpha_beta",
+            metadata={"thread_id": "999"},
+        )
+
+        assert result.success is True
+        assert "MARKDOWN_V2" in repr(sent["parse_mode"])
+        assert "Fix \\[issue\\]\\_1" in sent["text"]
+        assert "alpha\\_beta" in sent["text"]
+
+    @pytest.mark.asyncio
     async def test_truncates_long_command(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()
@@ -210,9 +233,6 @@ class TestTelegramExecApproval:
         kwargs = adapter._bot.send_message.call_args[1]
         assert "..." in kwargs["text"]
         assert len(kwargs["text"]) < 5000
-
-
-# ===========================================================================
 # _handle_callback_query — approval button clicks
 # ===========================================================================
 
@@ -250,6 +270,34 @@ class TestTelegramApprovalCallback:
 
         # State should be cleaned up
         assert 1 not in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_approval_callback_escapes_dynamic_user_name(self):
+        adapter = _make_adapter()
+        adapter._approval_state[3] = "agent:main:telegram:group:12345:99"
+
+        query = AsyncMock()
+        query.data = "ea:once:3"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Alice_Bob"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+        query.from_user.id = "12345"
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
+        assert "Alice\\_Bob" in edit_kwargs["text"]
+        assert "Approved once" in edit_kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_deny_button(self):

@@ -455,7 +455,36 @@ def test_admit_per_group_require_mention_overrides_global():
 def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
     import asyncio
 
-    from gateway.platforms.feishu import FeishuAdapter
+    from gateway.platforms import feishu as feishu_mod
+    FeishuAdapter = feishu_mod.FeishuAdapter
+
+    class _FakeBaseRequestBuilder:
+        def __init__(self):
+            self._request = SimpleNamespace()
+
+        def http_method(self, value):
+            self._request.http_method = value
+            return self
+
+        def uri(self, value):
+            self._request.uri = value
+            return self
+
+        def token_types(self, value):
+            self._request.token_types = value
+            return self
+
+        def build(self):
+            return self._request
+
+    monkeypatch.setattr(
+        feishu_mod,
+        "BaseRequest",
+        SimpleNamespace(builder=lambda: _FakeBaseRequestBuilder()),
+        raising=False,
+    )
+    monkeypatch.setattr(feishu_mod, "HttpMethod", SimpleNamespace(GET="GET"), raising=False)
+    monkeypatch.setattr(feishu_mod, "AccessTokenType", SimpleNamespace(TENANT="TENANT"), raising=False)
 
     adapter = object.__new__(FeishuAdapter)
     adapter._bot_open_id = ""

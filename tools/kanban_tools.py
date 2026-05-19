@@ -371,6 +371,7 @@ def _handle_complete(args: dict, **kw) -> str:
     metadata = args.get("metadata")
     result = args.get("result")
     created_cards = args.get("created_cards")
+    artifacts = args.get("artifacts")
     if created_cards is not None:
         if isinstance(created_cards, str):
             # Accept a single id as a string for convenience.
@@ -384,6 +385,45 @@ def _handle_complete(args: dict, **kw) -> str:
         created_cards = [
             str(c).strip() for c in created_cards if str(c).strip()
         ]
+    if artifacts is not None:
+        if isinstance(artifacts, str):
+            # Accept a single path as a string for convenience.
+            artifacts = [artifacts]
+        if not isinstance(artifacts, (list, tuple)):
+            return tool_error(
+                f"artifacts must be a list of file paths, got "
+                f"{type(artifacts).__name__}"
+            )
+        artifacts = [
+            str(p).strip() for p in artifacts if str(p).strip()
+        ]
+        # Carry the artifact list inside metadata so it rides the
+        # existing completed-event payload without a schema change at
+        # the DB layer.  The gateway notifier reads payload['artifacts']
+        # off the completion event and uploads each path as a native
+        # attachment.
+        if artifacts:
+            if metadata is None:
+                metadata = {}
+            elif not isinstance(metadata, dict):
+                return tool_error(
+                    f"metadata must be an object/dict, got "
+                    f"{type(metadata).__name__}"
+                )
+            # Don't overwrite an existing metadata.artifacts the worker
+            # passed manually — merge instead.
+            existing = metadata.get("artifacts")
+            if isinstance(existing, (list, tuple)):
+                merged: list[str] = []
+                seen: set[str] = set()
+                for item in list(existing) + artifacts:
+                    s = str(item).strip()
+                    if s and s not in seen:
+                        seen.add(s)
+                        merged.append(s)
+                metadata["artifacts"] = merged
+            else:
+                metadata["artifacts"] = artifacts
     if not (summary or result):
         return tool_error(
             "provide at least one of: summary (preferred), result"
@@ -760,7 +800,12 @@ KANBAN_COMPLETE_SCHEMA = {
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
         "references are caught before they leak into downstream "
-        "automation."
+        "automation. If you produced deliverable files (charts, PDFs, "
+        "spreadsheets, generated images), list their absolute paths "
+        "in ``artifacts`` — the gateway notifier will upload them as "
+        "native attachments to the human who subscribed to the task, "
+        "so the deliverable lands in their chat alongside the summary "
+        "instead of being a path they have to fetch by hand."
     ),
     "parameters": {
         "type": "object",
@@ -809,6 +854,25 @@ KANBAN_COMPLETE_SCHEMA = {
                     "``kanban_create`` call — do not invent or "
                     "remember ids from prose. Omit the field if you "
                     "did not create any cards."
+                ),
+            },
+            "artifacts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional list of absolute paths to deliverable "
+                    "files you produced during this run — generated "
+                    "charts, PDFs, spreadsheets, images, archives. "
+                    "Examples: [\"/tmp/q3-revenue.png\", "
+                    "\"/tmp/report.pdf\"]. The gateway notifier "
+                    "uploads each path as a native attachment to the "
+                    "subscribed chat (images embed inline, everything "
+                    "else uploads as a file) so the deliverable "
+                    "lands with the completion notification. Skip "
+                    "intermediate scratch files and references that "
+                    "are not the deliverable. The path must exist "
+                    "on disk when the notifier runs; missing files "
+                    "are silently skipped."
                 ),
             },
         },

@@ -30,6 +30,28 @@ _DEFAULT_TIMEOUT_SECONDS = 900.0
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
+# Stderr fingerprint of the deprecated `gh copilot` CLI extension
+# (https://github.blog/changelog/2025-09-25-upcoming-deprecation-of-gh-copilot-cli-extension).
+# We require BOTH the literal product name ("gh-copilot") AND a deprecation
+# marker, so generic stderr from the NEW `@github/copilot` CLI — whose repo
+# is github.com/github/copilot-cli and which legitimately mentions "copilot-cli"
+# in its own banners and error messages — doesn't get misclassified as the
+# deprecated extension.
+_DEPRECATION_REQUIRED = ("gh-copilot",)
+_DEPRECATION_MARKERS = (
+    "has been deprecated",
+    "no commands will be executed",
+)
+
+
+def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
+    """True iff stderr looks like the deprecated gh-copilot extension's banner."""
+
+    lower = stderr_text.lower()
+    if not any(req in lower for req in _DEPRECATION_REQUIRED):
+        return False
+    return any(marker in lower for marker in _DEPRECATION_MARKERS)
+
 
 def _resolve_command() -> str:
     return (
@@ -506,6 +528,21 @@ class CopilotACPClient:
 
             stderr_text = "\n".join(stderr_tail).strip()
             if proc.poll() is not None and stderr_text:
+                if _is_gh_copilot_deprecation_message(stderr_text):
+                    raise RuntimeError(
+                        "Hermes ACP mode requires the NEW GitHub Copilot CLI "
+                        "(github.com/github/copilot-cli), but the binary it just "
+                        "spawned is the deprecated `gh copilot` extension.\n\n"
+                        "Install the new CLI:\n"
+                        "  npm install -g @github/copilot\n"
+                        "  # then verify with: copilot --help\n\n"
+                        "If `copilot` already resolves to the new CLI but you still see this,\n"
+                        "point Hermes at it explicitly:\n"
+                        "  export HERMES_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
+                        "Alternative: use the `copilot` provider (no ACP, hits the Copilot API\n"
+                        "directly with a Copilot subscription token) via `hermes setup`.\n\n"
+                        f"Original error:\n{stderr_text}"
+                    )
                 raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
             raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
 

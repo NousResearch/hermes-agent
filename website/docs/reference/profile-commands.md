@@ -83,6 +83,7 @@ Creates a new profile.
 | `--clone-all` | Copy everything (config, memories, skills, sessions, state) from the current profile. |
 | `--clone-from <profile>` | Clone from a specific profile instead of the current one. Used with `--clone` or `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
+| `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
 
 Creating a profile does **not** make that profile directory the default project/workspace directory for terminal commands. If you want a profile to start in a specific project, set `terminal.cwd` in that profile's `config.yaml`.
 
@@ -100,6 +101,40 @@ hermes profile create backup --clone-all
 
 # Clone config from a specific profile
 hermes profile create work2 --clone --clone-from work
+```
+
+## `hermes profile describe`
+
+```bash
+hermes profile describe [<name>] [options]
+```
+
+Read or set a profile's description. The description is consumed by the kanban orchestrator to route tasks based on what each profile is good at, rather than guessing from the profile name alone. Persisted in `<profile_dir>/profile.yaml` so it survives reboots and is shared with the gateway.
+
+With no flags, prints the current description (or `(no description set for '<name>')` if empty).
+
+| Argument / Option | Description |
+|-------------------|-------------|
+| `<name>` | Profile to describe. Required unless `--all --auto` is used. |
+| `--text "<text>"` | Set the description to this exact text (user-authored). Overwrites any existing description. |
+| `--auto` | Auto-generate a 1-2 sentence description via the auxiliary LLM, based on the profile's installed skills, configured model, and name. Configure the model under `auxiliary.profile_describer` in `config.yaml`. Auto-generated descriptions are marked `description_auto: true` so the dashboard can flag them for review. |
+| `--overwrite` | With `--auto`, replace user-authored descriptions too (default: skip profiles whose description was set explicitly). |
+| `--all` | With `--auto`, sweep every profile missing a description. |
+
+**Examples:**
+
+```bash
+# Read the current description
+hermes profile describe researcher
+
+# Set it explicitly
+hermes profile describe researcher --text "Reads source code and writes findings."
+
+# Let the LLM generate one
+hermes profile describe researcher --auto
+
+# Fill in descriptions for every profile that doesn't have one
+hermes profile describe --all --auto
 ```
 
 ## `hermes profile delete`

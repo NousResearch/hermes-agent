@@ -10,6 +10,80 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 
 
+class _FakeDingTalkModel:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class _FakeChatbotMessage(SimpleNamespace):
+    @classmethod
+    def from_dict(cls, data):
+        data = data or {}
+        return cls(
+            message_id=data.get("msgId") or data.get("messageId") or data.get("message_id") or "",
+            conversation_id=data.get("conversationId") or data.get("conversation_id") or "",
+            conversation_type=str(data.get("conversationType") or data.get("conversation_type") or "1"),
+            sender_id=data.get("senderId") or data.get("sender_id") or "",
+            sender_staff_id=data.get("senderStaffId") or data.get("sender_staff_id") or data.get("senderId") or "",
+            sender_nick=data.get("senderNick") or data.get("sender_nick") or "",
+            text=data.get("text") or "",
+            rich_text=data.get("richText") or data.get("rich_text"),
+            rich_text_content=data.get("richTextContent") or data.get("rich_text_content"),
+            session_webhook=data.get("sessionWebhook") or data.get("session_webhook") or "",
+            session_webhook_expired_time=data.get("sessionWebhookExpiredTime") or data.get("session_webhook_expired_time") or 0,
+            create_at=data.get("createAt") or data.get("create_at") or 0,
+            at_users=data.get("atUsers") or data.get("at_users") or [],
+            is_in_at_list=bool(data.get("isInAtList") or data.get("is_in_at_list")),
+        )
+
+
+@pytest.fixture(autouse=True)
+def _fake_dingtalk_optional_sdks(monkeypatch):
+    """Keep DingTalk adapter tests hermetic when optional SDKs are absent."""
+    from gateway.platforms import dingtalk as dt
+
+    card_models = SimpleNamespace(**{
+        name: _FakeDingTalkModel
+        for name in (
+            "CreateCardRequest",
+            "CreateCardRequestCardData",
+            "CreateCardRequestImGroupOpenSpaceModel",
+            "CreateCardRequestImRobotOpenSpaceModel",
+            "CreateCardHeaders",
+            "DeliverCardRequest",
+            "DeliverCardRequestImGroupOpenDeliverModel",
+            "DeliverCardRequestImRobotOpenDeliverModel",
+            "DeliverCardHeaders",
+            "StreamingUpdateRequest",
+            "StreamingUpdateHeaders",
+        )
+    })
+    robot_models = SimpleNamespace(**{
+        name: _FakeDingTalkModel
+        for name in (
+            "RobotReplyEmotionRequestTextEmotion",
+            "RobotReplyEmotionRequest",
+            "RobotReplyEmotionHeaders",
+            "RobotRecallEmotionRequestTextEmotion",
+            "RobotRecallEmotionRequest",
+            "RobotRecallEmotionHeaders",
+            "RobotMessageFileDownloadRequest",
+            "RobotMessageFileDownloadHeaders",
+        )
+    })
+
+    monkeypatch.setattr(dt, "ChatbotMessage", _FakeChatbotMessage, raising=False)
+    monkeypatch.setattr(
+        dt,
+        "AckMessage",
+        SimpleNamespace(STATUS_OK=200, STATUS_SYSTEM_EXCEPTION=500),
+        raising=False,
+    )
+    monkeypatch.setattr(dt, "tea_util_models", SimpleNamespace(RuntimeOptions=_FakeDingTalkModel), raising=False)
+    monkeypatch.setattr(dt, "dingtalk_card_models", card_models, raising=False)
+    monkeypatch.setattr(dt, "dingtalk_robot_models", robot_models, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Requirements check
 # ---------------------------------------------------------------------------
@@ -18,7 +92,8 @@ from gateway.config import Platform, PlatformConfig
 class TestDingTalkRequirements:
 
     def test_returns_false_when_sdk_missing(self, monkeypatch):
-        with patch.dict("sys.modules", {"dingtalk_stream": None}):
+        with patch.dict("sys.modules", {"dingtalk_stream": None}), \
+             patch("tools.lazy_deps.ensure", side_effect=ImportError("dingtalk_stream unavailable")):
             monkeypatch.setattr(
                 "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", False
             )

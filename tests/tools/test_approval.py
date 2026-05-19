@@ -1102,3 +1102,206 @@ class TestDetectSudoStdin:
             "make 2>&1 | tee build.log"
         )
         assert is_dangerous is False
+
+
+class TestMacOSPrivateSystemPaths:
+    """Inspired by Claude Code 2.1.113 "dangerous path protection".
+
+    On macOS, /etc, /var, /tmp, /home are symlinks to
+    /private/{etc,var,tmp,home}. A command that writes to
+    /private/etc/sudoers works identically to /etc/sudoers but bypasses
+    a plain "/etc/" pattern check.  These tests guard the shared
+    _SYSTEM_CONFIG_PATH fragment used across redirect / tee / cp / mv /
+    install / sed -i patterns.
+    """
+
+    def test_private_etc_redirect(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "echo 'root ALL=NOPASSWD: ALL' > /private/etc/sudoers"
+        )
+        assert dangerous is True
+        assert "system config" in desc.lower()
+
+    def test_private_var_redirect(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "echo payload > /private/var/db/dslocal/nodes/x"
+        )
+        assert dangerous is True
+
+    def test_private_etc_via_tee(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "echo malicious | tee /private/etc/hosts"
+        )
+        assert dangerous is True
+        assert "tee" in desc.lower() or "system" in desc.lower()
+
+    def test_private_etc_cp(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "cp malicious.conf /private/etc/hosts"
+        )
+        assert dangerous is True
+        assert "copy" in desc.lower() or "system config" in desc.lower()
+
+    def test_private_etc_mv(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "mv evil /private/etc/ssh/sshd_config"
+        )
+        assert dangerous is True
+
+    def test_private_etc_install(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "install -m 600 key /private/etc/ssh/keys"
+        )
+        assert dangerous is True
+
+    def test_private_etc_sed_in_place(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "sed -i 's/root/pwned/' /private/etc/passwd"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower() or "system config" in desc.lower()
+
+    def test_private_var_sed_long_flag(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "sed --in-place 's/x/y/' /private/var/log/wtmp"
+        )
+        assert dangerous is True
+
+    def test_private_tmp_cp(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "cp rootkit /private/tmp/payload"
+        )
+        assert dangerous is True
+
+    def test_ls_private_is_safe(self):
+        """Reading under /private/ must not trigger approval."""
+        dangerous, _, _ = detect_dangerous_command("ls /private")
+        assert dangerous is False
+
+    def test_echo_mentioning_private_path_is_safe(self):
+        """Literal mention of /private/etc in an echo string must not fire."""
+        dangerous, _, _ = detect_dangerous_command(
+            "echo 'the macOS path is /private/etc on disk'"
+        )
+        assert dangerous is False
+
+
+class TestKillallKillSignals:
+    """Inspired by Claude Code 2.1.113 expanded deny rules.
+
+    The existing pattern caught `pkill -9` but not the equivalent
+    `killall -9` / `-KILL` / `-s KILL` / `-r <regex>` broad sweeps that
+    can wipe out unrelated processes.
+    """
+
+    def test_killall_dash_9(self):
+        dangerous, _, desc = detect_dangerous_command("killall -9 firefox")
+        assert dangerous is True
+        assert "kill" in desc.lower()
+
+    def test_killall_dash_kill(self):
+        dangerous, _, _ = detect_dangerous_command("killall -KILL firefox")
+        assert dangerous is True
+
+    def test_killall_dash_sigkill(self):
+        dangerous, _, _ = detect_dangerous_command("killall -SIGKILL firefox")
+        assert dangerous is True
+
+    def test_killall_dash_s_kill(self):
+        dangerous, _, _ = detect_dangerous_command("killall -s KILL firefox")
+        assert dangerous is True
+
+    def test_killall_dash_s_signum(self):
+        dangerous, _, _ = detect_dangerous_command("killall -s 9 firefox")
+        assert dangerous is True
+
+    def test_killall_regex(self):
+        """killall -r <regex> is a broad sweep; require approval."""
+        dangerous, _, desc = detect_dangerous_command("killall -r 'fire.*'")
+        assert dangerous is True
+        assert "regex" in desc.lower() or "kill" in desc.lower()
+
+    def test_killall_combined_flags(self):
+        dangerous, _, _ = detect_dangerous_command("killall -9 -r 'herm.*'")
+        assert dangerous is True
+
+    def test_killall_list_signals_is_safe(self):
+        """`killall -l` lists signals and is harmless — must not fire."""
+        dangerous, _, _ = detect_dangerous_command("killall -l")
+        assert dangerous is False
+
+    def test_killall_version_is_safe(self):
+        dangerous, _, _ = detect_dangerous_command("killall -V")
+        assert dangerous is False
+
+
+class TestFindExecdir:
+    """Inspired by Claude Code 2.1.113 tightening of find rules.
+
+    `find -execdir rm` has the same destructive effect as `find -exec rm`
+    but ran in each match's directory. Previously missed because the
+    pattern required a literal `-exec ` followed by a space.
+    """
+
+    def test_find_execdir_rm(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "find . -execdir rm {} \\;"
+        )
+        assert dangerous is True
+        assert "find" in desc.lower() or "rm" in desc.lower()
+
+    def test_find_execdir_with_absolute_rm(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "find /var -execdir /bin/rm -rf {} \\;"
+        )
+        assert dangerous is True
+
+    def test_find_exec_rm_still_caught(self):
+        """Original -exec pattern must still fire (regression guard)."""
+        dangerous, _, _ = detect_dangerous_command(
+            "find . -exec rm {} \\;"
+        )
+        assert dangerous is True
+
+    def test_find_execdir_ls_is_safe(self):
+        """-execdir with a read-only command is not dangerous."""
+        dangerous, _, _ = detect_dangerous_command(
+            "find . -execdir ls {} \\;"
+        )
+        assert dangerous is False
+
+
+class TestEtcPatternsUnaffectedByRefactor:
+    """Regression guard: the /etc/ patterns were refactored to share the
+    _SYSTEM_CONFIG_PATH fragment with the /private/ mirror. Make sure the
+    existing /etc/ coverage remains identical.
+    """
+
+    def test_etc_redirect(self):
+        dangerous, _, _ = detect_dangerous_command("echo x > /etc/hosts")
+        assert dangerous is True
+
+    def test_etc_cp(self):
+        dangerous, _, _ = detect_dangerous_command("cp evil /etc/hosts")
+        assert dangerous is True
+
+    def test_etc_sed_inline(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "sed -i 's/a/b/' /etc/hosts"
+        )
+        assert dangerous is True
+
+    def test_etc_tee(self):
+        dangerous, _, _ = detect_dangerous_command(
+            "echo x | tee /etc/hosts"
+        )
+        assert dangerous is True
+
+    def test_cat_etc_hostname_is_safe(self):
+        """Reading /etc/ files is safe — only writes require approval."""
+        dangerous, _, _ = detect_dangerous_command("cat /etc/hostname")
+        assert dangerous is False
+
+    def test_grep_etc_passwd_is_safe(self):
+        dangerous, _, _ = detect_dangerous_command("grep root /etc/passwd")
+        assert dangerous is False

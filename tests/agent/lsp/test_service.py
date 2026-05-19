@@ -130,6 +130,35 @@ def test_service_e2e_delta_filter(mock_pyright):
         svc.shutdown()
 
 
+def test_service_e2e_delta_filter_with_line_shift(mock_pyright):
+    """End-to-end: an edit that shifts the diagnostic's line still
+    filters correctly when ``line_shift`` is supplied.
+
+    The mock LSP server emits a fixed error at line 0; for this test
+    we don't need to actually shift the server's output — we just
+    need to prove that supplying a line_shift through the API works
+    and doesn't break the existing delta path.  The unit tests in
+    test_delta_key.py cover the shift semantics in detail.
+    """
+    repo = mock_pyright
+    f = repo / "x.py"
+    f.write_text("print('hi')\n")
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+    )
+    try:
+        svc.snapshot_baseline(str(f))
+        # Identity shift — should behave exactly like no shift.
+        new_diags = svc.get_diagnostics_sync(str(f), line_shift=lambda L: L)
+        assert new_diags == []
+    finally:
+        svc.shutdown()
+
+
 def test_service_status_includes_clients(mock_pyright):
     repo = mock_pyright
     f = repo / "x.py"

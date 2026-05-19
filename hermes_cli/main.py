@@ -1302,6 +1302,18 @@ def _launch_tui(
             except Exception:
                 pass
 
+    # Exit code 42 = TUI requested an update. Relaunch as `hermes update` so
+    # the user sees update output directly and gets the new version.
+    # preserve_inherited=False ensures --tui and other flags are NOT carried
+    # into the update subcommand.
+    if code == 42:
+        from hermes_cli.relaunch import relaunch
+
+        print()
+        print("⚕ Launching update...")
+        print()
+        relaunch(["update"], preserve_inherited=False)
+
     sys.exit(code)
 
 

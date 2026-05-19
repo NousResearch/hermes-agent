@@ -486,11 +486,11 @@ class TestSlackSocketWatchdog:
             assert len(instances) == 1, "watchdog kept reconnecting after disconnect"
 
     @pytest.mark.asyncio
-    async def test_watchdog_self_restarts_after_unexpected_crash(self):
-        """A bug inside the watchdog body must not permanently disable healing."""
+    async def test_watchdog_cancellation_does_not_respawn(self):
+        """Cancellation is the intentional-shutdown signal — no respawn allowed."""
         adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
         adapter._socket_watchdog_interval_s = 0.01
-        factory, instances = self._make_fake_handler_factory()
+        factory, _instances = self._make_fake_handler_factory()
 
         with contextlib.ExitStack() as stack:
             for p in self._patch_stack(factory):
@@ -500,21 +500,60 @@ class TestSlackSocketWatchdog:
                 assert await adapter.connect() is True
                 first_watchdog = adapter._socket_watchdog_task
 
-                # Force the loop to raise on its next iteration: the broad
-                # except inside the loop swallows it, so the same task keeps
-                # running. We additionally cancel it to simulate a hard crash
-                # and verify the done-callback restarts a fresh watchdog.
                 first_watchdog.cancel()
                 for _ in range(20):
-                    if adapter._socket_watchdog_task is not first_watchdog:
+                    if first_watchdog.done():
                         break
                     await asyncio.sleep(0.01)
 
-                # Cancelled tasks should NOT respawn (intentional shutdown
-                # signal). The done-callback differentiates cancel vs crash.
+                # Done-callback must treat cancel as a shutdown signal and
+                # leave the watchdog unattended (either cleared or unchanged
+                # to the same cancelled task — never a fresh respawn).
                 assert adapter._socket_watchdog_task is None or (
                     adapter._socket_watchdog_task is first_watchdog
                 )
+            finally:
+                await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_unexpected_exit_respawns_via_done_callback(self):
+        """A real exception out of the loop body must trigger a respawn."""
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._socket_watchdog_interval_s = 0.01
+        factory, _instances = self._make_fake_handler_factory()
+
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_stack(factory):
+                stack.enter_context(p)
+
+            try:
+                assert await adapter.connect() is True
+                first_watchdog = adapter._socket_watchdog_task
+                assert first_watchdog is not None
+
+                # Build a fake "crashed" task: a coroutine that raises so the
+                # done-callback observes a non-cancelled exit with exception.
+                async def _boom():
+                    raise RuntimeError("simulated watchdog crash")
+
+                crashed = asyncio.create_task(_boom())
+                # Wait for it to actually complete with the exception.
+                for _ in range(20):
+                    if crashed.done():
+                        break
+                    await asyncio.sleep(0.01)
+                assert crashed.done() and crashed.exception() is not None
+
+                # Pretend this crashed task is the current watchdog and drive
+                # the done-callback directly — this is the exact signal the
+                # event loop fires when the real watchdog blows up.
+                adapter._socket_watchdog_task = crashed
+                adapter._on_socket_watchdog_done(crashed)
+
+                replacement = adapter._socket_watchdog_task
+                assert replacement is not None
+                assert replacement is not crashed
+                assert not replacement.done()
             finally:
                 await adapter.disconnect()
 

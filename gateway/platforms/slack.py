@@ -933,9 +933,25 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
-            self._running = True
-            self._start_socket_mode_handler()
-            self._ensure_socket_watchdog()
+            # Bring up the handler and watchdog atomically. ``_running`` only
+            # flips to True after the handler is alive so the watchdog loop
+            # observes the live task immediately; on any failure here we tear
+            # down whatever we managed to start, leave ``_running=False``, and
+            # let the ``finally`` block release the platform lock cleanly.
+            try:
+                self._start_socket_mode_handler()
+                self._running = True
+                self._ensure_socket_watchdog()
+            except Exception:
+                self._running = False
+                try:
+                    await self._stop_socket_mode_handler()
+                except Exception:  # pragma: no cover - defensive logging
+                    logger.debug(
+                        "[Slack] Cleanup after failed start raised", exc_info=True
+                    )
+                raise
+
             logger.info(
                 "[Slack] Socket Mode connected (%d workspace(s))",
                 len(self._team_clients),

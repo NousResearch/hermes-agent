@@ -9847,6 +9847,12 @@ class GatewayRunner:
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
+        # Intercept reserved subcommands that should show status/info
+        # instead of switching to a model literally named "status" etc.
+        _MODEL_INFO_SUBCOMMANDS = {"status", "info"}
+        if model_input.lower() in _MODEL_INFO_SUBCOMMANDS and not explicit_provider:
+            model_input = ""  # Treat as no-args → show status/picker
+
         # Read current model/provider from config
         current_model = ""
         current_provider = "openrouter"

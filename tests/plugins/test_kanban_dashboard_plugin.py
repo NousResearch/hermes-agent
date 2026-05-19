@@ -70,7 +70,8 @@ def test_board_empty(client):
     data = r.json()
     # All canonical columns present (triage + the rest), each empty.
     names = [c["name"] for c in data["columns"]]
-    for expected in ("triage", "todo", "ready", "running", "blocked", "done"):
+    assert set(names) == kb.VALID_STATUSES - {"archived"}
+    for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
@@ -111,6 +112,31 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_scheduled_tasks_have_their_own_column_not_todo(client):
+    """Scheduled/time-delay tasks must not be silently bucketed into todo."""
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "wait for indexed data", "assignee": "ops"},
+    ).json()["task"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'scheduled' WHERE id = ?",
+                (task["id"],),
+            )
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    columns = {c["name"]: c["tasks"] for c in r.json()["columns"]}
+    assert any(t["id"] == task["id"] for t in columns["scheduled"])
+    assert not any(t["id"] == task["id"] for t in columns["todo"])
 
 
 def test_tenant_filter(client):

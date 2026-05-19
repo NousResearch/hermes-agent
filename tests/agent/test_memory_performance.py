@@ -62,7 +62,7 @@ class TestMemoryManagerPerformance:
 
         assert elapsed < 0.001, f"add_provider took {elapsed*1000:.3f}ms, expected <1ms"
 
-    @pytest.mark.skipif(os.getenv("CI"), reason="timing-sensitive, skipped in CI")
+    @pytest.mark.skipif(bool(os.getenv("CI")), reason="timing-sensitive, skipped in CI")
     def test_add_ten_providers_under_5ms(self):
         """Adding 10 providers (100 tools total) should complete in under 5ms."""
         mgr = MemoryManager()

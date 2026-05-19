@@ -6016,22 +6016,20 @@ class GatewayRunner:
 
             timeout = self._restart_drain_timeout
 
-            # Pre-mark sessions as resume_pending BEFORE the drain wait.
-            # If the process is killed by the service manager during the
-            # drain, the durable marker is already written so the next
-            # gateway boot can recover in-flight sessions (#27856).
-            _pre_drain_keys: list[str] = []
-            for _sk, _agent in list(self._running_agents.items()):
-                if _agent is _AGENT_PENDING_SENTINEL:
-                    continue
-                try:
-                    self.session_store.mark_resume_pending(
-                        _sk,
-                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
-                    )
-                    _pre_drain_keys.append(_sk)
-                except Exception as _e:
-                    logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
+            # NOTE(#27856 follow-up): We intentionally do NOT pre-mark running
+            # sessions as resume_pending before the drain wait.  The original
+            # pre-drain block (removed in fork) pre-marked ALL running sessions
+            # then cleared the markers on clean drain, but this caused
+            # mark_resume_pending to fire on clean drains (violating the test
+            # contract) and to mark sessions that finished during the drain
+            # window (stray resume-interruption notes on their next turn).
+            #
+            # SIGKILL safety is preserved without pre-drain marking: if the
+            # gateway is killed mid-drain, the .clean_shutdown marker is NOT
+            # written, so the next boot's suspend_recently_active() marks those
+            # sessions as resume_pending with reason="restart_interrupted",
+            # which is included in _AUTO_RESUME_REASONS and produces
+            # functionally identical auto-resume behaviour.
 
             _drain_started_at = time.monotonic()
             active_agents, timed_out = await self._drain_active_agents(timeout)
@@ -6044,20 +6042,6 @@ class GatewayRunner:
                 len(active_agents),
                 self._running_agent_count(),
             )
-
-            if not timed_out:
-                # Drain completed gracefully — all running sessions finished.
-                # Clear the pre-drain resume_pending markers so sessions that
-                # completed during the drain window don't carry a stale flag.
-                for _sk in _pre_drain_keys:
-                    if _sk not in self._running_agents:
-                        try:
-                            self.session_store.clear_resume_pending(_sk)
-                        except Exception as _e:
-                            logger.debug(
-                                "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
-                            )
 
             if timed_out:
                 logger.warning(

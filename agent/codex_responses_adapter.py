@@ -820,6 +820,18 @@ def _preflight_codex_api_kwargs(
     elif "stream" in api_kwargs:
         raise ValueError("Codex Responses stream flag is only allowed in fallback streaming requests.")
 
+    # Safety-net sanitization for xAI: even if the caller skipped
+    # sanitization in ``build_api_kwargs``, strip slash-containing
+    # ``enum`` values from tool schemas here to prevent xAI Responses
+    # API from rejecting the request with HTTP 400 ``Invalid arguments
+    # passed to the model``.
+    if normalized.get("tools"):
+        try:
+            from tools.schema_sanitizer import strip_slash_enum
+            normalized["tools"], _ = strip_slash_enum(normalized["tools"])
+        except Exception:
+            pass  # Best-effort — the caller-level sanitization should have handled it
+
     unexpected = sorted(key for key in api_kwargs if key not in allowed_keys)
     if unexpected:
         raise ValueError(

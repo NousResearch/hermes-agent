@@ -146,6 +146,12 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
 
+        # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
+        # supported: service_tier"). Strip it from request overrides when
+        # targeting xAI. See #XXXXX.
+        if is_xai_responses:
+            kwargs.pop("service_tier", None)
+
         if is_codex_backend:
             prompt_cache_key = kwargs.get("prompt_cache_key")
             cache_scope_id = str(prompt_cache_key or session_id or "").strip()

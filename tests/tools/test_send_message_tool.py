@@ -453,6 +453,50 @@ class TestSendToPlatformChunking:
         for call in send.await_args_list:
             assert len(call.args[2]) <= 2020  # each chunk fits the limit
 
+    def test_discord_embed_attaches_to_first_chunk_only(self):
+        """Standalone Discord fallback carries cron embeds through to REST sender."""
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+        embed = {"title": "operator action needed", "description": "details"}
+        long_msg = "word " * 1000  # force multiple chunks
+
+        with patch("tools.send_message_tool._send_discord", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "ch",
+                    long_msg,
+                    discord_embed=embed,
+                )
+            )
+
+        assert result["success"] is True
+        assert send.await_count >= 3
+        assert send.await_args_list[0].kwargs["discord_embed"] == embed
+        for call in send.await_args_list[1:]:
+            assert "discord_embed" not in call.kwargs
+
+    def test_discord_embed_only_message_is_sent(self):
+        """Discord embed-only cron deliveries must not be dropped as empty text."""
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+        embed = {"title": "Cron: watchdog", "description": "state changed"}
+
+        with patch("tools.send_message_tool._send_discord", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "ch",
+                    "",
+                    discord_embed=embed,
+                )
+            )
+
+        assert result["success"] is True
+        send.assert_awaited_once()
+        assert send.await_args.args[2] == ""
+        assert send.await_args.kwargs["discord_embed"] == embed
+
     def test_slack_messages_are_formatted_before_send(self, monkeypatch):
         _ensure_slack_mock(monkeypatch)
 

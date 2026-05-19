@@ -107,6 +107,7 @@ def adapter(monkeypatch):
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_WAKE_WORDS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
         "DISCORD_ALLOWED_CHANNELS",
@@ -345,6 +346,50 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_wake_word_can_replace_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_WAKE_WORDS", "dex")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=321), content="Dex, can you check this?")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "can you check this?"
+
+
+@pytest.mark.asyncio
+async def test_discord_wake_word_can_come_from_config_extra(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_WAKE_WORDS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["wake_words"] = ["dex", "hey dex"]
+
+    message = make_message(channel=FakeTextChannel(channel_id=321), content="hey dex status please")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "status please"
+
+
+@pytest.mark.asyncio
+async def test_discord_wake_word_requires_prefix_boundary(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_WAKE_WORDS", "dex")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=321), content="index this please")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

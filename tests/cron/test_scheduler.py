@@ -7,7 +7,17 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    _resolve_origin,
+    _resolve_delivery_target,
+    _deliver_result,
+    _send_media_via_adapter,
+    run_job,
+    SILENT_MARKER,
+    _build_job_prompt,
+    _extract_discord_embed_payload,
+    _build_default_discord_cron_embed,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -564,6 +574,111 @@ class TestDeliverResultWrapping:
         assert "Cronjob Response" not in sent_content
         assert "The agent cannot see" not in sent_content
 
+    def test_delivery_extracts_discord_embed_marker(self):
+        content = 'HERMES_DISCORD_EMBED:{"title":"Board","fields":[]}\nplain fallback'
+
+        cleaned, embed = _extract_discord_embed_payload(content)
+
+        assert cleaned == "plain fallback"
+        assert embed == {"title": "Board", "fields": []}
+
+    def test_default_discord_embed_uses_job_metadata_and_clamps_description(self):
+        embed = _build_default_discord_cron_embed(
+            {"id": "abc123", "name": "gateway-profile-health"},
+            "x" * 5000,
+        )
+
+        assert embed["title"] == "Cron: gateway-profile-health"
+        assert embed["footer"] == {"text": "job_id: abc123"}
+        assert len(embed["description"]) <= 4096
+        assert embed["description"].endswith("… truncated")
+
+    def test_plain_discord_cron_delivery_uses_default_embed_without_wrapper_text(self):
+        """Plain Discord cron output should render as an embed, not wrapper text."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "health-job",
+                "name": "gateway-profile-health",
+                "deliver": "origin",
+                "origin": {"platform": "discord", "chat_id": "123"},
+            }
+            _deliver_result(job, "Gateway/profile health\n\nProfiles:\n  default running")
+
+        send_mock.assert_called_once()
+        args, kwargs = send_mock.call_args
+        assert args[3] == ""
+        assert "Cronjob Response" not in args[3]
+        assert kwargs["discord_embed"]["title"] == "Cron: gateway-profile-health"
+        assert "Gateway/profile health" in kwargs["discord_embed"]["description"]
+
+    def test_discord_embed_delivery_uses_unwrapped_content_and_embed_kwarg(self):
+        """Discord cron embeds should bypass the noisy Cronjob Response wrapper."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+        embed = {"title": "operator action needed: board", "fields": []}
+        content = f"HERMES_DISCORD_EMBED:{json.dumps(embed)}\noperator action needed: board"
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "watchdog-job",
+                "name": "board watchdog",
+                "deliver": "origin",
+                "origin": {"platform": "discord", "chat_id": "123"},
+            }
+            _deliver_result(job, content)
+
+        send_mock.assert_called_once()
+        args, kwargs = send_mock.call_args
+        assert args[3] == "operator action needed: board"
+        assert "Cronjob Response" not in args[3]
+        assert kwargs["discord_embed"] == embed
+
+    def test_live_discord_adapter_receives_embed_metadata(self):
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        embed = {"title": "intervened: board", "fields": []}
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                {"id": "watchdog", "deliver": "origin", "origin": {"platform": "discord", "chat_id": "123"}},
+                f"HERMES_DISCORD_EMBED:{json.dumps(embed)}\nfallback text",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        adapter.send.assert_called_once()
+        assert adapter.send.call_args[0][1] == "fallback text"
+        assert adapter.send.call_args.kwargs["metadata"]["discord_embed"] == embed
+
     def test_delivery_extracts_media_tags_before_send(self):
         """Cron delivery should pass MEDIA attachments separately to the send helper."""
         from gateway.config import Platform
@@ -637,7 +752,8 @@ class TestDeliverResultWrapping:
         adapter.send.assert_called_once()
         text_sent = adapter.send.call_args[0][1]
         assert "MEDIA:" not in text_sent
-        assert "Here is TTS" in text_sent
+        assert text_sent == ""
+        assert adapter.send.call_args.kwargs["metadata"]["discord_embed"]["description"] == "Here is TTS"
 
         # Audio file should be sent as a voice attachment
         adapter.send_voice.assert_called_once()

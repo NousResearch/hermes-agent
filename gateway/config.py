@@ -838,6 +838,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "exclusive_bot_mentions" in platform_cfg:
                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
+                if "wake_words" in platform_cfg:
+                    bridged["wake_words"] = platform_cfg["wake_words"]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "allow_from" in platform_cfg:
@@ -929,6 +931,11 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
                 if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
                     os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+                wake_words = discord_cfg.get("wake_words")
+                if wake_words is not None and not os.getenv("DISCORD_WAKE_WORDS"):
+                    if isinstance(wake_words, list):
+                        wake_words = ",".join(str(v) for v in wake_words)
+                    os.environ["DISCORD_WAKE_WORDS"] = str(wake_words)
                 frc = discord_cfg.get("free_response_channels")
                 if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
                     if isinstance(frc, list):

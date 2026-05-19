@@ -1408,7 +1408,7 @@ def create_task(
                         workspace_path,
                         tenant,
                         idempotency_key,
-                        int(max_runtime_seconds) if max_runtime_seconds else None,
+                        int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                     ),

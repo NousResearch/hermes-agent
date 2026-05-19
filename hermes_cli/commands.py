@@ -217,7 +217,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit",)),
+               cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
 
 
@@ -338,6 +338,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "commands",
         "deny",
         "help",
+        "loop",
         "new",
         "profile",
         "queue",

@@ -939,7 +939,6 @@ CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_events_run            ON task_events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
@@ -1079,10 +1078,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
-            "ON tasks(idempotency_key)"
-        )
+    # ``idx_tasks_idempotency`` is created unconditionally below alongside
+    # the other additive-column indexes — see the block after the
+    # legacy-column migration. Creating it here too would be redundant.
 
     # Refresh after early additive migrations above. Some existing DBs were
     # partially migrated in older releases and can already contain the later
@@ -1170,9 +1168,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
-    # Indexes over additive task columns must be created after the columns
-    # exist. Keeping them in SCHEMA_SQL breaks legacy boards because
-    # CREATE TABLE IF NOT EXISTS does not add new columns to existing tables.
+    # Indexes over additive ``tasks`` columns must be created after the
+    # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
+    # parses each statement in ``executescript`` against the live schema, so a
+    # ``CREATE INDEX`` over a missing column aborts initialization before the
+    # additive ``ALTER TABLE`` migrations below can run. Re-running them here
+    # is cheap thanks to ``IF NOT EXISTS`` and stays correct on fresh DBs
+    # (where the columns already exist from SCHEMA_SQL).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
@@ -1186,10 +1188,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
     if "run_id" not in ev_cols:
         _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_events_run "
-            "ON task_events(run_id, id)"
-        )
+
+    # Same ordering rule as the additive ``tasks`` indexes above: create the
+    # index after the additive column migration so legacy ``task_events``
+    # tables don't fail during SCHEMA_SQL execution before ``run_id`` exists.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_run "
+        "ON task_events(run_id, id)"
+    )
 
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"

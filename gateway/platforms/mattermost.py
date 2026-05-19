@@ -471,9 +471,10 @@ class MattermostAdapter(BasePlatformAdapter):
 
         p = Path(file_path)
         if not p.exists():
-            return await self.send(
-                chat_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
+            logger.warning(
+                "Mattermost: local file not found, skipping: %s", file_path
             )
+            return SendResult(success=True, message_id=None)
 
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"

@@ -946,6 +946,12 @@ def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
     Priority:
+      0. ANTHROPIC_API_KEY env var — only when HERMES_PREFER_API_KEY is set to
+         a truthy value (1/true/yes/on) AND the key has the real-API-key
+         prefix `sk-ant-api`. Opt-in override for users who run hermes on the
+         same machine as Claude Code but want hermes to bill a different
+         (Console / API-key) account than the one Claude Code is signed in
+         to. Without this opt-in the default order applies.
       1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
@@ -954,6 +960,12 @@ def resolve_anthropic_token() -> Optional[str]:
 
     Returns the token string or None.
     """
+    # 0. Opt-in API-key-first override.
+    if os.getenv("HERMES_PREFER_API_KEY", "").strip().lower() in ("1", "true", "yes", "on"):
+        early_api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if early_api_key.startswith("sk-ant-api"):
+            return early_api_key
+
     creds = read_claude_code_credentials()
 
     # 1. Hermes-managed OAuth/setup token env var

@@ -1415,6 +1415,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
+            warnings: list[str] = []
             reference = None
 
             if reply_to and self._reply_to_mode != "off":
@@ -1455,12 +1456,21 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        try:
+                            msg = await channel.send(
+                                content=chunk,
+                                reference=None,
+                            )
+                        except Exception as retry_exc:
+                            warning = f"Failed to send Discord chunk {i + 1}/{len(chunks)} after retry without reply reference: {retry_exc}"
+                            logger.warning("[%s] %s", self.name, warning)
+                            warnings.append(warning)
+                            continue
                     else:
-                        raise
+                        warning = f"Failed to send Discord chunk {i + 1}/{len(chunks)}: {e}"
+                        logger.warning("[%s] %s", self.name, warning)
+                        warnings.append(warning)
+                        continue
                 message_ids.append(str(msg.id))
 
             # Track the last message we sent in this channel for history
@@ -1469,10 +1479,26 @@ class DiscordAdapter(BasePlatformAdapter):
                 _target_id = thread_id or chat_id
                 self._last_self_message_id[_target_id] = message_ids[-1]
 
+            total_parts = len(chunks)
+            succeeded_parts = len(message_ids)
+            failed_parts = max(0, total_parts - succeeded_parts)
+            raw_response: Dict[str, Any] = {
+                "message_ids": message_ids,
+                "total_parts": total_parts,
+                "succeeded_parts": succeeded_parts,
+                "failed_parts": failed_parts,
+            }
+            if warnings:
+                raw_response["warnings"] = warnings
+            error = None
+            if failed_parts:
+                error = f"PARTIAL delivery ({succeeded_parts}/{total_parts} parts succeeded): {'; '.join(warnings) or 'unknown error'}"
+
             return SendResult(
-                success=True,
+                success=failed_parts == 0,
                 message_id=message_ids[0] if message_ids else None,
-                raw_response={"message_ids": message_ids}
+                error=error,
+                raw_response=raw_response,
             )
 
         except Exception as e:  # pragma: no cover - defensive logging
@@ -1524,13 +1550,26 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.warning("[%s] %s", self.name, warning)
                 warnings.append(warning)
 
-        raw_response: Dict[str, Any] = {"message_ids": message_ids, "thread_id": thread_id}
+        total_parts = len(chunks)
+        succeeded_parts = len(message_ids)
+        failed_parts = max(0, total_parts - succeeded_parts)
+        raw_response: Dict[str, Any] = {
+            "message_ids": message_ids,
+            "thread_id": thread_id,
+            "total_parts": total_parts,
+            "succeeded_parts": succeeded_parts,
+            "failed_parts": failed_parts,
+        }
         if warnings:
             raw_response["warnings"] = warnings
+        error = None
+        if failed_parts:
+            error = f"PARTIAL forum delivery ({succeeded_parts}/{total_parts} parts succeeded): {'; '.join(warnings)}"
 
         return SendResult(
-            success=True,
+            success=failed_parts == 0,
             message_id=message_ids[0],
+            error=error,
             raw_response=raw_response,
         )
 

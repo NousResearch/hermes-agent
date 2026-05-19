@@ -585,12 +585,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
+        adapter_partial_failure = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
+                total_parts = 1
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
                     future = safe_schedule_threadsafe(
@@ -605,13 +607,39 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         except TimeoutError:
                             future.cancel()
                             raise
-                        if send_result and not getattr(send_result, "success", True):
-                            err = getattr(send_result, "error", "unknown")
-                            logger.warning(
-                                "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
-                                job["id"], platform_name, chat_id, err,
-                            )
-                            adapter_ok = False  # fall through to standalone path
+
+                        raw_response = getattr(send_result, "raw_response", None) if send_result else None
+                        if not isinstance(raw_response, dict):
+                            raw_response = {}
+                        message_ids = raw_response.get("message_ids") or []
+                        total_parts = raw_response.get("total_parts")
+                        if total_parts is None:
+                            total_parts = len(message_ids) if message_ids else 1
+                        succeeded_parts = raw_response.get("succeeded_parts")
+                        if succeeded_parts is None:
+                            succeeded_parts = len(message_ids) if message_ids else (1 if getattr(send_result, "success", True) else 0)
+                        warnings = raw_response.get("warnings") or []
+
+                        send_success = bool(getattr(send_result, "success", True)) if send_result else True
+                        if send_result and (not send_success or warnings):
+                            err = getattr(send_result, "error", None) or "; ".join(str(w) for w in warnings) or "unknown"
+                            if total_parts > 1 and 0 < succeeded_parts < total_parts:
+                                msg = (
+                                    f"PARTIAL delivery to {platform_name}:{chat_id} "
+                                    f"({succeeded_parts}/{total_parts} parts succeeded): {err}"
+                                )
+                                logger.warning(
+                                    "Job '%s': %s; not retrying standalone to avoid duplicate parts",
+                                    job["id"], msg,
+                                )
+                                delivery_errors.append(msg)
+                                adapter_partial_failure = True
+                            else:
+                                logger.warning(
+                                    "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                                    job["id"], platform_name, chat_id, err,
+                                )
+                            adapter_ok = False  # fall through to standalone path unless partial
 
                 # Send extracted media files as native attachments via the live adapter
                 if adapter_ok and media_files:
@@ -626,13 +654,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
                 if adapter_ok:
-                    logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    if text_to_send and total_parts > 1:
+                        logger.info(
+                            "Job '%s': delivered all %s parts to %s:%s via live adapter",
+                            job["id"], total_parts, platform_name, chat_id,
+                        )
+                    else:
+                        logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
             except Exception as e:
                 logger.warning(
                     "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
                     job["id"], platform_name, chat_id, e,
                 )
+
+        if adapter_partial_failure:
+            continue
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)

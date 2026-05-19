@@ -2241,9 +2241,12 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             raise RuntimeError("Not connected")
 
-        message_thread_id = kwargs.get("message_thread_id")
+        helper_metadata = kwargs.pop("_hermes_thread_metadata", None)
+        send_kwargs = dict(kwargs)
+        message_thread_id = send_kwargs.get("message_thread_id")
+        reply_to_message_id = send_kwargs.get("reply_to_message_id")
         try:
-            return await self._bot.send_message(**kwargs)
+            return await self._bot.send_message(**send_kwargs)
         except Exception as send_err:
             if (
                 message_thread_id is not None
@@ -2255,8 +2258,24 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name,
                     message_thread_id,
                 )
-                retry_kwargs = dict(kwargs)
+                retry_kwargs = dict(send_kwargs)
                 retry_kwargs.pop("message_thread_id", None)
+                return await self._bot.send_message(**retry_kwargs)
+            if (
+                reply_to_message_id is not None
+                and self._is_bad_request_error(send_err)
+                and "message to be replied not found" in str(send_err).lower()
+            ):
+                logger.warning(
+                    "[%s] Reply target deleted for control message, retrying without reply/topic anchor: %s",
+                    self.name,
+                    send_err,
+                )
+                retry_kwargs = dict(send_kwargs)
+                retry_kwargs["reply_to_message_id"] = None
+                if helper_metadata and helper_metadata.get("telegram_dm_topic_reply_fallback"):
+                    retry_kwargs.pop("message_thread_id", None)
+                    retry_kwargs.pop("direct_messages_topic_id", None)
                 return await self._bot.send_message(**retry_kwargs)
             raise
 
@@ -2289,6 +2308,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
                 reply_to_message_id=reply_to_id,
+                _hermes_thread_metadata=metadata,
                 **self._thread_kwargs_for_send(
                     chat_id,
                     thread_id,
@@ -2355,6 +2375,7 @@ class TelegramAdapter(BasePlatformAdapter):
             }
             reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             kwargs["reply_to_message_id"] = reply_to_id
+            kwargs["_hermes_thread_metadata"] = metadata
             kwargs.update(
                 self._thread_kwargs_for_send(
                     chat_id,
@@ -2406,6 +2427,7 @@ class TelegramAdapter(BasePlatformAdapter):
             }
             reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             kwargs["reply_to_message_id"] = reply_to_id
+            kwargs["_hermes_thread_metadata"] = metadata
             kwargs.update(
                 self._thread_kwargs_for_send(
                     chat_id,
@@ -2489,6 +2511,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             reply_to_id = self._reply_to_message_id_for_send(None, metadata)
             kwargs["reply_to_message_id"] = reply_to_id
+            kwargs["_hermes_thread_metadata"] = metadata
             kwargs.update(
                 self._thread_kwargs_for_send(
                     chat_id,
@@ -2564,6 +2587,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
                 reply_to_message_id=reply_to_id,
+                _hermes_thread_metadata=metadata,
                 **self._thread_kwargs_for_send(
                     chat_id,
                     thread_id,
@@ -2984,6 +3008,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         if thread_id is not None and is_private_chat and prompt_message_id is not None:
                             reply_to_id = int(prompt_message_id)
                             send_kwargs["reply_to_message_id"] = reply_to_id
+                            send_kwargs["_hermes_thread_metadata"] = {
+                                "thread_id": str(thread_id),
+                                "telegram_dm_topic_reply_fallback": True,
+                            }
                             send_kwargs.update(
                                 self._thread_kwargs_for_send(
                                     str(query.message.chat_id),

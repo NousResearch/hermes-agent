@@ -4,6 +4,7 @@
 #
 # What this script enforces:
 #   * -n 4 xdist workers (CI has 4 cores; -n auto diverges locally)
+#   * A higher open-file limit before spawning pytest-xdist workers
 #   * TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0 (deterministic)
 #   * Credential env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running `pytest` outside of
@@ -87,6 +88,64 @@ export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export PYTHONHASHSEED=0
 
+# ── File descriptor limit ─────────────────────────────────────────────────
+# macOS interactive shells commonly start with a soft nofile limit of 256.
+# Four xdist workers plus subprocess-heavy tests can exhaust that quickly,
+# after which failures cascade as unrelated imports, sockets, temp files, and
+# pytest pipes all report "Too many open files".
+raise_nofile_limit() {
+  local target="${HERMES_TEST_NOFILE_LIMIT:-4096}"
+  local current hard desired
+
+  case "$target" in
+    ''|*[!0-9]*)
+      echo "warning: invalid HERMES_TEST_NOFILE_LIMIT=$target; leaving open-file limit unchanged" >&2
+      return
+      ;;
+  esac
+
+  current="$(ulimit -n 2>/dev/null || true)"
+  if [ "$current" = "unlimited" ]; then
+    return
+  fi
+  case "$current" in
+    ''|*[!0-9]*)
+      echo "warning: could not read current open-file limit; leaving it unchanged" >&2
+      return
+      ;;
+  esac
+  if [ "$current" -ge "$target" ]; then
+    return
+  fi
+
+  desired="$target"
+  hard="$(ulimit -Hn 2>/dev/null || true)"
+  if [ "$hard" != "unlimited" ]; then
+    case "$hard" in
+      ''|*[!0-9]*)
+        echo "warning: could not read hard open-file limit; leaving it unchanged" >&2
+        return
+        ;;
+    esac
+    if [ "$hard" -lt "$desired" ]; then
+      desired="$hard"
+    fi
+  fi
+
+  if [ "$desired" -le "$current" ]; then
+    echo "warning: open-file limit is $current and cannot be raised toward $target" >&2
+    return
+  fi
+
+  if ulimit -S -n "$desired" 2>/dev/null; then
+    echo "→ raised open-file limit from $current to $(ulimit -n)"
+  else
+    echo "warning: failed to raise open-file limit from $current to $desired" >&2
+  fi
+}
+
+raise_nofile_limit
+
 # ── Live-gateway test guard (developer machines) ────────────────────────────
 # If a system-wide hermes pytest_live_guard plugin is installed at
 # $HOME/.hermes/pytest_live_guard.py, force-load it here so every test run
@@ -112,10 +171,6 @@ WORKERS="${HERMES_TEST_WORKERS:-4}"
 # ── Run pytest ──────────────────────────────────────────────────────────────
 cd "$REPO_ROOT"
 
-# If the first argument starts with `-` treat all args as pytest flags;
-# otherwise treat them as test paths.
-ARGS=("$@")
-
 echo "▶ running pytest with $WORKERS workers, hermetic env, in $REPO_ROOT"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"
 
@@ -131,4 +186,4 @@ exec "$PYTHON" -m pytest \
   --ignore=tests/integration \
   --ignore=tests/e2e \
   -m "not integration" \
-  "${ARGS[@]}"
+  "$@"

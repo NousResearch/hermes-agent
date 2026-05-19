@@ -340,3 +340,139 @@ class TestCmdUpdatePipInstallLayouts:
         assert "--system" not in cmd
         assert cmd == ["/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent"]
         assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/home/u/.hermes/hermes-agent/venv"
+
+
+# ---------------------------------------------------------------------------
+# release-age gate across the install-layout matrix (PR #28749)
+# ---------------------------------------------------------------------------
+
+
+class TestCmdUpdatePipReleaseAgeGate:
+    """``--exclude-newer`` composition per layout:
+
+    - uv tool upgrade      -> flag applied (uv-native)
+    - uv pip (venv)        -> flag applied, VIRTUAL_ENV overlay preserved
+    - uv pip (--system)    -> flag applied alongside ``--system``
+    - pipx upgrade         -> no equivalent flag; explicit warning, proceeds
+    - plain pip            -> no flag; explicit warning, proceeds
+    - gate off (days == 0) -> no flag anywhere, no gate output
+    """
+
+    def _gate(self, hm, days, cutoff="2026-05-10"):
+        return (
+            patch.object(hm, "_get_min_release_age_days", return_value=days),
+            patch.object(hm, "_exclude_newer_date", return_value=cutoff if days else None),
+        )
+
+    @patch("subprocess.run")
+    def test_uv_tool_upgrade_applies_exclude_newer(self, mock_run, monkeypatch):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        gate_days, gate_cutoff = self._gate(hm, 3)
+        with patch("shutil.which", return_value="/usr/local/bin/uv"), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=True), \
+             gate_days, gate_cutoff:
+            hm._cmd_update_pip(SimpleNamespace())
+
+        assert mock_run.call_args[0][0] == [
+            "/usr/local/bin/uv", "tool", "upgrade", "hermes-agent",
+            "--exclude-newer", "2026-05-10",
+        ]
+
+    @patch("subprocess.run")
+    def test_uv_pip_venv_applies_exclude_newer(self, mock_run, monkeypatch):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(hm.sys, "prefix", "/home/u/.hermes/hermes-agent/venv")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+        gate_days, gate_cutoff = self._gate(hm, 3)
+        with patch("shutil.which", return_value="/usr/bin/uv"), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=False), \
+             gate_days, gate_cutoff:
+            hm._cmd_update_pip(SimpleNamespace())
+
+        cmd = mock_run.call_args[0][0]
+        assert "--system" not in cmd
+        assert cmd == [
+            "/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent",
+            "--exclude-newer", "2026-05-10",
+        ]
+        assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/home/u/.hermes/hermes-agent/venv"
+
+    @patch("subprocess.run")
+    def test_uv_pip_system_applies_exclude_newer(self, mock_run, monkeypatch):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.setattr(hm.sys, "prefix", "/usr")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+        gate_days, gate_cutoff = self._gate(hm, 3)
+        with patch("shutil.which", return_value="/usr/bin/uv"), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=False), \
+             gate_days, gate_cutoff:
+            hm._cmd_update_pip(SimpleNamespace())
+
+        assert mock_run.call_args[0][0] == [
+            "/usr/bin/uv", "pip", "install", "--system", "--upgrade", "hermes-agent",
+            "--exclude-newer", "2026-05-10",
+        ]
+
+    @patch("subprocess.run")
+    def test_pipx_upgrade_warns_and_proceeds_ungated(self, mock_run, monkeypatch, capsys):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.setattr(hm.sys, "prefix", "/home/u/.local/pipx/venvs/hermes-agent")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+
+        def _which(name):
+            return {"uv": "/usr/bin/uv", "pipx": "/usr/bin/pipx"}.get(name)
+
+        gate_days, gate_cutoff = self._gate(hm, 3)
+        with patch("shutil.which", side_effect=_which), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=False), \
+             gate_days, gate_cutoff:
+            hm._cmd_update_pip(SimpleNamespace())
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["/usr/bin/pipx", "upgrade", "hermes-agent"]
+        assert "--exclude-newer" not in cmd
+        out = capsys.readouterr().out
+        assert "release-age gate configured" in out
+        assert "pipx" in out
+
+    @patch("subprocess.run")
+    def test_plain_pip_warns_and_proceeds_ungated(self, mock_run, monkeypatch, capsys):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        gate_days, gate_cutoff = self._gate(hm, 3)
+        with patch("shutil.which", return_value=None), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=False), \
+             gate_days, gate_cutoff:
+            hm._cmd_update_pip(SimpleNamespace())
+
+        cmd = mock_run.call_args[0][0]
+        assert "--exclude-newer" not in cmd
+        assert cmd[1:] == ["-m", "pip", "install", "--upgrade", "hermes-agent"]
+        out = capsys.readouterr().out
+        assert "requires `uv`" in out
+
+    @patch("subprocess.run")
+    def test_gate_off_adds_no_flag_and_no_output(self, mock_run, monkeypatch, capsys):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        gate_days, gate_cutoff = self._gate(hm, 0)
+        with patch("shutil.which", return_value="/usr/local/bin/uv"), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=True), \
+             gate_days, gate_cutoff:
+            hm._cmd_update_pip(SimpleNamespace())
+
+        assert mock_run.call_args[0][0] == [
+            "/usr/local/bin/uv", "tool", "upgrade", "hermes-agent",
+        ]
+        assert "release-age" not in capsys.readouterr().out

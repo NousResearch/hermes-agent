@@ -14,6 +14,11 @@ PSUTIL_URL = (
     "psutil-7.2.2.tar.gz"
 )
 
+# PyPI upload time of the pinned sdist above (urls[].upload_time_iso_8601).
+# The release-age gate compares this against its cutoff since this direct
+# download bypasses uv's --exclude-newer. Update together with PSUTIL_URL.
+PSUTIL_UPLOAD_TIME = "2026-01-28T18:14:54Z"
+
 MARKER = 'LINUX = sys.platform.startswith("linux")'
 REPLACEMENT = 'LINUX = sys.platform.startswith(("linux", "android"))'
 

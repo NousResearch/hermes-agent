@@ -2718,7 +2718,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"
         cur = conn.execute(
-            "UPDATE tasks SET status = ?, current_run_id = NULL "
+            "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            "consecutive_failures = 0, last_failure_error = NULL "
             "WHERE id = ? AND status = 'blocked'",
             (new_status, task_id),
         )

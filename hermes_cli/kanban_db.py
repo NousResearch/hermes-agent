@@ -1531,6 +1531,20 @@ def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
     return Task.from_row(row) if row else None
 
 
+# Canonical sort-order mappings for ``hermes kanban list --sort``.
+# Each value is a raw SQL fragment appended after ``ORDER BY``.
+VALID_SORT_ORDERS: dict[str, str] = {
+    "created": "created_at ASC, id ASC",
+    "created-desc": "created_at DESC, id DESC",
+    "priority": "priority DESC, created_at ASC",
+    "priority-desc": "priority ASC, created_at ASC",
+    "status": "status ASC, created_at ASC",
+    "assignee": "assignee ASC, created_at ASC",
+    "title": "title ASC, id ASC",
+    "updated": "started_at DESC NULLS LAST, created_at DESC",
+}
+
+
 def list_tasks(
     conn: sqlite3.Connection,
     *,
@@ -1539,6 +1553,7 @@ def list_tasks(
     tenant: Optional[str] = None,
     include_archived: bool = False,
     limit: Optional[int] = None,
+    order_by: Optional[str] = None,
 ) -> list[Task]:
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[Any] = []
@@ -1555,7 +1570,15 @@ def list_tasks(
         params.append(tenant)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
-    query += " ORDER BY priority DESC, created_at ASC"
+    if order_by is not None:
+        order_by = order_by.strip().lower()
+        if order_by not in VALID_SORT_ORDERS:
+            raise ValueError(
+                f"order_by must be one of {sorted(VALID_SORT_ORDERS.keys())}"
+            )
+        query += f" ORDER BY {VALID_SORT_ORDERS[order_by]}"
+    else:
+        query += " ORDER BY priority DESC, created_at ASC"
     if limit:
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()

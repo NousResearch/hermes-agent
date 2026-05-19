@@ -726,6 +726,39 @@ def test_delete_archived_task_rejects_non_archived_rows(kanban_home):
         assert kb.get_task(conn, tid) is not None
 
 
+def test_list_tasks_order_by(kanban_home):
+    with kb.connect() as conn:
+        # Create tasks with different titles and priorities
+        t_a = kb.create_task(conn, title="alpha", priority=1)
+        t_b = kb.create_task(conn, title="beta", priority=2)
+        t_c = kb.create_task(conn, title="gamma", priority=1)
+
+        # Default sort: priority DESC, created ASC
+        default = kb.list_tasks(conn)
+        assert [t.id for t in default] == [t_b, t_a, t_c]
+
+        # Sort by title ASC
+        by_title = kb.list_tasks(conn, order_by="title")
+        assert [t.id for t in by_title] == [t_a, t_b, t_c]
+
+        # Sort by assignee
+        kb.assign_task(conn, t_a, "alice")
+        kb.assign_task(conn, t_b, "bob")
+        kb.assign_task(conn, t_c, "alice")
+        by_assignee = kb.list_tasks(conn, order_by="assignee")
+        # alice's tasks first (alphabetically), then bob's
+        assignees = [t.assignee for t in by_assignee]
+        assert assignees[:2] == ["alice", "alice"]
+        assert assignees[2] == "bob"
+
+        # Invalid sort order raises ValueError
+        try:
+            kb.list_tasks(conn, order_by="bogus")
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert "order_by must be one of" in str(e)
+
+
 # ---------------------------------------------------------------------------
 # Comments / events / worker context
 # ---------------------------------------------------------------------------

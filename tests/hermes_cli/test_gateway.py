@@ -231,10 +231,15 @@ class TestContainerSystemdSupport:
 
 
 def test_gateway_install_in_container_with_operational_systemd_uses_systemd(monkeypatch):
+    class _TTY:
+        def isatty(self):
+            return True
+
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
     monkeypatch.setattr(gateway, "is_wsl", lambda: False)
     monkeypatch.setattr(gateway, "is_macos", lambda: False)
     monkeypatch.setattr(gateway, "is_managed", lambda: False)
+    monkeypatch.setattr(gateway.sys, "stdin", _TTY())
 
     calls = []
     monkeypatch.setattr(gateway, "prompt_yes_no", lambda question, default=True: calls.append(("prompt", question, default)) or True)
@@ -527,10 +532,15 @@ def test_install_linux_gateway_from_setup_passes_startup_choice(monkeypatch):
 
 
 def test_gateway_install_can_decline_start_now_and_startup(monkeypatch):
+    class _TTY:
+        def isatty(self):
+            return True
+
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
     monkeypatch.setattr(gateway, "is_wsl", lambda: False)
     monkeypatch.setattr(gateway, "is_macos", lambda: False)
     monkeypatch.setattr(gateway, "is_managed", lambda: False)
+    monkeypatch.setattr(gateway.sys, "stdin", _TTY())
 
     answers = iter([False, False])
     calls = []

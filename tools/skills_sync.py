@@ -423,7 +423,12 @@ if __name__ == "__main__":
         f"{result['skipped']} unchanged",
     ]
     if result["user_modified"]:
-        parts.append(f"{len(result['user_modified'])} user-modified (kept)")
+        names = result["user_modified"]
+        MAX_SHOW = 5
+        shown = ", ".join(names[:MAX_SHOW])
+        if len(names) > MAX_SHOW:
+            shown += f", +{len(names) - MAX_SHOW} more"
+        parts.append(f"{len(names)} user-modified (kept): {shown}")
     if result["cleaned"]:
         parts.append(f"{len(result['cleaned'])} cleaned from manifest")
     print(f"\nDone: {', '.join(parts)}. {result['total_bundled']} total bundled.")

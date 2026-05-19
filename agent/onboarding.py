@@ -47,7 +47,7 @@ def busy_input_hint_gateway(mode: str) -> str:
     if mode == "steer":
         return (
             "💡 First-time tip — I steered your message into the current run; "
-            "it will arrive after the next tool call instead of interrupting. "
+            "it will arrive before the next tool call instead of interrupting. "
             "Send `/busy interrupt` or `/busy queue` to change this, or "
             "`/busy status` to check. This notice won't appear again."
         )
@@ -70,7 +70,7 @@ def busy_input_hint_cli(mode: str) -> str:
     if mode == "steer":
         return (
             "(tip) Your message was steered into the current run; it arrives "
-            "after the next tool call. Use /busy interrupt or /busy queue to "
+            "before the next tool call. Use /busy interrupt or /busy queue to "
             "change this. This tip only shows once."
         )
     return (

@@ -2940,7 +2940,7 @@ class GatewayRunner:
         if is_steer_mode:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
+                f"Your message arrives before the next tool call."
             )
         elif is_queue_mode:
             message = (
@@ -6785,7 +6785,7 @@ class GatewayRunner:
                     return "Queued for the next turn."
                 return f"Queued for the next turn. ({depth} queued)"
 
-            # /steer <prompt> — inject mid-run after the next tool call.
+            # /steer <prompt> — inject mid-run before the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
             # iterations inside the same agent run, by appending to the
             # last tool result's content. No interrupt, no new user turn,
@@ -6816,7 +6816,7 @@ class GatewayRunner:
                         return f"⚠️ Steer failed: {exc}"
                     if accepted:
                         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-                        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+                        return f"⏩ Steer queued — arrives before the next tool call: '{preview}'"
                     return "Steer rejected (empty payload)."
                 # Running agent is missing or lacks steer() — fall back to queue.
                 adapter = self.adapters.get(source.platform)

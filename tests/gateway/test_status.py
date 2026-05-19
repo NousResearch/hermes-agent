@@ -1061,3 +1061,61 @@ class TestCorruptStatusFiles:
         p = tmp_path / "gateway.pid"
         p.write_text("4242", encoding="utf-8")
         assert status._read_pid_record(p) == {"pid": 4242}
+
+
+class TestReadJsonFileRobustness:
+    """Regression tests for _read_json_file edge cases.
+
+    _read_json_file must silently return None for any unreadable or malformed
+    file instead of propagating unexpected exceptions to callers.
+    """
+
+    def test_returns_none_for_missing_file(self, tmp_path):
+        """Non-existent path must return None (baseline)."""
+        result = status._read_json_file(tmp_path / "missing.json")
+        assert result is None
+
+    def test_returns_none_for_valid_json_object(self, tmp_path):
+        """Sanity: a valid JSON object must be returned as a dict."""
+        p = tmp_path / "state.json"
+        p.write_text('{"platform": "telegram", "connected": true}', encoding="utf-8")
+        result = status._read_json_file(p)
+        assert result == {"platform": "telegram", "connected": True}
+
+    def test_returns_none_for_empty_file(self, tmp_path):
+        """Empty file must return None, not raise."""
+        p = tmp_path / "empty.json"
+        p.write_bytes(b"")
+        assert status._read_json_file(p) is None
+
+    def test_returns_none_for_invalid_json(self, tmp_path):
+        """Truncated/malformed JSON must return None, not raise."""
+        p = tmp_path / "bad.json"
+        p.write_text('{"broken": ', encoding="utf-8")
+        assert status._read_json_file(p) is None
+
+    def test_returns_none_for_non_utf8_bytes(self, tmp_path):
+        """Corruption with non-UTF-8 bytes (e.g. stray TLS record) must not raise.
+
+        Regression for #28579: _read_json_file only caught OSError, so
+        UnicodeDecodeError from a corrupted gateway_state.json propagated
+        up and caused persistent WARNING log spam on every status write.
+        """
+        p = tmp_path / "gateway_state.json"
+        # Valid JSON followed by a TLS 1.2 Application Data record trailer
+        # (the exact corruption pattern from the bug report).
+        valid_json = b'{"platform":"feishu","status":"connected"}'
+        tls_trailer = bytes([0x17, 0x03, 0x03, 0x00, 0x13, 0x68, 0xC7,
+                              0x13, 0x3D, 0xC6, 0x99, 0xA7, 0x2C, 0xA2,
+                              0xEF, 0xEE, 0x11, 0x3D, 0x1A, 0xBF, 0xF5,
+                              0xCE, 0x19, 0x8C])
+        p.write_bytes(valid_json + tls_trailer)
+        # Must return None without raising, not UnicodeDecodeError.
+        result = status._read_json_file(p)
+        assert result is None
+
+    def test_returns_none_for_json_array(self, tmp_path):
+        """JSON arrays are not dicts — must return None."""
+        p = tmp_path / "array.json"
+        p.write_text("[1, 2, 3]", encoding="utf-8")
+        assert status._read_json_file(p) is None

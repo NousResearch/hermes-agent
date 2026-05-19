@@ -6,6 +6,7 @@ without risk of circular imports.
 
 import os
 import sysconfig
+import tempfile
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -40,6 +41,16 @@ def get_hermes_home_override() -> str | None:
     return str(override)
 
 
+def _home_or_none() -> Path | None:
+    try:
+        return Path.home()
+    except RuntimeError:
+        expanded = os.path.expanduser("~")
+        if expanded and expanded != "~":
+            return Path(expanded)
+        return None
+
+
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: ~/.hermes).
 
@@ -67,14 +78,15 @@ def get_hermes_home() -> Path:
     # Guard: if a non-default profile is sticky-active, warn once that
     # the fallback to the default profile is almost certainly wrong.
     global _profile_fallback_warned
+    home = _home_or_none()
     if not _profile_fallback_warned:
         try:
             # Inline the default-root resolution from get_default_hermes_root()
             # to stay import-safe (this function is called from module scope
             # in 30+ files; we cannot afford to trigger logging setup here).
-            active_path = (Path.home() / ".hermes" / "active_profile")
+            active_path = ((home or Path(tempfile.gettempdir())) / ".hermes" / "active_profile")
             active = active_path.read_text().strip() if active_path.exists() else ""
-        except (UnicodeDecodeError, OSError):
+        except (RuntimeError, UnicodeDecodeError, OSError):
             active = ""
         if active and active != "default":
             _profile_fallback_warned = True
@@ -98,7 +110,7 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return Path.home() / ".hermes"
+    return (home or Path(tempfile.gettempdir())) / ".hermes"
 
 
 def get_default_hermes_root() -> Path:

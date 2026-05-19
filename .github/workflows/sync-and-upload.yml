@@ -21,7 +21,8 @@ jobs:
         id: sync
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
         with:
-          upstream_sync_repo: https://github.com/NousResearch/hermes-agent.git
+          # ⚠️ 修正点：必须使用 owner/repo 格式，不能带 https:// 和 .git 后缀
+          upstream_sync_repo: NousResearch/hermes-agent 
           upstream_sync_branch: main
           target_sync_branch: main
           target_repo_token: ${{ secrets.GITHUB_TOKEN }}

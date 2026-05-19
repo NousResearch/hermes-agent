@@ -4820,6 +4820,18 @@ class GatewayRunner:
             )
             failure_limit = _kb.DEFAULT_FAILURE_LIMIT
 
+        # Read stale_timeout_seconds — 0 disables stale detection.
+        raw_stale = kanban_cfg.get("dispatch_stale_timeout_seconds", 0)
+        try:
+            stale_timeout_seconds = int(raw_stale or 0)
+        except (TypeError, ValueError):
+            logger.warning(
+                "kanban dispatcher: invalid kanban.dispatch_stale_timeout_seconds=%r; "
+                "disabling stale detection",
+                raw_stale,
+            )
+            stale_timeout_seconds = 0
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -4888,6 +4900,7 @@ class GatewayRunner:
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    stale_timeout_seconds=stale_timeout_seconds,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

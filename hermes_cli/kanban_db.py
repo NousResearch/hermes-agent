@@ -3472,6 +3472,9 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    stale: list[str] = field(default_factory=list)
+    """Task ids reclaimed because no progress (heartbeat) was seen
+    within ``dispatch_stale_timeout_seconds``."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -3827,6 +3830,145 @@ def enforce_max_runtime(
                 event_payload_extra={"pid": pid, "sigkill": killed},
             )
     return timed_out
+
+
+# Heartbeat staleness heartbeat gap — if a running task hasn't sent a
+# heartbeat in this many seconds it's considered inactive regardless of
+# the ``dispatch_stale_timeout_seconds`` threshold.  Hardcoded at 1 hour
+# to match the original spec (">4h started + no commits in 1h").
+_STALE_HEARTBEAT_GAP_SECONDS = 3600
+
+
+def detect_stale_running(
+    conn: sqlite3.Connection,
+    *,
+    stale_timeout_seconds: int = 0,
+    signal_fn=None,
+) -> list[str]:
+    """Reclaim ``running`` tasks that show no progress (heartbeat) within the
+    staleness window.
+
+    A task is considered stale when BOTH of these hold:
+
+    1. It has been running for longer than ``stale_timeout_seconds``
+       (measured from the active run's ``started_at``, falling back to
+       ``tasks.started_at`` on older runs).
+    2. Its ``last_heartbeat_at`` is older than
+       ``_STALE_HEARTBEAT_GAP_SECONDS`` (or NULL — never sent a heartbeat).
+
+    On reclaim the task is reset to ``ready``, the run is closed with
+    ``outcome='stale'``, and the host-local worker (if still running) is
+    terminated.
+
+    Only considers ``status='running'`` tasks. Blocked tasks are never
+    candidates.  Returns the list of reclaimed task IDs.
+
+    ``stale_timeout_seconds=0`` disables the check entirely (returns ``[]``
+    immediately).  ``signal_fn`` is a test hook; defaults to ``os.kill``
+    on POSIX.
+    """
+    if stale_timeout_seconds <= 0:
+        return []
+
+    import signal as _signal_mod
+
+    now = int(time.time())
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    reclaimed: list[str] = []
+
+    rows = conn.execute(
+        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "       COALESCE(r.started_at, t.started_at) AS active_started_at "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running'"
+    ).fetchall()
+
+    for row in rows:
+        # Skip if no started_at (shouldn't happen for running, but be safe).
+        if row["active_started_at"] is None:
+            continue
+
+        elapsed = now - int(row["active_started_at"])
+        if elapsed < stale_timeout_seconds:
+            continue  # not old enough to check
+
+        last_hb = row["last_heartbeat_at"]
+        hb_age = (now - int(last_hb)) if last_hb is not None else None
+        if hb_age is not None and hb_age < _STALE_HEARTBEAT_GAP_SECONDS:
+            continue  # recent heartbeat → still alive
+
+        pid = row["worker_pid"]
+        tid = row["id"]
+        lock = row["claim_lock"] or ""
+
+        # Terminate the worker if it's still host-local.
+        termination = _terminate_reclaimed_worker(
+            pid, lock, signal_fn=signal_fn,
+        )
+
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "last_heartbeat_at = NULL "
+                "WHERE id = ? AND status = 'running'",
+                (tid,),
+            )
+            if cur.rowcount != 1:
+                continue
+
+            payload = {
+                "elapsed_seconds": int(elapsed),
+                "last_heartbeat_at": (
+                    int(last_hb) if last_hb is not None else None
+                ),
+                "heartbeat_age_seconds": (
+                    int(hb_age) if hb_age is not None else None
+                ),
+                "timeout_seconds": stale_timeout_seconds,
+                "pid": int(pid) if pid else None,
+            }
+            payload.update(termination)
+
+            run_id = _end_run(
+                conn, tid,
+                outcome="stale", status="stale",
+                error=(
+                    f"no heartbeat for {int(hb_age)}s "
+                    if hb_age is not None
+                    else "no heartbeat ever"
+                ) + f" after {int(elapsed)}s running",
+                metadata=payload,
+            )
+            _append_event(
+                conn, tid, "stale", payload, run_id=run_id,
+            )
+            reclaimed.append(tid)
+
+        # Increment failure counter. The task is already ``ready`` and the
+        # run is already closed; this just ticks the counter and may trip
+        # the circuit breaker.
+        _record_task_failure(
+            conn, tid,
+            error=(
+                f"no heartbeat for {int(hb_age)}s "
+                if hb_age is not None
+                else "no heartbeat ever"
+            ) + f" after {int(elapsed)}s running",
+            outcome="stale",
+            release_claim=False,
+            end_run=False,
+            event_payload_extra={
+                "elapsed_seconds": int(elapsed),
+                "heartbeat_age_seconds": (
+                    int(hb_age) if hb_age is not None else None
+                ),
+                "timeout_seconds": stale_timeout_seconds,
+            },
+        )
+
+    return reclaimed
 
 
 def set_max_runtime(
@@ -4274,13 +4416,15 @@ def dispatch_once(
     max_spawn: Optional[int] = None,
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+    stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
     Steps:
       1. Reclaim stale running tasks (TTL expired).
-      2. Reclaim crashed running tasks (host-local PID no longer alive).
+      2. Reclaim stale running tasks (no recent heartbeat).
+      3. Reclaim crashed running tasks (host-local PID no longer alive).
       3. Promote todo -> ready where all parents are done.
       4. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
@@ -4338,6 +4482,9 @@ def dispatch_once(
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
+    result.stale = detect_stale_running(
+        conn, stale_timeout_seconds=stale_timeout_seconds,
+    )
     result.crashed = detect_crashed_workers(conn)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the

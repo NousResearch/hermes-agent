@@ -1911,7 +1911,25 @@ class AIAgent:
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
-        
+
+        # Plan 002-B: per-session ephemeral sandbox.
+        # Creates runtime/sessions/{id}/workspace/ and subagents/ on init.
+        # On session close, workspace/outputs/ is promoted to artifacts and
+        # the sandbox is destroyed.  Failures are non-fatal (logged as warnings).
+        try:
+            from agent.session_runtime import SessionRuntime
+            self._session_runtime = SessionRuntime(
+                session_id=self.session_id,
+                user_id=os.environ.get("HERMES_USER_ID", ""),
+            )
+        except Exception as _sr_exc:
+            self._session_runtime = None
+            logging.warning(
+                "SessionRuntime init failed (session=%s): %s — continuing without sandbox",
+                self.session_id,
+                _sr_exc,
+            )
+
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
         self._memory_write_origin = "assistant_tool"
@@ -5583,6 +5601,17 @@ class AIAgent:
                 )
             except Exception:
                 pass
+        # Plan 002-B: close session sandbox — promote outputs, destroy workspace.
+        _sr = getattr(self, "_session_runtime", None)
+        if _sr is not None:
+            try:
+                _sr.close()
+            except Exception as _sr_exc:
+                logging.warning(
+                    "SessionRuntime.close failed (session=%s): %s",
+                    self.session_id,
+                    _sr_exc,
+                )
 
     def commit_memory_session(self, messages: list = None) -> None:
         """Trigger end-of-session extraction without tearing providers down.

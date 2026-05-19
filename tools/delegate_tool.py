@@ -1131,6 +1131,42 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
 
+    # Plan 002-B: inject isolated subagent workspace under the parent session's
+    # sandbox.  The subagent writes ONLY to its own subdirectory — invisible to
+    # siblings and the parent.
+    parent_session_id = getattr(parent_agent, "session_id", None)
+    if parent_session_id:
+        try:
+            parent_runtime = getattr(parent_agent, "_session_runtime", None)
+            if parent_runtime is not None:
+                # Re-use the existing parent SessionRuntime object directly.
+                sub_workspace = parent_runtime.subagent_workspace(subagent_id)
+            else:
+                # Parent was created before 002-B — reconstruct path cheaply.
+                from hermes_constants import get_runtime_root
+                _sub_path = (
+                    get_runtime_root()
+                    / "sessions"
+                    / parent_session_id
+                    / "subagents"
+                    / subagent_id
+                    / "workspace"
+                )
+                _sub_path.mkdir(parents=True, exist_ok=True)
+                sub_workspace = _sub_path
+            child._subagent_workspace = sub_workspace
+            logger.debug(
+                "delegate_task: subagent %s workspace → %s",
+                subagent_id,
+                sub_workspace,
+            )
+        except Exception as _ws_exc:
+            logger.debug(
+                "delegate_task: subagent workspace setup failed (%s): %s",
+                subagent_id,
+                _ws_exc,
+            )
+
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
     child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)

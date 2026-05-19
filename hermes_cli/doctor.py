@@ -1337,42 +1337,6 @@ def run_doctor(args):
     except Exception as e:
         check_warn("Harness check failed", f"({e})")
 
-    # =========================================================================
-    # Check: API connectivity
-    # =========================================================================
-    print()
-    print(color("◆ API Connectivity", Colors.CYAN, Colors.BOLD))
-    
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    if openrouter_key:
-        print("  Checking OpenRouter API...", end="", flush=True)
-        try:
-            import httpx
-            response = httpx.get(
-                OPENROUTER_MODELS_URL,
-                headers={"Authorization": f"Bearer {openrouter_key}"},
-                timeout=10
-            )
-            if response.status_code == 200:
-                print(f"\r  {color('✓', Colors.GREEN)} OpenRouter API                          ")
-            elif response.status_code == 401:
-                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(invalid API key)', Colors.DIM)}                ")
-                issues.append("Check OPENROUTER_API_KEY in .env")
-            else:
-                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'(HTTP {response.status_code})', Colors.DIM)}                ")
-        except Exception as e:
-            print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'({e})', Colors.DIM)}                ")
-            issues.append("Check network connectivity")
-    else:
-        check_warn("OpenRouter API", "(not configured)")
-    
-    anthropic_key = os.getenv("ANTHROPIC_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
-    if anthropic_key:
-        print("  Checking Anthropic API...", end="", flush=True)
-        try:
-            import httpx
-            from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
-
     _section("API Connectivity")
     # Refactor: every connectivity probe below is HTTP-bound and fully
     # independent. Running them in series spent ~5s wall on a typical

@@ -1342,6 +1342,8 @@ class HermesACPAgent(acp.Agent):
         tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
         tool_call_meta: dict[str, dict[str, Any]] = {}
         previous_approval_cb = None
+        previous_interactive = None
+        edit_approval_token = None
         edit_approval_requester = None
 
         streamed_message = False

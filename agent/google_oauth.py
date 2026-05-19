@@ -838,6 +838,7 @@ def start_oauth_flow(
     open_browser: bool = True,
     callback_wait_seconds: float = CALLBACK_WAIT_SECONDS,
     project_id: str = "",
+    manual_paste: bool = False,
 ) -> GoogleCredentials:
     """Run the interactive browser OAuth flow and persist credentials.
 
@@ -847,6 +848,8 @@ def start_oauth_flow(
         callback_wait_seconds: Max seconds to wait for the browser callback.
         project_id: Initial GCP project ID to bake into the stored creds.
                     Can be discovered/updated later via update_project_ids().
+        manual_paste: Skip the loopback callback listener and paste the
+                      failed callback URL from another browser/device.
     """
     if not force_relogin:
         existing = load_credentials()
@@ -860,8 +863,8 @@ def start_oauth_flow(
     verifier, challenge = _generate_pkce_pair()
     state = secrets.token_urlsafe(16)
 
-    # If headless, skip the listener and go straight to paste mode
-    if _is_headless() and open_browser:
+    # If headless or explicitly requested, skip the listener and go straight to paste mode.
+    if manual_paste or (_is_headless() and open_browser):
         logger.info("Headless environment detected; using paste-mode OAuth fallback.")
         return _paste_mode_login(verifier, challenge, state, client_id, client_secret, project_id)
 
@@ -1030,9 +1033,19 @@ def _persist_token_response(
 # Pool-compatible variant
 # =============================================================================
 
-def run_gemini_oauth_login_pure() -> Dict[str, Any]:
+def run_gemini_oauth_login_pure(
+    *,
+    manual_paste: bool = False,
+    open_browser: bool = True,
+    callback_wait_seconds: float = CALLBACK_WAIT_SECONDS,
+) -> Dict[str, Any]:
     """Run the login flow and return a dict matching the credential pool shape."""
-    creds = start_oauth_flow(force_relogin=True)
+    creds = start_oauth_flow(
+        force_relogin=True,
+        manual_paste=manual_paste,
+        open_browser=open_browser,
+        callback_wait_seconds=callback_wait_seconds,
+    )
     return {
         "access_token": creds.access_token,
         "refresh_token": creds.refresh_token,

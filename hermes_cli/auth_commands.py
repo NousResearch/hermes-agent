@@ -364,7 +364,11 @@ def auth_add_command(args) -> None:
     if provider == "google-gemini-cli":
         from agent.google_oauth import run_gemini_oauth_login_pure
 
-        creds = run_gemini_oauth_login_pure()
+        creds = run_gemini_oauth_login_pure(
+            manual_paste=bool(getattr(args, "manual_paste", False)),
+            open_browser=not bool(getattr(args, "no_browser", False)),
+            callback_wait_seconds=float(getattr(args, "timeout", 300) or 300),
+        )
         label = (getattr(args, "label", None) or "").strip() or (
             creds.get("email") or _oauth_default_label(provider, len(pool.entries()) + 1)
         )

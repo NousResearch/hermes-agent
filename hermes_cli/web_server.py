@@ -1444,6 +1444,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "status_fn": None,  # dispatched via auth.get_qwen_auth_status
     },
     {
+        "id": "google-gemini-cli",
+        "name": "Google Gemini CLI (OAuth)",
+        "flow": "external",
+        "cli_command": "hermes auth add google-gemini-cli",
+        "docs_url": "https://google-gemini.github.io/gemini-cli/docs/get-started/",
+        "status_fn": None,  # dispatched via auth.get_gemini_oauth_auth_status
+    },
+    {
         "id": "minimax-oauth",
         "name": "MiniMax (OAuth)",
         # MiniMax's flow is structurally device-code (verification URI +
@@ -1497,6 +1505,16 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "source_label": raw.get("auth_store_path") or "Qwen CLI",
                 "token_preview": _truncate_token(raw.get("access_token")),
                 "expires_at": raw.get("expires_at"),
+                "has_refresh_token": bool(raw.get("has_refresh_token")),
+            }
+        if provider_id == "google-gemini-cli":
+            raw = hauth.get_gemini_oauth_auth_status()
+            return {
+                "logged_in": bool(raw.get("logged_in")),
+                "source": raw.get("source") or "google_oauth",
+                "source_label": raw.get("auth_file") or "Google Gemini CLI",
+                "token_preview": _truncate_token(raw.get("access_token")),
+                "expires_at": raw.get("expires_at_ms"),
                 "has_refresh_token": bool(raw.get("has_refresh_token")),
             }
         if provider_id == "minimax-oauth":

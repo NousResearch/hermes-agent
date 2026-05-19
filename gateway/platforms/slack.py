@@ -814,6 +814,14 @@ class SlackAdapter(BasePlatformAdapter):
             self._app_token = app_token
             self._proxy_url = proxy_url
 
+            # Reset multi-workspace state before re-populating it so a
+            # reconnect that drops a workspace (or rotates the primary bot
+            # token) doesn't carry stale ``_bot_user_id`` / ``_team_clients``
+            # / ``_team_bot_user_ids`` entries from the prior session.
+            self._bot_user_id = None
+            self._team_clients = {}
+            self._team_bot_user_ids = {}
+
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
             self._app = AsyncApp(token=primary_token)
@@ -832,7 +840,9 @@ class SlackAdapter(BasePlatformAdapter):
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
 
-                # First token sets the primary bot_user_id (backward compat)
+                # First token always wins as the primary bot user id; we
+                # cleared ``_bot_user_id`` above so this picks up the current
+                # token's identity even on reconnect.
                 if self._bot_user_id is None:
                     self._bot_user_id = bot_user_id
 

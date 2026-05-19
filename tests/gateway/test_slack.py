@@ -605,6 +605,34 @@ class TestSlackSocketWatchdog:
                 await adapter.disconnect()
 
     @pytest.mark.asyncio
+    async def test_reconnect_refreshes_multi_workspace_state(self):
+        """A reconnect that rotates the primary token must drop stale state."""
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._socket_watchdog_interval_s = 9999
+        factory, _instances = self._make_fake_handler_factory()
+
+        # Pre-seed stale multi-workspace state as if a prior connect had run.
+        adapter._bot_user_id = "U_OLD_BOT"
+        adapter._team_clients = {"T_OLD": MagicMock(name="old-client")}
+        adapter._team_bot_user_ids = {"T_OLD": "U_OLD_BOT"}
+
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_stack(factory):
+                stack.enter_context(p)
+
+            try:
+                assert await adapter.connect() is True
+
+                # State must reflect the fresh auth, not the stale seed.
+                assert adapter._bot_user_id == "U_BOT"
+                assert "T_OLD" not in adapter._team_clients
+                assert "T_OLD" not in adapter._team_bot_user_ids
+                assert "T_FAKE" in adapter._team_clients
+                assert adapter._team_bot_user_ids["T_FAKE"] == "U_BOT"
+            finally:
+                await adapter.disconnect()
+
+    @pytest.mark.asyncio
     async def test_reconnect_lock_prevents_concurrent_reconnects(self):
         adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
         adapter._socket_watchdog_interval_s = 9999

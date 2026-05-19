@@ -944,6 +944,34 @@ TELEGRAM_GROUP_ALLOWED_USERS="-1001234567890"
 TELEGRAM_GROUP_ALLOWED_CHATS="-1001234567890"
 ```
 
+### Guest @mention bypass (`guest_mode`)
+
+In a typical setup, `group_allowed_chats` is a hard gate: messages from groups outside the list are silently dropped, even if a member explicitly @mentions the bot. That's the right default for support / team bots.
+
+For more casual setups — friend group chats where you want the bot **mostly silent** but **occasionally available on explicit ping** — enable `guest_mode`:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        group_allowed_chats:
+          - "-1001234567890"   # your main allowlisted group
+        guest_mode: true       # non-allowlisted groups: allow on @mention only
+```
+
+Env equivalent:
+
+```bash
+TELEGRAM_GUEST_MODE=true
+```
+
+Default: `false`.
+
+With `guest_mode: true`, a message from a non-allowlisted group is processed **only** if it explicitly @mentions the bot. The mention is required every turn — there's no session stickiness for guest interactions, so the bot never auto-engages in a friend group thread it isn't pinged into.
+
+DMs and allowlisted groups behave exactly as before.
+
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the platform's `extra` block:
@@ -1152,6 +1180,32 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
 Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+
+## Push notification volume
+
+Telegram fires a push notification on every message the bot sends. For long agent turns that emit tool-progress bubbles, streaming updates, and status callbacks, this gets noisy fast. The Telegram adapter has two notification modes:
+
+| Mode | Behavior |
+|------|----------|
+| `important` (default) | Only **final responses**, **approval prompts**, and **slash-command confirmations** ring. Tool progress, streaming chunks, and status messages are delivered with `disable_notification=true`. |
+| `all` | Every outgoing message fires a push notification. Legacy behavior; opt in if you genuinely want to hear about every tool call. |
+
+Configure in `~/.hermes/config.yaml`:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      notifications: important   # or "all"
+```
+
+Env override (handy for quick A/B testing):
+
+```bash
+HERMES_TELEGRAM_NOTIFICATIONS=all
+```
+
+Unknown values log a warning and fall back to `important`.
 
 ## Security
 

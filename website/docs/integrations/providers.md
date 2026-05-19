@@ -29,8 +29,10 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
-| **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`) |
-| **Alibaba Coding Plan** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, different endpoint |
+| **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
+| **xAI Grok OAuth (SuperGrok)** | `hermes model` → "xAI Grok OAuth (SuperGrok Subscription)" — browser login, no API key. See [guide](../guides/xai-grok-oauth.md) |
+| **Qwen Cloud (Alibaba DashScope)** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`) |
+| **Alibaba Cloud (Coding Plan)** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, different endpoint |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
@@ -137,6 +139,8 @@ with the Generative Language API enabled.
 
 :::info Codex Note
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
+
+If a token refresh fails with a terminal error (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and stops replaying it so you don't see a flood of identical auth failures. The next request surfaces a typed re-auth message instead. Run `hermes auth add codex-oauth` (or `hermes model` → OpenAI Codex) to start a fresh device-code login; the quarantine clears on the next successful exchange.
 :::
 
 :::warning
@@ -157,6 +161,18 @@ Hermes has **two** model commands that serve different purposes:
 | **`/model`** | Inside a Hermes chat session | Quick switch between **already-configured** providers and models |
 
 If you're trying to switch to a provider you haven't set up yet (e.g. you only have OpenRouter configured and want to use Anthropic), you need `hermes model`, not `/model`. Exit your session first (`Ctrl+C` or `/quit`), run `hermes model`, complete the provider setup, then start a new session.
+
+### Nous Portal
+
+Subscription-based access to Hermes-4 models (`Hermes-4-70B`, `Hermes-4.3-36B`, `Hermes-4-405B`) via Nous Research's portal. Run `hermes model`, pick **Nous Portal**, sign in through the browser — Hermes stores a long-lived refresh token at `~/.hermes/auth.json`.
+
+The refresh token is also shared across profiles via a shared token store, so logging in on one profile carries over to the others.
+
+#### Token handling
+
+Hermes mints a short-lived JWT from your stored Nous refresh token on each inference call rather than reusing a long-lived API key. The token lifecycle is fully automatic — refresh, mint, retry on transient 401 — and you never see it.
+
+If the portal invalidates the refresh token (password change, manual revoke, session expiry), the invalid refresh token is quarantined locally so Hermes stops replaying it and you don't see a stream of identical 401s. The next call surfaces a clear "re-authentication required" message. Run `hermes auth add nous` to log in again; the quarantine clears on the next successful login.
 
 ### Anthropic (Native)
 
@@ -292,7 +308,7 @@ hermes chat --provider minimax --model MiniMax-M2.7
 hermes chat --provider minimax-cn --model MiniMax-M2.7
 # Requires: MINIMAX_CN_API_KEY in ~/.hermes/.env
 
-# Alibaba Cloud / DashScope (Qwen models)
+# Qwen Cloud / DashScope (Qwen models)
 hermes chat --provider alibaba --model qwen3.5-plus
 # Requires: DASHSCOPE_API_KEY in ~/.hermes/.env
 
@@ -440,11 +456,11 @@ model:
 
 Set `HERMES_QWEN_BASE_URL` only if the portal endpoint relocates (default: `https://portal.qwen.ai/v1`).
 
-:::tip Qwen OAuth vs DashScope (Alibaba)
-`qwen-oauth` uses the consumer-facing Qwen Portal with OAuth login — ideal for individual users. The `alibaba` provider uses DashScope's enterprise API with a `DASHSCOPE_API_KEY` — ideal for programmatic / production workloads. Both route to Qwen-family models but live at different endpoints.
+:::tip Qwen OAuth vs Qwen Cloud (Alibaba DashScope)
+`qwen-oauth` uses the consumer-facing Qwen Portal with OAuth login — ideal for individual users. The `alibaba` provider uses Qwen Cloud (Alibaba DashScope) with a `DASHSCOPE_API_KEY` — ideal for programmatic / production workloads. Both route to Qwen-family models but live at different endpoints.
 :::
 
-### Alibaba Coding Plan
+### Alibaba Cloud (Coding Plan)
 
 If you're subscribed to Alibaba's **Coding Plan** (a pricing SKU separate from standard DashScope API access), Hermes exposes it as its own first-class provider: `alibaba-coding-plan`. Endpoint: `https://coding-intl.dashscope.aliyuncs.com/v1`. It's OpenAI-compatible like the regular `alibaba` provider but with a different base URL and billing surface.
 
@@ -511,6 +527,8 @@ model:
 :::tip Local NIM
 For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://localhost:8000/v1`. NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
 :::
+
+Hermes automatically attaches the NIM billing-origin header on every request to `build.nvidia.com` — no configuration needed. This routes consumption against the correct origin in NVIDIA's billing dashboard.
 
 ### GMI Cloud
 
@@ -1203,12 +1221,14 @@ custom_providers:
   - name: work
     base_url: https://gpu-server.internal.corp/v1
     key_env: CORP_API_KEY
-    api_mode: chat_completions   # optional, auto-detected from URL
+    api_mode: chat_completions   # set explicitly by `hermes model` → Custom Endpoint wizard; auto-detection still happens as a fallback
   - name: anthropic-proxy
     base_url: https://proxy.example.com/anthropic
     key_env: ANTHROPIC_PROXY_KEY
     api_mode: anthropic_messages  # for Anthropic-compatible proxies
 ```
+
+The `hermes model` → Custom Endpoint wizard now prompts for `api_mode` explicitly and persists your answer to `config.yaml`. URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
 Switch between them mid-session with the triple syntax:
 

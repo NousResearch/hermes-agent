@@ -60,6 +60,9 @@ into chat.
 Use `/compress` when a session gets long, `/new` for a fresh thread, and
 `hermes sessions prune` only when you want to delete old ended sessions from
 storage. Compression reduces the active context; it is not a privacy delete.
+Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
+initial title up front — useful for finding it later with `/resume <name>` or
+in the `/sessions` picker.
 :::
 
 ### Session Sources
@@ -412,9 +415,9 @@ session_search()
 
 Returns recent sessions chronologically (titles, previews, timestamps). Useful when the user asks "what was I working on" without naming a topic.
 
-### FTS5 Query Syntax
+### FTS5 query syntax
 
-The search supports standard FTS5 query syntax:
+The keyword mode supports standard FTS5 query syntax:
 
 - Simple keywords: `docker deployment` (FTS5 defaults to AND)
 - Phrases: `"exact phrase"`
@@ -431,6 +434,8 @@ The search supports standard FTS5 query syntax:
 The agent is prompted to use session search automatically:
 
 > *"When the user references something from a past conversation or you suspect relevant prior context exists, use session_search to recall it before asking them to repeat themselves."*
+
+Typical triggers: "we did this before", "remember when", "last time", "as I mentioned", or any reference to a project/person/concept that isn't in the current window.
 
 ## Per-Platform Session Tracking
 

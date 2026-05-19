@@ -1925,7 +1925,6 @@ def delegate_task(
             "delegate_task: ignoring caller-supplied ACP transport override; "
             "ACP child transports must come from trusted configuration"
         )
-
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
@@ -2010,6 +2009,17 @@ def delegate_task(
 
     if not task_list:
         return tool_error("No tasks provided.")
+
+    caller_acp_override = acp_command is not None or acp_args is not None or any(
+        isinstance(task, dict)
+        and ("acp_command" in task or "acp_args" in task)
+        for task in task_list
+    )
+    if caller_acp_override:
+        logger.warning(
+            "delegate_task: ignoring caller-supplied ACP command/args; "
+            "configure delegation.provider credentials instead"
+        )
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):

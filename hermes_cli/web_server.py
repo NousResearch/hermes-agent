@@ -3759,8 +3759,28 @@ async def set_dashboard_theme(body: ThemeSetBody):
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
+
+def _dashboard_plugin_is_enabled(name: str, directory_name: str) -> bool:
+    """Return whether a dashboard plugin is allowed to load.
+
+    Dashboard extensions can execute Python through their ``api`` file, so
+    they must honor the same explicit opt-in gate as general plugins.
+    """
+    try:
+        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
+
+        disabled = _get_disabled_plugins()
+        if name in disabled or directory_name in disabled:
+            return False
+
+        enabled = _get_enabled_plugins()
+        return enabled is not None and (name in enabled or directory_name in enabled)
+    except Exception:
+        return False
+
+
 def _discover_dashboard_plugins() -> list:
-    """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
+    """Scan enabled plugins/*/dashboard/manifest.json for dashboard extensions.
 
     Checks three plugin sources (same as hermes_cli.plugins):
     1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
@@ -3792,6 +3812,8 @@ def _discover_dashboard_plugins() -> list:
             try:
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 name = data.get("name", child.name)
+                if not _dashboard_plugin_is_enabled(str(name), child.name):
+                    continue
                 if name in seen_names:
                     continue
                 seen_names.add(name)

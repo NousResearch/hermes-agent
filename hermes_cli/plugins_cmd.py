@@ -10,6 +10,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import shutil
@@ -694,6 +695,14 @@ def _plugin_exists(name: str) -> bool:
             manifest = _read_manifest(child)
             if manifest.get("name") == name:
                 return True
+            dashboard_manifest = child / "dashboard" / "manifest.json"
+            if dashboard_manifest.exists():
+                try:
+                    data = json.loads(dashboard_manifest.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+                if data.get("name", child.name) == name:
+                    return True
     # Bundled: <repo>/plugins/<name>/ (or HERMES_BUNDLED_PLUGINS on Nix).
     from hermes_cli.plugins import get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
@@ -702,8 +711,21 @@ def _plugin_exists(name: str) -> bool:
         if candidate.is_dir() and (
             (candidate / "plugin.yaml").exists()
             or (candidate / "plugin.yml").exists()
+            or (candidate / "dashboard" / "manifest.json").exists()
         ):
             return True
+        for child in repo_plugins.iterdir():
+            if not child.is_dir():
+                continue
+            dashboard_manifest = child / "dashboard" / "manifest.json"
+            if not dashboard_manifest.exists():
+                continue
+            try:
+                data = json.loads(dashboard_manifest.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            if data.get("name", child.name) == name:
+                return True
     return False
 
 
@@ -736,15 +758,25 @@ def _discover_all_plugins() -> list:
             manifest_file = d / "plugin.yaml"
             if not manifest_file.exists():
                 manifest_file = d / "plugin.yml"
-            if not manifest_file.exists():
+            dashboard_manifest = d / "dashboard" / "manifest.json"
+            has_plugin_manifest = manifest_file.exists()
+            if not has_plugin_manifest and not dashboard_manifest.exists():
                 continue
             name = d.name
             version = ""
             description = ""
-            if yaml:
+            if has_plugin_manifest and yaml:
                 try:
                     with open(manifest_file, encoding="utf-8") as f:
                         manifest = yaml.safe_load(f) or {}
+                    name = manifest.get("name", d.name)
+                    version = manifest.get("version", "")
+                    description = manifest.get("description", "")
+                except Exception:
+                    pass
+            elif dashboard_manifest.exists():
+                try:
+                    manifest = json.loads(dashboard_manifest.read_text(encoding="utf-8"))
                     name = manifest.get("name", d.name)
                     version = manifest.get("version", "")
                     description = manifest.get("description", "")

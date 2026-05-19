@@ -1731,12 +1731,12 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 # =========================================================================
 
 class TestDispatchDelegateTask(unittest.TestCase):
-    """Tests for the _dispatch_delegate_task helper and full param forwarding."""
+    """Tests for the _dispatch_delegate_task helper and guarded param forwarding."""
 
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_caller_supplied_acp_args_ignored(self, mock_creds, mock_cfg):
-        """Caller-supplied ACP transports are not forwarded to child agents."""
+        """Tool-call ACP command/args must not reach child agent construction."""
         mock_creds.return_value = {
             "provider": None, "base_url": None,
             "api_key": None, "api_mode": None, "model": None,

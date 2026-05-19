@@ -367,6 +367,8 @@ def _capture_required_environment_variables(
 def _is_gateway_surface() -> bool:
     if os.getenv("HERMES_GATEWAY_SESSION"):
         return True
+    if os.getenv("HERMES_SESSION_PLATFORM"):
+        return True
     from gateway.session_context import get_session_env
     return bool(get_session_env("HERMES_SESSION_PLATFORM"))
 
@@ -1530,4 +1532,3 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
-

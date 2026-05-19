@@ -656,12 +656,42 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
         reply_to_message_id: Optional[int],
     ) -> bool:
-        return (
-            bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
-            and reply_to_message_id is not None
-            and cls._is_bad_request_error(error)
-            and "message to be replied not found" in str(error).lower()
-        )
+        """True when a DM-topic send should be retried with routing stripped.
+
+        Two cases trigger the retry:
+
+        1. The original anchor-stale case — the reply target was deleted, so
+           Bot API returns "message to be replied not found". The retry drops
+           the reply anchor and the topic id together.
+
+        2. The synthetic-event case (added when #27937 introduced
+           ``direct_messages_topic_id`` fallback for sends without an anchor):
+           if Bot API rejects the topic id itself with any BadRequest that
+           mentions topic/thread routing, we retry without routing rather
+           than dropping the message.
+        """
+        if not (metadata and metadata.get("telegram_dm_topic_reply_fallback")):
+            return False
+        if not cls._is_bad_request_error(error):
+            return False
+        err_lower = str(error).lower()
+        if reply_to_message_id is not None and "message to be replied not found" in err_lower:
+            return True
+        # Synthetic / resumed sends route via ``direct_messages_topic_id``
+        # instead of a reply anchor. If Telegram rejects the topic id, fall
+        # back to a plain DM send.
+        if metadata.get("direct_messages_topic_id"):
+            topic_markers = (
+                "direct_messages_topic",
+                "message thread not found",
+                "thread not found",
+                "topic_closed",
+                "topic_deleted",
+                "topic not found",
+            )
+            if any(marker in err_lower for marker in topic_markers):
+                return True
+        return False
 
     async def _send_with_dm_topic_reply_anchor_retry(
         self,
@@ -1752,17 +1782,22 @@ class TelegramAdapter(BasePlatformAdapter):
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
+                                # Telegram has been observed to return a
+                                # one-off "thread not found" that recovers on
+                                # an immediate retry (transient flake — see
+                                # test_send_retries_transient_thread_not_found_before_fallback).
+                                # Try the same thread_id once without sleeping
+                                # before falling back to a plain send.
                                 if not retried_thread_not_found:
                                     retried_thread_not_found = True
                                     logger.warning(
-                                        "[%s] Thread %s not found, retrying once with message_thread_id",
+                                        "[%s] Thread %s not found, retrying once with same thread_id",
                                         self.name, effective_thread_id,
                                     )
-                                    await asyncio.sleep(1)
                                     continue
-                                # Thread doesn't exist — retry without
-                                # message_thread_id so the message still
-                                # reaches the chat.
+                                # Second failure: the thread is genuinely gone.
+                                # Retry without ``message_thread_id`` so the
+                                # message still reaches the chat.
                                 logger.warning(
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
@@ -4944,20 +4979,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
-                if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES:
-                    file_obj = await doc.get_file()
-                    image_bytes = await file_obj.download_as_bytearray()
-                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
-                    event.media_urls = [cached_path]
-                    event.media_types = [SUPPORTED_IMAGE_DOCUMENT_TYPES[ext]]
-                    event.message_type = MessageType.PHOTO
-                    logger.info("[Telegram] Cached user image document at %s", cached_path)
-                    media_group_id = getattr(msg, "media_group_id", None)
-                    if media_group_id:
-                        await self._queue_media_group_event(str(media_group_id), event)
-                    else:
-                        await self.handle_message(event)
-                    return
+                # NOTE: image-document handling is performed earlier in this
+                # function (ext in _TELEGRAM_IMAGE_EXTENSIONS or image/* mime),
+                # which returns before reaching here.  Any subsequent
+                # ext-in-SUPPORTED_IMAGE_DOCUMENT_TYPES branch would be dead
+                # code — the extension sets are identical.
 
                 # Check if supported
                 if ext not in SUPPORTED_DOCUMENT_TYPES:

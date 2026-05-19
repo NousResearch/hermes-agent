@@ -345,40 +345,104 @@ edge:
 
 ## First safe parallel Kanban wave
 
-Only create these after operator approval.
+Only create these after operator approval. All cards in this wave stay inside the
+standalone ContextOps lane; origin and `return_to` are `Devhub/#contextops`.
+
+### Wave graph
+
+Each implementation card has a **reviewer child**. In Hermes Kanban, the
+implementation parent completes as `done` with a `GO-for-review` handoff after local
+verification; that completion promotes the reviewer child. Downstream implementation
+work depends on the relevant **reviewer child** returning `GO`, not merely on the
+implementation parent finishing. The fan-in card is the single final-ACK node.
+
+```text
+   Card A (docs)            Card B (models/store)
+        │                         │
+        ▼                         ▼
+   Review A  (GO)            Review B  (GO)
+                                   │
+                  ┌────────────────┴────────────────┐
+                  ▼                                 ▼
+          Card C (context pack)            Card D (router/extractor)
+                  │                                 │
+                  ▼                                 ▼
+            Review C  (GO)                    Review D  (GO)
+                  │                                 │
+                  └────────────────┬────────────────┘
+                                   ▼
+                        Fan-in card — MVP status/report
+                                   │
+                                   ▼
+                     Final ACK → Devhub/#contextops
+                          (GO | BLOCK | NEED_MORE)
+```
+
+### Dependency semantics
+
+- **Depends-on** means: the upstream card's *reviewer child* has returned `GO`. A
+  dependent card must not start while any dependency is still `proposed`,
+  `in_progress`, or `BLOCK`/`NEED_MORE`.
+- A `BLOCK` or `NEED_MORE` from a reviewer child propagates downstream: dependents
+  stay blocked until the upstream pair re-runs and clears to `GO`.
+- Cards with no dependency on each other run in parallel (A ∥ B; C ∥ D).
+- The fan-in card depends on **all** of Review A/B/C/D returning `GO`
+  (fan-in = AND of every reviewer child).
+
+### GO-for-review rule
+
+When an implementation card has a review child, the implementation worker does
+**not** claim final acceptance. Instead:
+
+1. Implementation worker finishes scope, runs local verification, and records a
+   structured handoff with changed files, tests, decisions, and residual risks.
+2. If the review child already exists or is linked, the implementation card completes
+   as `done` with a **GO-for-review** summary. This is the dependency-engine signal
+   that promotes the reviewer child; it is not final product acceptance.
+3. The reviewer child independently returns `GO`, `BLOCK`, or `NEED_MORE`.
+4. Downstream implementation cards depend on reviewer `GO` edges. Reviewer
+   `BLOCK`/`NEED_MORE` creates a remediation loop and keeps downstream cards from
+   starting.
+5. Use `review-required` blocking only when no valid review child/path exists; do
+   not block a parent that already has a waiting reviewer child.
 
 ### Card A — Docs/contract hardening
 
 - Assignee profile: `ccsupervisor`
-- Reviewer profile: `ccreviewer`
+- Reviewer child: Review A — profile `ccreviewer`
 - Scope: refine docs, add diagrams, add acceptance checklist.
 - No code beyond docs.
+- Depends on: nothing (wave root).
 
 ### Card B — Models/store prototype
 
 - Assignee profile: `ccsupervisor`
-- Reviewer profile: `ccreviewer`
+- Reviewer child: Review B — profile `ccreviewer`
 - Scope: models + file store + offline tests.
-- Depends on Milestone 0 docs.
+- Depends on: Milestone 0 docs (Card A reviewer `GO`).
 
 ### Card C — Context pack builder prototype
 
 - Assignee profile: `ccsupervisor`
-- Reviewer profile: `ccreviewer`
+- Reviewer child: Review C — profile `ccreviewer`
 - Scope: deterministic builder from seed state + tests.
-- Depends on Card B model definitions.
+- Depends on: Card B model definitions (Review B `GO`).
 
 ### Card D — Router/extractor prompt contracts
 
 - Assignee profile: `ccsupervisor`
-- Reviewer profile: `ccreviewer`
+- Reviewer child: Review D — profile `ccreviewer`
 - Scope: prompt contract docs + fake model fixtures + schema validation tests.
-- Depends on Card B models.
+- Depends on: Card B models (Review B `GO`).
 
 ### Fan-in card — MVP status/report
 
 - Assignee profile: `ccreviewer`
-- Scope: verify all cards, run tests, report GO/BLOCK/NEED_MORE to `Devhub/#contextops`.
+- Scope: verify all cards, run tests, evaluate the MVP acceptance checklist in
+  `docs/contextops/epistemic-state-engine.md`, and emit the single final ACK.
+- Depends on: Review A, Review B, Review C, Review D all `GO`.
+- Final report path: `GO | BLOCK | NEED_MORE` to `Devhub/#contextops`, using the
+  `final_report` contract under [Required return path](#required-return-path).
 
 ## Implementation guardrails
 

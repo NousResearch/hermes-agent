@@ -1,0 +1,85 @@
+# Offline seed state for the ContextOps context pack builder tests.
+#
+# Two threads deliberately compete:
+#   - thread:discord:contextops:msg-42  -> high cognitive pressure, open tension,
+#     low recency. This is the thread a correct builder must restore.
+#   - thread:cli:contextops:msg-99      -> most recently touched and an easy
+#     topic-label match, but its tension is resolved and its heat is recency-only.
+#
+# A builder that favors recency or topic labels would wrongly restore msg-99.
+
+events:
+  - id: evt-coupling
+    source: Devhub/#contextops
+    text: >-
+      Operator flagged that two systems meant to stay independent keep showing a
+      hidden coupling anomaly, and refused to close the contradiction.
+    refs:
+      - msg-42
+    metadata:
+      lane: contextops
+  - id: evt-recent
+    source: Devhub/#contextops
+    text: >-
+      Operator asked a quick pricing question and the topic was answered fully.
+    refs:
+      - msg-99
+    metadata:
+      lane: contextops
+
+threads:
+  - id: thread:discord:contextops:msg-42
+    anchor_event_ids:
+      - evt-coupling
+    stance: >-
+      Keep investigating the hidden coupling anomaly between supposedly
+      independent systems without prematurely resolving it.
+    heat: 0.82
+    status: open
+    metadata:
+      topic_labels:
+        - coupling
+        - architecture
+      heat_components:
+        recency: 0.15
+        recurrence: 0.55
+        unresolvedness: 0.95
+        emotional_salience: 0.70
+        contradiction_density: 0.85
+        cross_thread_connectivity: 0.60
+        explicit_reactivation: 0.40
+  - id: thread:cli:contextops:msg-99
+    anchor_event_ids:
+      - evt-recent
+    stance: >-
+      Answer the operator's pricing question.
+    heat: 0.61
+    status: open
+    metadata:
+      topic_labels:
+        - pricing
+      heat_components:
+        recency: 0.98
+        recurrence: 0.10
+        unresolvedness: 0.05
+        emotional_salience: 0.05
+        contradiction_density: 0.00
+        cross_thread_connectivity: 0.05
+        explicit_reactivation: 0.00
+
+tensions:
+  - id: tension-coupling
+    thread_id: thread:discord:contextops:msg-42
+    description: >-
+      Independent-by-design systems still behave as if coupled; the contradiction
+      is unresolved and must not be flattened away.
+    evidence_refs:
+      - evt-coupling
+    status: open
+  - id: tension-pricing
+    thread_id: thread:cli:contextops:msg-99
+    description: >-
+      Whether the quoted price was current.
+    evidence_refs:
+      - evt-recent
+    status: resolved

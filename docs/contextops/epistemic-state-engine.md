@@ -59,6 +59,19 @@ Thread/Tension Orchestrator
 7. **Forgetting is less dangerous than flattening contamination.**
    - 잘못된 giant summary, noisy semantic match, 오래된 compaction이 현재 사고장을 오염시키는 것이 단순 망각보다 더 위험하다.
 
+### Distinctions quick reference
+
+These five distinctions are the contract surface of the lane. Any doc, schema, or
+prompt that blurs them is a contamination bug, not a style choice.
+
+| Concept | Is NOT | Is |
+| --- | --- | --- |
+| **Thread** | a topic label (`사주`, `트레이딩`, `AI memory`) | a persistent cognitive line — an unresolved line of thinking that survives topic changes |
+| **Heat** | recency of last mention | a composite of unresolvedness, emotional salience, contradiction density, cross-thread connectivity, and explicit reactivation |
+| **Compaction** | a shorter summary of what was said | preservation of cognitive pressure — the unresolved core stays unresolved |
+| **Context pack** | a transcript or history window | a minimal phase-restoration packet with `restore` and `avoid` fields |
+| **StateDelta** | note-taking / after-the-fact minutes | only the cognitive deltas that change the *next* response, with evidence refs |
+
 ## Core philosophy
 
 ```text
@@ -255,6 +268,47 @@ Working State Update
 Long-Term Memory Candidate Queue
 ```
 
+### Architecture overview
+
+The same loop, annotated with the stores each component reads from (`R`) and writes
+to (`W`). Note that the raw event ledger and the working cognitive state never share
+a store — that separation is what keeps a bad extraction from corrupting evidence.
+
+```text
+                ┌──────────────────────────────────────────────┐
+                │              Raw Event Ledger                 │
+                │                (events.jsonl)                 │
+                └───────▲───────────────────────────────┬───────┘
+                        │ W                             │ R
+   User Message ──► Session Event Logger                 │
+                        │                                │
+                        ▼                                │
+                  Cognitive Router  ◄─────────────────────┤ R
+                        │  (matched threads, lane check)  │
+                        ▼                                 │
+                Working State Loader  ◄───────────────────┼──┐ R
+                        │                                 │  │
+                        ▼                                 │  │
+               Context Pack Builder ──► context_packs ────┘  │
+                        │  (restore + avoid)               W │
+                        ▼                                    │
+                    Main LLM                                 │
+                        │                                    │
+                        ▼                                    │
+                  State Extractor                            │
+                        │  (deltas + evidence refs)           │
+                        ▼                                     │
+              Working State Update ──► threads/tensions ──────┘ W
+                        │
+                        ▼
+        Long-Term Memory Candidate Queue ──► memory_candidates  W
+                        │
+                        ▼
+              Human review (no auto-promotion)
+
+   Working Cognitive State store: threads.yaml · tensions.yaml · hypotheses.yaml
+```
+
 ## Component responsibilities
 
 ### 1. Session Event Logger
@@ -366,6 +420,46 @@ This makes early cognitive ethnography easy to inspect before the system hardens
 7. Every extracted state change must carry evidence refs and confidence.
 8. If router confidence is low, prefer a minimal clarification or neutral response over hallucinated continuity.
 
+### Contamination guard examples
+
+Concrete failure/repair pairs. Each guard rule above should be testable against a
+case like these.
+
+**Topic-only routing (rule 2).**
+
+```text
+BAD  : message mentions "타로" → route to every thread tagged tarot.
+GOOD : message mentions "타로" → router checks for an active cognitive line
+       (e.g. independent_systems_hidden_coupling); routes only if the conceptual
+       continuation holds, otherwise opens a new thread.
+```
+
+**Cross-lane residue (rule 5).**
+
+```text
+BAD  : a #contextops turn silently inherits a trading-lane tension because a
+       vector match scored high.
+GOOD : router either drops the trading tension, or includes it with an explicit
+       lane tag + evidence ref + a one-line reason for conceptual relevance.
+```
+
+**Stale compaction overriding live correction (rule 4).**
+
+```text
+BAD  : old compaction says "user wants schema-first design"; user just said
+       "schema 조기 고정하지 말자" — pack still restores the schema-first stance.
+GOOD : authority ranking puts the latest explicit user message above old
+       compaction; pack's `avoid` field carries "복잡한 schema 조기 고정".
+```
+
+**Giant summary injection (rule 1).**
+
+```text
+BAD  : context pack embeds a 2k-token recap of the whole session.
+GOOD  : pack carries phase + tensions + restore/avoid; raw excerpts appear only
+       under minimal_raw_excerpts when exact wording matters.
+```
+
 ## Evaluation rubric
 
 This system should not be evaluated like ordinary RAG.
@@ -380,6 +474,48 @@ Useful evaluation axes:
 - Does it honor current lane/scope over old memory?
 - Does the next state delta actually change future responses?
 - Can a human audit why a thread was activated?
+
+## MVP acceptance checklist
+
+The MVP is the first observable loop (see roadmap Milestone 1). It is "done enough"
+only when every box below can be checked with offline evidence. This checklist is
+the GO/BLOCK gate for the fan-in card.
+
+**Core loop**
+
+- [ ] Raw session events are logged to an append-only ledger with provenance
+      (session, channel, lane, source, model, timestamps).
+- [ ] Raw ledger and working cognitive state are physically separate stores.
+- [ ] A new user message routes to candidate threads with a stated reason.
+- [ ] A context pack is built from seed state with both `restore` and `avoid`.
+- [ ] A state delta is extracted after the response and contains deltas, not a summary.
+- [ ] Applying a delta updates working state without auto-promoting durable memory.
+
+**Distinction integrity**
+
+- [ ] Thread IDs reject bare topic labels (`trading`, `tarot`, `memory`) with no
+      cognitive-pressure qualifier.
+- [ ] Heat is computed from its components, not from recency alone.
+- [ ] Compaction output preserves the unresolved core, not just a topic recap.
+- [ ] Context pack is a phase packet, not a transcript window.
+- [ ] StateDelta entries each carry evidence refs or are marked low-confidence.
+
+**Contamination guards**
+
+- [ ] No giant summary is injected unless explicitly requested for audit.
+- [ ] No topic-only routing path exists.
+- [ ] Latest explicit user correction outranks old compaction / long-term memory.
+- [ ] Cross-lane state only appears with an explicit lane tag + evidence + reason.
+- [ ] Low router confidence yields clarification/neutral output, not invented continuity.
+
+**Observability & safety**
+
+- [ ] A human-readable status view lists active threads/tensions sorted by heat
+      and explains heat components.
+- [ ] Every state mutation is reversible and auditable.
+- [ ] Offline fixture tests cover routing, context-pack construction, and
+      contamination guards; `pytest tests/contextops -q` passes with no paid/remote calls.
+- [ ] No live gateway integration, no durable memory writes, no message dispatch.
 
 ## Product stance
 

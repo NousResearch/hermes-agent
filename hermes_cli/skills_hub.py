@@ -78,6 +78,110 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
     return ""
 
 
+
+def _inspect_installed_local_skill(identifier: str) -> Optional[dict]:
+    """Resolve an already-installed local/builtin skill from ~/.hermes/skills.
+
+    `hermes skills list` enumerates installed local skills via tools.skills_tool,
+    but `hermes skills inspect` historically only searched remote/source
+    registries. This helper makes inspect consistent with list/skill_view for
+    personal drop-in skills.
+    """
+    try:
+        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform
+        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    except Exception:
+        return None
+
+    wanted = (identifier or "").strip()
+    if not wanted:
+        return None
+
+    local_category_name = None
+    if ":" in wanted:
+        namespace, _, bare = wanted.partition(":")
+        if namespace and bare:
+            local_category_name = f"{namespace}/{bare}"
+
+    dirs_to_scan = []
+    if SKILLS_DIR.exists():
+        dirs_to_scan.append(SKILLS_DIR)
+    try:
+        dirs_to_scan.extend(get_external_skills_dirs())
+    except Exception:
+        pass
+
+    candidate_paths = []
+    for root in dirs_to_scan:
+        candidate_paths.append(root / wanted / "SKILL.md")
+        if local_category_name:
+            candidate_paths.append(root / local_category_name / "SKILL.md")
+
+    for skill_md in candidate_paths:
+        if skill_md.exists():
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+                frontmatter, _body = _parse_frontmatter(content)
+                if not skill_matches_platform(frontmatter):
+                    return None
+                return {"path": skill_md, "frontmatter": frontmatter, "content": content}
+            except Exception:
+                return None
+
+    # Search by frontmatter name or directory name across installed skills.
+    for root in dirs_to_scan:
+        try:
+            iterator = iter_skill_index_files(root, "SKILL.md")
+        except Exception:
+            continue
+        for skill_md in iterator:
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+                frontmatter, _body = _parse_frontmatter(content)
+                if not skill_matches_platform(frontmatter):
+                    continue
+                name = str(frontmatter.get("name") or skill_md.parent.name)
+                if name == wanted or skill_md.parent.name == wanted:
+                    return {"path": skill_md, "frontmatter": frontmatter, "content": content}
+            except Exception:
+                continue
+    return None
+
+
+def _local_skill_preview_dict(identifier: str) -> Optional[dict]:
+    """Return inspect-style metadata for an installed local skill."""
+    found = _inspect_installed_local_skill(identifier)
+    if not found:
+        return None
+    fm = found["frontmatter"] or {}
+    content = found["content"]
+    skill_md = found["path"]
+    name = str(fm.get("name") or skill_md.parent.name)
+    description = str(fm.get("description") or "")
+    tags = []
+    try:
+        raw_tags = ((fm.get("metadata") or {}).get("hermes") or {}).get("tags") or fm.get("tags") or []
+        if isinstance(raw_tags, list):
+            tags = [str(t) for t in raw_tags]
+        elif raw_tags:
+            tags = [str(raw_tags)]
+    except Exception:
+        tags = []
+    lines = content.split("\n")
+    preview = "\n".join(lines[:50])
+    if len(lines) > 50:
+        preview += f"\n\n... ({len(lines) - 50} more lines)"
+    return {
+        "name": name,
+        "description": description,
+        "source": "local-installed",
+        "identifier": name,
+        "tags": tags,
+        "skill_md_preview": preview,
+        "path": str(skill_md),
+    }
+
+
 def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
     lines: list[str] = []
     if not extra:
@@ -629,6 +733,29 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     from tools.skills_hub import GitHubAuth, create_source_router
 
     c = console or _console
+
+    # First inspect already-installed local skills so `skills inspect <name>`
+    # matches `skills list` and `skill_view(<name>)` for drop-in skills under
+    # ~/.hermes/skills/. If no installed skill matches, fall back to hub sources.
+    local = _local_skill_preview_dict(identifier)
+    if local:
+        info_lines = [
+            f"[bold]Name:[/] {local['name']}",
+            f"[bold]Description:[/] {local.get('description', '')}",
+            "[bold]Source:[/] local-installed",
+            "[bold]Trust:[/] [dim]local[/]",
+            f"[bold]Identifier:[/] {local['identifier']}",
+            f"[bold]Path:[/] {local.get('path', '')}",
+        ]
+        if local.get('tags'):
+            info_lines.append(f"[bold]Tags:[/] {', '.join(local['tags'])}")
+        c.print()
+        c.print(Panel("\n".join(info_lines), title=f"Skill: {local['name']}"))
+        if local.get("skill_md_preview"):
+            c.print(Panel(local["skill_md_preview"], title="SKILL.md Preview", subtitle="installed local skill"))
+        c.print()
+        return
+
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
@@ -732,6 +859,9 @@ def inspect_skill(identifier: str) -> Optional[dict]:
     auth = GitHubAuth()
     sources = create_source_router(auth)
     ident = identifier
+    local = _local_skill_preview_dict(ident)
+    if local:
+        return local
     if "/" not in ident:
         ident = _resolve_short_name(ident, sources, c)
         if not ident:

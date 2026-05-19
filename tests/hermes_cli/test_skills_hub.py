@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash, inspect_skill
 
 
 class _DummyLockFile:
@@ -524,3 +524,64 @@ def test_existing_categories_returns_empty_when_skills_dir_missing(monkeypatch, 
 
     from hermes_cli.skills_hub import _existing_categories
     assert _existing_categories() == []
+
+
+def test_inspect_skill_resolves_installed_local_skill(monkeypatch, tmp_path):
+    import tools.skills_tool as skills_tool
+    from agent import skill_utils
+
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "local-inspect"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: local-inspect\n"
+        "description: Local skill available only from the installed skills dir.\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    tags: [local, inspect]\n"
+        "---\n\n"
+        "# Local Inspect\n\n"
+        "This skill is not present in any hub source.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [])
+
+    info = inspect_skill("local-inspect")
+
+    assert info is not None
+    assert info["name"] == "local-inspect"
+    assert info["source"] == "local-installed"
+    assert info["identifier"] == "local-inspect"
+    assert info["path"].endswith("local-inspect/SKILL.md")
+    assert "local" in info["tags"]
+    assert "This skill is not present" in info["skill_md_preview"]
+
+
+def test_inspect_skill_resolves_categorized_local_identifier(monkeypatch, tmp_path):
+    import tools.skills_tool as skills_tool
+    from agent import skill_utils
+
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "workflow" / "context-hygiene"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: context-hygiene\n"
+        "description: Categorized local skill.\n"
+        "---\n\n"
+        "# Context Hygiene\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [])
+
+    info = inspect_skill("workflow:context-hygiene")
+
+    assert info is not None
+    assert info["name"] == "context-hygiene"
+    assert info["source"] == "local-installed"
+    assert info["path"].endswith("workflow/context-hygiene/SKILL.md")

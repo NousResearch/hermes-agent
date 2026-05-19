@@ -964,29 +964,33 @@ def connect(
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
-    conn.row_factory = sqlite3.Row
-    with _INIT_LOCK:
-        # WAL activation can take an exclusive lock while SQLite creates the
-        # sidecar files for a fresh database. Keep it in the same process-local
-        # critical section as schema initialization so concurrent gateway
-        # startup threads do not race before _INITIALIZED_PATHS is populated.
-        # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-        # falls back to DELETE with one WARNING so kanban stays usable there.
-        # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-        from hermes_state import apply_wal_with_fallback
-        apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        needs_init = resolved not in _INITIALIZED_PATHS
-        if needs_init:
-            # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
-            # migrations. Cached so subsequent connect() calls in the same
-            # process are cheap. The lock prevents same-process dispatcher
-            # threads from racing through the additive ALTER TABLE pass with
-            # stale PRAGMA snapshots during gateway startup.
-            conn.executescript(SCHEMA_SQL)
-            _migrate_add_optional_columns(conn)
-            _INITIALIZED_PATHS.add(resolved)
+    try:
+        conn.row_factory = sqlite3.Row
+        with _INIT_LOCK:
+            # WAL activation can take an exclusive lock while SQLite creates the
+            # sidecar files for a fresh database. Keep it in the same process-local
+            # critical section as schema initialization so concurrent gateway
+            # startup threads do not race before _INITIALIZED_PATHS is populated.
+            # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
+            # falls back to DELETE with one WARNING so kanban stays usable there.
+            # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
+            from hermes_state import apply_wal_with_fallback
+            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            needs_init = resolved not in _INITIALIZED_PATHS
+            if needs_init:
+                # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
+                # migrations. Cached so subsequent connect() calls in the same
+                # process are cheap. The lock prevents same-process dispatcher
+                # threads from racing through the additive ALTER TABLE pass with
+                # stale PRAGMA snapshots during gateway startup.
+                conn.executescript(SCHEMA_SQL)
+                _migrate_add_optional_columns(conn)
+                _INITIALIZED_PATHS.add(resolved)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _safe_job_id_for_session, _MAX_JOB_ID_IN_SESSION_KEY
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -2386,3 +2386,27 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == "/tmp/fast.mp4"
+
+
+class TestSafeJobIdForSession:
+    """Regression: prompt_cache_key (=session_id) must stay <=64 chars (API limit)."""
+
+    def test_short_job_id_passthrough(self):
+        assert _safe_job_id_for_session("foo") == "foo"
+        boundary = "a" * _MAX_JOB_ID_IN_SESSION_KEY
+        assert _safe_job_id_for_session(boundary) == boundary
+
+    def test_long_job_id_truncated_with_hash(self):
+        # The job that originally tripped the 400 from OpenAI/xAI.
+        job_id = "oneshot-plan-b-merge-transition-into-evaluation"
+        assert len(job_id) > _MAX_JOB_ID_IN_SESSION_KEY
+        out = _safe_job_id_for_session(job_id)
+        assert len(out) == _MAX_JOB_ID_IN_SESSION_KEY
+        # Final session_id stays under the 64-char API ceiling.
+        sid = f"cron_{out}_20260519_093057"
+        assert len(sid) == 64
+
+    def test_truncated_ids_dont_collide_on_shared_prefix(self):
+        a = _safe_job_id_for_session("oneshot-plan-b-merge-transition-into-evaluation")
+        b = _safe_job_id_for_session("oneshot-plan-b-merge-transition-into-evaluation-v2")
+        assert a != b

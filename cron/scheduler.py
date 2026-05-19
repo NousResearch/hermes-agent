@@ -11,6 +11,7 @@ runs at a time if multiple processes overlap.
 import asyncio
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -231,6 +232,22 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     if platform and chat_id:
         return origin
     return None
+
+
+# OpenAI/xAI `prompt_cache_key` has a 64-char hard limit. The cron session id
+# is `cron_{job_id}_{YYYYMMDD_HHMMSS}` (21 chars overhead), leaving 43 chars
+# for the job_id. Longer job_ids get a hash suffix so two truncated names
+# don't share a cache scope.
+_CRON_SESSION_KEY_MAX = 64
+_CRON_SESSION_KEY_OVERHEAD = len("cron__YYYYMMDD_HHMMSS")  # 21
+_MAX_JOB_ID_IN_SESSION_KEY = _CRON_SESSION_KEY_MAX - _CRON_SESSION_KEY_OVERHEAD
+
+
+def _safe_job_id_for_session(job_id: str) -> str:
+    if len(job_id) <= _MAX_JOB_ID_IN_SESSION_KEY:
+        return job_id
+    digest = hashlib.sha1(job_id.encode("utf-8")).hexdigest()[:8]
+    return f"{job_id[:_MAX_JOB_ID_IN_SESSION_KEY - 9]}-{digest}"
 
 
 def _plugin_cron_env_var(platform_name: str) -> str:
@@ -1285,7 +1302,10 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
-    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _cron_session_id = (
+        f"cron_{_safe_job_id_for_session(job_id)}_"
+        f"{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    )
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])

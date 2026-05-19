@@ -420,3 +420,105 @@ def test_viking_client_health_sends_auth_headers(monkeypatch):
     assert client.health() is True
     assert captured["url"] == "https://example.com/health"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+# ---------------------------------------------------------------------------
+# on_session_switch — flush + commit + rotate behavior (hermes-agent#28296)
+# ---------------------------------------------------------------------------
+
+def _make_provider_with_session(session_id: str, turn_count: int):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._session_id = session_id
+    provider._turn_count = turn_count
+    return provider
+
+
+def test_on_session_switch_commits_old_session_and_rotates_id():
+    provider = _make_provider_with_session("old-sid", turn_count=3)
+
+    provider.on_session_switch("new-sid", parent_session_id="old-sid")
+
+    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    assert provider._session_id == "new-sid"
+    assert provider._turn_count == 0
+
+
+def test_on_session_switch_skips_commit_for_empty_old_session():
+    """No turns accumulated → nothing to extract → no commit call."""
+    provider = _make_provider_with_session("old-sid", turn_count=0)
+
+    provider.on_session_switch("new-sid")
+
+    provider._client.post.assert_not_called()
+    assert provider._session_id == "new-sid"
+    assert provider._turn_count == 0
+
+
+def test_on_session_switch_clears_stale_prefetch_result():
+    provider = _make_provider_with_session("old-sid", turn_count=1)
+    provider._prefetch_result = "stale recall from old session"
+
+    provider.on_session_switch("new-sid")
+
+    assert provider._prefetch_result == ""
+
+
+def test_on_session_switch_waits_for_inflight_sync_thread():
+    """In-flight sync_turn write must drain before the commit fires —
+    otherwise the commit can race the last message write."""
+    provider = _make_provider_with_session("old-sid", turn_count=2)
+
+    join_calls = []
+
+    class FakeThread:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            join_calls.append(timeout)
+
+    provider._sync_thread = FakeThread()
+
+    provider.on_session_switch("new-sid")
+
+    assert join_calls, "expected on_session_switch to join the in-flight sync thread"
+    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+
+
+def test_on_session_switch_noop_on_empty_new_id():
+    provider = _make_provider_with_session("old-sid", turn_count=5)
+
+    provider.on_session_switch("")
+    provider.on_session_switch("   ")
+
+    provider._client.post.assert_not_called()
+    assert provider._session_id == "old-sid"
+    assert provider._turn_count == 5
+
+
+def test_on_session_switch_noop_when_client_missing():
+    provider = OpenVikingMemoryProvider()
+    provider._client = None
+    provider._session_id = "old-sid"
+    provider._turn_count = 4
+
+    # Must not raise even though no client is configured.
+    provider.on_session_switch("new-sid")
+
+    # State stays untouched — provider is effectively disabled.
+    assert provider._session_id == "old-sid"
+    assert provider._turn_count == 4
+
+
+def test_on_session_switch_swallows_commit_failure():
+    """Commit-on-switch must not propagate exceptions: a failing commit on the
+    old session must still allow the rotate to the new session to complete,
+    otherwise subsequent sync_turn writes would land in the wrong session."""
+    provider = _make_provider_with_session("old-sid", turn_count=2)
+    provider._client.post.side_effect = RuntimeError("commit boom")
+
+    provider.on_session_switch("new-sid")
+
+    assert provider._session_id == "new-sid"
+    assert provider._turn_count == 0

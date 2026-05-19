@@ -43,34 +43,96 @@ def test_ouro_intake_is_registered_as_gateway_known_command():
     assert resolve_command("ouro_intake").name == "ouro-intake"
 
 
-def test_help_and_missing_goal_do_not_mutate(hermes_home):
+def test_help_and_missing_goal_do_not_create_kanban_card(hermes_home):
     from gateway.ouro_intake import handle_ouro_intake_command
 
     help_result = handle_ouro_intake_command("")
     explicit_help = handle_ouro_intake_command("help")
+    missing = handle_ouro_intake_command("project:bo")
 
     assert help_result.action == "help"
     assert explicit_help.action == "help"
+    assert missing.action == "error"
     assert help_result.mutated is False
+    assert missing.mutated is False
     assert help_result.dispatched is False
-    assert "admission only" in help_result.message
+    assert "Interview -> Seed" in help_result.message
     assert not (hermes_home / "kanban.db").exists()
 
 
-def test_creates_blocked_seed_contract_without_dispatch(hermes_home):
+def test_start_runs_interview_before_kanban_admission(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    result = handle_ouro_intake_command(
+        'goal:"Improve billing" project:dc tenant:billing',
+        actor="tester",
+    )
+
+    assert result.action == "interview_started"
+    assert result.session_id
+    assert result.public_id is None
+    assert result.task_id is None
+    assert result.dispatched is False
+    assert "Socratic blockers" in result.message
+    assert "No Kanban card" in result.message or "no Kanban card" in result.message
+    assert (hermes_home / "ouro_intake_sessions.json").exists()
+    assert not (hermes_home / "kanban.db").exists()
+
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    session = sessions[result.session_id]
+    assert session["status"] == "interviewing"
+    assert session["seed"] is None
+    review = session["values"]
+    assert review["goal"] == "Improve billing"
+
+
+def test_answer_can_make_seed_ready_without_admitting(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    started = handle_ouro_intake_command(
+        'goal:"Build Discord intake report command" project:bo tenant:kanban context:"Hermes gateway command"',
+        actor="tester",
+    )
+    assert started.session_id
+
+    updated = handle_ouro_intake_command(
+        f'answer session:{started.session_id} answer:"pytest test_ouro_intake_command.py passes with exit code 0; no repo mutation or gateway restart is allowed"',
+        actor="tester",
+    )
+
+    assert updated.action == "interview_updated"
+    assert updated.session_id == started.session_id
+    assert updated.public_id is None
+    assert "Seed draft + QA is ready" in updated.message
+    assert not (hermes_home / "kanban.db").exists()
+
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    seed = sessions[started.session_id]["seed"]
+    assert seed["seed_review"]["mode"] == "seed_ready_for_admission"
+    assert seed["ambiguity_score"] <= seed["seed_review"]["ambiguity_threshold"]
+    assert seed["seed_qa"]["passed"] is True
+    assert seed["authority"]["seed_contract_is_source_material_only"] is True
+    assert seed["side_effect_boundary"]["executor_dispatch"] == "forbidden_during_admission"
+
+
+def test_admit_creates_blocked_seed_contract_without_dispatch(hermes_home):
     from gateway.ouro_intake import handle_ouro_intake_command
     from hermes_cli import kanban_db as kb
 
-    result = handle_ouro_intake_command(
-        'goal:"Design the Discord intake flow" project:bo tenant:kanban context:"seed only"',
+    started = handle_ouro_intake_command(
+        'goal:"Design the Discord intake flow" project:bo tenant:kanban context:"seed only" acceptance:"Kanban readback command returns task_runs equals 0"',
         actor="tester",
     )
+    assert started.session_id
+
+    result = handle_ouro_intake_command(f"admit session:{started.session_id}", actor="tester")
 
     assert result.action == "created"
     assert result.mutated is True
     assert result.dispatched is False
     assert result.public_id == "BO-001"
     assert result.task_id
+    assert result.session_id == started.session_id
     assert "no worker dispatched" in result.message.lower()
 
     with kb.connect() as conn:
@@ -87,15 +149,16 @@ def test_creates_blocked_seed_contract_without_dispatch(hermes_home):
         assert task.admission_snapshot is not None
         assert task.body is not None
         assert task.admission_snapshot["executor_dispatch"] == "forbidden_during_admission"
+        assert task.admission_snapshot["seed_qa_passed"] is True
         assert task.closeout_evidence["policy"] == "admission_only_no_execution"
-        assert task.admission_snapshot["seed_review_mode"] == "decision_gate_only"
-        assert "missing_acceptance_criteria" in task.admission_snapshot["ambiguity_flags"]
         seed = _seed_from_body(task.body)
         assert seed["authority"]["seed_contract_is_source_material_only"] is True
         assert seed["side_effect_boundary"]["executor_dispatch"] == "forbidden_during_admission"
         assert seed["initial_routing"]["status"] == "proposed_only"
         assert seed["seed_review"]["dispatch_allowed"] is False
-        assert "What observable proof should make this accepted as Done?" in seed["open_questions"]
+        assert "ontology" in seed
+        assert "ambiguity_ledger" in seed
+        assert "seed_qa" in seed
         runs = conn.execute(
             "SELECT COUNT(*) AS n FROM task_runs WHERE task_id = ?",
             (result.task_id,),
@@ -105,14 +168,18 @@ def test_creates_blocked_seed_contract_without_dispatch(hermes_home):
         assert any("Admission-only block" in c.body for c in comments)
 
 
-def test_sensitive_prod_billing_env_goal_stays_decision_gated(hermes_home):
+def test_sensitive_prod_billing_env_seed_stays_decision_gated_after_admit(hermes_home):
     from gateway.ouro_intake import handle_ouro_intake_command
     from hermes_cli import kanban_db as kb
 
-    result = handle_ouro_intake_command(
+    started = handle_ouro_intake_command(
         'goal:"Change production billing env for Paddle checkout" project:dc tenant:billing',
         actor="tester",
     )
+    assert started.action == "interview_started"
+    assert "Seed is decision-gated" in started.message
+
+    result = handle_ouro_intake_command(f"admit session:{started.session_id}", actor="tester")
 
     assert result.action == "created"
     assert result.task_id is not None
@@ -124,6 +191,7 @@ def test_sensitive_prod_billing_env_goal_stays_decision_gated(hermes_home):
         assert task.claim_lock is None
         assert task.worker_pid is None
         assert task.admission_snapshot is not None
+        assert task.admission_snapshot["seed_review_mode"] == "decision_gate_only"
         assert "sensitive_side_effect_domain" in task.admission_snapshot["ambiguity_flags"]
         seed = _seed_from_body(task.body or "")
         assert seed["seed_review"]["mode"] == "decision_gate_only"

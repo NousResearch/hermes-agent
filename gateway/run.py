@@ -3149,6 +3149,7 @@ class GatewayRunner:
         if not normalized:
             return False
         strong_exact = {
+            "+",
             "утвердить",
             "утверждаю",
             "подтверждаю",

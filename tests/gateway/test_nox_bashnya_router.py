@@ -458,6 +458,124 @@ async def test_employee_approval_starts_next_phase(monkeypatch, bashnya_routes_p
 
 
 @pytest.mark.asyncio
+async def test_bare_plus_approval_in_employee_topic_starts_matching_phase(bashnya_routes_path):
+    """Bare '+' is allowed only as a deterministic gate approval in the current worker topic."""
+    event = _make_employee_event("+")
+    adapter = CaptureAdapter()
+    runner = _make_runner(event.source, adapter)
+    runner._save_nox_phase_runs(
+        {
+            "run-plus": {
+                "run_id": "run-plus",
+                "status": "awaiting_approval",
+                "project": "metaauto",
+                "display": "MetaAuto",
+                "goal": "safe next phase",
+                "plan": "Фаза 1: диагностика",
+                "phase_index": 0,
+                "phase_count": 1,
+                "bashnya_chat_id": BASHNYA_CHAT_ID,
+                "bashnya_thread_id": BASHNYA_THREAD_ID,
+                "employee_chat_id": BASHNYA_CHAT_ID,
+                "employee_thread_id": "31",
+                "topic_name": "MetaAuto · Сотрудник",
+            }
+        }
+    )
+    started: list[dict] = []
+
+    def fake_start_phase_runner(*, run_id, route, state):
+        started.append({"run_id": run_id, "route": route, "state": dict(state)})
+        return "phase-task-id"
+
+    runner._start_nox_worker_phase_runner = fake_start_phase_runner
+
+    reply = await runner._maybe_handle_nox_worker_approval(event, "[Exzy] +")
+
+    assert "Фаза 1" in reply
+    assert started[0]["run_id"] == "run-plus"
+    assert runner._load_nox_phase_runs()["run-plus"]["status"] == "running_phase"
+
+
+@pytest.mark.asyncio
+async def test_bare_plus_in_bashnya_without_waiting_gate_stops_before_agent(bashnya_routes_path):
+    """Bare '+' in Башня must not fall through to the LLM and continue stale context."""
+    event = _make_bashnya_event("+")
+    adapter = CaptureAdapter()
+    runner = _make_runner(event.source, adapter)
+
+    async def fail_if_agent_runs(**_kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("bare plus must be handled deterministically before _run_agent")
+
+    runner._run_agent = fail_if_agent_runs
+
+    reply = await runner._handle_message_with_agent(
+        event,
+        event.source,
+        build_session_key(event.source),
+        run_generation=1,
+    )
+
+    assert "Нет worker-фазы" in reply
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_bare_plus_in_bashnya_requires_run_id_when_multiple_gates(bashnya_routes_path):
+    """Bare '+' in Башня is rejected if more than one active gate could match."""
+    event = _make_bashnya_event("+")
+    adapter = CaptureAdapter()
+    runner = _make_runner(event.source, adapter)
+    base_state = {
+        "status": "awaiting_approval",
+        "goal": "safe next phase",
+        "plan": "Фаза 1: диагностика",
+        "phase_index": 0,
+        "phase_count": 1,
+        "bashnya_chat_id": BASHNYA_CHAT_ID,
+        "bashnya_thread_id": BASHNYA_THREAD_ID,
+    }
+    runner._save_nox_phase_runs(
+        {
+            "meta-run": {
+                "run_id": "meta-run",
+                "project": "metaauto",
+                "display": "MetaAuto",
+                "employee_chat_id": BASHNYA_CHAT_ID,
+                "employee_thread_id": "31",
+                "topic_name": "MetaAuto · Сотрудник",
+                **base_state,
+            },
+            "ryadom-run": {
+                "run_id": "ryadom-run",
+                "project": "ryadom",
+                "display": "Ryadom",
+                "employee_chat_id": BASHNYA_CHAT_ID,
+                "employee_thread_id": "32",
+                "topic_name": "Ryadom · Сотрудник",
+                **base_state,
+            },
+        }
+    )
+
+    async def fail_if_agent_runs(**_kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("ambiguous plus must be handled before _run_agent")
+
+    runner._run_agent = fail_if_agent_runs
+
+    reply = await runner._handle_message_with_agent(
+        event,
+        event.source,
+        build_session_key(event.source),
+        run_generation=1,
+    )
+
+    assert "Нужен run_id" in reply
+    assert "meta-run" in reply and "ryadom-run" in reply
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
 async def test_prefixed_employee_approval_is_bound_to_exact_project_thread(bashnya_routes_path):
     """Gateway-prepared '[User] утвердить' must approve only the run waiting in this topic."""
     event = _make_ryadom_employee_event("утвердить")

@@ -208,29 +208,44 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setRecoveryPending(false);
     };
 
+    const recoverFromMostRecent = () => {
+      api
+        .getMostRecentSession()
+        .then((res) => {
+          if (cancelled) return;
+          if (res.session_id) {
+            resumeTo(res.session_id);
+          } else {
+            setRecoveryPending(false);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setRecoveryPending(false);
+          }
+        });
+    };
+
     const remembered = getRememberedChatSessionId();
     if (remembered) {
-      resumeTo(remembered);
+      api
+        .getSessionLatestDescendant(remembered)
+        .then((res) => {
+          if (cancelled) return;
+          resumeTo(res.session_id || remembered);
+        })
+        .catch(() => {
+          // Older dashboard builds could save the ephemeral gateway sid in
+          // sessionStorage. If it is not a real DB session, do not resume that
+          // invalid id; fall back to the latest resumable server-side session.
+          recoverFromMostRecent();
+        });
       return () => {
         cancelled = true;
       };
     }
 
-    api
-      .getMostRecentSession()
-      .then((res) => {
-        if (cancelled) return;
-        if (res.session_id) {
-          resumeTo(res.session_id);
-        } else {
-          setRecoveryPending(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setRecoveryPending(false);
-        }
-      });
+    recoverFromMostRecent();
 
     return () => {
       cancelled = true;

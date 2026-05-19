@@ -59,6 +59,24 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_session_info_exposes_persistent_resume_session_id(monkeypatch):
+    agent = types.SimpleNamespace(
+        session_id="session_20260519_123456_abcd12",
+        model="test-model",
+        provider="openrouter",
+        base_url="",
+        tools=[],
+    )
+
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+
+    info = server._session_info(agent)
+
+    assert info["session_id"] == "session_20260519_123456_abcd12"
+    assert info["model"] == "test-model"
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 

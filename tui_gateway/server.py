@@ -1394,6 +1394,11 @@ def _session_info(agent) -> dict:
         reasoning_effort = str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or ""
     info: dict = {
+        # Persistent SessionDB id used by /resume and dashboard recovery.
+        # This is intentionally distinct from the short in-process gateway sid
+        # carried in event envelopes; the latter dies with the TUI process and
+        # must never be saved as a resume target.
+        "session_id": getattr(agent, "session_id", "") or "",
         "model": getattr(agent, "model", ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,

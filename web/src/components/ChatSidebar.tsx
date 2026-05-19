@@ -44,6 +44,7 @@ interface SessionInfo {
   cwd?: string;
   model?: string;
   provider?: string;
+  session_id?: string;
   credential_warning?: string;
 }
 
@@ -208,9 +209,15 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       const { type, payload, session_id: eventSessionId } = frame.params;
 
       if (type === "session.info") {
-        rememberChatSessionId(eventSessionId);
+        const infoPayload = payload as SessionInfo | undefined;
+        // eventSessionId is the short, in-process TUI gateway id. It is useful
+        // for routing live events, but it is not a durable SessionDB id and
+        // cannot be used with /resume after a dashboard reload. Prefer the
+        // persistent id included in the session.info payload; only older
+        // backends without that field fall back to the event envelope.
+        rememberChatSessionId(infoPayload?.session_id ?? eventSessionId);
         if (payload) {
-          setInfo((prev) => ({ ...prev, ...(payload as SessionInfo) }));
+          setInfo((prev) => ({ ...prev, ...infoPayload }));
         }
         return;
       }

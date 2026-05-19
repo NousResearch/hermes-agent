@@ -2425,6 +2425,38 @@ class TestPtyWebSocket:
         assert "channel=abc-123" in url
         assert "token=" in url
 
+    def test_attach_failure_detaches_dead_websocket(self, monkeypatch):
+        """A client drop during buffered replay must not leave session.ws stuck.
+
+        The next reconnect relies on session.ws being clear; otherwise the PTY
+        session can sit attached to a dead socket until a later writer failure.
+        """
+        class FakeBridge:
+            def close(self):
+                pass
+
+        session = self.ws_module._DashboardPtySession(FakeBridge())
+
+        async def fake_get_session(**_kwargs):
+            return session
+
+        async def fake_attach(sess, ws):
+            sess.ws = ws
+            raise RuntimeError("client dropped during replay")
+
+        monkeypatch.setattr(
+            self.ws_module, "_get_dashboard_pty_session", fake_get_session
+        )
+        monkeypatch.setattr(
+            self.ws_module, "_attach_dashboard_pty_session", fake_attach
+        )
+
+        with self.client.websocket_connect(self._url(channel="attach-fail")) as conn:
+            msg = conn.receive_text()
+
+        assert "Chat connection failed" in msg
+        assert session.ws is None
+
     def test_channel_disconnect_keeps_pty_alive_for_reconnect(self, monkeypatch):
         import time
 

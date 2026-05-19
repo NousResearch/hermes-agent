@@ -3691,6 +3691,7 @@ async def pty_ws(ws: WebSocket) -> None:
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
+    session: Optional[_DashboardPtySession] = None
     try:
         session = await _get_dashboard_pty_session(
             channel=channel,
@@ -3710,6 +3711,16 @@ async def pty_ws(ws: WebSocket) -> None:
         return
     except (FileNotFoundError, OSError) as exc:
         await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+        await ws.close(code=1011)
+        return
+    except Exception as exc:
+        if session is not None:
+            await _detach_dashboard_pty_session(channel, session, ws)
+        _log.exception("Dashboard PTY attach failed")
+        try:
+            await ws.send_text(f"\r\n\x1b[31mChat connection failed: {exc}\x1b[0m\r\n")
+        except Exception:
+            pass
         await ws.close(code=1011)
         return
 

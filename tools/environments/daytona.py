@@ -10,6 +10,7 @@ import math
 import os
 import shlex
 import threading
+import uuid
 from pathlib import Path
 
 from tools.environments.base import (
@@ -84,7 +85,12 @@ class DaytonaEnvironment(BaseEnvironment):
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
 
         labels = {"hermes_task_id": task_id}
-        sandbox_name = f"hermes-{task_id}"
+        # task_id collapses to "default" for subagents sharing a parent's
+        # container; Daytona requires globally-unique names so concurrent
+        # processes need a uuid suffix to avoid DaytonaConflictError.  The
+        # hermes_task_id label still carries logical task identity for
+        # persistent-resume via list(labels=...).
+        sandbox_name = f"hermes-{task_id}-{uuid.uuid4().hex[:8]}"
 
         if self._persistent:
             try:

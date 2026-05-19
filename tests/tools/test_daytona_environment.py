@@ -148,7 +148,9 @@ class TestPersistence:
         env = make_env(get_side_effect=lambda name: existing, persistent=True,
                        task_id="mytask")
         existing.start.assert_called_once()
-        env._mock_client.get.assert_called_once_with("hermes-mytask")
+        env._mock_client.get.assert_called_once()
+        get_name = env._mock_client.get.call_args[0][0]
+        assert get_name.startswith("hermes-mytask-")
         env._mock_client.create.assert_not_called()
 
     def test_persistent_resumes_legacy_via_list(self, make_env, daytona_sdk):
@@ -172,9 +174,11 @@ class TestPersistence:
             task_id="mytask",
         )
         env._mock_client.create.assert_called_once()
-        # Verify the name and labels were passed to CreateSandboxFromImageParams
-        # by checking get() was called with the right sandbox name
-        env._mock_client.get.assert_called_with("hermes-mytask")
+        # Sandbox name is uuid-suffixed for uniqueness (#28299); verify the
+        # prefix only and that the label-based legacy lookup still uses the
+        # logical task id.
+        get_name = env._mock_client.get.call_args[0][0]
+        assert get_name.startswith("hermes-mytask-")
         env._mock_client.list.assert_called_with(
             labels={"hermes_task_id": "mytask"}, limit=1)
 
@@ -183,6 +187,70 @@ class TestPersistence:
         env._mock_client.get.assert_not_called()
         env._mock_client.list.assert_not_called()
         env._mock_client.create.assert_called_once()
+
+
+class _ParamsCapture:
+    """Records constructor kwargs so tests can verify what was passed to
+    ``CreateSandboxFromImageParams`` (a MagicMock won't expose the ``name``
+    kwarg as a real attribute -- ``name`` is a reserved constructor arg)."""
+
+    instances: list["_ParamsCapture"] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        _ParamsCapture.instances.append(self)
+
+
+class TestSandboxNameUniqueness:
+    """Regression guard for #28299.
+
+    ``tools.terminal_tool._resolve_container_task_id`` collapses subagent
+    task ids back to ``"default"`` so subagents share their parent's
+    container. Two concurrent gateway / Kanban workers therefore both hit
+    the Daytona backend with ``task_id="default"``; Daytona requires
+    globally-unique sandbox names, so the second ``create`` previously
+    failed with ``DaytonaConflictError: Sandbox with name hermes-default
+    already exists``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _capture_params(self, daytona_sdk):
+        _ParamsCapture.instances.clear()
+        daytona_sdk.CreateSandboxFromImageParams = _ParamsCapture
+        yield
+        _ParamsCapture.instances.clear()
+
+    def test_default_task_id_gets_unique_sandbox_names(self, make_env):
+        make_env(persistent=False, task_id="default")
+        make_env(persistent=False, task_id="default")
+
+        name_a = _ParamsCapture.instances[-2].kwargs["name"]
+        name_b = _ParamsCapture.instances[-1].kwargs["name"]
+
+        assert name_a.startswith("hermes-default-")
+        assert name_b.startswith("hermes-default-")
+        assert name_a != name_b
+
+    def test_named_task_id_also_gets_unique_suffix(self, make_env):
+        # Even for explicit task ids, two concurrent instances must not
+        # collide on the Daytona side. Logical identity stays on the label.
+        make_env(persistent=False, task_id="mytask")
+        make_env(persistent=False, task_id="mytask")
+
+        name_a = _ParamsCapture.instances[-2].kwargs["name"]
+        name_b = _ParamsCapture.instances[-1].kwargs["name"]
+
+        assert name_a.startswith("hermes-mytask-")
+        assert name_b.startswith("hermes-mytask-")
+        assert name_a != name_b
+
+    def test_create_passes_hermes_task_id_label(self, make_env):
+        make_env(persistent=False, task_id="mytask")
+        kwargs = _ParamsCapture.instances[-1].kwargs
+        assert kwargs["labels"] == {"hermes_task_id": "mytask"}
+        # And the name still carries the logical task id (Daytona ops still
+        # need a recognizable prefix even though uniqueness is on the suffix).
+        assert kwargs["name"].startswith("hermes-mytask-")
 
 
 # ---------------------------------------------------------------------------

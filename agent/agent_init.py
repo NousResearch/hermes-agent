@@ -1079,6 +1079,34 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Codex economy mode: reduces token pressure by encouraging compact
+    # context packaging without sacrificing final quality.  Read once at
+    # construction; never mutated mid-session to keep prompt cache stable.
+    _codex_economy_cfg = _agent_cfg.get("codex_economy", {})
+    if not isinstance(_codex_economy_cfg, dict):
+        _codex_economy_cfg = {}
+    agent._codex_economy_enabled = bool(_codex_economy_cfg.get("enabled", False))
+    agent._codex_economy_auto_openai_codex = bool(
+        _codex_economy_cfg.get("auto_for_openai_codex", False)
+    )
+    try:
+        _raw_files = _codex_economy_cfg.get("max_changed_files_for_inline_context", 8)
+        _max_changed_files = int(_raw_files)
+        if _max_changed_files < 1:
+            _max_changed_files = 8
+    except (TypeError, ValueError):
+        _max_changed_files = 8
+    agent._codex_economy_max_changed_files = _max_changed_files
+
+    try:
+        _raw_lines = _codex_economy_cfg.get("max_diff_lines_for_review_packet", 400)
+        _max_diff_lines = int(_raw_lines)
+        if _max_diff_lines < 1:
+            _max_diff_lines = 400
+    except (TypeError, ValueError):
+        _max_diff_lines = 400
+    agent._codex_economy_max_diff_lines = _max_diff_lines
+
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
     try:

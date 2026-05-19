@@ -360,6 +360,69 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "Don't stop with a plan — execute it.\n"
 )
 
+# Guidance injected when Codex economy mode is active (opt-in).
+# Reduces token pressure by encouraging compact context packaging without
+# sacrificing final quality or skipping verification steps.
+
+def _format_economy_guidance(max_changed_files: int = 8, max_diff_lines: int = 400) -> str:
+    """Build Codex economy guidance with the given budget thresholds."""
+    return (
+        "# Codex economy mode\n"
+        "<context_efficiency>\n"
+        "- Before reading files, run file-discovery or diff-stats to identify "
+        "what is actually relevant. Do not load whole files when offsets and "
+        "snippets suffice.\n"
+        "- Use search_files with targeted patterns and read_file with byte/line "
+        "offsets instead of reading entire files.\n"
+        f"- When the changeset touches more than {max_changed_files} files, switch "
+        "to compact context (snippets + diff summary) instead of loading full files.\n"
+        "- When preparing a review packet, include: original goal/spec, "
+        "changed-file list, diff summary (not raw diff), relevant snippets, "
+        f"test-output tail, and explicit questions. Keep total packet size "
+        f"within {max_diff_lines} diff lines.\n"
+        "- Preserve parallel execution when work is independent — do NOT "
+        "serialize tasks solely to reduce token volume.\n"
+        "- Do NOT skip verification, final tests, security checks, or Codex "
+        "Final whole-system review. These are non-negotiable quality gates.\n"
+        "- Codex is the final/important-review judge. Cheaper tools "
+        "(subscription, local, planning) can handle packaging and planning "
+        "steps; no extra API spend is required for low-value intermediate steps.\n"
+        "</context_efficiency>"
+    )
+
+
+CODEX_ECONOMY_GUIDANCE = _format_economy_guidance()
+
+
+def build_codex_economy_prompt(
+    *,
+    enabled: bool = False,
+    auto_for_openai_codex: bool = False,
+    provider: str = "",
+    api_mode: str = "",
+    model: str = "",
+    max_changed_files: int = 8,
+    max_diff_lines: int = 400,
+) -> str:
+    """Return economy guidance when the mode is active, else empty string.
+
+    Active when enabled=True, OR when auto_for_openai_codex=True and the
+    provider/api_mode/model indicates openai-codex or codex_responses.
+    """
+    if enabled:
+        return _format_economy_guidance(max_changed_files, max_diff_lines)
+    if auto_for_openai_codex:
+        _provider = (provider or "").lower()
+        _api_mode = (api_mode or "").lower()
+        _model = (model or "").lower()
+        if (
+            _provider in {"openai-codex", "xai-oauth"}
+            or _api_mode == "codex_responses"
+            or "codex" in _model
+        ):
+            return _format_economy_guidance(max_changed_files, max_diff_lines)
+    return ""
+
 
 # Guidance injected into the system prompt when the computer_use toolset
 # is active. Universal — works for any model (Claude, GPT, open models).

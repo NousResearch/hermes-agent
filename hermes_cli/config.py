@@ -1003,7 +1003,21 @@ DEFAULT_CONFIG = {
             "extra_body": {},
         },
     },
-    
+
+    "codex_economy": {
+        # Opt-in mode that reduces OpenAI Codex token pressure without
+        # lowering final quality.  See docs/user-guide/codex-economy-mode.md.
+        "enabled": False,
+        # When true, automatically activates for openai-codex / xai-oauth
+        # providers and codex_responses api_mode.
+        "auto_for_openai_codex": False,
+        # Max changed-file count before the agent switches to compact context
+        # (snippets + diff summary instead of full files).
+        "max_changed_files_for_inline_context": 8,
+        # Max diff lines to include in a review packet.
+        "max_diff_lines_for_review_packet": 400,
+    },
+
     "display": {
         "compact": False,
         "personality": "kawaii",

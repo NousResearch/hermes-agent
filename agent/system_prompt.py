@@ -39,6 +39,7 @@ from agent.prompt_builder import (
     SKILLS_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    build_codex_economy_prompt,
 )
 
 
@@ -165,6 +166,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # existing tools, replies with plans instead of executing).
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+
+    # Codex economy mode — inject when enabled or auto-detected.
+    # Placed outside the tool_use_enforcement block so it fires
+    # regardless of whether tool-use enforcement is configured.
+    _eco_prompt = build_codex_economy_prompt(
+        enabled=getattr(agent, "_codex_economy_enabled", False),
+        auto_for_openai_codex=getattr(agent, "_codex_economy_auto_openai_codex", False),
+        provider=getattr(agent, "provider", "") or "",
+        api_mode=getattr(agent, "api_mode", "") or "",
+        model=getattr(agent, "model", "") or "",
+        max_changed_files=getattr(agent, "_codex_economy_max_changed_files", 8),
+        max_diff_lines=getattr(agent, "_codex_economy_max_diff_lines", 400),
+    )
+    if _eco_prompt:
+        stable_parts.append(_eco_prompt)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:

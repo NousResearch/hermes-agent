@@ -301,6 +301,14 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
+    # Read fallback chain from profile config — supports both the new list
+    # format (fallback_providers) and the legacy single-dict (fallback_model).
+    # Mirrors the same normalization in cli.py so oneshot workers (e.g. kanban
+    # workers spawned via `hermes -p <profile> chat -q ...`) honour the
+    # profile's fallback chain just like interactive sessions do.
+    _fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or []
+    if isinstance(_fb, dict):
+        _fb = [_fb] if _fb.get("provider") and _fb.get("model") else []
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),
@@ -313,6 +321,7 @@ def _run_agent(
         platform="cli",
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
+        fallback_model=_fb or None,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

@@ -1128,6 +1128,8 @@ AUTHOR_MAP = {
     "33933019+hueilau@users.noreply.github.com": "hueilau",
     "32297275+Timur00Kh@users.noreply.github.com": "Timur00Kh",  # PR #27114 (telegram DM topic for synthetic events)
     "al.bellemare@gmail.com": "Grogger",  # PR #27061 (windows console flash suppress)
+    "7065068+Grogger@users.noreply.github.com": "Grogger",
+    "18091625+Grogger@users.noreply.github.com": "Grogger",  # stale salvage commit alias (PR #28330)
     "clement@nousresearch.com": "lemassykoi",  # PR #27042 (model-switch probe keyless providers)
     "16377344+lemassykoi@users.noreply.github.com": "lemassykoi",
     "draplater@icloud.com": "draplater",  # PR #26707 (goal judge current time)

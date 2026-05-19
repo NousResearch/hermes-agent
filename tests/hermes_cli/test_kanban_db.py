@@ -1036,6 +1036,76 @@ def test_tenant_propagates_to_events(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Originating session id (ACP propagation)
+# ---------------------------------------------------------------------------
+
+def test_create_task_stamps_session_id(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="from chat", session_id="acp-sess-123"
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.session_id == "acp-sess-123"
+
+
+def test_create_task_session_id_defaults_to_none(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cli-created")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.session_id is None
+
+
+def test_session_id_filters_listings(kanban_home):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="s1-a", session_id="sess-1")
+        kb.create_task(conn, title="s1-b", session_id="sess-1")
+        kb.create_task(conn, title="s2-a", session_id="sess-2")
+        kb.create_task(conn, title="cli-only")  # no session
+        sess1 = kb.list_tasks(conn, session_id="sess-1")
+        sess2 = kb.list_tasks(conn, session_id="sess-2")
+        unscoped = kb.list_tasks(conn)
+    assert sorted(t.title for t in sess1) == ["s1-a", "s1-b"]
+    assert [t.title for t in sess2] == ["s2-a"]
+    # Unscoped list still returns everything (legacy NULL rows visible).
+    assert len(unscoped) == 4
+
+
+def test_session_id_index_exists(kanban_home):
+    """The migration creates an index on session_id for cheap per-session
+    list queries on busy boards. Without it, a chat-scoped poll would
+    full-scan the tasks table."""
+    with kb.connect() as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='tasks'"
+        ).fetchall()
+    names = {r["name"] for r in rows}
+    assert "idx_tasks_session_id" in names
+
+
+def test_session_id_compose_with_tenant_filter(kanban_home):
+    """A client may want both `tenant=scarf:foo` AND `session=acp-x` —
+    the filters must AND, not replace."""
+    with kb.connect() as conn:
+        kb.create_task(
+            conn, title="match", tenant="scarf:foo", session_id="acp-x"
+        )
+        kb.create_task(
+            conn, title="wrong-tenant", tenant="other", session_id="acp-x"
+        )
+        kb.create_task(
+            conn, title="wrong-session",
+            tenant="scarf:foo", session_id="acp-y",
+        )
+        rows = kb.list_tasks(
+            conn, tenant="scarf:foo", session_id="acp-x"
+        )
+    assert [t.title for t in rows] == ["match"]
+
+
+# ---------------------------------------------------------------------------
 # Shared-board path resolution (issue #19348)
 #
 # The kanban board is a cross-profile coordination primitive: a worker
@@ -1557,7 +1627,8 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
             workflow_template_id TEXT,
             current_step_key TEXT,
             skills TEXT,
-            max_retries INTEGER
+            max_retries INTEGER,
+            session_id TEXT
         )
         """
     )

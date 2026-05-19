@@ -1091,6 +1091,80 @@ class TestPrompt:
         assert any(update.session_update == "agent_message_chunk" for update in updates)
 
     @pytest.mark.asyncio
+    async def test_prompt_propagates_hermes_session_id_env(self, agent, monkeypatch):
+        """ACP must propagate the originating session id to the agent loop
+        via ``HERMES_SESSION_ID`` so tools that want to stamp side-effects
+        with it (e.g. ``kanban_create``) can read the env var inside
+        ``run_conversation``. The variable must be visible during the
+        agent call AND restored afterwards so a re-used executor thread
+        doesn't leak one session's id into another."""
+        # Pre-condition: env is clean.
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        captured: dict[str, str | None] = {}
+
+        def mock_run(user_message, conversation_history=None, task_id=None, **kwargs):
+            # Inside the agent loop the env var must reflect the active
+            # ACP session id. ``task_id`` is also the session id at this
+            # boundary; assert both for symmetry.
+            captured["env"] = os.environ.get("HERMES_SESSION_ID")
+            captured["task_id"] = task_id
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hi")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert captured["env"] == new_resp.session_id, (
+            "HERMES_SESSION_ID must be set to the originating ACP session id "
+            "while the agent loop is running"
+        )
+        assert captured["task_id"] == new_resp.session_id
+        # Post-condition: must be restored to the prior value (None here).
+        assert os.environ.get("HERMES_SESSION_ID") is None, (
+            "HERMES_SESSION_ID must be restored after the agent call so "
+            "a re-used executor thread doesn't leak the id into the next "
+            "session's tools"
+        )
+
+    @pytest.mark.asyncio
+    async def test_prompt_restores_prior_hermes_session_id(self, agent, monkeypatch):
+        """If the env already had HERMES_SESSION_ID set (e.g. nested
+        agent loops), the prior value must be restored after the inner
+        prompt completes — not popped, not left at the inner id."""
+        monkeypatch.setenv("HERMES_SESSION_ID", "outer-sess")
+
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        captured: dict[str, str | None] = {}
+
+        def mock_run(*args, **kwargs):
+            captured["inner"] = os.environ.get("HERMES_SESSION_ID")
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hi")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert captured["inner"] == new_resp.session_id
+        # Outer scope must be restored.
+        assert os.environ.get("HERMES_SESSION_ID") == "outer-sess"
+
+    @pytest.mark.asyncio
     async def test_prompt_does_not_duplicate_streamed_final_message(self, agent):
         """If ACP already streamed response chunks, final_response should not be sent again."""
         new_resp = await agent.new_session(cwd=".")

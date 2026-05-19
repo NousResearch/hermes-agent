@@ -138,7 +138,7 @@ class ModelDeprecationDB:
             return
         
         try:
-            with open(self.db_path, "r") as f:
+            with open(self.db_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 for key, record_data in data.items():
                     self._records[key] = ModelDeprecationRecord.from_dict(record_data)
@@ -149,7 +149,7 @@ class ModelDeprecationDB:
         """Save deprecation records to disk."""
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.db_path, "w") as f:
+            with open(self.db_path, "w", encoding="utf-8") as f:
                 data = {key: record.to_dict() for key, record in self._records.items()}
                 json.dump(data, f, indent=2)
         except Exception as e:

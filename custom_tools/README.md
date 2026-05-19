@@ -80,26 +80,24 @@ python -m custom_tools.wallet_manager list
 ### Step 2: Analyze NFT Contract
 
 ```bash
-python -m custom_tools.contract_analyzer 0xNFTContract --chain base
+# Plan mint and auto-save to approval queue (default --queue)
+python -m custom_tools.mint_planner 0xContract --wallet burner1
+
+# With quantity
+python -m custom_tools.mint_planner 0xContract --wallet burner1 --quantity 3
+
+# Override function and price
+python -m custom_tools.mint_planner 0xContract --wallet burner1 --function mint --price-wei 0
+
+# Preview only, do NOT save to queue
+python -m custom_tools.mint_planner 0xContract --wallet burner1 --no-queue
 ```
 
-### Step 3: Scan Unminted Tokens
+> **Note:** By default, `mint_planner` saves the plan to the approval queue
+> with `status=pending` and prints the generated approval ID. Use `--no-queue`
+> for preview-only mode.
 
-```bash
-python -m custom_tools.unminted_scanner 0xNFTContract 1 1000 --chain base --csv unminted.csv
-```
-
-### Step 4: Plan Mint (Auto-Queues as PENDING)
-
-```bash
-# Single wallet - auto-saves to approval queue
-python -m custom_tools.mint_planner 0xNFTContract --wallet burner1 --function mint --price-wei 0
-
-# Preview only (no save)
-python -m custom_tools.mint_planner 0xNFTContract --wallet burner1 --function mint --price-wei 0 --no-queue
-```
-
-### Step 5: Verify Queue
+### approval_queue.py - Transaction Approval
 
 ```bash
 python -m custom_tools.approval_queue list
@@ -216,8 +214,59 @@ python -m custom_tools.telegram_gateway.bot
 
 ### Start with PM2:
 ```bash
-cd hermes-agent
-pm2 start custom_tools/ecosystem.config.js
+# 1. Analyze contract
+python -m custom_tools.contract_analyzer 0xNFTContract --chain base
+
+# 2. Scan for unminted tokens
+python -m custom_tools.unminted_scanner 0xNFTContract 1 1000 --chain base
+
+# 3. Create burner wallet
+python -m custom_tools.wallet_manager create --label "test1"
+
+# 4. Fund wallet (manually send ETH)
+
+# 5. Plan mint transaction (auto-queues as PENDING)
+python -m custom_tools.mint_planner 0xNFTContract --wallet test1 --function mint --price-wei 0
+#    -> Shows preview + prints: "Queued as PENDING approval ID #1"
+
+# 6. Verify it's in the queue
+python -m custom_tools.approval_queue list
+
+# 7. Approve
+python -m custom_tools.approval_queue approve --id 1
+
+# 8. Execute (set DRY_RUN=false)
+DRY_RUN=false python -m custom_tools.mint_executor --id 1
+```
+
+### Key Rules:
+- `mint_planner` **plans and queues** but NEVER sends transactions.
+- `mint_executor` **only executes entries with status=approved**.
+- `DRY_RUN=true` is the default — executor will simulate even if approved.
+- Set `DRY_RUN=false` explicitly to send real transactions.
+
+## PM2 / Systemd Startup
+
+### PM2 (for Telegram bot - future)
+
+```json
+// ecosystem.config.js
+{
+  "apps": [{
+    "name": "hermes-telegram-bot",
+    "script": "python",
+    "args": "-m custom_tools.telegram_gateway.bot",
+    "cwd": "/path/to/hermes-agent",
+    "env": {
+      "TELEGRAM_BOT_TOKEN": "your-token",
+      "TELEGRAM_ALLOWED_USERS": "123456789"
+    }
+  }]
+}
+```
+
+```bash
+pm2 start ecosystem.config.js
 pm2 save
 pm2 startup
 ```

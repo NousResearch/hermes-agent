@@ -73,11 +73,11 @@ def _get_db() -> sqlite3.Connection:
 
 def add_to_queue(preview: dict) -> int:
     """
-    Add a mint transaction to the approval queue with status=pending.
+    Add a mint transaction to the approval queue.
 
-    Stores: chain, contract, wallet_label, wallet_address, function_name,
-    quantity, value_wei, gas_limit, gas_price, total_cost, calldata_preview,
-    risk_warnings, created_at, status=pending.
+    Saves the full plan including chain, contract, wallet_label, wallet_address,
+    function_name, quantity, value_wei, gas_limit, gas_price, total_cost,
+    calldata_preview, risk_warnings, created_at, status=pending.
 
     Args:
         preview: Transaction preview from mint_planner
@@ -88,11 +88,11 @@ def add_to_queue(preview: dict) -> int:
     conn = _get_db()
     now = datetime.utcnow().isoformat()
 
-    # Extract fields
+    # Extract gas price and total cost
     gas_price_wei = str(preview.get("gas_price_wei", "0"))
     total_cost_wei = str(preview.get("total_cost_wei", "0"))
 
-    # Calldata preview (first 66 chars)
+    # Extract calldata preview (first 66 chars of data field)
     tx_data_raw = preview.get("tx_data", {})
     calldata = tx_data_raw.get("data", "") if isinstance(tx_data_raw, dict) else ""
     calldata_preview = calldata[:66] + "..." if len(calldata) > 66 else calldata
@@ -160,8 +160,10 @@ def approve(entry_id: int, approved_by: str = "manual") -> dict:
     conn.commit()
     conn.close()
 
+    print(f"  Approved: ID #{entry_id}")
     return {"id": entry_id, "status": "approved", "approved_by": approved_by}
 
+    return {"id": entry_id, "status": "approved", "approved_by": approved_by}
 
 def reject(entry_id: int, reason: str = "") -> dict:
     """Reject a pending transaction."""
@@ -184,6 +186,7 @@ def reject(entry_id: int, reason: str = "") -> dict:
     conn.commit()
     conn.close()
 
+    print(f"  Rejected: ID #{entry_id}")
     return {"id": entry_id, "status": "rejected", "reason": reason}
 
 

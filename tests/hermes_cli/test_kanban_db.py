@@ -186,6 +186,16 @@ def test_claim_once_wins_second_loses(kanban_home):
         assert second is None
 
 
+def test_claim_uses_env_default_ttl(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_TTL_SECONDS", "3600")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        kb.claim_task(conn, t, claimer="host:1")
+        expires = kb.get_task(conn, t).claim_expires
+    assert expires is not None
+    assert expires > int(time.time()) + 3000
+
+
 def test_claim_fails_on_non_ready(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x")
@@ -265,6 +275,33 @@ def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
         ]
         assert "claim_extended" in kinds
         assert "reclaimed" not in kinds
+
+
+def test_stale_claim_with_live_pid_uses_env_ttl_override(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_TTL_SECONDS", "3600")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 60, t),
+        )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 0
+
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.claim_expires is not None
+        assert task.claim_expires > int(time.time()) + 3000
 
 
 def test_stale_claim_reclaim_event_records_diagnostic_payload(
@@ -424,6 +461,20 @@ def test_heartbeat_extends_claim(kanban_home):
         ok = kb.heartbeat_claim(conn, t, claimer=claimer, ttl_seconds=3600)
         assert ok
         new = kb.get_task(conn, t).claim_expires
+        assert new > int(time.time()) + 3000
+
+
+def test_heartbeat_uses_env_default_ttl(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_TTL_SECONDS", "3600")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        claimer = "host:hb"
+        kb.claim_task(conn, t, claimer=claimer, ttl_seconds=60)
+        conn.execute("UPDATE tasks SET claim_expires = ? WHERE id = ?", (0, t))
+        ok = kb.heartbeat_claim(conn, t, claimer=claimer)
+        assert ok
+        new = kb.get_task(conn, t).claim_expires
+        assert new is not None
         assert new > int(time.time()) + 3000
 
 

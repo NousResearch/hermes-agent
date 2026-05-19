@@ -3684,18 +3684,29 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # human with a clear reason than to loop ``DEFAULT_FAILURE_LIMIT``
     # times first.
     auto_blocked: list[str] = []
-    for tid, pid, claimer, protocol_violation, error_text in crash_details:
-        tripped = _record_task_failure(
-            conn, tid,
-            error=error_text,
-            outcome="crashed",
-            failure_limit=(1 if protocol_violation else None),
-            release_claim=False,
-            end_run=False,
-            event_payload_extra={"pid": pid, "claimer": claimer},
-        )
-        if tripped:
-            auto_blocked.append(tid)
+    if crash_details:
+        # Fingerprint errors to detect systemic failures.
+        _fp_counts: dict[str, int] = {}
+        for _, _, _, _, err_text in crash_details:
+            fp = _error_fingerprint(err_text)
+            _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
+        for tid, pid, claimer, protocol_violation, error_text in crash_details:
+            fp = _error_fingerprint(error_text)
+            is_systemic = (
+                not protocol_violation
+                and _fp_counts.get(fp, 0) >= 3
+            )
+            tripped = _record_task_failure(
+                conn, tid,
+                error=error_text,
+                outcome="crashed",
+                failure_limit=1 if (protocol_violation or is_systemic) else None,
+                release_claim=False,
+                end_run=False,
+                event_payload_extra={"pid": pid, "claimer": claimer},
+            )
+            if tripped:
+                auto_blocked.append(tid)
     # Stash auto-blocked ids on the function for the dispatch loop to pick up.
     # Keeps the public return type (``list[str]``) stable for direct callers
     # and tests that destructure the result; ``dispatch_once`` reads this

@@ -1173,6 +1173,16 @@ AUTHOR_MAP = {
     "hoangv.pham0803@gmail.com": "hehehe0803",  # PR #26212 salvage (codex kanban writable root)
     "26063003+hehehe0803@users.noreply.github.com": "hehehe0803",
     "38348871+vaddisrinivas@users.noreply.github.com": "vaddisrinivas",  # PR #26394 salvage (Docker messaging extra)
+    # batch salvage (May 2026 LHF run, group 7)
+    "198679067+02356abc@users.noreply.github.com": "02356abc",  # PR #28286 salvage (wecom CLOSING)
+    "1743117+burjorjee@users.noreply.github.com": "burjorjee",  # PR #28201 salvage (inline-shell timeout guard)
+    "keki@MacBookPro.attlocal.net": "burjorjee",
+    "264690993+oseftg@users.noreply.github.com": "oseftg",  # PR #28168 salvage (natural ending emoji/caret)
+    "hex.hermes@agentmail.to": "oseftg",
+    "236912655+rudi193-cmd@users.noreply.github.com": "rudi193-cmd",  # PR #28241 salvage (empty credential pool)
+    "rudi193@gmail.com": "rudi193-cmd",
+    "86684667+sadiksaifi@users.noreply.github.com": "sadiksaifi",  # PR #27982 salvage (kanban horiz scroll)
+    "mail@sadiksaifi.dev": "sadiksaifi",
 }
 
 

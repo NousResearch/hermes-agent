@@ -29,7 +29,11 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
-from hermes_cli.config import get_compatible_custom_providers, load_config
+from hermes_cli.config import (
+    get_compatible_custom_providers,
+    load_config,
+    read_api_key_file,
+)
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname
 
@@ -116,6 +120,13 @@ def _get_model_config() -> Dict[str, Any]:
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
+        if not str(cfg.get("api_key") or "").strip():
+            secret = read_api_key_file(
+                cfg.get("api_key_file"),
+                label="model.api_key_file",
+            )
+            if secret:
+                cfg["api_key"] = secret
         # Accept "model" as alias for "default" (users intuitively write model.model)
         if not cfg.get("default") and cfg.get("model"):
             cfg["default"] = cfg["model"]
@@ -433,7 +444,16 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 return None
 
     config = load_config()
-    
+
+    def _resolve_entry_api_key(entry: Dict[str, Any], *, label: str) -> str:
+        key_env = str(entry.get("key_env", "") or "").strip()
+        resolved = os.getenv(key_env, "").strip() if key_env else ""
+        if not resolved:
+            resolved = str(entry.get("api_key", "") or "").strip()
+        if not resolved:
+            resolved = read_api_key_file(entry.get("api_key_file"), label=label)
+        return resolved
+
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
     if isinstance(providers, dict):
@@ -442,14 +462,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 continue
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
-            # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
-            resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
-            # Fall back to inline api_key when key_env is absent or unresolvable
-            if not resolved_api_key:
-                resolved_api_key = str(entry.get("api_key", "") or "").strip()
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
+                resolved_api_key = _resolve_entry_api_key(
+                    entry,
+                    label=f"providers.{ep_name}.api_key_file",
+                )
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
@@ -475,6 +493,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             if display_name:
                 display_norm = _normalize_custom_provider_name(display_name)
                 if requested_norm in {display_name, display_norm, f"custom:{display_norm}"}:
+                    resolved_api_key = _resolve_entry_api_key(
+                        entry,
+                        label=f"providers.{ep_name}.api_key_file",
+                    )
                     # Found match by display name
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
@@ -520,7 +542,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
-            "api_key": str(entry.get("api_key", "") or "").strip(),
+            "api_key": str(entry.get("api_key", "") or "").strip()
+            or read_api_key_file(
+                entry.get("api_key_file"),
+                label=f"custom_providers.{name}.api_key_file",
+            ),
         }
         key_env = str(entry.get("key_env", "") or "").strip()
         if key_env:

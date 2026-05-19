@@ -832,6 +832,80 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["model"] == "acme-large"
 
 
+def test_named_custom_provider_uses_api_key_file_from_providers_dict(tmp_path, monkeypatch):
+    """providers dict entries with api_key_file should resolve from secret files."""
+    key_file = tmp_path / "mycorp.key"
+    key_file.write_text("file-secret\n", encoding="utf-8")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "mycorp-proxy": {
+                    "base_url": "https://proxy.example.com/v1",
+                    "default_model": "acme-large",
+                    "api_key_file": str(key_file),
+                    "name": "MyCorp Proxy",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://proxy.example.com/v1"
+    assert resolved["api_key"] == "file-secret"
+    assert resolved["model"] == "acme-large"
+
+
+def test_named_custom_provider_uses_api_key_file_from_custom_providers(tmp_path, monkeypatch):
+    """legacy custom_providers entries with api_key_file should also work."""
+    key_file = tmp_path / "legacy.key"
+    key_file.write_text("legacy-file-secret\n", encoding="utf-8")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Legacy Proxy",
+                    "base_url": "https://legacy.example.com/v1",
+                    "api_key_file": str(key_file),
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="legacy-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://legacy.example.com/v1"
+    assert resolved["api_key"] == "legacy-file-secret"
+
+
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

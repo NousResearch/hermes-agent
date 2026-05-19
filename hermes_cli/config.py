@@ -96,8 +96,9 @@ _CONFIG_LOCK = threading.RLock()
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
-    "OPENAI_API_KEY", "OPENAI_BASE_URL",
-    "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+    "OPENAI_API_KEY", "OPENAI_API_KEY_FILE", "OPENAI_BASE_URL",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_FILE", "ANTHROPIC_TOKEN",
+    "GEMINI_API_KEY_FILE", "GOOGLE_API_KEY_FILE", "OPENROUTER_API_KEY_FILE",
     "DISCORD_HOME_CHANNEL", "DISCORD_HOME_CHANNEL_NAME",
     "TELEGRAM_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL_NAME",
     "SLACK_HOME_CHANNEL", "SLACK_HOME_CHANNEL_NAME",
@@ -356,6 +357,31 @@ def get_container_exec_info() -> Optional[dict]:
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home  # noqa: F811,E402
 from utils import atomic_replace
+
+
+def read_api_key_file(path_value: Any, *, label: str = "api_key_file") -> str:
+    """Read an API key from a user-configured secret file path.
+
+    The returned value is stripped of surrounding whitespace so Docker,
+    Kubernetes, and systemd secret files with a trailing newline work as
+    expected. Failures are logged without exposing file contents.
+    """
+    if not isinstance(path_value, str) or not path_value.strip():
+        return ""
+
+    raw_path = os.path.expandvars(os.path.expanduser(path_value.strip()))
+    path = Path(raw_path)
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.warning("%s: could not read API key file %s: %s", label, path, exc)
+        return ""
+    except UnicodeDecodeError as exc:
+        logger.warning("%s: API key file %s is not valid UTF-8: %s", label, path, exc)
+        return ""
+    if not value:
+        logger.warning("%s: API key file %s is empty", label, path)
+    return value
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -3004,7 +3030,8 @@ def _normalize_custom_provider_entry(
     if "api_key_env" in entry and "key_env" not in entry:
         entry["key_env"] = entry["api_key_env"]
     _KNOWN_KEYS = {
-        "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
+        "name", "api", "url", "base_url", "api_key", "api_key_file",
+        "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
@@ -3066,6 +3093,10 @@ def _normalize_custom_provider_entry(
     api_key = entry.get("api_key")
     if isinstance(api_key, str) and api_key.strip():
         normalized["api_key"] = api_key.strip()
+
+    api_key_file = entry.get("api_key_file")
+    if isinstance(api_key_file, str) and api_key_file.strip():
+        normalized["api_key_file"] = api_key_file.strip()
 
     key_env = entry.get("key_env")
     if isinstance(key_env, str) and key_env.strip():
@@ -3262,7 +3293,7 @@ _KNOWN_ROOT_KEYS = {
 
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
-    "name", "base_url", "api_key", "api_mode", "model", "models",
+    "name", "base_url", "api_key", "api_key_file", "api_mode", "model", "models",
     "context_length", "rate_limit_delay",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.

@@ -70,6 +70,43 @@ def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "project-key"
 
 
+def test_api_key_file_env_var_populates_missing_api_key(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    secret_file = tmp_path / "openai.key"
+    secret_file.write_text("sk-file-secret\n", encoding="utf-8")
+    env_file = home / ".env"
+    env_file.write_text(f"OPENAI_API_KEY_FILE={secret_file}\n", encoding="utf-8")
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("OPENAI_API_KEY") == "sk-file-secret"
+
+
+def test_api_key_file_env_var_does_not_override_direct_api_key(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    secret_file = tmp_path / "openai.key"
+    secret_file.write_text("sk-file-secret\n", encoding="utf-8")
+    env_file = home / ".env"
+    env_file.write_text(
+        f"OPENAI_API_KEY=sk-direct-secret\nOPENAI_API_KEY_FILE={secret_file}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("OPENAI_API_KEY") == "sk-direct-secret"
+
+
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

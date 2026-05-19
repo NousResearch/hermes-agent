@@ -22,6 +22,38 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 _WARNED_KEYS: set[str] = set()
 
 
+def _resolve_api_key_file_env_vars() -> None:
+    """Resolve ``*_API_KEY_FILE`` variables into in-process API key env vars.
+
+    Direct ``*_API_KEY`` values keep precedence. This mirrors common Docker,
+    Kubernetes, and systemd secret-file conventions without persisting the
+    secret back to ``.env`` or ``config.yaml``.
+    """
+    for file_key, file_path in list(os.environ.items()):
+        if not file_key.endswith("_API_KEY_FILE") or not file_path.strip():
+            continue
+        target_key = file_key[: -len("_FILE")]
+        if os.environ.get(target_key, "").strip():
+            continue
+        expanded_path = os.path.expandvars(os.path.expanduser(file_path.strip()))
+        try:
+            secret = Path(expanded_path).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            print(
+                f"  Warning: {file_key} points to an unreadable file: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        except UnicodeDecodeError as exc:
+            print(
+                f"  Warning: {file_key} points to a non-UTF-8 file: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        if secret:
+            os.environ[target_key] = secret
+
+
 def _format_offending_chars(value: str, limit: int = 3) -> str:
     """Return a compact 'U+XXXX ('c'), ...' summary of non-ASCII codepoints."""
     seen: list[str] = []
@@ -91,6 +123,8 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars
     # typically come from copy-pasting keys from PDFs or rich-text editors
     # that substitute Unicode lookalike glyphs (e.g. ʋ U+028B for v).
+    _sanitize_loaded_credentials()
+    _resolve_api_key_file_env_vars()
     _sanitize_loaded_credentials()
 
 

@@ -17346,6 +17346,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         )
         return False  # → sys.exit(1) in the caller
 
+    # When the gateway is restarting via the service manager (SIGUSR1 →
+    # launchd_restart or /restart / /update commands), exit with code 75 so
+    # that launchd's ``KeepAlive → SuccessfulExit → false`` policy treats
+    # the exit as *unsuccessful* and relaunches the service.  This mirrors
+    # the systemd ``RestartForceExitStatus=75`` convention already used by
+    # the systemd unit template.
+    if runner._restart_via_service:
+        logger.info(
+            "Exiting with code 75 (service-restart requested) so "
+            "launchd KeepAlive relaunches the gateway."
+        )
+        raise SystemExit(75)
+
     return True
 
 

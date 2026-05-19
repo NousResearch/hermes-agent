@@ -1849,21 +1849,32 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id FROM tasks WHERE status = 'todo'"
+            "SELECT id, status FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
+            cur_status = row["status"]
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in {"done", "archived"} for p in parents):
-                conn.execute(
-                    "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
-                    (task_id,),
-                )
+            if all(p["status"] in ("done", "archived") for p in parents):
+                # Blocked tasks also get their failure counters reset —
+                # this is effectively an auto-unblock.
+                if cur_status == "blocked":
+                    conn.execute(
+                        "UPDATE tasks SET status = 'ready', "
+                        "consecutive_failures = 0, last_failure_error = NULL "
+                        "WHERE id = ? AND status = 'blocked'",
+                        (task_id,),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
+                        (task_id,),
+                    )
                 _append_event(conn, task_id, "promoted", None)
                 promoted += 1
     return promoted
@@ -3552,6 +3563,17 @@ def set_max_runtime(
             (int(seconds) if seconds is not None else None, task_id),
         )
     return cur.rowcount == 1
+
+
+def _error_fingerprint(error_text: str) -> str:
+    """Normalize an error message for grouping identical failures.
+
+    Strips host-specific details (PIDs, timestamps) so that errors
+    with the same root cause produce the same fingerprint.
+    """
+    fp = re.sub(r'\bpid \d+\b', 'pid N', error_text[:80])
+    fp = re.sub(r'\b\d{10,}\b', '<TS>', fp)
+    return fp.lower().strip()
 
 
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:

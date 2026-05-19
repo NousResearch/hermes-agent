@@ -134,6 +134,34 @@ def test_recompute_ready_cascades_through_chain(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
+    """blocked tasks with all parents done should be promoted to ready."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        # Complete the parent
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, result="ok")
+        # Manually block the child (simulates a worker that failed
+        # after the parent finished)
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=5, "
+            "last_failure_error='persistent error' WHERE id=?",
+            (child,),
+        )
+        conn.commit()
+        assert kb.get_task(conn, child).status == "blocked"
+        # recompute_ready should promote blocked → ready and reset failures
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 1
+        task = kb.get_task(conn, child)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+
+
 def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
     with kb.connect() as conn:
         a = kb.create_task(conn, title="a")

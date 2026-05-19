@@ -499,6 +499,39 @@ def register(ctx):
     ctx.register_hook("post_tool_call", track_metrics)
 ```
 
+#### Extended event type: `human_ops_gate`
+
+`post_tool_call` is also fired at Kanban R3 human-ops gate sites (inside
+`kanban_db.block_task`). These calls carry an `event_type` kwarg that
+distinguishes them from normal tool-dispatch events.
+
+**When it fires:** `kanban_db.block_task()` is called — once before the
+state transition (`phase='before'`) and once after (`phase='after'`).
+
+**Additional kwargs for `event_type='human_ops_gate'`:**
+
+| Kwarg | Type | Description |
+|-------|------|-------------|
+| `event_type` | `str` | Always `"human_ops_gate"` |
+| `card_id` | `str` | Kanban task ID that entered the gate |
+| `tool` | `str` | Always `"kanban_block"` |
+| `phase` | `str` | `"before"` (gate entry) or `"after"` (gate outcome) |
+| `gate_reason` | `str` | Always `"r3_human_ops_required"` |
+| `outcome` | `str \| None` | `"approved"` (block succeeded) or `"denied"` (block failed — task not in running/ready). Only present when `phase="after"`. |
+
+**Compatibility:** Existing `post_tool_call` plugins that do not read
+`event_type` receive these calls as extra kwargs captured by `**kwargs`
+and are unaffected. To handle only tool-dispatch events, filter on
+`event_type` being absent or `None`:
+
+```python
+def on_tool(tool_name="", event_type=None, **kwargs):
+    if event_type == "human_ops_gate":
+        # observe human-ops gate: kwargs has card_id, phase, outcome …
+        return
+    # normal tool-dispatch path …
+```
+
 ---
 
 ### `pre_llm_call`

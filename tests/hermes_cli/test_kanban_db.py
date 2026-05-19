@@ -1530,3 +1530,154 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
         conn.close()
     age = kb.task_age(task)
     assert age["created_age_seconds"] is None
+
+
+# ---------------------------------------------------------------------------
+# T1-T4: post_tool_call hook at human_ops gate sites (PR-3)
+# ---------------------------------------------------------------------------
+
+class TestHumanOpsGateHook:
+    """Tests for post_tool_call invocation at R3 human_ops gate sites.
+
+    T1 — gate hit fires phase='before'
+    T2 — gate approved fires phase='after', outcome='approved'
+    T3 — gate denied fires phase='after', outcome='denied'
+    T4 — existing plugin (mock) that ignores new event_type does not crash
+    """
+
+    def _collected_calls(self, monkeypatch):
+        """Return a list that collects every invoke_hook call payload."""
+        calls: list[dict] = []
+
+        def _fake_invoke(hook_name: str, **kwargs) -> list:
+            calls.append({"hook_name": hook_name, **kwargs})
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.kanban_db.invoke_hook", _fake_invoke, raising=False
+        )
+        # Also patch at the plugins import site used inside block_task
+        import hermes_cli.kanban_db as _kdb
+        monkeypatch.setattr(_kdb, "_HAS_PLUGINS_PATCHED", True, raising=False)
+        return calls
+
+    def _patch_invoke(self, monkeypatch):
+        """Monkey-patch the inline import inside block_task/unblock_task."""
+        calls: list[dict] = []
+
+        original_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else None
+
+        import hermes_cli.plugins as _plugins_mod
+
+        def _mock_invoke(hook_name: str, **kwargs) -> list:
+            calls.append({"hook_name": hook_name, **kwargs})
+            return []
+
+        monkeypatch.setattr(_plugins_mod, "invoke_hook", _mock_invoke)
+        return calls
+
+    def test_t1_gate_hit_before_fires(self, kanban_home, monkeypatch):
+        """T1: block_task fires post_tool_call with phase='before' before state change."""
+        calls = self._patch_invoke(monkeypatch)
+
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="gate-test", assignee="ops")
+            kb.claim_task(conn, tid)
+            kb.block_task(conn, tid, reason="need human input")
+
+        before_calls = [
+            c for c in calls
+            if c.get("event_type") == "human_ops_gate" and c.get("phase") == "before"
+        ]
+        assert len(before_calls) >= 1, "expected at least one before-phase call"
+        first = before_calls[0]
+        assert first["card_id"] == tid
+        assert first["tool"] == "kanban_block"
+        assert first["gate_reason"] == "r3_human_ops_required"
+        assert first["hook_name"] == "post_tool_call"
+
+    def test_t2_gate_approved_after_fires(self, kanban_home, monkeypatch):
+        """T2: successful block_task fires phase='after', outcome='approved'."""
+        calls = self._patch_invoke(monkeypatch)
+
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="gate-approve", assignee="ops")
+            kb.claim_task(conn, tid)
+            result = kb.block_task(conn, tid, reason="approved path")
+
+        assert result is True
+        after_approved = [
+            c for c in calls
+            if c.get("event_type") == "human_ops_gate"
+            and c.get("phase") == "after"
+            and c.get("outcome") == "approved"
+        ]
+        assert len(after_approved) >= 1, "expected after/approved call"
+        first = after_approved[0]
+        assert first["card_id"] == tid
+        assert first["hook_name"] == "post_tool_call"
+
+    def test_t3_gate_denied_after_fires(self, kanban_home, monkeypatch):
+        """T3: failed block_task (task not in running/ready) fires phase='after', outcome='denied'."""
+        calls = self._patch_invoke(monkeypatch)
+
+        with kb.connect() as conn:
+            tid = kb.create_task(conn, title="gate-deny", assignee="ops")
+            # Task is 'ready' but not claimed — block on a done task to force deny
+            kb.claim_task(conn, tid)
+            kb.complete_task(conn, tid, result="done")
+            # Now task is 'done', block_task should fail → denied
+            result = kb.block_task(conn, tid, reason="should be denied")
+
+        assert result is False
+        after_denied = [
+            c for c in calls
+            if c.get("event_type") == "human_ops_gate"
+            and c.get("phase") == "after"
+            and c.get("outcome") == "denied"
+        ]
+        assert len(after_denied) >= 1, "expected after/denied call"
+        first = after_denied[0]
+        assert first["card_id"] == tid
+        assert first["hook_name"] == "post_tool_call"
+
+    def test_t4_existing_plugin_ignores_new_event_type(self, kanban_home):
+        """T4: a plugin that ignores unknown event_type kwargs does not crash.
+
+        Simulates cost-event-wrapper style plugin that uses **kwargs to absorb
+        unknown keyword arguments.  When block_task fires the human_ops_gate
+        event, the plugin must receive the call without raising.
+        """
+        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+
+        manifest = PluginManifest(
+            name="mock-cost-wrapper", source="test", key="mock-cost-wrapper"
+        )
+        manager = PluginManager()
+        ctx = PluginContext(manifest, manager)
+
+        observed: list[dict] = []
+
+        def mock_post_tool_call(tool_name: str = "", args: dict = None,
+                                result: str = "", task_id: str = "",
+                                duration_ms: int = 0, **kwargs) -> None:
+            """Existing plugin — only reads normal post_tool_call kwargs.
+            New event_type kwarg is captured silently in **kwargs."""
+            observed.append({"tool_name": tool_name, "extra": kwargs})
+
+        ctx.register_hook("post_tool_call", mock_post_tool_call)
+
+        # Fire the human_ops_gate event the same way block_task does.
+        manager.invoke_hook(
+            "post_tool_call",
+            event_type="human_ops_gate",
+            card_id="t_test123",
+            tool="kanban_block",
+            phase="before",
+            gate_reason="r3_human_ops_required",
+        )
+
+        # Plugin received the call without crashing and absorbed event_type in **kwargs.
+        assert len(observed) == 1
+        assert observed[0]["extra"].get("event_type") == "human_ops_gate"
+        assert observed[0]["tool_name"] == ""  # not set in gate events

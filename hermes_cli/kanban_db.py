@@ -2603,7 +2603,31 @@ def block_task(
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running -> blocked``."""
+    """Transition ``running -> blocked``.
+
+    Fires ``post_tool_call`` with ``event_type='human_ops_gate'`` around
+    the transition so plugins (e.g. cost-event-wrapper) can observe when
+    a task enters the human-ops gate:
+
+    * ``phase='before'``  — gate entered (block requested)
+    * ``phase='after'`` / ``outcome='approved'``  — transition succeeded
+    * ``phase='after'`` / ``outcome='denied'``    — transition failed
+      (task not in running/ready, or run_id mismatch)
+    """
+    # Plugin hook: human_ops_gate — before phase
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "post_tool_call",
+            event_type="human_ops_gate",
+            card_id=task_id,
+            tool="kanban_block",
+            phase="before",
+            gate_reason="r3_human_ops_required",
+        )
+    except Exception:
+        pass
+
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -2633,6 +2657,20 @@ def block_task(
                 (task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
+            # Plugin hook: human_ops_gate — after/denied
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "post_tool_call",
+                    event_type="human_ops_gate",
+                    card_id=task_id,
+                    tool="kanban_block",
+                    phase="after",
+                    gate_reason="r3_human_ops_required",
+                    outcome="denied",
+                )
+            except Exception:
+                pass
             return False
         run_id = _end_run(
             conn, task_id,
@@ -2648,7 +2686,23 @@ def block_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
-        return True
+
+    # Plugin hook: human_ops_gate — after/approved (outside write_txn so
+    # the committed state is visible to plugins that read the DB).
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "post_tool_call",
+            event_type="human_ops_gate",
+            card_id=task_id,
+            tool="kanban_block",
+            phase="after",
+            gate_reason="r3_human_ops_required",
+            outcome="approved",
+        )
+    except Exception:
+        pass
+    return True
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:

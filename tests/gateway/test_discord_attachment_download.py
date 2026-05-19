@@ -59,6 +59,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from gateway.platforms.base import MessageType  # noqa: E402
 
 
 # Minimal valid image / audio / PDF bytes so the cache_*_from_bytes
@@ -358,3 +359,91 @@ class TestHandleMessageUsesAuthenticatedRead:
         event = adapter.handle_message.call_args[0][0]
         assert event.media_urls == ["/tmp/img_from_read.png"]
         assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_native_voice_note_is_classified_as_voice(self, monkeypatch):
+        """Discord native voice notes must enter the auto-STT voice path."""
+        adapter = _make_adapter()
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+        adapter.handle_message = AsyncMock()
+
+        with patch(
+            "gateway.platforms.discord.cache_audio_from_bytes",
+            return_value="/tmp/voice_from_read.ogg",
+        ):
+            att = SimpleNamespace(
+                url="https://cdn.discordapp.com/attachments/fake/voice.ogg",
+                filename="voice.ogg",
+                content_type="audio/ogg",
+                size=len(_OGG_BYTES),
+                read=AsyncMock(return_value=_OGG_BYTES),
+                is_voice_message=lambda: True,
+            )
+            from datetime import datetime, timezone
+
+            class _FakeDMChannel:
+                id = 100
+                name = "dm"
+
+            monkeypatch.setattr(
+                "gateway.platforms.discord.discord.DMChannel",
+                _FakeDMChannel,
+            )
+            chan = _FakeDMChannel()
+            msg = SimpleNamespace(
+                id=1, content="", attachments=[att], mentions=[],
+                reference=None,
+                created_at=datetime.now(timezone.utc),
+                channel=chan,
+                author=SimpleNamespace(id=42, display_name="U", name="U"),
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VOICE
+        assert event.media_urls == ["/tmp/voice_from_read.ogg"]
+        assert event.media_types == ["audio/ogg"]
+
+    @pytest.mark.asyncio
+    async def test_plain_audio_attachment_stays_audio(self, monkeypatch):
+        """Plain audio uploads should stay out of automatic voice-note STT."""
+        adapter = _make_adapter()
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+        adapter.handle_message = AsyncMock()
+
+        with patch(
+            "gateway.platforms.discord.cache_audio_from_bytes",
+            return_value="/tmp/audio_from_read.ogg",
+        ):
+            att = SimpleNamespace(
+                url="https://cdn.discordapp.com/attachments/fake/audio.ogg",
+                filename="audio.ogg",
+                content_type="audio/ogg",
+                size=len(_OGG_BYTES),
+                read=AsyncMock(return_value=_OGG_BYTES),
+                is_voice_message=lambda: False,
+            )
+            from datetime import datetime, timezone
+
+            class _FakeDMChannel:
+                id = 100
+                name = "dm"
+
+            monkeypatch.setattr(
+                "gateway.platforms.discord.discord.DMChannel",
+                _FakeDMChannel,
+            )
+            chan = _FakeDMChannel()
+            msg = SimpleNamespace(
+                id=1, content="", attachments=[att], mentions=[],
+                reference=None,
+                created_at=datetime.now(timezone.utc),
+                channel=chan,
+                author=SimpleNamespace(id=42, display_name="U", name="U"),
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.AUDIO
+        assert event.media_urls == ["/tmp/audio_from_read.ogg"]
+        assert event.media_types == ["audio/ogg"]

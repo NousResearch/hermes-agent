@@ -1128,6 +1128,56 @@ def test_recompute_ready_emits_promoted_not_ready(kanban_home):
         conn.close()
 
 
+def test_blocked_parent_remediation_child_can_run(kanban_home):
+    """A fix/remediation child under a blocked parent must not deadlock.
+
+    QA/parent cards often block because they need a repair child to run. Treating
+    that repair child as dependent on the blocked parent makes the board wait on
+    itself forever.
+    """
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="QA failed", assignee="qa")
+        assert kb.block_task(conn, parent, reason="needs implementation fix")
+
+        child = kb.create_task(
+            conn,
+            title="fix: address QA failure",
+            body="Remediation child for the blocked QA parent.",
+            assignee="dev",
+            parents=[parent],
+        )
+        assert kb.get_task(conn, child).status == "ready"
+
+        claimed = kb.claim_task(conn, child)
+        assert claimed is not None
+        assert claimed.status == "running"
+    finally:
+        conn.close()
+
+
+def test_blocked_parent_non_remediation_child_stays_gated(kanban_home):
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="blocked parent", assignee="qa")
+        assert kb.block_task(conn, parent, reason="waiting")
+
+        child = kb.create_task(conn, title="ordinary follow-up", assignee="dev", parents=[parent])
+        assert kb.get_task(conn, child).status == "todo"
+
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "todo"
+
+        # Even if someone manually flips it ready, claim_task must still enforce
+        # the dependency gate for non-remediation children.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child,))
+        assert kb.claim_task(conn, child) is None
+        assert kb.get_task(conn, child).status == "todo"
+    finally:
+        conn.close()
+
+
 def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home, all_assignees_spawnable):
     def _bad(task, ws):
         raise RuntimeError("nope")

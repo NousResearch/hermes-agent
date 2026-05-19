@@ -126,7 +126,64 @@ DEFAULT_BOARD = "default"
 # pass without fuss. Board names with display formatting (spaces, emoji)
 # live in ``board.json``; the slug is just the directory name.
 _BOARD_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]{0,63}$")
+_REMEDIATION_TEXT_RE = re.compile(
+    r"\b(fix(?:e[ds])?|repair|remediat(?:e|ion)|unblock|resolve|blocker)\b",
+    re.IGNORECASE,
+)
 
+
+def _looks_like_remediation(title: Optional[str], body: Optional[str] = None) -> bool:
+    """Return True when task text clearly describes repair/remediation work."""
+    text = f"{title or ''}\n{body or ''}"
+    return bool(_REMEDIATION_TEXT_RE.search(text))
+
+
+def _parents_allow_ready(
+    conn: sqlite3.Connection,
+    parents: Iterable[str],
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> bool:
+    """Return whether a task may be ready despite parent links.
+
+    Normal task edges are dependencies: every parent must be done/archived.
+    Blocked QA/review parents are different for explicitly repair-shaped
+    children: the parent is waiting on the child, so gating the child on the
+    blocked parent deadlocks the board. In that case, allow the remediation child
+    to run when every non-terminal parent is blocked and at least one parent is
+    blocked.
+    """
+    parent_ids = tuple(p for p in parents if p)
+    if not parent_ids:
+        return True
+    rows = conn.execute(
+        "SELECT status FROM tasks WHERE id IN (" + ",".join("?" * len(parent_ids)) + ")",
+        parent_ids,
+    ).fetchall()
+    statuses = [r["status"] for r in rows]
+    if len(statuses) != len(parent_ids):
+        return False
+    if all(status in {"done", "archived"} for status in statuses):
+        return True
+    if not any(status == "blocked" for status in statuses):
+        return False
+    if any(status not in {"done", "archived", "blocked"} for status in statuses):
+        return False
+    if task_id and title is None and body is None:
+        row = conn.execute(
+            "SELECT title, body FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row:
+            title = row["title"]
+            body = row["body"]
+    return _looks_like_remediation(title, body)
+
+
+def _task_parents_allow_ready(conn: sqlite3.Connection, task_id: str) -> bool:
+    return _parents_allow_ready(conn, parent_ids(conn, task_id), task_id=task_id)
 
 def _normalize_board_slug(slug: Optional[str]) -> Optional[str]:
     """Lowercase + strip a slug; validate; return ``None`` for empty."""
@@ -1357,13 +1414,7 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
-                        rows = conn.execute(
-                            "SELECT status FROM tasks WHERE id IN "
-                            "(" + ",".join("?" * len(parents)) + ")",
-                            parents,
-                        ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        if not _parents_allow_ready(conn, parents, title=title, body=body):
                             initial_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -1526,11 +1577,11 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        # If child was ready but the new parent does not allow execution yet,
+        # demote child to todo. Done/archived parents are satisfied; explicitly
+        # repair-shaped children may also run under blocked parents to avoid
+        # remediation deadlocks.
+        if not _task_parents_allow_ready(conn, child_id):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -1827,7 +1878,11 @@ def _synthesize_ended_run(
 # ---------------------------------------------------------------------------
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
+    """Promote ``todo`` tasks whose parent links allow execution.
+
+    Normal tasks require all parents to be ``done`` or ``archived``. Explicitly
+    repair-shaped remediation children may also run under blocked parents so QA
+    / review blockers do not deadlock their own fix tasks.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
@@ -1839,13 +1894,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in {"done", "archived"} for p in parents):
+            if _task_parents_allow_ready(conn, task_id):
                 conn.execute(
                     "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                     (task_id,),
@@ -1875,21 +1924,11 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + int(ttl_seconds)
     with write_txn(conn):
-        # Structural invariant: never transition ready -> running while any
-        # parent is not yet 'done'. This is the single enforcement point
-        # regardless of which writer (create_task, link_tasks, unblock_task,
-        # release_stale_claims, manual SQL) set status='ready'. If a racy
-        # writer promoted a task with undone parents, demote it back to
-        # 'todo' here — recompute_ready will re-promote when the parents
-        # actually finish. See RCA at
-        # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        if undone:
+        # Structural invariant: never transition ready -> running while parent
+        # links still gate execution. Normal children wait for parents to be
+        # done/archived; explicitly remediation-shaped children may run under
+        # blocked parents because the parent is waiting for that repair.
+        if not _task_parents_allow_ready(conn, task_id):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
                 "WHERE id = ? AND status = 'ready'",

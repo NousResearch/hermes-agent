@@ -39,10 +39,10 @@ if [ "$(id -u)" = "0" ]; then
         # by the mapped user on the host side.
         chown -R hermes:hermes "$HERMES_HOME" 2>/dev/null || \
             echo "Warning: chown failed (rootless container?) — continuing anyway"
-        # The .venv must also be re-chowned when UID is remapped, otherwise
-        # lazy_deps.py cannot install platform packages (discord.py, etc.).
-        chown -R hermes:hermes "$INSTALL_DIR/.venv" 2>/dev/null || \
-            echo "Warning: chown .venv failed (rootless container?) — continuing anyway"
+        # The .venv and ui-tui/dist must also be re-chowned when UID is remapped, otherwise
+        # lazy_deps.py cannot install platform packages (discord.py, etc.) or esbuild fails.
+        chown -R hermes:hermes "$INSTALL_DIR/.venv" "$INSTALL_DIR/ui-tui/dist" 2>/dev/null || \
+            echo "Warning: chown .venv or ui-tui/dist failed (rootless container?) — continuing anyway"
     fi
 
     # Ensure config.yaml is readable by the hermes runtime user even if it was

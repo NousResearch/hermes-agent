@@ -1785,7 +1785,16 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print(_PT_ANSI(text))
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            # Fallback when stdout is not a real console (e.g. subprocess
+            # worker logging to a file). prompt_toolkit raises
+            # NoConsoleScreenBufferError (Windows) or OSError (other).
+            try:
+                print(text)
+            except Exception:
+                pass
         return
 
     try:

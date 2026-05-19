@@ -52,71 +52,61 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground overflow-x-hidden">
-      {/* Global grain + warm glow (matches landing page) */}
       <div className="noise-overlay" />
       <div className="warm-glow" />
 
-      {/* ---- Header with grid-border nav ---- */}
-      <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-sm">
-        <div className="mx-auto flex h-12 max-w-[1400px] items-stretch">
-          {/* Brand — abbreviated on mobile */}
-          <div className="flex items-center border-r border-border px-3 sm:px-5 shrink-0">
-            <span className="font-collapse text-lg sm:text-xl font-bold tracking-wider uppercase blend-lighter">
-              H<span className="hidden sm:inline">ermes </span>A<span className="hidden sm:inline">gent</span>
+      <header className="sticky top-0 z-40 border-b border-black/[0.06] bg-white/72 backdrop-blur-2xl supports-[backdrop-filter]:bg-white/62">
+        <div className="mx-auto flex min-h-14 max-w-[1180px] flex-col gap-2 px-4 py-2 sm:min-h-[64px] sm:flex-row sm:items-center sm:gap-5 sm:px-6">
+          <button
+            type="button"
+            onClick={() => setPage("status")}
+            className="flex shrink-0 items-center gap-2 rounded-full px-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+          >
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-foreground text-[0.72rem] font-semibold text-background shadow-sm">
+              H
             </span>
-          </div>
+            <span className="text-sm font-semibold tracking-[-0.02em] sm:text-base">
+              Hermes Agent
+            </span>
+          </button>
 
-          {/* Nav — icons only on mobile, icon+label on sm+ */}
-          <nav className="flex items-stretch overflow-x-auto scrollbar-none">
+          <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-full bg-black/[0.035] p-1 scrollbar-none">
             {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setPage(id)}
-                className={`group relative inline-flex items-center gap-1 sm:gap-1.5 border-r border-border px-2.5 sm:px-4 py-2 font-display text-[0.65rem] sm:text-[0.8rem] tracking-[0.12em] uppercase whitespace-nowrap transition-colors cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium tracking-[-0.01em] transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 sm:text-sm ${
                   page === id
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
+                    ? "bg-white text-foreground shadow-[0_1px_8px_rgba(0,0,0,0.08)]"
+                    : "text-muted-foreground hover:bg-white/60 hover:text-foreground"
                 }`}
               >
-                <Icon className="h-4 w-4 sm:h-3.5 sm:w-3.5 shrink-0" />
-                <span className="hidden sm:inline">{label}</span>
-                {/* Hover highlight */}
-                <span className="absolute inset-0 bg-foreground pointer-events-none transition-opacity duration-150 group-hover:opacity-5 opacity-0" />
-                {/* Active indicator */}
-                {page === id && (
-                  <span className="absolute bottom-0 left-0 right-0 h-px bg-foreground" />
-                )}
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                <span>{label}</span>
               </button>
             ))}
           </nav>
 
-          {/* Version badge — hidden on mobile */}
-          <div className="ml-auto hidden sm:flex items-center px-4 text-muted-foreground">
-            <span className="font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50">
-              Web UI
-            </span>
+          <div className="hidden shrink-0 items-center gap-2 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-sm ring-1 ring-black/[0.04] lg:flex">
+            <span className="h-1.5 w-1.5 rounded-full bg-success" />
+            Web UI
           </div>
         </div>
       </header>
 
       <main
         key={animKey}
-        className="relative z-2 mx-auto w-full max-w-[1400px] flex-1 px-3 sm:px-6 py-4 sm:py-8"
+        className="relative z-10 mx-auto w-full max-w-[1180px] flex-1 px-4 py-6 sm:px-6 sm:py-10"
         style={{ animation: "fade-in 150ms ease-out" }}
       >
         <PageComponent />
       </main>
 
-      {/* ---- Footer ---- */}
-      <footer className="relative z-2 border-t border-border">
-        <div className="mx-auto flex max-w-[1400px] items-center justify-between px-3 sm:px-6 py-3">
-          <span className="font-display text-[0.7rem] sm:text-[0.8rem] tracking-[0.12em] uppercase opacity-50">
-            Hermes Agent
-          </span>
-          <span className="font-display text-[0.6rem] sm:text-[0.7rem] tracking-[0.15em] uppercase text-foreground/40">
-            Nous Research
-          </span>
+      <footer className="relative z-10 border-t border-black/[0.06] bg-white/50">
+        <div className="mx-auto flex max-w-[1180px] items-center justify-between px-4 py-5 text-xs text-muted-foreground sm:px-6">
+          <span>Hermes Agent</span>
+          <span>Nous Research</span>
         </div>
       </footer>
     </div>

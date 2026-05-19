@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 /* ------------------------------------------------------------------ */
-/* Hermes Agent — Design tokens                                        */
-/* Matched to hermes-agent.nousresearch.com (dark teal theme)          */
+/* Hermes Agent — Web UI design tokens                                 */
+/* Clean Apple-like dashboard rhythm: readable, quiet, spacious.        */
 /* ------------------------------------------------------------------ */
 
 /* --- Font faces --- */
@@ -17,42 +17,44 @@
 @font-face { font-family: "Mondwest"; src: url("/fonts/Mondwest-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
 
 @theme {
-  /* ---- Hermes palette (dark teal, from live site) ---- */
-  --color-background: #041C1C;
-  --color-foreground: #ffe6cb;
-  --color-card: #062424;
-  --color-card-foreground: #ffe6cb;
-  --color-primary: #ffe6cb;
-  --color-primary-foreground: #041C1C;
-  --color-secondary: #0a2e2e;
-  --color-secondary-foreground: #ffe6cb;
-  --color-muted: #083030;
-  --color-muted-foreground: #8aaa9a;
-  --color-accent: #0c3838;
-  --color-accent-foreground: #ffe6cb;
-  --color-destructive: #fb2c36;
-  --color-destructive-foreground: #fff;
-  --color-success: #4ade80;
-  --color-warning: #ffbd38;
-  --color-border: color-mix(in srgb, #ffe6cb 15%, transparent);
-  --color-input: color-mix(in srgb, #ffe6cb 15%, transparent);
-  --color-ring: #ffe6cb;
-  --color-popover: #062424;
-  --color-popover-foreground: #ffe6cb;
+  /* ---- Apple-inspired neutral palette ---- */
+  --color-background: #f5f5f7;
+  --color-foreground: #1d1d1f;
+  --color-card: #ffffff;
+  --color-card-foreground: #1d1d1f;
+  --color-primary: #0071e3;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #e8e8ed;
+  --color-secondary-foreground: #1d1d1f;
+  --color-muted: #f2f2f5;
+  --color-muted-foreground: #6e6e73;
+  --color-accent: #eaf3ff;
+  --color-accent-foreground: #0066cc;
+  --color-destructive: #d70015;
+  --color-destructive-foreground: #ffffff;
+  --color-success: #248a3d;
+  --color-warning: #b26a00;
+  --color-border: rgba(0, 0, 0, 0.08);
+  --color-input: rgba(0, 0, 0, 0.12);
+  --color-ring: #0071e3;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #1d1d1f;
 
   /* ---- Font stacks ---- */
-  --font-sans: "Mondwest", Arial, sans-serif;
-  --font-mono: "Courier Prime", "Courier New", monospace;
-  --font-display: "Mondwest", Arial, sans-serif;
-  --font-expanded: "RulesExpanded", Arial, sans-serif;
-  --font-compressed: "RulesCompressed", Arial, sans-serif;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --font-display: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-expanded: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-compressed: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 /* ---- Global body ---- */
 body {
   margin: 0;
-  font-family: "Mondwest", Arial, sans-serif;
-  background: var(--color-background);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background:
+    radial-gradient(circle at 50% -20%, rgba(255, 255, 255, 0.85), transparent 32rem),
+    linear-gradient(180deg, #ffffff 0%, #f5f5f7 34%, #f2f2f5 100%);
   color: var(--color-foreground);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -143,11 +145,13 @@ code {
 }
 
 /* ---- Font utilities ---- */
-.font-display { font-family: "Mondwest", Arial, sans-serif; }
-.font-expanded { font-family: "RulesExpanded", Arial, sans-serif; }
-.font-compressed { font-family: "RulesCompressed", Arial, sans-serif; }
+.font-display,
+.font-expanded,
+.font-compressed {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
 .font-courier { font-family: "Courier Prime", "Courier New", monospace; }
-.font-collapse { font-family: "Collapse", Arial, sans-serif; }
+.font-collapse { font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
 .font-mono-ui { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace; }
 
 /* ---- Subtle grain overlay for badges ---- */
@@ -163,27 +167,21 @@ code {
   background: repeating-conic-gradient(currentColor 0% 25%, #0000 0% 50%) 0 0 / 2px 2px;
 }
 
-/* ---- Global noise grain (canonical: color-dodge, #eaeaea, high density) ---- */
+/* ---- Global noise grain disabled for readability ---- */
 .noise-overlay {
-  pointer-events: none;
-  position: fixed;
-  inset: 0;
-  z-index: 101;
-  mix-blend-mode: color-dodge;
-  opacity: 0.10;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' fill='%23eaeaea' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
-  background-size: 512px 512px;
+  display: none;
 }
 
-/* ---- Vignette (canonical: top-left amber radial, lighten blend) ---- */
+/* ---- Soft top light, not texture ---- */
 .warm-glow {
   pointer-events: none;
   position: fixed;
   inset: 0;
-  z-index: 99;
-  mix-blend-mode: lighten;
-  opacity: 0.22;
-  background: radial-gradient(ellipse at 0% 0%, rgba(255,189,56,0.35) 0%, rgba(255,189,56,0) 60%);
+  z-index: 0;
+  opacity: 0.65;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0) 34rem),
+    radial-gradient(circle at 82% 12%, rgba(0, 113, 227, 0.08) 0%, rgba(0, 113, 227, 0) 22rem);
 }
 
 /* ---- Reduced motion ---- */

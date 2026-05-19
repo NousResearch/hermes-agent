@@ -58,8 +58,37 @@ export default function StatusPage() {
 
   if (!status) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      <div className="flex flex-col gap-7" aria-busy="true">
+        <section className="overflow-hidden rounded-[32px] bg-[#1d1d1f] px-6 py-8 text-white shadow-[0_30px_80px_rgba(0,0,0,0.16)] sm:px-10 sm:py-12">
+          <div className="grid gap-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-end">
+            <div className="max-w-2xl">
+              <div className="mb-5 h-4 w-36 animate-pulse rounded-full bg-white/14" />
+              <div className="h-12 w-full max-w-xl animate-pulse rounded-2xl bg-white/12 sm:h-16" />
+              <div className="mt-4 h-5 w-full max-w-lg animate-pulse rounded-full bg-white/10" />
+            </div>
+            <div className="grid gap-3 rounded-[24px] bg-white/[0.08] p-4 ring-1 ring-white/10">
+              {[0, 1, 2].map((item) => (
+                <div key={item} className="flex items-center justify-between border-b border-white/10 pb-3 last:border-0 last:pb-0">
+                  <div className="h-4 w-24 animate-pulse rounded-full bg-white/12" />
+                  <div className="h-6 w-20 animate-pulse rounded-full bg-white/16" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+        <div className="grid gap-4 sm:grid-cols-3">
+          {["Agent", "Gateway", "Sessions"].map((label) => (
+            <Card key={label}>
+              <CardHeader>
+                <CardTitle>{label}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="h-8 w-32 animate-pulse rounded-full bg-muted" />
+                <div className="mt-3 h-6 w-20 animate-pulse rounded-full bg-muted" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       </div>
     );
   }
@@ -112,10 +141,37 @@ export default function StatusPage() {
 
 
   return (
-    <div className="flex flex-col gap-6">
-      {/* Alert banner — breaks grid monotony for critical states */}
+    <div className="flex flex-col gap-7">
+      <section className="overflow-hidden rounded-[32px] bg-[#1d1d1f] px-6 py-8 text-white shadow-[0_30px_80px_rgba(0,0,0,0.16)] sm:px-10 sm:py-12">
+        <div className="grid gap-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-end">
+          <div className="max-w-2xl">
+            <p className="mb-3 text-sm font-medium text-white/56">Hermes Control Center</p>
+            <h1 className="text-4xl font-semibold tracking-[-0.045em] sm:text-6xl">
+              Everything important, in one calm view.
+            </h1>
+            <p className="mt-4 max-w-xl text-base leading-7 text-white/68 sm:text-lg">
+              Monitor the agent, gateway, platforms, and recent work without the noisy generic AI-dashboard chrome.
+            </p>
+          </div>
+          <div className="grid gap-3 rounded-[24px] bg-white/[0.08] p-4 ring-1 ring-white/10 backdrop-blur-xl">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <span className="text-sm text-white/56">Gateway</span>
+              <Badge variant={gwBadge.badge}>{gwBadge.label}</Badge>
+            </div>
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <span className="text-sm text-white/56">Version</span>
+              <span className="font-mono-ui text-sm">v{status.version}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-white/56">Active sessions</span>
+              <span className="font-semibold">{status.active_sessions}</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {alerts.length > 0 && (
-        <div className="border border-destructive/30 bg-destructive/[0.06] p-4">
+        <div className="rounded-[24px] border border-red-100 bg-red-50 p-5 shadow-sm">
           <div className="flex items-start gap-3">
             <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
             <div className="flex flex-col gap-2 min-w-0">
@@ -173,7 +229,7 @@ export default function StatusPage() {
             {activeSessions.map((s) => (
               <div
                 key={s.id}
-                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border border-border p-3 w-full"
+                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl bg-muted/70 p-4 w-full"
               >
                 <div className="flex flex-col gap-1 min-w-0 w-full">
                   <div className="flex items-center gap-2">
@@ -208,7 +264,7 @@ export default function StatusPage() {
             {recentSessions.map((s) => (
               <div
                 key={s.id}
-                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border border-border p-3 w-full"
+                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl bg-muted/70 p-4 w-full"
               >
                 <div className="flex flex-col gap-1 min-w-0 w-full">
                   <span className="font-medium text-sm truncate">{s.title ?? "Untitled"}</span>
@@ -258,7 +314,7 @@ function PlatformsCard({ platforms }: PlatformsCardProps) {
           return (
             <div
               key={name}
-              className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border border-border p-3 w-full"
+              className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl bg-muted/70 p-4 w-full"
             >
               <div className="flex items-center gap-3 min-w-0 w-full">
                 <IconComponent className={`h-4 w-4 shrink-0 ${

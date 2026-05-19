@@ -18007,9 +18007,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         )
         return False
     if not acquire_gateway_runtime_lock():
-        logger.error(
-            "Gateway runtime lock is already held by another instance. Exiting."
-        )
+        stale_lock_pid = get_running_pid(cleanup_stale=False)
+        if stale_lock_pid is None:
+            logger.error(
+                "Gateway runtime lock could not be acquired and no live gateway PID was found. "
+                "The runtime lock may be stale. Try `hermes gateway run --replace` or remove %s and %s.",
+                get_hermes_home() / "gateway.lock",
+                get_hermes_home() / "gateway.pid",
+            )
+        else:
+            logger.error(
+                "Gateway runtime lock is already held by another instance. Exiting."
+            )
         return False
     try:
         write_pid_file()

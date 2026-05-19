@@ -349,6 +349,35 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
 
 
 @pytest.mark.asyncio
+async def test_start_gateway_reports_stale_runtime_lock_guidance(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    calls = []
+
+    def _mock_get_running_pid(*, cleanup_stale=True):
+        calls.append(cleanup_stale)
+        return None
+
+    monkeypatch.setattr("gateway.status.get_running_pid", _mock_get_running_pid)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: False)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+
+    from gateway.run import start_gateway
+
+    with caplog.at_level("ERROR"):
+        ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+    assert ok is False
+    assert calls[-1] is False
+    assert any(flag is True for flag in calls[:-1])
+    assert "runtime lock may be stale" in caplog.text
+    assert "gateway.lock" in caplog.text
+    assert "--replace" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch, tmp_path, caplog):
     """When all enabled platforms have no adapter (missing library or credentials),
     the gateway should NOT return failure — it should warn and continue running for

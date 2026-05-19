@@ -125,6 +125,60 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn(f"max_spawn_depth={_get_max_spawn_depth()}", fn["description"])
 
 
+
+class TestDelegateProviderModelSchema(unittest.TestCase):
+    def test_schema_advertises_top_level_provider_and_model(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertEqual(props["provider"]["type"], "string")
+        self.assertIn("acp_command", props["provider"]["description"])
+        self.assertEqual(props["model"]["type"], "string")
+        self.assertIn("delegation.model", props["model"]["description"])
+
+    def test_schema_advertises_per_task_provider_and_model(self):
+        task_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        self.assertEqual(task_props["provider"]["type"], "string")
+        self.assertIn("Per-task", task_props["provider"]["description"])
+        self.assertEqual(task_props["model"]["type"], "string")
+        self.assertIn("Per-task", task_props["model"]["description"])
+
+
+class TestDelegateProviderModelDispatch(unittest.TestCase):
+    def test_delegate_task_signature_accepts_provider_and_model(self):
+        import inspect
+
+        sig = inspect.signature(delegate_task)
+        self.assertIn("provider", sig.parameters)
+        self.assertIn("model", sig.parameters)
+
+    def test_registry_handler_forwards_provider_and_model(self):
+        from tools.registry import registry
+
+        parent = _make_mock_parent()
+        with patch("tools.delegate_tool.delegate_task", return_value='{"ok": true}') as mock_delegate:
+            tool = registry.get_entry("delegate_task")
+            tool.handler(
+                {
+                    "goal": "review",
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                },
+                parent_agent=parent,
+            )
+
+        self.assertEqual(mock_delegate.call_args.kwargs["provider"], "openai-codex")
+        self.assertEqual(mock_delegate.call_args.kwargs["model"], "gpt-5.5")
+
+
+class TestDelegateProviderModelHelpers(unittest.TestCase):
+    def test_clean_optional_str_normalizes_empty_values(self):
+        from tools.delegate_tool import _clean_optional_str
+
+        self.assertIsNone(_clean_optional_str(None))
+        self.assertIsNone(_clean_optional_str(""))
+        self.assertIsNone(_clean_optional_str("   "))
+        self.assertEqual(_clean_optional_str(" zai "), "zai")
+
+
 class TestChildSystemPrompt(unittest.TestCase):
     def test_goal_only(self):
         prompt = _build_child_system_prompt("Fix the tests")
@@ -1098,8 +1152,343 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
 
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_override_provider_and_model_drive_runtime_resolution(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+        cfg = {"provider": "zai", "model": "glm-5.1"}
+        mock_resolve.return_value = {
+            "provider": "openai-codex",
+            "model": "gpt-5.5",
+            "base_url": "https://codex.example.invalid/v1",
+            "api_key": "test-api-key",
+            "api_mode": "codex_responses",
+        }
+
+        creds = _resolve_delegation_credentials(
+            cfg,
+            parent,
+            override_provider="openai-codex",
+            override_model="gpt-5.5",
+        )
+
+        mock_resolve.assert_called_once_with(
+            requested="openai-codex", target_model="gpt-5.5"
+        )
+        self.assertEqual(creds["provider"], "openai-codex")
+        self.assertEqual(creds["model"], "gpt-5.5")
+        self.assertEqual(creds["api_key"], "test-api-key")
+        self.assertEqual(creds["api_mode"], "codex_responses")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_override_model_with_config_provider_drives_target_model(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+        cfg = {"provider": "zai", "model": "glm-5.1"}
+        mock_resolve.return_value = {
+            "provider": "zai",
+            "model": "glm-4.5-flash",
+            "base_url": "https://zai.example.invalid/v1",
+            "api_key": "test-api-key",
+            "api_mode": "chat_completions",
+        }
+
+        _resolve_delegation_credentials(cfg, parent, override_model="glm-4.5-flash")
+
+        mock_resolve.assert_called_once_with(
+            requested="zai", target_model="glm-4.5-flash"
+        )
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_override_provider_beats_config_base_url(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "base_url": "https://custom.example.invalid/v1",
+            "api_key": "custom-key",
+            "model": "custom-model",
+        }
+        mock_resolve.return_value = {
+            "provider": "openai-codex",
+            "model": "gpt-5.5",
+            "base_url": "https://codex.example.invalid/v1",
+            "api_key": "codex-key",
+            "api_mode": "codex_responses",
+        }
+
+        creds = _resolve_delegation_credentials(
+            cfg,
+            parent,
+            override_provider="openai-codex",
+            override_model="gpt-5.5",
+        )
+
+        mock_resolve.assert_called_once_with(
+            requested="openai-codex", target_model="gpt-5.5"
+        )
+        self.assertEqual(creds["provider"], "openai-codex")
+        self.assertEqual(creds["base_url"], "https://codex.example.invalid/v1")
+        self.assertEqual(creds["api_key"], "codex-key")
+
+    def test_config_base_url_still_used_without_provider_override(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "base_url": "https://custom.example.invalid/v1",
+            "api_key": "custom-key",
+            "model": "custom-model",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["base_url"], "https://custom.example.invalid/v1")
+        self.assertEqual(creds["api_key"], "custom-key")
+
+
+
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
+
+    def test_top_level_provider_and_model_reach_single_child_build(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._load_config", return_value={}), \
+             patch("tools.delegate_tool._resolve_delegation_credentials") as mock_creds, \
+             patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_creds.return_value = {
+                "model": "gpt-5.5",
+                "provider": "openai-codex",
+                "base_url": "https://codex.example.invalid/v1",
+                "api_key": "test-api-key",
+                "api_mode": "codex_responses",
+            }
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {"task_index": 0, "status": "completed", "summary": "ok"}
+
+            delegate_task(
+                goal="review",
+                provider="openai-codex",
+                model="gpt-5.5",
+                parent_agent=parent,
+            )
+
+        first = mock_build.call_args.kwargs
+        self.assertEqual(first["model"], "gpt-5.5")
+        self.assertEqual(first["override_provider"], "openai-codex")
+        self.assertEqual(first["override_api_mode"], "codex_responses")
+        mock_creds.assert_called_once()
+        self.assertEqual(mock_creds.call_args.kwargs["override_provider"], "openai-codex")
+        self.assertEqual(mock_creds.call_args.kwargs["override_model"], "gpt-5.5")
+
+    def test_top_level_provider_and_model_apply_to_batch_tasks(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._load_config", return_value={}), \
+             patch("tools.delegate_tool._resolve_delegation_credentials") as mock_creds, \
+             patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_creds.return_value = {
+                "model": "gpt-5.5",
+                "provider": "openai-codex",
+                "base_url": "https://codex.example.invalid/v1",
+                "api_key": "test-api-key",
+                "api_mode": "codex_responses",
+            }
+            mock_build.return_value = MagicMock()
+            mock_run.side_effect = [
+                {"task_index": 0, "status": "completed", "summary": "ok A"},
+                {"task_index": 1, "status": "completed", "summary": "ok B"},
+            ]
+
+            delegate_task(
+                tasks=[{"goal": "review A"}, {"goal": "review B"}],
+                provider="openai-codex",
+                model="gpt-5.5",
+                parent_agent=parent,
+            )
+
+        self.assertEqual(mock_build.call_count, 2)
+        for call in mock_build.call_args_list:
+            self.assertEqual(call.kwargs["model"], "gpt-5.5")
+            self.assertEqual(call.kwargs["override_provider"], "openai-codex")
+
+    def test_per_task_provider_and_model_win_over_top_level(self):
+        parent = _make_mock_parent(depth=0)
+
+        def fake_creds(cfg, parent_agent, override_provider=None, override_model=None):
+            provider = override_provider or "zai"
+            model = override_model or "glm-5.1"
+            return {
+                "provider": provider,
+                "model": model,
+                "base_url": f"https://{provider}.example.invalid/v1",
+                "api_key": "test-api-key",
+                "api_mode": "codex_responses" if provider == "openai-codex" else "chat_completions",
+            }
+
+        with patch("tools.delegate_tool._load_config", return_value={}), \
+             patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds), \
+             patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.return_value = MagicMock()
+            mock_run.side_effect = [
+                {"task_index": 0, "status": "completed", "summary": "ok A"},
+                {"task_index": 1, "status": "completed", "summary": "ok B"},
+            ]
+            delegate_task(
+                tasks=[
+                    {"goal": "cheap research"},
+                    {"goal": "deep review", "provider": "openai-codex", "model": "gpt-5.5"},
+                ],
+                provider="zai",
+                model="glm-5.1",
+                parent_agent=parent,
+            )
+
+        self.assertEqual(mock_build.call_count, 2)
+        first = mock_build.call_args_list[0].kwargs
+        second = mock_build.call_args_list[1].kwargs
+        self.assertEqual(first["override_provider"], "zai")
+        self.assertEqual(first["model"], "glm-5.1")
+        self.assertEqual(second["override_provider"], "openai-codex")
+        self.assertEqual(second["model"], "gpt-5.5")
+        self.assertEqual(second["override_api_mode"], "codex_responses")
+
+    def test_invalid_per_task_provider_fails_before_any_child_build(self):
+        parent = _make_mock_parent(depth=0)
+
+        def fake_creds(cfg, parent_agent, override_provider=None, override_model=None):
+            if override_provider == "bad-provider":
+                raise ValueError("Cannot resolve delegation provider 'bad-provider'")
+            return {
+                "provider": override_provider or "zai",
+                "model": override_model or "glm-5.1",
+                "base_url": "https://zai.example.invalid/v1",
+                "api_key": "test-api-key",
+                "api_mode": "chat_completions",
+            }
+
+        with patch("tools.delegate_tool._load_config", return_value={}), \
+             patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds), \
+             patch("tools.delegate_tool._build_child_agent") as mock_build:
+            result = delegate_task(
+                tasks=[
+                    {"goal": "ok"},
+                    {"goal": "bad", "provider": "bad-provider"},
+                ],
+                parent_agent=parent,
+            )
+
+        self.assertIn("bad-provider", result)
+        mock_build.assert_not_called()
+
+    def test_provider_override_preserves_config_model(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {"provider": "zai", "model": "glm-5.1"}
+
+        def fake_creds(cfg, parent_agent, override_provider=None, override_model=None):
+            return {
+                "provider": override_provider or cfg.get("provider"),
+                "model": override_model or cfg.get("model"),
+                "base_url": "https://selected.example.invalid/v1",
+                "api_key": "test-api-key",
+                "api_mode": "chat_completions",
+            }
+
+        with patch("tools.delegate_tool._load_config", return_value=cfg), \
+             patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds), \
+             patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {"task_index": 0, "status": "completed", "summary": "ok"}
+            delegate_task(provider="openrouter", goal="work", parent_agent=parent)
+
+        kwargs = mock_build.call_args.kwargs
+        self.assertEqual(kwargs["override_provider"], "openrouter")
+        self.assertEqual(kwargs["model"], "glm-5.1")
+
+    def test_acp_command_wins_over_provider_override(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._load_config", return_value={}), \
+             patch("tools.delegate_tool._resolve_delegation_credentials") as mock_creds, \
+             patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_creds.return_value = {
+                "model": "gpt-5.5",
+                "provider": "openai-codex",
+                "base_url": "https://codex.example.invalid/v1",
+                "api_key": "test-api-key",
+                "api_mode": "codex_responses",
+            }
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {"task_index": 0, "status": "completed", "summary": "ok"}
+
+            delegate_task(
+                goal="review",
+                provider="openai-codex",
+                model="gpt-5.5",
+                acp_command="claude",
+                acp_args=["--acp", "--stdio"],
+                parent_agent=parent,
+            )
+
+        kwargs = mock_build.call_args.kwargs
+        self.assertEqual(kwargs["override_provider"], "openai-codex")
+        self.assertEqual(kwargs["override_acp_command"], "claude")
+        self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
+
+    def test_per_task_acp_command_wins_over_per_task_provider(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._load_config", return_value={}), \
+             patch("tools.delegate_tool._resolve_delegation_credentials") as mock_creds, \
+             patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_creds.return_value = {
+                "model": "gpt-5.5",
+                "provider": "openai-codex",
+                "base_url": "https://codex.example.invalid/v1",
+                "api_key": "test-api-key",
+                "api_mode": "codex_responses",
+            }
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {"task_index": 0, "status": "completed", "summary": "ok"}
+
+            delegate_task(
+                tasks=[{
+                    "goal": "review",
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                    "acp_command": "claude",
+                    "acp_args": ["--acp", "--stdio"],
+                }],
+                parent_agent=parent,
+            )
+
+        kwargs = mock_build.call_args.kwargs
+        self.assertEqual(kwargs["override_provider"], "openai-codex")
+        self.assertEqual(kwargs["override_acp_command"], "claude")
+        self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
+
+    def test_model_override_preserves_config_provider(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {"provider": "zai", "model": "glm-5.1"}
+
+        def fake_creds(cfg, parent_agent, override_provider=None, override_model=None):
+            return {
+                "provider": override_provider or cfg.get("provider"),
+                "model": override_model or cfg.get("model"),
+                "base_url": "https://selected.example.invalid/v1",
+                "api_key": "test-api-key",
+                "api_mode": "chat_completions",
+            }
+
+        with patch("tools.delegate_tool._load_config", return_value=cfg), \
+             patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=fake_creds), \
+             patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {"task_index": 0, "status": "completed", "summary": "ok"}
+            delegate_task(model="glm-4.5-flash", goal="work", parent_agent=parent)
+
+        kwargs = mock_build.call_args.kwargs
+        self.assertEqual(kwargs["override_provider"], "zai")
+        self.assertEqual(kwargs["model"], "glm-4.5-flash")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

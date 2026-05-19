@@ -129,6 +129,14 @@ _SUBAGENT_TOOLSETS = sorted(
 )
 _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
+def _clean_optional_str(value: Any) -> Optional[str]:
+    """Return a stripped string or None for unset/blank optional tool fields."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected unless max_spawn_depth raised.
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
@@ -1920,6 +1928,8 @@ def delegate_task(
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -1930,8 +1940,8 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, provider/model)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, provider, model}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -1952,8 +1962,10 @@ def delegate_task(
             "(`p` in /agents) or the `delegation.pause` RPC before retrying."
         )
 
-    # Normalise the top-level role once; per-task overrides re-normalise.
+    # Normalise top-level per-call overrides once; per-task values can override.
     top_role = _normalize_role(role)
+    top_provider = _clean_optional_str(provider)
+    top_model = _clean_optional_str(model)
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -1987,16 +1999,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2017,7 +2019,14 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "provider": top_provider,
+                "model": top_model,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2034,12 +2043,30 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    # Resolve credential bundles for every task before constructing any child.
+    # This makes provider/model errors fail atomically (no partial fan-out) and
+    # lets batch items override top-level routing independently.
+    task_entries = []
+    for i, task in enumerate(task_list):
+        task_provider = _clean_optional_str(task.get("provider")) or top_provider
+        task_model = _clean_optional_str(task.get("model")) or top_model
+        try:
+            task_creds = _resolve_delegation_credentials(
+                cfg,
+                parent_agent,
+                override_provider=task_provider,
+                override_model=task_model,
+            )
+        except ValueError as exc:
+            return tool_error(f"Task {i}: {exc}")
+        task_entries.append({"task": task, "creds": task_creds})
+
     overall_start = time.monotonic()
     results = []
 
-    n_tasks = len(task_list)
+    n_tasks = len(task_entries)
     # Track goal labels for progress display (truncated for readability)
-    task_labels = [t["goal"][:40] for t in task_list]
+    task_labels = [entry["task"]["goal"][:40] for entry in task_entries]
 
     # Save parent tool names BEFORE any child construction mutates the global.
     # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
@@ -2053,7 +2080,9 @@ def delegate_task(
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
     try:
-        for i, t in enumerate(task_list):
+        for i, entry in enumerate(task_entries):
+            t = entry["task"]
+            creds = entry["creds"]
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
@@ -2342,48 +2371,41 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_delegation_credentials(
+    cfg: dict,
+    parent_agent,
+    override_provider: Optional[str] = None,
+    override_model: Optional[str] = None,
+) -> dict:
     """Resolve credentials for subagent delegation.
 
-    If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
-    omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
-    inherits the parent agent's key (``effective_api_key = override_api_key or
-    parent_api_key``). This lets providers that store their key outside
-    ``OPENAI_API_KEY`` (e.g. ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work
-    without a duplicate config entry.
-
-    Otherwise, if ``delegation.provider`` is configured, the full credential
-    bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
-    provider system — the same path used by CLI/gateway startup. This lets
-    subagents run on a completely different provider:model pair.
-
-    If neither base_url nor provider is configured, returns None values so the
-    child inherits everything from the parent agent.
+    Precedence:
+      * Per-call/per-task ``override_provider`` and ``override_model`` win.
+      * If no explicit provider override is supplied, ``delegation.base_url``
+        keeps its existing direct-endpoint behavior.
+      * If a provider override is supplied, it intentionally bypasses
+        ``delegation.base_url`` and resolves through the runtime provider system.
 
     Raises ValueError with a user-friendly message on credential failure.
     """
-    configured_model = str(cfg.get("model") or "").strip() or None
-    configured_provider = str(cfg.get("provider") or "").strip() or None
-    configured_base_url = str(cfg.get("base_url") or "").strip() or None
-    configured_api_key = str(cfg.get("api_key") or "").strip() or None
-    configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
+    configured_model = _clean_optional_str(cfg.get("model"))
+    configured_provider = _clean_optional_str(cfg.get("provider"))
+    configured_base_url = _clean_optional_str(cfg.get("base_url"))
+    configured_api_key = _clean_optional_str(cfg.get("api_key"))
+    configured_api_mode = (_clean_optional_str(cfg.get("api_mode")) or "").lower() or None
 
-    if configured_base_url:
+    selected_provider = _clean_optional_str(override_provider) or configured_provider
+    selected_model = _clean_optional_str(override_model) or configured_model
+    explicit_provider_override = _clean_optional_str(override_provider) is not None
+
+    if configured_base_url and not explicit_provider_override:
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This
-        # lets providers that store their key in a non-OPENAI_API_KEY env var
-        # (e.g. MINIMAX_API_KEY, DASHSCOPE_API_KEY) work without requiring
-        # callers to duplicate the key under delegation.api_key.
-        api_key = configured_api_key  # None → inherited from parent in _build_child_agent
+        # preserves the existing direct-endpoint semantics unless a per-call
+        # provider override explicitly asks for runtime-provider routing.
+        api_key = configured_api_key
 
-        # Use the shared URL-based api_mode detector (same path the main agent's
-        # runtime resolver uses) so Anthropic-compatible direct endpoints with a
-        # /anthropic suffix — Azure AI Foundry, MiniMax, Zhipu GLM, LiteLLM
-        # proxies — pick the right transport automatically. Without this,
-        # subagents would default to chat_completions and hit 404s on endpoints
-        # that only speak the Anthropic Messages protocol. Fixes #10213.
         from hermes_cli.runtime_provider import _detect_api_mode_for_url
 
         base_lower = configured_base_url.lower()
@@ -2402,52 +2424,59 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             provider = "custom"
             api_mode = "anthropic_messages"
 
-        # Explicit delegation.api_mode in config always wins. Lets users force
-        # a transport for non-standard endpoints the URL heuristic can't detect.
         if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             api_mode = configured_api_mode
 
         return {
-            "model": configured_model,
+            "model": selected_model,
             "provider": provider,
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
         }
 
-    if not configured_provider:
-        # No provider override — child inherits everything from parent
+    if not selected_provider:
+        # No provider override — child inherits credentials from parent.  A model
+        # override can still be applied while inheriting the parent provider/key.
         return {
-            "model": configured_model,
+            "model": selected_model,
             "provider": None,
             "base_url": None,
             "api_key": None,
             "api_mode": None,
         }
 
-    # Provider is configured — resolve full credentials
+    # Provider is configured/overridden — resolve full credentials through the
+    # runtime provider system.  No static allowlist: provider validity is whatever
+    # resolve_runtime_provider currently supports.
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested=configured_provider, target_model=configured_model)
+        runtime = resolve_runtime_provider(
+            requested=selected_provider,
+            target_model=selected_model,
+        )
     except Exception as exc:
         raise ValueError(
-            f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
-            f"Check that the provider is configured (API key set, valid provider name), "
-            f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            f"Cannot resolve delegation provider '{selected_provider}': {exc}. "
+            "Check that the provider is configured (API key set, valid provider name), "
+            "or set delegation.base_url/delegation.api_key for a direct endpoint."
         ) from exc
 
     api_key = runtime.get("api_key", "")
     if not api_key:
         raise ValueError(
-            f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'hermes auth'."
+            f"Delegation provider '{selected_provider}' resolved but has no API key. "
+            "Set the appropriate environment variable or run 'hermes auth'."
         )
 
+    runtime_provider = runtime.get("provider")
+    effective_provider = (
+        selected_provider if runtime_provider == _RUNTIME_PROVIDER_CUSTOM else runtime_provider
+    )
     return {
-        "model": configured_model or runtime.get("model") or None,
-        "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
+        "model": selected_model or runtime.get("model") or None,
+        "provider": effective_provider,
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
@@ -2703,6 +2732,23 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Provider override for this delegate_task call (e.g. 'zai', "
+                    "'openrouter', 'openai-codex'). Overrides delegation.provider "
+                    "for these children. If acp_command is also set, acp_command "
+                    "wins and the child uses ACP transport instead."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Model override for this delegate_task call. Overrides "
+                    "delegation.model for these children while preserving the "
+                    "selected provider unless provider is also supplied."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -2717,6 +2763,20 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override. Wins over top-level "
+                                "provider and delegation.provider for this task only."
+                            ),
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override. Wins over top-level model "
+                                "and delegation.model for this task only."
+                            ),
                         },
                         "acp_command": {
                             "type": "string",
@@ -2789,6 +2849,8 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        provider=args.get("provider"),
+        model=args.get("model"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),

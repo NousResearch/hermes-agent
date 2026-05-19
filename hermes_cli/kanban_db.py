@@ -266,7 +266,7 @@ def board_dir(board: Optional[str] = None) -> Path:
 
 
 def board_exists(board: Optional[str] = None) -> bool:
-    """Return True if the board has a DB or a metadata dir on disk.
+    """Return True if the board has persisted metadata or a DB on disk.
 
     ``default`` is considered to always exist — its DB is created
     on first :func:`connect` and there's no way for it to be missing
@@ -276,7 +276,7 @@ def board_exists(board: Optional[str] = None) -> bool:
     if slug == DEFAULT_BOARD:
         return True
     d = board_dir(slug)
-    return d.is_dir() or (d / "kanban.db").exists()
+    return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
 def kanban_db_path(board: Optional[str] = None) -> Path:

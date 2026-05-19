@@ -169,6 +169,13 @@ class TestCurrentBoard:
         assert not kb.board_exists("missing-board")
         assert [b["slug"] for b in kb.list_boards()] == ["default"]
 
+    def test_empty_board_dir_does_not_count_as_existing(self, fresh_home):
+        ghost = fresh_home / "kanban" / "boards" / "ghost"
+        ghost.mkdir(parents=True)
+
+        assert not kb.board_exists("ghost")
+        assert [b["slug"] for b in kb.list_boards()] == ["default"]
+
     def test_env_beats_file(self, fresh_home, monkeypatch):
         kb.create_board("a")
         kb.create_board("b")
@@ -531,6 +538,13 @@ class TestCLI:
         # main.py's dispatcher doesn't propagate return codes today, so we
         # assert the user-visible signal: a stderr error message. Whether
         # the exit code stays 0 is a separate (pre-existing) issue.
+        assert "does not exist" in r.stderr
+
+    def test_board_flag_rejects_empty_board_dir(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        ghost = tmp_path / "kanban" / "boards" / "ghost"
+        ghost.mkdir(parents=True)
+        r = _cli(["--board", "ghost", "list"], env_extra=env)
         assert "does not exist" in r.stderr
 
     def test_boards_rm_archives(self, tmp_path):

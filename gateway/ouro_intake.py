@@ -298,6 +298,119 @@ def _seed_review(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+
+def _detect_language(values: dict[str, Any]) -> str:
+    text = " ".join(str(values.get(key) or "") for key in ("goal", "context", "scope", "answer"))
+    return "ko" if re.search(r"[가-힣]", text) else "en"
+
+
+def _infer_track(values: dict[str, Any]) -> str:
+    text = " ".join(str(values.get(key) or "") for key in ("goal", "context", "scope"))
+    lowered = text.lower()
+    if re.search(r"오토파일럿|autopilot", text, re.IGNORECASE):
+        return "autopilot"
+    if "gateway" in lowered or "discord" in lowered or "command" in lowered:
+        return "trigger_surface"
+    if any(word in lowered for word in ("billing", "paddle", "payment", "prod", "production")):
+        return "side_effect_boundary"
+    return "scope"
+
+
+def _restate_goal(values: dict[str, Any]) -> str:
+    goal = str(values.get("goal") or "").strip()
+    scope = str(values.get("scope") or "").strip()
+    context = str(values.get("context") or "").strip()
+    if scope:
+        base = f"{goal} — scope: {scope}"
+    elif context:
+        base = f"{goal} — context: {context[:160]}"
+    else:
+        base = goal
+    return base[:260]
+
+
+def _is_restate_approval(answer: str) -> bool:
+    text = (answer or "").strip().lower()
+    return bool(re.search(r"\b(yes|y|approve|approved|confirm|confirmed|correct|ok|okay)\b|맞아|승인|확인|그대로|좋아|진행", text))
+
+
+def _highest_impact_question(values: dict[str, Any], review: dict[str, Any], *, previous_track: str | None = None) -> dict[str, Any]:
+    language = _detect_language(values)
+    track = _infer_track(values)
+    flags = set(review.get("ambiguity_flags") or [])
+    blockers = review.get("blocking_questions") or []
+    if previous_track == track and blockers:
+        # Keep turns moving across independent ambiguity tracks instead of asking
+        # the same broad question twice.
+        order = ["authority", "verification", "non_goals", "brownfield_context", "scope"]
+        track = next((candidate for candidate in order if candidate != previous_track), track)
+
+    if track == "autopilot":
+        if language == "ko":
+            text = (
+                "오토파일럿이라고 할 때, 먼저 자동화하려는 축이 어느 쪽이에요? "
+                "하나만 골라주세요: A) intake/카드화 자동화, B) Kanban 실행 준비 자동화, "
+                "C) git·PR·CI 운영 자동화, D) gateway·cron·런타임 감시 자동화, E) 다른 범위."
+            )
+        else:
+            text = (
+                "When you say autopilot, which axis should it automate first? Choose one: "
+                "A) intake/cardization, B) Kanban execution prep, C) git/PR/CI operations, "
+                "D) gateway/cron/runtime monitoring, or E) another scope."
+            )
+        options = ["intake/cardization", "Kanban execution prep", "git/PR/CI operations", "gateway/cron/runtime monitoring", "other"]
+        return {"id": "autopilot_axis", "track": "scope", "text": text, "options": options}
+
+    if "goal_unclear" in flags:
+        text = "결과물을 한 문장으로 좁히면 무엇인가요?" if language == "ko" else "What concrete output should this produce, in one sentence?"
+        return {"id": "goal_output", "track": "scope", "text": text, "options": []}
+    if "context_unclear" in flags:
+        text = "어느 기존 시스템·repo·런타임 맥락을 먼저 기준으로 삼아야 해요?" if language == "ko" else "Which existing repo/runtime/product context should be treated as the baseline?"
+        return {"id": "brownfield_context", "track": "brownfield_context", "text": text, "options": []}
+    if "acceptance_criteria_unclear" in flags:
+        text = "완료 판정은 어떤 관측 가능한 증거 하나로 할까요?" if language == "ko" else "What single observable proof should make this Done?"
+        return {"id": "observable_proof", "track": "verification", "text": text, "options": []}
+    if "constraints_unclear" in flags or "sensitive_side_effect_domain" in flags:
+        text = "이번 Seed에서 금지할 부작용은 무엇인가요? 예: worker dispatch, PR, gateway restart, secret/env 변경." if language == "ko" else "Which side effects are forbidden for this Seed? For example: worker dispatch, PR, gateway restart, secret/env mutation."
+        return {"id": "side_effect_boundary", "track": "authority", "text": text, "options": []}
+    text = "제가 이해한 목표를 한 문장으로 재확인할게요. 이 문장으로 Seed를 만들어도 되나요?" if language == "ko" else "I will restate the goal in one sentence before Seed. Is this correct?"
+    return {"id": "restate_confirmation", "track": "restate", "text": text, "options": []}
+
+
+def _format_interview_question(session_id: str, review: dict[str, Any], question: dict[str, Any]) -> str:
+    ledger_hint = ", ".join(
+        f"{item['name']}={item['clarity_score']:.2f}" for item in review.get("ambiguity_ledger", [])
+    )
+    return (
+        f"Started /ouro-intake interview session {session_id}.\n"
+        f"Ambiguity: {review['ambiguity_score']:.2f} ({review['ambiguity_level']}); Seed is decision-gated.\n"
+        f"Question ({question['track']}): {question['text']}\n"
+        f"Ledger: {ledger_hint}\n"
+        f"Reply with `/ouro-intake answer session:{session_id} answer:<answer>`; no Kanban card or worker was created."
+    )
+
+
+def _format_next_question(session_id: str, review: dict[str, Any], question: dict[str, Any]) -> str:
+    ledger_hint = ", ".join(
+        f"{item['name']}={item['clarity_score']:.2f}" for item in review.get("ambiguity_ledger", [])
+    )
+    return (
+        f"Updated /ouro-intake session {session_id}.\n"
+        f"Ambiguity: {review['ambiguity_score']:.2f} ({review['ambiguity_level']}); Seed remains decision-gated.\n"
+        f"Next question ({question['track']}): {question['text']}\n"
+        f"Ledger: {ledger_hint}"
+    )
+
+
+def _format_restate(session_id: str, values: dict[str, Any], review: dict[str, Any]) -> str:
+    restatement = _restate_goal(values)
+    return (
+        f"Updated /ouro-intake session {session_id}.\n"
+        f"Ambiguity: {review['ambiguity_score']:.2f} ({review['ambiguity_level']}) — Restate gate is pending.\n"
+        f"Restate: {restatement}\n"
+        f"If correct, reply `/ouro-intake answer session:{session_id} answer:승인`. Seed remains blocked until this confirmation."
+    )
+
 def _ontology_for(values: dict[str, Any]) -> dict[str, Any]:
     project = str(values.get("project") or "bo").strip().lower()
     return {
@@ -313,30 +426,43 @@ def _ontology_for(values: dict[str, Any]) -> dict[str, Any]:
 
 
 def _qa_and_repair_seed(seed: dict[str, Any]) -> dict[str, Any]:
-    """Run deterministic Seed QA and small structural repairs before admission."""
+    """Run deterministic Seed QA and explicit repair/adoption checks."""
 
     findings: list[dict[str, str]] = []
-    repairs: list[str] = []
+    safe_repairs: list[str] = []
+    proposed_repairs: list[dict[str, str]] = []
+    adoption_required: list[str] = []
     if not seed.get("goal"):
         findings.append({"code": "missing_goal", "severity": "high", "message": "Seed goal is missing"})
     if not seed.get("acceptance_criteria"):
         findings.append({"code": "missing_acceptance", "severity": "high", "message": "Seed needs observable acceptance criteria"})
     if not seed.get("ontology"):
         seed["ontology"] = _ontology_for(seed)
-        repairs.append("added ontology")
+        safe_repairs.append("added ontology")
     if not seed.get("verification_requirements"):
         seed["verification_requirements"] = ["Kanban readback confirms admission metadata and no task runs exist"]
-        repairs.append("added verification requirement")
+        safe_repairs.append("added verification requirement")
     vague_acceptance = [item for item in seed.get("acceptance_criteria", []) if not _OBSERVABLE_RE.search(str(item))]
     if vague_acceptance:
         findings.append({"code": "weak_acceptance_observability", "severity": "medium", "message": "Some acceptance criteria lack observable proof language"})
-        seed["acceptance_criteria"] = [
-            item if _OBSERVABLE_RE.search(str(item)) else f"Observable proof exists for: {item}"
-            for item in seed.get("acceptance_criteria", [])
-        ]
-        repairs.append("made weak acceptance criteria observable")
+        for item in vague_acceptance:
+            proposed_repairs.append({
+                "code": "make_acceptance_observable",
+                "from": str(item),
+                "proposal": f"Define observable proof for: {item}",
+                "adoption": "requires_user_or_followup_gate",
+            })
+        adoption_required.append("weak_acceptance_observability")
     passed = not any(f["severity"] == "high" for f in findings)
-    return {"passed": passed, "findings": findings, "repairs": repairs, "max_iterations": 1}
+    return {
+        "passed": passed,
+        "findings": findings,
+        "safe_repairs": safe_repairs,
+        "proposed_repairs": proposed_repairs,
+        "adoption_required": adoption_required,
+        "repairs": safe_repairs,
+        "max_iterations": 1,
+    }
 
 
 def _build_seed_contract(values: dict[str, Any], *, public_id: str | None, actor: str | None, session_id: str | None = None) -> dict[str, Any]:
@@ -489,35 +615,31 @@ def _start_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
         )
     session_id = _session_id_for(values)
     review = _seed_review(values)
-    seed = _build_seed_contract(values, public_id=None, actor=actor, session_id=session_id)
     sessions = _load_sessions()
+    status = "restate_pending" if review["mode"] == "seed_ready_for_admission" else "interviewing"
+    question = _highest_impact_question(values, review)
     sessions[session_id] = {
         "session_id": session_id,
         "created_at": int(time.time()),
         "updated_at": int(time.time()),
         "actor": actor or "unknown",
         "values": values,
+        "turns": [],
         "rounds": [],
-        "seed": seed if review["mode"] == "seed_ready_for_admission" else None,
-        "status": "seed_ready" if review["mode"] == "seed_ready_for_admission" else "interviewing",
+        "last_question": question if status == "interviewing" else {"id": "restate_confirmation", "track": "restate", "text": _restate_goal(values), "options": []},
+        "track": question["track"] if status == "interviewing" else "restate",
+        "language": _detect_language(values),
+        "phase": status,
+        "seed": None,
+        "status": status,
+        "restate": _restate_goal(values) if status == "restate_pending" else None,
+        "ambiguity_ledger": review["ambiguity_ledger"],
     }
     _save_sessions(sessions)
-    if review["mode"] == "seed_ready_for_admission":
-        message = (
-            f"Started /ouro-intake interview session {session_id}.\n"
-            f"Ambiguity: {review['ambiguity_score']:.2f} ({review['ambiguity_level']}) — Seed draft + QA is ready, but not admitted.\n"
-            f"Seed QA passed: {seed['seed_qa']['passed']}.\n"
-            f"Next: `/ouro-intake admit session:{session_id}` to create the blocked Kanban admission card."
-        )
+    if status == "restate_pending":
+        message = _format_restate(session_id, values, review)
     else:
-        questions = "\n".join(f"- {q}" for q in review["blocking_questions"])
-        message = (
-            f"Started /ouro-intake interview session {session_id}.\n"
-            f"Ambiguity: {review['ambiguity_score']:.2f} ({review['ambiguity_level']}); Seed is decision-gated.\n"
-            "Socratic blockers tied to the ambiguity ledger:\n"
-            f"{questions}\n"
-            f"Reply with `/ouro-intake answer session:{session_id} answer:<answer>`; no Kanban card or worker was created."
-        )
+        message = _format_interview_question(session_id, review, question)
     return OuroIntakeResult(action="interview_started", mutated=True, dispatched=False, session_id=session_id, message=message)
 
 
@@ -548,30 +670,52 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
     session = sessions.get(session_id)
     if not isinstance(session, dict):
         return OuroIntakeResult(action="error", error="unknown_session", message=f"Unknown ouro-intake session {session_id}. No action was taken.")
+    answer_text = str(parsed.get("answer") or parsed.get("goal") or "").strip()
+    previous_question = session.get("last_question") if isinstance(session.get("last_question"), dict) else None
+    if session.get("status") == "restate_pending" and _is_restate_approval(answer_text):
+        values = dict(session.get("values") or {})
+        review = _seed_review(values)
+        seed = _build_seed_contract(values, public_id=None, actor=actor or session.get("actor"), session_id=session_id)
+        session.setdefault("turns", []).append({"at": int(time.time()), "question": previous_question, "answer": answer_text, "phase": "restate_approved"})
+        session.setdefault("rounds", []).append({"at": int(time.time()), "answer": answer_text, "review": review})
+        session["seed"] = seed
+        session["status"] = "seed_ready"
+        session["phase"] = "seed_ready"
+        session["updated_at"] = int(time.time())
+        sessions[session_id] = session
+        _save_sessions(sessions)
+        message = (
+            f"Updated /ouro-intake session {session_id}.\n"
+            f"Restate approved. Seed draft + QA is ready, not admitted.\n"
+            f"Seed QA passed: {seed['seed_qa']['passed']}.\n"
+            f"Next: `/ouro-intake seed session:{session_id}` to inspect, then `/ouro-intake admit session:{session_id}` to create the blocked Kanban admission card."
+        )
+        return OuroIntakeResult(action="interview_updated", mutated=True, dispatched=False, session_id=session_id, message=message)
+
     values = _merge_answer(dict(session.get("values") or {}), parsed, str(parsed.get("goal") or ""))
     review = _seed_review(values)
-    seed = _build_seed_contract(values, public_id=None, actor=actor or session.get("actor"), session_id=session_id)
     session["values"] = values
     session["updated_at"] = int(time.time())
-    session.setdefault("rounds", []).append({"at": int(time.time()), "answer": parsed.get("answer") or parsed.get("goal") or "", "review": review})
-    session["seed"] = seed if review["mode"] == "seed_ready_for_admission" else None
-    session["status"] = "seed_ready" if review["mode"] == "seed_ready_for_admission" else "interviewing"
+    session.setdefault("turns", []).append({"at": int(time.time()), "question": previous_question, "answer": answer_text, "review": review})
+    session.setdefault("rounds", []).append({"at": int(time.time()), "answer": answer_text, "review": review})
+    session["language"] = _detect_language(values)
+    session["ambiguity_ledger"] = review["ambiguity_ledger"]
+    session["seed"] = None
+    if review["mode"] == "seed_ready_for_admission":
+        session["status"] = "restate_pending"
+        session["phase"] = "restate_pending"
+        session["restate"] = _restate_goal(values)
+        session["last_question"] = {"id": "restate_confirmation", "track": "restate", "text": session["restate"], "options": []}
+        message = _format_restate(session_id, values, review)
+    else:
+        question = _highest_impact_question(values, review, previous_track=(previous_question or {}).get("track"))
+        session["status"] = "interviewing"
+        session["phase"] = "interviewing"
+        session["track"] = question["track"]
+        session["last_question"] = question
+        message = _format_next_question(session_id, review, question)
     sessions[session_id] = session
     _save_sessions(sessions)
-    if review["mode"] == "seed_ready_for_admission":
-        message = (
-            f"Updated /ouro-intake session {session_id}.\n"
-            f"Ambiguity: {review['ambiguity_score']:.2f} ({review['ambiguity_level']}) — Seed draft + QA is ready, not admitted.\n"
-            f"Seed QA passed: {seed['seed_qa']['passed']}.\n"
-            f"Next: `/ouro-intake admit session:{session_id}`."
-        )
-    else:
-        questions = "\n".join(f"- {q}" for q in review["blocking_questions"])
-        message = (
-            f"Updated /ouro-intake session {session_id}.\n"
-            f"Ambiguity: {review['ambiguity_score']:.2f} ({review['ambiguity_level']}); Seed remains decision-gated.\n"
-            f"Next Socratic blockers:\n{questions}"
-        )
     return OuroIntakeResult(action="interview_updated", mutated=True, dispatched=False, session_id=session_id, message=message)
 
 
@@ -582,10 +726,22 @@ def _show_or_seed(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
     session = sessions.get(session_id)
     if not session_id or not isinstance(session, dict):
         return OuroIntakeResult(action="error", error="unknown_session", message="Missing or unknown session. No action was taken.")
+    if session.get("status") != "seed_ready":
+        restate = session.get("restate") or _restate_goal(dict(session.get("values") or {}))
+        return OuroIntakeResult(
+            action="seed_blocked",
+            mutated=False,
+            dispatched=False,
+            session_id=session_id,
+            message=(
+                f"Seed is blocked for session {session_id}. Restate gate has not been approved.\n"
+                f"Restate: {restate}\n"
+                f"Reply `/ouro-intake answer session:{session_id} answer:승인` if this is correct; no Kanban action was taken."
+            ),
+        )
     values = dict(session.get("values") or {})
-    seed = _build_seed_contract(values, public_id=None, actor=actor or session.get("actor"), session_id=session_id)
+    seed = session.get("seed") if isinstance(session.get("seed"), dict) else _build_seed_contract(values, public_id=None, actor=actor or session.get("actor"), session_id=session_id)
     session["seed"] = seed
-    session["status"] = "seed_ready" if seed["seed_review"]["mode"] == "seed_ready_for_admission" else "decision_gate_only"
     session["updated_at"] = int(time.time())
     sessions[session_id] = session
     _save_sessions(sessions)
@@ -609,6 +765,15 @@ def _admit_seed(raw_args: str) -> OuroIntakeResult:
     session = sessions.get(session_id)
     if not session_id or not isinstance(session, dict):
         return OuroIntakeResult(action="error", error="unknown_session", message="Missing or unknown session. No Kanban action was taken.")
+    if session.get("status") != "seed_ready":
+        return OuroIntakeResult(
+            action="admission_blocked",
+            error="restate_not_approved",
+            mutated=False,
+            dispatched=False,
+            session_id=session_id,
+            message=f"Session {session_id} is not seed-ready. Approve the Restate gate before admission; no Kanban action was taken.",
+        )
     values = dict(session.get("values") or {})
     with kb.connect() as conn:
         namespace = _namespace_for(str(values.get("project") or "bo"))

@@ -156,6 +156,48 @@ def test_run_slash_tenant_filter(kanban_home):
     assert "biz-b task" in b and "biz-a task" not in b
 
 
+def test_run_slash_session_filter(kanban_home):
+    """`hermes kanban list --session <id>` filters by the originating
+    chat session id stamped on tasks created from inside an ACP loop."""
+    from hermes_cli import kanban_db as kb
+    with kb.connect() as conn:
+        kb.create_task(
+            conn, title="from sess-1 a", assignee="alice", session_id="sess-1"
+        )
+        kb.create_task(
+            conn, title="from sess-1 b", assignee="alice", session_id="sess-1"
+        )
+        kb.create_task(
+            conn, title="from sess-2", assignee="alice", session_id="sess-2"
+        )
+        kb.create_task(conn, title="cli only", assignee="alice")
+    out_1 = kc.run_slash("list --session sess-1")
+    out_2 = kc.run_slash("list --session sess-2")
+    assert "from sess-1 a" in out_1
+    assert "from sess-1 b" in out_1
+    assert "from sess-2" not in out_1
+    assert "cli only" not in out_1
+    assert "from sess-2" in out_2
+    assert "from sess-1 a" not in out_2
+
+
+def test_kanban_list_json_includes_session_id(kanban_home):
+    """JSON output exposes `session_id` so external clients (Scarf, web
+    dashboards) don't need a side query to filter by chat session."""
+    from hermes_cli import kanban_db as kb
+    with kb.connect() as conn:
+        kb.create_task(
+            conn, title="acp task", assignee="alice", session_id="acp-x"
+        )
+    raw = kc.run_slash("list --json")
+    payload = json.loads(raw)
+    assert any(
+        row.get("title") == "acp task"
+        and row.get("session_id") == "acp-x"
+        for row in payload
+    )
+
+
 def test_run_slash_usage_error_returns_message(kanban_home):
     # Missing required argument for create
     out = kc.run_slash("create")

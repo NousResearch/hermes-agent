@@ -649,6 +649,12 @@ class Task:
     # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
     # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
     max_retries: Optional[int] = None
+    # Originating chat/agent session id, when the task was created from
+    # within an agent loop that propagated ``HERMES_SESSION_ID``. NULL for
+    # tasks created from the CLI, the dashboard, or any path that doesn't
+    # set the env var. Lets clients render a per-session board without
+    # relying on tenant + time-window heuristics.
+    session_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -713,6 +719,9 @@ class Task:
             model_override=row["model_override"] if "model_override" in keys and row["model_override"] else None,
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
+            ),
+            session_id=(
+                row["session_id"] if "session_id" in keys else None
             ),
         )
 
@@ -844,8 +853,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
-    max_retries          INTEGER
+    max_retries          INTEGER,
+    -- Originating chat/agent session id when the task was created from
+    -- inside an agent loop that propagated ``HERMES_SESSION_ID``. NULL
+    -- for tasks created from the CLI, dashboard, or any path that doesn't
+    -- set the env var. Indexed so per-session list queries stay cheap on
+    -- larger boards.
+    session_id           TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id);
 
 CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
@@ -1143,6 +1160,20 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
 
+    if "session_id" not in cols:
+        # Originating agent/chat session id, populated when the task is
+        # created from within an agent loop that propagated
+        # ``HERMES_SESSION_ID`` (e.g. ACP). NULL on legacy rows and on any
+        # creation path that doesn't set the env var (CLI, dashboard).
+        # Index keeps per-session list queries cheap.
+        _add_column_if_missing(
+            conn, "tasks", "session_id", "session_id TEXT"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_session_id "
+            "ON tasks(session_id)"
+        )
+
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
@@ -1312,6 +1343,7 @@ def create_task(
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
     initial_status: str = "running",
+    session_id: Optional[str] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -1466,8 +1498,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         tenant, idempotency_key, max_runtime_seconds, skills,
-                        max_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        max_retries, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1485,6 +1517,7 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        session_id,
                     ),
                 )
                 for pid in parents:
@@ -1551,6 +1584,7 @@ def list_tasks(
     assignee: Optional[str] = None,
     status: Optional[str] = None,
     tenant: Optional[str] = None,
+    session_id: Optional[str] = None,
     include_archived: bool = False,
     limit: Optional[int] = None,
     order_by: Optional[str] = None,
@@ -1568,6 +1602,9 @@ def list_tasks(
     if tenant is not None:
         query += " AND tenant = ?"
         params.append(tenant)
+    if session_id is not None:
+        query += " AND session_id = ?"
+        params.append(session_id)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
     if order_by is not None:

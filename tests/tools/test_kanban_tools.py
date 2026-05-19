@@ -768,6 +768,75 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
+    """When the agent loop runs under ACP, the server propagates the
+    originating chat session id via HERMES_SESSION_ID. ``kanban_create``
+    reads it and stamps the new task so clients can render a per-session
+    board (issue: ACP session linkage on kanban tasks)."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "acp-sess-abc")
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "from chat",
+        "assignee": "peer",
+        "parents": [worker_env],
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        new_task = kb.get_task(conn, d["task_id"])
+        assert new_task.session_id == "acp-sess-abc"
+    finally:
+        conn.close()
+
+
+def test_create_session_id_arg_overrides_env(monkeypatch, worker_env):
+    """An explicit ``session_id`` arg from the model wins over the env
+    propagation. Edge case but exercised: a tool call could carry a
+    different session id (e.g. cross-session linking) and the explicit
+    arg should not be silently overwritten."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "from-env")
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "explicit override",
+        "assignee": "peer",
+        "parents": [worker_env],
+        "session_id": "explicit-arg",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        new_task = kb.get_task(conn, d["task_id"])
+        assert new_task.session_id == "explicit-arg"
+    finally:
+        conn.close()
+
+
+def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
+    """No env var, no arg → session_id stays NULL. Important for backwards
+    compatibility: pre-ACP-propagation hosts and CLI-driven creates must
+    not accidentally inherit a stale id."""
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "no session",
+        "assignee": "peer",
+        "parents": [worker_env],
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        new_task = kb.get_task(conn, d["task_id"])
+        assert new_task.session_id is None
+    finally:
+        conn.close()
+
+
 def test_create_rejects_no_title(worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"assignee": "x"})).get("error")

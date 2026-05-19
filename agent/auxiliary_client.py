@@ -4311,6 +4311,16 @@ def _resolve_task_provider_model(
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
+        # Resolve key_env / api_key_env for per-task API key indirection.
+        # When auxiliary.<task>.key_env (or its api_key_env alias) names an
+        # environment variable, resolve it to the actual key value. This
+        # mirrors the same pattern used by providers.<name>.key_env in
+        # resolve_provider_client() and fallback entries in agent_init.py.
+        if not cfg_api_key:
+            _task_key_env = (task_config.get("key_env") or task_config.get("api_key_env") or "").strip()
+            if _task_key_env:
+                cfg_api_key = os.getenv(_task_key_env, "").strip() or None
+
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
 

@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -3727,6 +3728,28 @@ def mount_spa(application: FastAPI):
     # Reduces bandwidth (1.5 MB -> 450 KB for main JS bundle) and allows
     # browser caching since filenames contain content hashes.
     class _OptimizedStaticFiles(StaticFiles):
+        def _accepts_gzip(self, accept_encoding: str) -> bool:
+            """Parse Accept-Encoding header and return True if gzip is accepted (q > 0)."""
+            if not accept_encoding:
+                return False
+            for encoding in accept_encoding.split(","):
+                encoding = encoding.strip()
+                if not encoding:
+                    continue
+                # Parse "gzip" or "gzip;q=0.5"
+                match = re.match(r"^([^;]+)(?:;q=([0-9.]+))?$", encoding)
+                if not match:
+                    continue
+                name, q_value = match.groups()
+                if name.strip().lower() == "gzip":
+                    if q_value is None:
+                        return True
+                    try:
+                        return float(q_value) > 0
+                    except ValueError:
+                        return False  # malformed q-value, treat as rejected (conservative)
+            return False
+
         async def get_response(self, path: str, scope):
             response = await super().get_response(path, scope)
             if path.endswith(".js") or path.endswith(".css"):
@@ -3735,8 +3758,8 @@ def mount_spa(application: FastAPI):
                 # Add long-term cache header for hashed filenames (e.g. index-XXXX.js)
                 if "content-type" in response.headers:
                     response.headers["cache-control"] = "public, max-age=31536000, immutable"
-                # Gzip compress if client supports it
-                if "gzip" in accept_encoding and isinstance(response, FileResponse):
+                # Gzip compress if client supports it (honors q=0)
+                if self._accepts_gzip(accept_encoding) and isinstance(response, FileResponse):
                     import gzip
                     file_path = response.path
                     file_size = os.path.getsize(file_path)

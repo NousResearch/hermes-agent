@@ -655,9 +655,58 @@ except Exception:
 # which, during CLI idle time, finds prompt_toolkit's event loop and tries to
 # close TCP transports bound to dead worker loops — producing
 # "Event loop is closed" / "Press ENTER to continue..." errors.
+#
+# We install a sys.meta_path finder that defers the actual import + patch
+# until ``openai._base_client`` is first loaded by the rest of the codebase.
+# Eagerly importing it here (the old approach) cost ~166ms / ~30MB on every
+# cold CLI start because openai's type tree (responses/*, graders/*) is huge.
+# The finder approach pays nothing until the SDK is genuinely needed and
+# still guarantees the patch is applied before any AsyncOpenAI instance can
+# be constructed (the import-then-instantiate ordering is enforced by
+# Python's import system).
 try:
-    from agent.auxiliary_client import neuter_async_httpx_del
-    neuter_async_httpx_del()
+    import sys as _httpx_neuter_sys
+    import importlib.util as _httpx_neuter_imp_util
+
+    class _AsyncHttpxDelNeuter:
+        """Defer ``AsyncHttpxClientWrapper.__del__`` neutering until import.
+
+        Saves ~166ms on cold CLI start where openai is never used (e.g.
+        ``hermes --help`` paths inside the chat command flow).  See
+        ``agent.auxiliary_client.neuter_async_httpx_del`` for full rationale
+        on why ``__del__`` must be a no-op.
+        """
+
+        _armed = True
+
+        def find_spec(self, fullname, path=None, target=None):
+            if not self._armed or fullname != "openai._base_client":
+                return None
+            # Disarm before delegating so the recursive find_spec call
+            # below doesn't loop through us.
+            self._armed = False
+            try:
+                _httpx_neuter_sys.meta_path.remove(self)
+            except ValueError:
+                pass
+            spec = _httpx_neuter_imp_util.find_spec(fullname)
+            if spec is None or spec.loader is None:
+                return None
+            _orig_exec = spec.loader.exec_module
+
+            def _patched_exec(module):
+                _orig_exec(module)
+                try:
+                    cls = getattr(module, "AsyncHttpxClientWrapper", None)
+                    if cls is not None:
+                        cls.__del__ = lambda self: None  # type: ignore[assignment]
+                except Exception:
+                    pass
+
+            spec.loader.exec_module = _patched_exec  # type: ignore[method-assign]
+            return spec
+
+    _httpx_neuter_sys.meta_path.insert(0, _AsyncHttpxDelNeuter())
 except Exception:
     pass
 

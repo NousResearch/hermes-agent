@@ -1305,3 +1305,345 @@ def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
     out = kt._handle_complete({"task_id": tid, "summary": "orchestrator close"})
     d = json.loads(out)
     assert d.get("ok") is True and d.get("task_id") == tid
+
+
+# ---------------------------------------------------------------------------
+# Optional ``board`` parameter — per-call DB override
+# ---------------------------------------------------------------------------
+#
+# The dispatcher pins the active board via HERMES_KANBAN_BOARD env var,
+# but a Telegram-side orchestrator handling multiple boards needs to be
+# able to route a single tool call to a specific board's DB without
+# restarting Hermes. These tests pin that ``board=<slug>`` argument
+# routes each handler to that board's sqlite file, and that omitting
+# ``board`` preserves the legacy env-driven resolution.
+
+
+@pytest.fixture
+def multi_board_env(monkeypatch, tmp_path):
+    """Isolated Hermes home with two distinct kanban boards seeded.
+
+    Returns ``("default", "alt")`` slugs. The default board has one
+    pre-existing task ``seed_default``; ``alt`` has ``seed_alt``. No
+    HERMES_KANBAN_TASK is pinned (orchestrator context) — workers test
+    the env-task case via the existing ``worker_env`` fixture.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Make sure neither HERMES_KANBAN_DB nor HERMES_KANBAN_BOARD pin a
+    # board — the test is specifically about the per-call override.
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    # Default board — implicit
+    conn = kb.connect()
+    try:
+        seed_default = kb.create_task(
+            conn, title="seed-default", assignee="worker-d"
+        )
+    finally:
+        conn.close()
+    # Alt board — explicit slug routes the connection to a separate DB
+    conn = kb.connect(board="alt")
+    try:
+        seed_alt = kb.create_task(
+            conn, title="seed-alt", assignee="worker-a"
+        )
+    finally:
+        conn.close()
+    return {
+        "default_seed": seed_default,
+        "alt_seed": seed_alt,
+        "default_db": kb.kanban_db_path(),
+        "alt_db": kb.kanban_db_path(board="alt"),
+    }
+
+
+def test_board_param_routes_create_to_alt_board(multi_board_env):
+    """kanban_create with ``board="alt"`` must write into the alt board's DB,
+    not the default one."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "alt-only",
+        "assignee": "worker",
+        "board": "alt",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, d
+    new_tid = d["task_id"]
+
+    # Lands on alt board.
+    with kb.connect(board="alt") as conn:
+        assert kb.get_task(conn, new_tid).title == "alt-only"
+    # Does NOT land on default board.
+    with kb.connect() as conn:
+        assert kb.get_task(conn, new_tid) is None
+
+
+def test_board_param_routes_list_to_alt_board(multi_board_env):
+    """kanban_list filters by the board parameter, not env-active."""
+    from tools import kanban_tools as kt
+
+    # Default — sees seed-default, not seed-alt.
+    default_out = json.loads(kt._handle_list({}))
+    default_titles = {t["title"] for t in default_out["tasks"]}
+    assert "seed-default" in default_titles
+    assert "seed-alt" not in default_titles
+
+    # Alt — sees seed-alt, not seed-default.
+    alt_out = json.loads(kt._handle_list({"board": "alt"}))
+    alt_titles = {t["title"] for t in alt_out["tasks"]}
+    assert "seed-alt" in alt_titles
+    assert "seed-default" not in alt_titles
+
+
+def test_board_param_routes_show_to_alt_board(multi_board_env):
+    """kanban_show reads from the board parameter, not env-active.
+
+    Tasks across boards may share ids (the id space is per-DB) but the
+    seed task ids in this fixture are distinct, so a cross-board show
+    must return the matching task only when board is correct.
+    """
+    from tools import kanban_tools as kt
+
+    alt_seed = multi_board_env["alt_seed"]
+    # Without board override, the alt task is invisible.
+    bad = json.loads(kt._handle_show({"task_id": alt_seed}))
+    assert "not found" in bad.get("error", "")
+
+    # With board override, it's readable.
+    good = json.loads(kt._handle_show({"task_id": alt_seed, "board": "alt"}))
+    assert good["task"]["id"] == alt_seed
+    assert good["task"]["title"] == "seed-alt"
+
+
+def test_board_param_routes_assign_via_create_to_alt(multi_board_env):
+    """Workflow test for the 'assign' UX — create with assignee on a
+    specific board. (The CLI has a separate ``kanban assign`` verb; the
+    MCP surface assigns at task creation time.)"""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "alt-assigned",
+        "assignee": "linguist",
+        "board": "alt",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    with kb.connect(board="alt") as conn:
+        task = kb.get_task(conn, d["task_id"])
+        assert task is not None
+        assert task.assignee == "linguist"
+
+
+def test_board_param_routes_comment_to_alt_board(multi_board_env):
+    """kanban_comment routes the insert to the alt board's DB."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    alt_seed = multi_board_env["alt_seed"]
+    out = kt._handle_comment({
+        "task_id": alt_seed,
+        "body": "alt comment",
+        "board": "alt",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+
+    with kb.connect(board="alt") as conn:
+        comments = kb.list_comments(conn, alt_seed)
+        assert len(comments) == 1
+        assert comments[0].body == "alt comment"
+    # Default board does not have this task at all, so no rogue comment.
+    with kb.connect() as conn:
+        assert kb.get_task(conn, alt_seed) is None
+
+
+def test_board_param_routes_complete_to_alt_board(multi_board_env):
+    """kanban_complete on the alt board closes the alt task, leaving
+    the default seed untouched."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    alt_seed = multi_board_env["alt_seed"]
+    # Make alt task running so complete is valid.
+    with kb.connect(board="alt") as conn:
+        kb.claim_task(conn, alt_seed)
+
+    out = kt._handle_complete({
+        "task_id": alt_seed,
+        "summary": "alt close",
+        "board": "alt",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+
+    with kb.connect(board="alt") as conn:
+        assert kb.get_task(conn, alt_seed).status == "done"
+    # Default seed is unchanged.
+    with kb.connect() as conn:
+        default_seed = multi_board_env["default_seed"]
+        assert kb.get_task(conn, default_seed).status == "ready"
+
+
+def test_board_param_routes_block_to_alt_board(multi_board_env):
+    """kanban_block targets the alt board's DB."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    alt_seed = multi_board_env["alt_seed"]
+    with kb.connect(board="alt") as conn:
+        kb.claim_task(conn, alt_seed)
+
+    out = kt._handle_block({
+        "task_id": alt_seed,
+        "reason": "need input on alt board",
+        "board": "alt",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+
+    with kb.connect(board="alt") as conn:
+        assert kb.get_task(conn, alt_seed).status == "blocked"
+
+
+def test_board_param_routes_unblock_to_alt_board(multi_board_env):
+    """kanban_unblock targets the alt board's DB."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    alt_seed = multi_board_env["alt_seed"]
+    with kb.connect(board="alt") as conn:
+        kb.block_task(conn, alt_seed, reason="waiting")
+        assert kb.get_task(conn, alt_seed).status == "blocked"
+
+    out = kt._handle_unblock({"task_id": alt_seed, "board": "alt"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "ready"
+
+    with kb.connect(board="alt") as conn:
+        assert kb.get_task(conn, alt_seed).status == "ready"
+
+
+def test_board_param_routes_heartbeat_to_alt_board(monkeypatch, tmp_path):
+    """kanban_heartbeat targets the alt board's DB. Worker-scoped, so we
+    use the worker-env style fixture inline (pinning HERMES_KANBAN_TASK
+    to a task that exists in the alt board)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "alt-worker")
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    # Seed the alt board with a claimed task.
+    with kb.connect(board="alt") as conn:
+        tid = kb.create_task(conn, title="alt hb", assignee="alt-worker")
+        kb.claim_task(conn, tid)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_heartbeat({"note": "alive on alt", "board": "alt"})
+    d = json.loads(out)
+    assert d["ok"] is True
+
+    # Heartbeat event landed in the alt DB.
+    with kb.connect(board="alt") as conn:
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "heartbeat"]
+        assert len(events) == 1
+
+
+def test_board_param_routes_link_to_alt_board(multi_board_env):
+    """kanban_link operates on the alt board's DB."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect(board="alt") as conn:
+        a = kb.create_task(conn, title="A-alt", assignee="x")
+        b = kb.create_task(conn, title="B-alt", assignee="x")
+
+    out = kt._handle_link({
+        "parent_id": a,
+        "child_id": b,
+        "board": "alt",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+
+    with kb.connect(board="alt") as conn:
+        assert b in kb.child_ids(conn, a)
+
+
+def test_board_param_none_falls_back_to_env(worker_env):
+    """When ``board`` is omitted or None, behaviour is unchanged from
+    before this feature — calls land on whatever the env resolves to.
+    Regression guard against accidentally rewiring default resolution."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_show({})  # no board, no task_id
+    d = json.loads(out)
+    assert d["task"]["id"] == worker_env
+
+    out = kt._handle_show({"task_id": worker_env, "board": None})
+    d = json.loads(out)
+    assert d["task"]["id"] == worker_env
+
+    # Sanity: the env-resolved path is the legacy default DB, NOT an
+    # 'alt' board path. Confirms the override path was not silently
+    # forced.
+    assert kb.kanban_db_path() == kb.kanban_db_path(board="default")
+
+
+def test_board_param_rejects_invalid_slug(multi_board_env):
+    """A board slug that fails ``_normalize_board_slug`` surfaces as a
+    structured tool_error rather than a 500 / unhandled exception."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_list({"board": "Has Spaces"})
+    err = json.loads(out).get("error", "")
+    assert "invalid board slug" in err, f"got {err!r}"
+
+
+def test_board_param_in_all_schemas():
+    """All nine kanban_* tool schemas must expose an optional ``board``
+    parameter. This pins the contract surfaced to the LLM — adding a
+    new kanban tool without ``board`` will fail CI immediately."""
+    from tools import kanban_tools as kt
+
+    schemas = [
+        kt.KANBAN_SHOW_SCHEMA,
+        kt.KANBAN_LIST_SCHEMA,
+        kt.KANBAN_COMPLETE_SCHEMA,
+        kt.KANBAN_BLOCK_SCHEMA,
+        kt.KANBAN_HEARTBEAT_SCHEMA,
+        kt.KANBAN_COMMENT_SCHEMA,
+        kt.KANBAN_CREATE_SCHEMA,
+        kt.KANBAN_UNBLOCK_SCHEMA,
+        kt.KANBAN_LINK_SCHEMA,
+    ]
+    for schema in schemas:
+        props = schema["parameters"]["properties"]
+        assert "board" in props, (
+            f"{schema['name']} is missing the 'board' property"
+        )
+        assert props["board"]["type"] == "string"
+        # board is optional everywhere — never in required.
+        assert "board" not in schema["parameters"].get("required", []), (
+            f"{schema['name']} marks board as required; must be optional"
+        )

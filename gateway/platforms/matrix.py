@@ -380,6 +380,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._require_mention: bool = os.getenv(
             "MATRIX_REQUIRE_MENTION", "true"
         ).lower() not in {"false", "0", "no"}
+        self._thread_require_mention: bool = self._parse_thread_require_mention(config)
         free_rooms_raw = config.extra.get("free_response_rooms")
         if free_rooms_raw is None:
             free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
@@ -467,6 +468,27 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    @staticmethod
+    def _parse_thread_require_mention(config) -> bool:
+        """Parse thread_require_mention from config.extra or env var.
+
+        Handles both YAML booleans and string values (``\"true\"``, ``\"false\"``,
+        ``\"yes\"``, ``\"no\"``, ``\"on\"``, ``\"off\"``, ``\"1\"``, ``\"0\"``).
+        Falls back to ``MATRIX_THREAD_REQUIRE_MENTION`` env var, default ``false``.
+        Mirrors Discord adapter's parsing pattern.
+        """
+        configured = config.extra.get("thread_require_mention")
+        if configured is not None:
+            if isinstance(configured, bool):
+                return configured
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            # int, float, etc. — truthiness fallback
+            return bool(configured)
+        return os.getenv(
+            "MATRIX_THREAD_REQUIRE_MENTION", "false"
+        ).lower() in {"true", "1", "yes", "on"}
 
     # ------------------------------------------------------------------
     # E2EE helpers
@@ -1698,6 +1720,21 @@ class MatrixAdapter(BasePlatformAdapter):
                         "(set MATRIX_REQUIRE_MENTION=false to disable)",
                         event_id,
                         room_id,
+                    )
+                    return None
+
+            # Thread-level @mention gating: even in a bot-participated thread,
+            # require @mention when thread_require_mention is enabled.
+            # Prevents infinite reply loops in multi-agent shared rooms
+            # where multiple bots all participate in the same thread.
+            elif (self._thread_require_mention and in_bot_thread
+                  and not is_free_room):
+                if not is_mentioned:
+                    logger.debug(
+                        "Matrix: ignoring message %s in thread %s — "
+                        "no @mention (thread_require_mention=true)",
+                        event_id,
+                        thread_id,
                     )
                     return None
 

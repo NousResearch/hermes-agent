@@ -599,6 +599,43 @@ class ShellFileOperations(FileOperations):
             return non_printable / min(len(content_sample), 1000) > 0.30
         
         return False
+
+    def _check_git_baseline(self, path: str) -> Optional[str]:
+        """Return a warning if the target starts in a dirty git worktree."""
+        workdir = os.path.dirname(path) or None
+
+        try:
+            git_result = self._exec("command -v git", cwd=workdir)
+            if git_result.exit_code != 0:
+                return None
+
+            repo_result = self._exec(
+                "git rev-parse --is-inside-work-tree",
+                cwd=workdir,
+            )
+            if repo_result.exit_code != 0 or repo_result.stdout.strip().lower() != "true":
+                return None
+
+            branch_result = self._exec(
+                "git rev-parse --abbrev-ref HEAD",
+                cwd=workdir,
+            )
+            branch = (
+                branch_result.stdout.strip()
+                if branch_result.exit_code == 0 and branch_result.stdout.strip()
+                else "unknown"
+            )
+
+            status_result = self._exec("git status --porcelain", cwd=workdir)
+            if status_result.exit_code == 0 and status_result.stdout.strip():
+                return (
+                    f"Git working tree is dirty (branch: {branch}); "
+                    "uncommitted changes existed before this write."
+                )
+        except Exception:
+            return None
+
+        return None
     
     def _is_image(self, path: str) -> bool:
         """Check if file is an image we can return as base64."""
@@ -909,6 +946,8 @@ class ShellFileOperations(FileOperations):
         if _is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
+        git_warning = self._check_git_baseline(path)
+
         # Capture pre-write content.  Two consumers want it:
         #
         #   1. The lint-delta layer (for in-process linters like ast.parse
@@ -993,6 +1032,7 @@ class ShellFileOperations(FileOperations):
             dirs_created=dirs_created,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
+            warning=git_warning,
         )
     
     # =========================================================================

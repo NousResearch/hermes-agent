@@ -9790,6 +9790,8 @@ class HermesCLI:
                 self.agent.tools = get_tool_definitions(
                     enabled_toolsets=self.agent.enabled_toolsets
                     if hasattr(self.agent, "enabled_toolsets") else None,
+                    disabled_toolsets=self.agent.disabled_toolsets
+                    if hasattr(self.agent, "disabled_toolsets") else None,
                     quiet_mode=True,
                 )
                 self.agent.valid_tool_names = {

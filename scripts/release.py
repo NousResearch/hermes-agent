@@ -189,6 +189,7 @@ AUTHOR_MAP = {
     "stevehq26-bot@users.noreply.github.com": "stevehq26-bot",  # PR #28015 salvage (quick-command-only menus)
     "seaverb@icloud.com": "brndnsvr",  # PR #25327 salvage (channel post updates)
     "oracle@jarviss-mbp.home": "houenyang-momo",  # PR #24014 salvage (quiet noisy errors)
+    "57119977+OCWC22@users.noreply.github.com": "OCWC22",  # PR #24581 salvage (multi-bot exclusive mentions)
     "282919977+eliteworkstation94-ai@users.noreply.github.com": "eliteworkstation94-ai",  # PR #28157 salvage (group reply session splits)
     "androidhtml@yandex.com": "hllqkb",
     "25840394+Bongulielmi@users.noreply.github.com": "Bongulielmi",

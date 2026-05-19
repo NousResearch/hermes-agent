@@ -49,8 +49,22 @@ def test_init_creates_expected_tables(kanban_home):
 
 
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
+    """Legacy DBs missing additive indexed columns must migrate cleanly.
+
+    SCHEMA_SQL runs in ``connect()`` before ``_migrate_add_optional_columns``.
+    Indexes over additive columns therefore must be created after the
+    migration adds those columns, or boards predating the column fail to
+    open before migration can run.
+
+    Covers all four indexes that sit on additive columns:
+    - ``tasks.session_id``       -> ``idx_tasks_session_id``    (#28447)
+    - ``tasks.tenant``           -> ``idx_tasks_tenant``        (#16081)
+    - ``tasks.idempotency_key``  -> ``idx_tasks_idempotency``   (#17805)
+    - ``task_events.run_id``     -> ``idx_events_run``          (#17805)
+    """
     db_path = tmp_path / "legacy-kanban.db"
     conn = sqlite3.connect(str(db_path))
+    # Pre-#16081 ``tasks`` shape: missing tenant, idempotency_key, session_id.
     conn.execute("""
         CREATE TABLE tasks (
             id TEXT PRIMARY KEY,
@@ -69,6 +83,18 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
             claim_expires INTEGER
         )
     """)
+    # Pre-#17805 ``task_events`` shape: missing run_id. Required because
+    # ``_migrate_add_optional_columns`` unconditionally runs PRAGMA on
+    # ``task_events`` for run_id back-fill.
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
     conn.execute(
         "INSERT INTO tasks (id, title, status, created_at) "
         "VALUES ('legacy', 'old board task', 'ready', 1)"
@@ -80,6 +106,10 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
         task_columns = {
             row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")
         }
+        event_columns = {
+            row["name"]
+            for row in migrated.execute("PRAGMA table_info(task_events)")
+        }
         indexes = {
             row["name"]
             for row in migrated.execute(
@@ -87,10 +117,16 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
             )
         }
 
+    # Additive columns added by migration:
     assert "session_id" in task_columns
+    assert "tenant" in task_columns
+    assert "idempotency_key" in task_columns
+    assert "run_id" in event_columns
+    # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
     assert "idx_tasks_idempotency" in indexes
+    assert "idx_events_run" in indexes
 
 
 # ---------------------------------------------------------------------------

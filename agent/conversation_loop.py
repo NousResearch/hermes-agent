@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from agent.anthropic_adapter import _is_oauth_token
@@ -71,6 +72,29 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+
+# ── Structured response metadata ──────────────────────────────────────
+# These dataclasses enrich the return value of run_conversation() so
+# downstream consumers (gateway platforms, chat(), session persistence)
+# can access per-turn content without relying on the overwritten
+# ``final_response`` string.  See FR #28431.
+
+@dataclass
+class ContentSegment:
+    """One piece of assistant content produced during the conversation loop.
+
+    Attributes:
+        content: The text content from this assistant turn (after stripping
+            think/reasoning blocks).
+        had_tool_calls: True if this turn also contained tool calls.
+        tool_call_count: Number of tool calls in this turn (0 if none).
+        tool_names: Names of the tools called in this turn.
+    """
+    content: str
+    had_tool_calls: bool = False
+    tool_call_count: int = 0
+    tool_names: List[str] = field(default_factory=list)
 
 
 def _ra():
@@ -283,6 +307,9 @@ def run_conversation(
     agent._last_content_with_tools = None
     agent._last_content_tools_all_housekeeping = False
     agent._mute_post_response = False
+    # Collect structured per-turn content metadata for downstream consumers.
+    # See FR #28431.
+    _content_segments: List[ContentSegment] = []
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
@@ -3271,6 +3298,14 @@ def run_conversation(
                 # answer and calls memory/skill tools as a side-effect in the same
                 # turn. If the follow-up turn after tools is empty, we use this.
                 turn_content = assistant_message.content or ""
+                # Collect structured content segment for this turn.
+                _tc_names = [tc.function.name for tc in assistant_message.tool_calls]
+                _content_segments.append(ContentSegment(
+                    content=agent._strip_think_blocks(turn_content).strip() if turn_content else "",
+                    had_tool_calls=True,
+                    tool_call_count=len(assistant_message.tool_calls),
+                    tool_names=_tc_names,
+                ))
                 if turn_content and agent._has_content_after_think_block(turn_content):
                     agent._last_content_with_tools = turn_content
                     # Only mute subsequent output when EVERY tool call in
@@ -3419,6 +3454,11 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+                # Collect structured content segment for this final turn.
+                _content_segments.append(ContentSegment(
+                    content=agent._strip_think_blocks(final_response).strip() if final_response else "",
+                    had_tool_calls=False,
+                ))
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
@@ -4021,6 +4061,11 @@ def run_conversation(
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
+        # Structured per-turn content metadata.  See FR #28431.
+        # Each ContentSegment records the text and tool-call info for one
+        # assistant turn, allowing consumers to reconstruct multi-turn
+        # content without relying on the single overwritten ``final_response``.
+        "content_segments": _content_segments,
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
@@ -4096,4 +4141,4 @@ def run_conversation(
 
 
 
-__all__ = ["run_conversation"]
+__all__ = ["run_conversation", "ContentSegment"]

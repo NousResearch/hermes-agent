@@ -5502,3 +5502,77 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+class TestContentSegments:
+    """FR #28431: run_conversation() returns structured per-turn content metadata."""
+
+    def test_single_turn_no_tools(self, agent):
+        """Simple response with no tool calls → one segment."""
+        resp = _mock_response(content="Hello world")
+        agent.client.chat.completions.create.return_value = resp
+        result = agent.run_conversation("hi")
+        segs = result["content_segments"]
+        assert len(segs) == 1
+        assert segs[0].content == "Hello world"
+        assert segs[0].had_tool_calls is False
+        assert segs[0].tool_call_count == 0
+        assert segs[0].tool_names == []
+
+    def test_content_then_tool_call_then_final(self, agent):
+        """Content+tool → short follow-up: both turns recorded as segments."""
+        tc = _mock_tool_call(name="web_search", arguments='{"query":"test"}')
+        resp1 = _mock_response(content="Here is the report " + "X" * 50, tool_calls=[tc])
+        resp2 = _mock_response(content="Done!")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+        agent.handle_function_call = MagicMock(return_value="ok")
+        result = agent.run_conversation("search")
+        segs = result["content_segments"]
+        assert len(segs) == 2
+        # First turn: content + tool
+        assert segs[0].had_tool_calls is True
+        assert segs[0].tool_call_count == 1
+        assert segs[0].tool_names == ["web_search"]
+        assert "report" in segs[0].content
+        # Second turn: final response only
+        assert segs[1].had_tool_calls is False
+        assert segs[1].content == "Done!"
+
+    def test_multiple_tool_turns(self, agent):
+        """Multiple tool-calling turns each produce a segment."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":"a"}')
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query":"b"}')
+        resp1 = _mock_response(content="Searching A...", tool_calls=[tc1])
+        resp2 = _mock_response(content="Searching B...", tool_calls=[tc2])
+        resp3 = _mock_response(content="All done")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2, resp3]
+        agent.handle_function_call = MagicMock(return_value="ok")
+        result = agent.run_conversation("search twice")
+        segs = result["content_segments"]
+        assert len(segs) == 3
+        assert segs[0].tool_names == ["web_search"]
+        assert segs[0].had_tool_calls is True
+        assert segs[1].tool_names == ["web_search"]
+        assert segs[1].had_tool_calls is True
+        assert segs[2].had_tool_calls is False
+
+    def test_empty_content_with_tools(self, agent):
+        """Tool call with no content: segment has empty content but records tools."""
+        tc = _mock_tool_call(name="web_search", arguments='{"query":"test"}')
+        resp1 = _mock_response(content=None, tool_calls=[tc])
+        resp2 = _mock_response(content="Done")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+        agent.handle_function_call = MagicMock(return_value="ok")
+        result = agent.run_conversation("search")
+        segs = result["content_segments"]
+        assert len(segs) == 2
+        assert segs[0].content == ""
+        assert segs[0].had_tool_calls is True
+        assert segs[0].tool_names == ["web_search"]
+
+    def test_content_segments_importable(self):
+        """ContentSegment can be imported from agent.conversation_loop."""
+        from agent.conversation_loop import ContentSegment
+        seg = ContentSegment(content="test", had_tool_calls=True, tool_call_count=1, tool_names=["foo"])
+        assert seg.content == "test"
+        assert seg.had_tool_calls is True

@@ -4680,7 +4680,7 @@ class GatewayRunner:
         if not candidates:
             return
 
-        _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg"}
+        _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 
         from urllib.parse import quote as _quote

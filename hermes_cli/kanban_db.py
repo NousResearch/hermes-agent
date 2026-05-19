@@ -534,6 +534,11 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     if get_current_board() == normed:
         clear_current_board()
 
+    # A concurrent connect(board=normed) after the rename/delete recreates
+    # an empty sqlite file via mkdir(exist_ok=True); the cache entry must be
+    # dropped first so the schema init pass re-runs on that fresh file.
+    _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
+
     if archive:
         archive_root = boards_root() / "_archived"
         archive_root.mkdir(parents=True, exist_ok=True)

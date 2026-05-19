@@ -1,0 +1,14 @@
+{
+  "name": "marketing_factory",
+  "label": "Marketing Factory",
+  "description": "Mission Control panel for dry-run-first brand campaigns, approvals, schedules, and audit logs.",
+  "icon": "Sparkles",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/marketing-factory",
+    "position": "after:cron"
+  },
+  "slots": [],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

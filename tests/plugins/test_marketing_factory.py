@@ -181,3 +181,59 @@ def test_cli_full_dry_run_for_two_apps(tmp_path, capsys):
     assert marketing_command(status_args) == 0
     out = capsys.readouterr().out
     assert '"dry_run_publish_events": 4' in out
+
+
+def test_dashboard_manifest_and_assets_exist():
+    manifest = Path("plugins/marketing_factory/dashboard/manifest.json")
+    bundle = Path("plugins/marketing_factory/dashboard/dist/index.js")
+    api_file = Path("plugins/marketing_factory/dashboard/plugin_api.py")
+
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+
+    assert data["name"] == "marketing_factory"
+    assert data["tab"]["path"] == "/marketing-factory"
+    assert data["entry"] == "dist/index.js"
+    assert data["api"] == "plugin_api.py"
+    assert bundle.exists()
+    assert api_file.exists()
+
+
+def test_dashboard_api_overview_and_dry_run_actions(isolate_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+
+    init = client.post("/api/plugins/marketing_factory/init")
+    assert init.status_code == 200
+    assert init.json()["overview"]["summary"]["apps"] == 2
+
+    generated = client.post(
+        "/api/plugins/marketing_factory/campaigns/generate",
+        json={"app_slug": "pupular", "days": 1},
+    )
+    assert generated.status_code == 200
+    draft = generated.json()["result"]["drafts"][0]
+
+    approved = client.post(
+        f"/api/plugins/marketing_factory/drafts/{draft['id']}/approve",
+        json={"reviewer": "tester", "reason": "dashboard test"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["overview"]["draft_status_counts"]["approved"] == 1
+
+    scheduled = client.post(f"/api/plugins/marketing_factory/drafts/{draft['id']}/schedule", json={})
+    assert scheduled.status_code == 200
+    assert scheduled.json()["overview"]["summary"]["scheduled"] == 1
+
+    published = client.post(f"/api/plugins/marketing_factory/drafts/{draft['id']}/publish-dry-run")
+    assert published.status_code == 200
+    event = published.json()["result"]
+    assert event["mode"] == "dry_run"
+    assert event["would_post"] is True
+    assert event["posted"] is False
+    assert published.json()["overview"]["summary"]["dry_run_publish_events"] == 1

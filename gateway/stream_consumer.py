@@ -96,13 +96,40 @@ class GatewayStreamConsumer:
     # Reasoning/thinking tags that models emit inline in content.
     # Must stay in sync with cli.py _OPEN_TAGS/_CLOSE_TAGS and
     # run_agent.py _strip_think_blocks() tag variants.
+    #
+    # IMPORTANT: all tag comparisons are case-insensitive — the state machine
+    # lowercases the search buffer before matching.  The original code used
+    # literal string matching with duplicate UPPER/lower entries, which still
+    # missed mixed-case variants like <Think> or <Thought> that some models
+    # emit.  run_agent.py _strip_think_blocks() uses re.IGNORECASE throughout;
+    # this keeps the streaming filter in sync so reasoning text cannot leak
+    # to users mid-stream even when the final post-stream scrub would have
+    # caught it.  Canonical lowercase forms only — duplicates removed.
     _OPEN_THINK_TAGS = (
-        "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>",
-        "<THINKING>", "<thinking>", "<thought>",
+        "<reasoning_scratchpad>", "<think>", "<reasoning>", "<thinking>", "<thought>",
     )
     _CLOSE_THINK_TAGS = (
-        "</REASONING_SCRATCHPAD>", "</think>", "</reasoning>",
-        "</THINKING>", "</thinking>", "</thought>",
+        "</reasoning_scratchpad>", "</think>", "</reasoning>", "</thinking>", "</thought>",
+    )
+
+    # Compiled regexes for the defence-in-depth scrub applied to the fully
+    # accumulated text once the stream ends.  Catches anything the streaming
+    # state machine missed (e.g. unterminated blocks, mixed-case tags, or
+    # tags that spanned chunk boundaries in an unusual split).
+    # Mirrors run_agent.py _strip_think_blocks() passes 1–3.
+    _THINK_SCRUB_RE = re.compile(
+        r'<(?:think|thinking|reasoning|thought|reasoning_scratchpad)\b[^>]*>'
+        r'.*?'
+        r'</(?:think|thinking|reasoning|thought|reasoning_scratchpad)>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    _THINK_UNTERMINATED_RE = re.compile(
+        r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|reasoning_scratchpad)\b[^>]*>.*$',
+        re.DOTALL | re.IGNORECASE,
+    )
+    _THINK_ORPHAN_RE = re.compile(
+        r'</?(?:think|thinking|reasoning|thought|reasoning_scratchpad)>\s*',
+        re.IGNORECASE,
     )
 
     # Class-wide monotonic counter for native-streaming draft ids.  Telegram
@@ -262,12 +289,17 @@ class GatewayStreamConsumer:
         self._think_buffer = ""
 
         while buf:
+            # All tag searches operate on a lowercased view of the buffer so
+            # that mixed-case variants (<Think>, <THINKING>, <Thought> …) are
+            # caught by the same canonical lowercase tag list.  Index values
+            # from buf_lower map 1:1 to buf because both have the same length.
+            buf_lower = buf.lower()
             if self._in_think_block:
                 # Look for the earliest closing tag
                 best_idx = -1
                 best_len = 0
                 for tag in self._CLOSE_THINK_TAGS:
-                    idx = buf.find(tag)
+                    idx = buf_lower.find(tag)
                     if idx != -1 and (best_idx == -1 or idx < best_idx):
                         best_idx = idx
                         best_len = len(tag)
@@ -287,12 +319,13 @@ class GatewayStreamConsumer:
                 # (start of text / preceded by newline + optional whitespace).
                 # This prevents false positives when models *mention* tags
                 # in prose (e.g. "the <think> tag is used for…").
+                # Search buf_lower so mixed-case tags are matched correctly.
                 best_idx = -1
                 best_len = 0
                 for tag in self._OPEN_THINK_TAGS:
                     search_start = 0
                     while True:
-                        idx = buf.find(tag, search_start)
+                        idx = buf_lower.find(tag, search_start)
                         if idx == -1:
                             break
                         # Block-boundary check (mirrors cli.py logic)
@@ -339,14 +372,33 @@ class GatewayStreamConsumer:
                     return
 
     def _flush_think_buffer(self) -> None:
-        """Flush any held-back partial-tag buffer into accumulated text.
+        """Flush any held-back partial-tag buffer into accumulated text, then
+        apply a defence-in-depth regex scrub to the full accumulated text.
 
-        Called when the stream ends (got_done) so that partial text that
-        was held back waiting for a possible opening tag is not lost.
+        Called when the stream ends (got_done) so that:
+        1. Partial text held back waiting for a possible opening tag is not
+           lost (existing behaviour).
+        2. Any reasoning/thinking content that slipped through the streaming
+           state machine (e.g. due to unusual chunk splits, unterminated
+           blocks, or mixed-case tags) is stripped from the final text before
+           it is delivered to the user.  This mirrors the scrub that
+           run_agent.py _strip_think_blocks() applies to the non-streaming
+           path, closing the leak window that issue #149 reported.
         """
         if self._think_buffer and not self._in_think_block:
             self._accumulated += self._think_buffer
             self._think_buffer = ""
+
+        # Defence-in-depth: scrub the fully accumulated text with the same
+        # three regex passes used by run_agent.py _strip_think_blocks().
+        # This is a no-op for the common case where the state machine did its
+        # job, and a safety net for edge cases it missed.
+        if self._accumulated:
+            text = self._accumulated
+            text = self._THINK_SCRUB_RE.sub("", text)
+            text = self._THINK_UNTERMINATED_RE.sub("", text)
+            text = self._THINK_ORPHAN_RE.sub("", text)
+            self._accumulated = text
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""

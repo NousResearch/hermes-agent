@@ -104,6 +104,13 @@ def test_answer_can_make_seed_ready_without_admitting(hermes_home):
         actor="tester",
     )
 
+    assert updated.action == "refine_pending"
+    assert "[from-user][refined]" in updated.message
+    updated = handle_ouro_intake_command(
+        f"answer session:{started.session_id} answer:승인",
+        actor="tester",
+    )
+
     assert updated.action == "interview_updated"
     assert updated.session_id == started.session_id
     assert updated.public_id is None
@@ -274,6 +281,10 @@ def test_plain_reply_routes_to_bound_active_interview_session(hermes_home):
     updated = handle_ouro_intake_plain_reply("A와 B에 가까워", actor="tester", origin=origin)
 
     assert updated is not None
+    assert updated.action == "refine_pending"
+    assert "[from-user][refined]" in updated.message
+    updated = handle_ouro_intake_plain_reply("승인", actor="tester", origin=origin)
+    assert updated is not None
     assert updated.action == "interview_updated"
     assert updated.session_id == started.session_id
     assert "Updated /ouro-intake session" in updated.message
@@ -362,6 +373,10 @@ async def test_gateway_routes_plain_reply_to_active_ouro_intake_session(hermes_h
     result = await runner._maybe_handle_ouro_intake_plain_reply(event)
 
     assert result is not None
+    assert "[from-user][refined]" in result
+    event = MessageEvent(text="승인", message_type=MessageType.TEXT, source=source, message_id="m3")
+    result = await runner._maybe_handle_ouro_intake_plain_reply(event)
+    assert result is not None
     assert "Updated /ouro-intake session" in result
     sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
     assert sessions[started.session_id]["turns"][-1]["answer"] == "A와 B에 가까워"
@@ -413,3 +428,180 @@ def test_cli_handler_routes_raw_args_to_controller(monkeypatch):
     assert should_continue is True
     assert calls == [("goal:test project:bo", "local-cli", None)]
     assert printed == ["cli handled"]
+
+
+
+def test_upstream_refine_gate_requires_confirmation_for_scope_decision(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command, handle_ouro_intake_plain_reply
+
+    origin = {"platform": "discord", "chat_id": "c", "thread_id": "t", "user_id": "u", "user_name": "tester"}
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester", origin=origin)
+
+    refine = handle_ouro_intake_plain_reply("A와 B에 가까워", actor="tester", origin=origin)
+
+    assert refine is not None
+    assert refine.action == "refine_pending"
+    assert "Decision:" in refine.message
+    assert "[from-user][refined]" in refine.message
+    assert "누락" in refine.message or "missing" in refine.message.lower()
+
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    session = sessions[started.session_id]
+    assert session["status"] == "refine_pending"
+    pending = session["pending_refinement"]
+    assert pending["raw_answer"] == "A와 B에 가까워"
+    assert pending["scope_axes"] == ["intake/cardization", "kanban_execution_prep"]
+    assert session["turns"] == []
+
+    advanced = handle_ouro_intake_plain_reply("승인", actor="tester", origin=origin)
+    assert advanced is not None
+    assert advanced.action == "interview_updated"
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    session = sessions[started.session_id]
+    assert session["last_question"]["id"] == "first_slice"
+    assert session["turns"][-1]["refined_answer"]["source_prefix"] == "[from-user][refined]"
+
+
+def test_upstream_compound_scope_answer_is_refined_not_collapsed(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command, handle_ouro_intake_plain_reply
+
+    origin = {"platform": "discord", "chat_id": "c", "thread_id": "t", "user_id": "u", "user_name": "tester"}
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester", origin=origin)
+    handle_ouro_intake_plain_reply("A와 B에 가까워", actor="tester", origin=origin)
+    handle_ouro_intake_plain_reply("승인", actor="tester", origin=origin)
+
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    turn = sessions[started.session_id]["turns"][-1]
+    refined = turn["refined_answer"]
+    assert refined["raw_answer"] == "A와 B에 가까워"
+    assert refined["decision"] == "A) intake/cardization + B) Kanban execution prep"
+    assert refined["scope_axes"] == ["intake/cardization", "kanban_execution_prep"]
+    assert refined["reasoning"]
+    assert refined["constraints"]
+    assert refined["out_of_scope"]
+    assert refined["source_prefix"] == "[from-user][refined]"
+
+
+def test_upstream_same_question_not_repeated_after_responsive_answer(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command, handle_ouro_intake_plain_reply
+
+    origin = {"platform": "discord", "chat_id": "c", "thread_id": "t", "user_id": "u", "user_name": "tester"}
+    handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester", origin=origin)
+    refine = handle_ouro_intake_plain_reply("A와 B에 가까워", actor="tester", origin=origin)
+    assert refine is not None and "하나만" not in refine.message
+    advanced = handle_ouro_intake_plain_reply("승인", actor="tester", origin=origin)
+
+    assert advanced is not None
+    assert "오토파일럿이라고 할 때" not in advanced.message
+    assert "first" in advanced.message.lower() or "첫 버전" in advanced.message
+
+
+def test_upstream_restate_correction_never_bypasses_refine(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    started = handle_ouro_intake_command(
+        'goal:"Build Discord intake report command" project:bo tenant:kanban context:"Hermes gateway command" acceptance:"pytest passes with exit code 0" side-effects:"no repo mutation or gateway restart"',
+        actor="tester",
+    )
+    assert started.session_id
+    assert "Restate:" in started.message or "Restate" in started.message
+
+    corrected = handle_ouro_intake_command(
+        f'answer session:{started.session_id} answer:"Exclude retry scheduling from the seed."',
+        actor="tester",
+    )
+
+    assert corrected.action == "refine_pending"
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    session = sessions[started.session_id]
+    assert session["status"] == "refine_pending"
+    assert session["pending_refinement"]["restate_correction"] is True
+    assert session["seed"] is None
+
+
+def test_upstream_seed_closer_blocks_score_only_seed_ready(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    result = handle_ouro_intake_command(
+        'goal:"Implement gateway command lifecycle" project:bo tenant:kanban context:"brownfield Hermes gateway" acceptance:"pytest returns exit code 0" side-effects:"no repo mutation without approval"',
+        actor="tester",
+    )
+
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    session = sessions[result.session_id]
+    assert session["status"] == "interviewing"
+    assert session["seed_closer"]["ready"] is False
+    assert any("ownership" in blocker or "SSOT" in blocker for blocker in session["seed_closer"]["blockers"])
+    assert session["last_question"]["id"] in {"seed_closer_material_gap", "brownfield_context"}
+
+
+def test_seed_projection_preserves_upstream_seed_fields(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    started = handle_ouro_intake_command(
+        'goal:"Build Discord intake report command" project:bo tenant:kanban context:"Hermes gateway command" acceptance:"pytest passes with exit code 0" side-effects:"no repo mutation or gateway restart"',
+        actor="tester",
+    )
+    approved = handle_ouro_intake_command(f"answer session:{started.session_id} answer:승인", actor="tester")
+    assert approved.action == "interview_updated"
+
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    seed = sessions[started.session_id]["seed"]
+    upstream_seed = seed["upstream_seed"]
+    assert set(upstream_seed) >= {
+        "goal",
+        "task_type",
+        "brownfield_context",
+        "constraints",
+        "acceptance_criteria",
+        "ontology_schema",
+        "evaluation_principles",
+        "exit_conditions",
+        "metadata",
+    }
+    assert seed["authority"]["seed_contract_is_source_material_only"] is True
+    assert seed["side_effect_boundary"]["executor_dispatch"] == "forbidden_during_admission"
+
+
+def test_intentional_divergences_are_documented():
+    from pathlib import Path
+
+    matrix = Path(".hermes/parity/ouro-intake-upstream-parity.md").read_text(encoding="utf-8")
+    assert "DIV-001" in matrix and "No live upstream MCP call" in matrix
+    assert "DIV-002" in matrix and "Kanban admission source material" in matrix
+    assert "unapproved divergence" in matrix.lower()
+
+
+def test_cancel_escape_expires_plain_reply_capture(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command, handle_ouro_intake_plain_reply
+
+    origin = {"platform": "discord", "chat_id": "c", "thread_id": "t", "user_id": "u1", "user_name": "tester"}
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester", origin=origin)
+    cancelled = handle_ouro_intake_plain_reply("탈출", actor="tester", origin=origin)
+
+    assert cancelled is not None
+    assert cancelled.action == "cancelled"
+    assert handle_ouro_intake_plain_reply("탈출 확인", actor="tester", origin=origin) is None
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    assert sessions[started.session_id]["origin_binding"]["expires_at"] < sessions[started.session_id]["cancelled_at"]
+
+
+def test_admission_never_dispatches_executor(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+    from hermes_cli import kanban_db as kb
+
+    started = handle_ouro_intake_command(
+        'goal:"Build Discord intake report command" project:bo tenant:kanban context:"Hermes gateway command" acceptance:"pytest passes with exit code 0" side-effects:"no repo mutation or gateway restart"',
+        actor="tester",
+    )
+    handle_ouro_intake_command(f"answer session:{started.session_id} answer:승인", actor="tester")
+    result = handle_ouro_intake_command(f"admit session:{started.session_id}", actor="tester")
+
+    assert result.action == "created"
+    with kb.connect() as conn:
+        runs = conn.execute("SELECT COUNT(*) AS n FROM task_runs WHERE task_id = ?", (result.task_id,)).fetchone()["n"]
+        task = kb.get_task(conn, result.task_id)
+        assert runs == 0
+        assert task.worker_pid is None
+        assert task.claim_lock is None
+        assert task.routing_verdict["status"] == "proposed_only"

@@ -74,7 +74,7 @@ _VAGUE_RE = re.compile(r"\b(improve|better|robust|easy|clean|nice|적당|잘|개
 AMBIGUITY_READY_THRESHOLD = 0.20
 SENSITIVE_READY_THRESHOLD = 0.15
 ACTIVE_SESSION_TTL_SECONDS = 24 * 60 * 60
-_ACTIVE_STATUSES = {"interviewing", "restate_pending"}
+_ACTIVE_STATUSES = {"interviewing", "restate_pending", "refine_pending"}
 _ESCAPE_REPLIES = {"취소", "그만", "중단", "탈출", "나가기", "cancel", "stop", "exit", "quit"}
 _AUTOPILOT_AXIS_OPTIONS = {
     "a": "intake/cardization",
@@ -368,6 +368,8 @@ def _refine_answer(values: dict[str, Any], answer: str, previous_question: dict[
         "constraints": [],
         "out_of_scope": [],
         "context": [],
+        "source_prefix": "[from-user][refined]",
+        "needs_confirmation": False,
     }
     if not raw:
         return refined
@@ -378,6 +380,7 @@ def _refine_answer(values: dict[str, Any], answer: str, previous_question: dict[
             refined["decision"] = " + ".join(_AUTOPILOT_AXIS_LABELS.get(axis, axis) for axis in axes)
             refined["scope_axes"] = axes
             refined["scope_confidence"] = "compound" if len(axes) > 1 else "single"
+            refined["needs_confirmation"] = True
             if {"intake/cardization", "kanban_execution_prep"}.issubset(set(axes)):
                 refined["reasoning"].append("User wants both intake/cardization and Kanban execution preparation, not a single-axis choice.")
                 refined["constraints"].append("This scope does not by itself approve worker dispatch or repo mutation.")
@@ -387,10 +390,81 @@ def _refine_answer(values: dict[str, Any], answer: str, previous_question: dict[
                 ])
     if _OBSERVABLE_RE.search(raw):
         refined["acceptance_criteria"] = raw
+        refined["needs_confirmation"] = True
     if re.search(r"\b(no|forbid|forbidden|approval|gate|금지|승인|하지마|말고)\b", raw, re.IGNORECASE):
         refined["constraints"].append(raw)
         refined["side_effect_boundary_note"] = raw
+        refined["needs_confirmation"] = True
     return refined
+
+
+def _is_refine_approval(answer: str) -> bool:
+    text = (answer or "").strip().lower()
+    return bool(re.search(r"\b(send as-is|send|approve|approved|confirm|confirmed|yes|y|ok|okay)\b|승인|그대로|보내|맞아|확인|좋아", text))
+
+
+def _format_refined_payload(refinement: dict[str, Any]) -> str:
+    def _section(title: str, value: Any) -> str:
+        if isinstance(value, list):
+            body = "\n".join(f"- {item}" for item in value) if value else "- None"
+        else:
+            body = str(value or "None")
+        return f"{title}:\n{body}"
+
+    return "\n\n".join([
+        str(refinement.get("source_prefix") or "[from-user][refined]"),
+        _section("Decision", refinement.get("decision")),
+        _section("Reasoning", refinement.get("reasoning") or []),
+        _section("Constraints", refinement.get("constraints") or []),
+        _section("Out of scope", refinement.get("out_of_scope") or []),
+        _section("Codebase context", refinement.get("context") or []),
+    ])
+
+
+def _format_refine_gate(session_id: str, refinement: dict[str, Any]) -> str:
+    return (
+        f"/ouro-intake session {session_id} 답변을 upstream Refine gate 형식으로 구조화했습니다.\n\n"
+        f"{_format_refined_payload(refinement)}\n\n"
+        "누락되거나 왜곡된 게 없으면 `승인`이라고 답해주세요. "
+        "수정할 내용이 있으면 그대로 적어주세요. 승인 전에는 다음 질문으로 넘기지 않습니다."
+    )
+
+
+def _needs_refine_gate(refinement: dict[str, Any], *, previous_question: dict[str, Any] | None = None, restate_correction: bool = False) -> bool:
+    if restate_correction:
+        return True
+    return bool(refinement.get("needs_confirmation"))
+
+
+def _seed_closer_review(values: dict[str, Any], review: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Local port of upstream Seed Closer's material-decision audit."""
+
+    goal = str(values.get("goal") or "")
+    context = str(values.get("context") or "")
+    scope = str(values.get("scope") or "")
+    combined = " ".join([goal, context, scope]).lower()
+    blockers: list[str] = []
+    questions: list[str] = []
+    is_system = any(token in combined for token in ("brownfield", "system-level", "migration", "protocol redesign"))
+    if is_system:
+        facts = " ".join(str(values.get(key) or "") for key in ("context", "constraints", "side_effect_boundary_note", "acceptance_criteria", "first_slice"))
+        checks = [
+            ("ownership/SSOT", r"ownership|owner|ssot|authority|source of truth|소유|권한"),
+            ("API/protocol contract", r"api|protocol|contract|command|slash|route|handler|dispatch"),
+            ("lifecycle/recovery", r"lifecycle|recovery|rollback|cancel|resume|restart|복구|취소"),
+            ("verification", r"pytest|test|검증|readback|proof|exit code|확인"),
+        ]
+        for label, pattern in checks:
+            if not re.search(pattern, facts, re.IGNORECASE):
+                blockers.append(f"{label} is not explicit enough for Seed Closer")
+        if blockers:
+            questions.append("Seed Closer 기준으로 ownership/SSOT, API/protocol, lifecycle/recovery, verification 중 빠진 실행 변경 결정을 먼저 확인해야 합니다. 어떤 경계가 맞나요?")
+    return {
+        "ready": not blockers,
+        "blockers": blockers,
+        "questions": questions,
+    }
+
 
 def handle_ouro_intake_plain_reply(text: str, *, origin: dict[str, Any] | None = None, actor: str | None = None) -> OuroIntakeResult | None:
     """Route a normal same-thread/user message into an active intake interview.
@@ -531,7 +605,9 @@ def _ambiguity_analysis(values: dict[str, Any]) -> dict[str, Any]:
 
 def _seed_review(values: dict[str, Any]) -> dict[str, Any]:
     analysis = _ambiguity_analysis(values)
-    mode = "seed_ready_for_admission" if analysis["seed_ready"] else "decision_gate_only"
+    closer = _seed_closer_review(values, analysis)
+    seed_ready = analysis["seed_ready"] and closer["ready"]
+    mode = "seed_ready_for_admission" if seed_ready else "decision_gate_only"
     return {
         "mode": mode,
         "ambiguity_score": analysis["ambiguity_score"],
@@ -539,7 +615,8 @@ def _seed_review(values: dict[str, Any]) -> dict[str, Any]:
         "ambiguity_threshold": analysis["threshold"],
         "ambiguity_flags": analysis["ambiguity_flags"],
         "ambiguity_ledger": analysis["ambiguity_ledger"],
-        "blocking_questions": analysis["blocking_questions"],
+        "blocking_questions": list(dict.fromkeys([*analysis["blocking_questions"], *closer["questions"]])),
+        "seed_closer": closer,
         "dispatch_allowed": False,
     }
 
@@ -617,6 +694,11 @@ def _highest_impact_question(values: dict[str, Any], review: dict[str, Any], *, 
             else "Good. If this is a combined scope, where should v1 stop? For example: request -> refined Seed draft -> Kanban admission/execution-prep card, excluding worker dispatch."
         )
         return {"id": "first_slice", "track": "scope", "text": text, "options": []}
+
+    closer = review.get("seed_closer") if isinstance(review.get("seed_closer"), dict) else {"ready": True, "questions": []}
+    if not closer.get("ready"):
+        question_text = (closer.get("questions") or ["What material Seed Closer decision is still unresolved?"])[0]
+        return {"id": "seed_closer_material_gap", "track": "closure", "text": question_text, "options": []}
 
     if "goal_unclear" in flags:
         text = "결과물을 한 문장으로 좁히면 무엇인가요?" if language == "ko" else "What concrete output should this produce, in one sentence?"
@@ -714,6 +796,39 @@ def _qa_and_repair_seed(seed: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _upstream_seed_projection(values: dict[str, Any], review: dict[str, Any], *, session_id: str | None) -> dict[str, Any]:
+    goal = str(values.get("goal") or "").strip()
+    context = str(values.get("context") or "").strip()
+    constraints = _as_list(values.get("constraints"), default=["Follow existing project patterns unless acceptance criteria require otherwise"])
+    acceptance = _as_list(values.get("acceptance_criteria"), default=["A command/API check returns stable observable output or artifacts proving the goal"])
+    ontology = _ontology_for(values)
+    return {
+        "goal": goal,
+        "task_type": str(values.get("task_type") or "code").strip() or "code",
+        "brownfield_context": {
+            "project_type": "brownfield" if re.search(r"brownfield|gateway|repo|runtime|existing", " ".join([goal, context]), re.IGNORECASE) else "greenfield",
+            "context_references": _as_list(values.get("context_references")),
+            "existing_patterns": _as_list(values.get("existing_patterns"), default=[context] if context else []),
+            "existing_dependencies": _as_list(values.get("existing_dependencies")),
+        },
+        "constraints": constraints,
+        "acceptance_criteria": acceptance,
+        "ontology_schema": {
+            "name": ontology["name"],
+            "description": ontology["description"],
+            "fields": ontology["fields"],
+        },
+        "evaluation_principles": _as_list(values.get("evaluation_principles"), default=["completeness: satisfy all acceptance criteria without violating constraints:1.0"]),
+        "exit_conditions": _as_list(values.get("exit_conditions"), default=["all_criteria_met: all acceptance criteria pass:100% criteria pass"]),
+        "metadata": {
+            "version": "1.0.0-hermes-projection",
+            "ambiguity_score": review["ambiguity_score"],
+            "interview_id": session_id,
+            "source": "hermes_ouro_intake_upstream_seed_projection",
+        },
+    }
+
+
 def _build_seed_contract(values: dict[str, Any], *, public_id: str | None, actor: str | None, session_id: str | None = None) -> dict[str, Any]:
     goal = str(values.get("goal") or "").strip()
     project = str(values.get("project") or "bo").strip().lower()
@@ -766,6 +881,7 @@ def _build_seed_contract(values: dict[str, Any], *, public_id: str | None, actor
         "goal": goal,
         "context": context,
         "interview_refinements": values.get("refined_answers", []),
+        "upstream_seed": _upstream_seed_projection(values, review, session_id=session_id),
         "non_goals": non_goals,
         "constraints": _as_list(values.get("constraints"), default=["Seed is Kanban admission source material only"]),
         "ontology": _ontology_for(values),
@@ -773,6 +889,7 @@ def _build_seed_contract(values: dict[str, Any], *, public_id: str | None, actor
         "ambiguity_level": review["ambiguity_level"],
         "ambiguity_ledger": review["ambiguity_ledger"],
         "seed_review": review,
+        "seed_closer": review.get("seed_closer"),
         "authority": {
             "after_admission": f"Kanban {public_id}" if public_id else "pending Kanban admission",
             "seed_contract_is_source_material_only": True,
@@ -884,6 +1001,8 @@ def _start_interview(raw_args: str, *, actor: str | None, origin: dict[str, Any]
         "status": status,
         "restate": _restate_goal(values) if status == "restate_pending" else None,
         "ambiguity_ledger": review["ambiguity_ledger"],
+        "seed_closer": review.get("seed_closer"),
+        "dialectic": {"non_user_streak": 0},
         "origin_binding": {
             "key": _origin_key(origin),
             "origin": origin or {},
@@ -948,6 +1067,54 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
         return OuroIntakeResult(action="error", error="unknown_session", message=f"Unknown ouro-intake session {session_id}. No action was taken.")
     answer_text = str(parsed.get("answer") or parsed.get("goal") or "").strip()
     previous_question = session.get("last_question") if isinstance(session.get("last_question"), dict) else None
+    if session.get("status") == "refine_pending":
+        if _is_refine_approval(answer_text):
+            pending_refinement = dict(session.get("pending_refinement") or {})
+            pending_answer = str(session.get("pending_answer_text") or pending_refinement.get("raw_answer") or "")
+            pending_parsed = dict(session.get("pending_parsed") or {})
+            pending_question = session.get("pending_previous_question") if isinstance(session.get("pending_previous_question"), dict) else previous_question
+            base_values = dict(session.get("values") or {})
+            values = _merge_answer(base_values, pending_parsed, pending_answer, refinement=pending_refinement)
+            if (pending_question or {}).get("id") == "first_slice" and pending_answer:
+                values["first_slice"] = pending_answer
+            review = _seed_review(values)
+            session["values"] = values
+            session["updated_at"] = int(time.time())
+            session.setdefault("turns", []).append({"at": int(time.time()), "question": pending_question, "answer": pending_answer, "refined_answer": pending_refinement, "review": review})
+            session.setdefault("rounds", []).append({"at": int(time.time()), "answer": pending_answer, "review": review})
+            session["language"] = _detect_language(values)
+            session["ambiguity_ledger"] = review["ambiguity_ledger"]
+            session["seed_closer"] = review.get("seed_closer")
+            session["seed"] = None
+            session.pop("pending_refinement", None)
+            session.pop("pending_answer_text", None)
+            session.pop("pending_parsed", None)
+            session.pop("pending_previous_question", None)
+            if review["mode"] == "seed_ready_for_admission":
+                session["status"] = "restate_pending"
+                session["phase"] = "restate_pending"
+                session["restate"] = _restate_goal(values)
+                session["last_question"] = {"id": "restate_confirmation", "track": "restate", "text": session["restate"], "options": []}
+                message = _format_restate(session_id, values, review)
+            else:
+                question = _highest_impact_question(values, review, previous_track=(pending_question or {}).get("track"))
+                session["status"] = "interviewing"
+                session["phase"] = "interviewing"
+                session["track"] = question["track"]
+                session["last_question"] = question
+                message = _format_next_question(session_id, review, question)
+            sessions[session_id] = session
+            _save_sessions(sessions)
+            return OuroIntakeResult(action="interview_updated", mutated=True, dispatched=False, session_id=session_id, message=message)
+        refinement = _refine_answer(dict(session.get("values") or {}), answer_text, previous_question)
+        refinement["needs_confirmation"] = True
+        session["pending_refinement"] = refinement
+        session["pending_answer_text"] = answer_text
+        session["pending_parsed"] = parsed
+        session["updated_at"] = int(time.time())
+        sessions[session_id] = session
+        _save_sessions(sessions)
+        return OuroIntakeResult(action="refine_pending", mutated=True, dispatched=False, session_id=session_id, message=_format_refine_gate(session_id, refinement))
     if session.get("status") == "restate_pending" and _is_restate_approval(answer_text):
         values = dict(session.get("values") or {})
         review = _seed_review(values)
@@ -968,8 +1135,36 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
         )
         return OuroIntakeResult(action="interview_updated", mutated=True, dispatched=False, session_id=session_id, message=message)
 
+    if session.get("status") == "restate_pending" and answer_text and not _is_restate_approval(answer_text):
+        base_values = dict(session.get("values") or {})
+        refinement = _refine_answer(base_values, answer_text, previous_question)
+        refinement["restate_correction"] = True
+        refinement["needs_confirmation"] = True
+        session["status"] = "refine_pending"
+        session["phase"] = "refine_pending"
+        session["pending_refinement"] = refinement
+        session["pending_answer_text"] = answer_text
+        session["pending_parsed"] = parsed
+        session["pending_previous_question"] = previous_question
+        session["updated_at"] = int(time.time())
+        sessions[session_id] = session
+        _save_sessions(sessions)
+        return OuroIntakeResult(action="refine_pending", mutated=True, dispatched=False, session_id=session_id, message=_format_refine_gate(session_id, refinement))
+
     base_values = dict(session.get("values") or {})
     refinement = _refine_answer(base_values, answer_text, previous_question)
+    if _needs_refine_gate(refinement, previous_question=previous_question):
+        session["status"] = "refine_pending"
+        session["phase"] = "refine_pending"
+        session["pending_refinement"] = refinement
+        session["pending_answer_text"] = answer_text
+        session["pending_parsed"] = parsed
+        session["pending_previous_question"] = previous_question
+        session["updated_at"] = int(time.time())
+        sessions[session_id] = session
+        _save_sessions(sessions)
+        return OuroIntakeResult(action="refine_pending", mutated=True, dispatched=False, session_id=session_id, message=_format_refine_gate(session_id, refinement))
+
     values = _merge_answer(base_values, parsed, str(parsed.get("goal") or ""), refinement=refinement)
     if (previous_question or {}).get("id") == "first_slice" and answer_text:
         values["first_slice"] = answer_text

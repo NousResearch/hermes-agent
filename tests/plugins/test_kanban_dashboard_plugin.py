@@ -1353,6 +1353,7 @@ def test_home_subscribe_creates_notify_sub_row(client, with_home_channels):
     assert subs[0]["platform"] == "telegram"
     assert subs[0]["chat_id"] == "1234567"
     assert subs[0]["thread_id"] == "42"
+    assert subs[0]["notifier_profile"] == "default"
 
 
 def test_home_subscribe_flips_subscribed_flag_in_subsequent_get(client, with_home_channels):
@@ -1378,6 +1379,36 @@ def test_home_subscribe_is_idempotent(client, with_home_channels):
         assert len(kb.list_notify_subs(conn, t["id"])) == 1
     finally:
         conn.close()
+
+
+def test_home_subscribe_backfills_owner_on_legacy_row(client, with_home_channels):
+    """Re-subscribing should backfill notifier ownership on ownerless rows."""
+    from hermes_cli import kanban_db as kb
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    conn = kb.connect()
+    try:
+        kb.add_notify_sub(
+            conn,
+            task_id=t["id"],
+            platform="telegram",
+            chat_id="1234567",
+            thread_id="42",
+        )
+    finally:
+        conn.close()
+
+    r = client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    assert r.status_code == 200
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, t["id"])
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["notifier_profile"] == "default"
 
 
 def test_home_subscribe_unknown_platform_returns_404(client, with_home_channels):

@@ -73,8 +73,23 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+<<<<<<< HEAD
         "session_id": t.session_id,
+=======
+        "workflow_template_id": t.workflow_template_id,
+        "current_step_key": t.current_step_key,
+>>>>>>> 503702ea9 (kanban: filter tasks by workflow fields and runs by status/outcome)
     }
+
+
+def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
+    st = getattr(args, "state_type", None)
+    sn = getattr(args, "state_name", None)
+    if (st is None) != (sn is None):
+        return None
+    if st is None:
+        return {}
+    return {"state_type": st, "state_name": sn}
 
 
 def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
@@ -351,16 +366,42 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Include archived tasks")
     p_list.add_argument("--json", action="store_true")
     p_list.add_argument(
+<<<<<<< HEAD
         "--sort",
         default=None,
         choices=sorted(kb.VALID_SORT_ORDERS.keys()),
         help="Sort order for listed tasks (default: priority)",
+=======
+        "--workflow-template-id",
+        default=None,
+        metavar="ID",
+        help="Restrict to tasks with this workflow_template_id",
+    )
+    p_list.add_argument(
+        "--step-key",
+        default=None,
+        dest="current_step_key",
+        metavar="KEY",
+        help="Restrict to tasks with this current_step_key",
+>>>>>>> 503702ea9 (kanban: filter tasks by workflow fields and runs by status/outcome)
     )
 
     # --- show ---
     p_show = sub.add_parser("show", help="Show a task with comments + events")
     p_show.add_argument("task_id")
     p_show.add_argument("--json", action="store_true")
+    p_show.add_argument(
+        "--state-type",
+        choices=("status", "outcome"),
+        default=None,
+        help="With --state-name: filter listed runs by task_runs column",
+    )
+    p_show.add_argument(
+        "--state-name",
+        default=None,
+        metavar="VALUE",
+        help="With --state-type: keep runs whose column equals this value",
+    )
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -607,6 +648,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_runs.add_argument("task_id")
     p_runs.add_argument("--json", action="store_true")
+    p_runs.add_argument(
+        "--state-type",
+        choices=("status", "outcome"),
+        default=None,
+        help="With --state-name: filter runs by task_runs column",
+    )
+    p_runs.add_argument(
+        "--state-name",
+        default=None,
+        metavar="VALUE",
+        help="With --state-type: keep runs whose column equals this value",
+    )
 
     # --- heartbeat (worker liveness signal) ---
     p_hb = sub.add_parser(
@@ -1285,7 +1338,12 @@ def _cmd_list(args: argparse.Namespace) -> int:
             tenant=args.tenant,
             session_id=args.session,
             include_archived=args.archived,
+<<<<<<< HEAD
             order_by=getattr(args, "sort", None),
+=======
+            workflow_template_id=args.workflow_template_id,
+            current_step_key=args.current_step_key,
+>>>>>>> 503702ea9 (kanban: filter tasks by workflow fields and runs by status/outcome)
         )
     if getattr(args, "json", False):
         print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
@@ -1314,6 +1372,13 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
+    rsk = _run_state_kwargs(args)
+    if rsk is None:
+        print(
+            "kanban show: pass both --state-type and --state-name, or omit both",
+            file=sys.stderr,
+        )
+        return 2
     with kb.connect() as conn:
         task = kb.get_task(conn, args.task_id)
         if not task:
@@ -1323,7 +1388,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         events = kb.list_events(conn, args.task_id)
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
-        runs = kb.list_runs(conn, args.task_id)
+        runs = kb.list_runs(conn, args.task_id, **rsk)
         # Workers hand off via ``task_runs.summary`` (kanban-worker skill);
         # ``tasks.result`` is left NULL unless the caller explicitly passed
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
@@ -2205,8 +2270,15 @@ def _cmd_log(args: argparse.Namespace) -> int:
 
 def _cmd_runs(args: argparse.Namespace) -> int:
     """Show attempt history for a task."""
+    rsk = _run_state_kwargs(args)
+    if rsk is None:
+        print(
+            "kanban runs: pass both --state-type and --state-name, or omit both",
+            file=sys.stderr,
+        )
+        return 2
     with kb.connect() as conn:
-        runs = kb.list_runs(conn, args.task_id)
+        runs = kb.list_runs(conn, args.task_id, **rsk)
     if getattr(args, "json", False):
         print(json.dumps([
             {

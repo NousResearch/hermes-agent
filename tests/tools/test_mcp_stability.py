@@ -108,8 +108,10 @@ class TestStdioPidTracking:
         with _lock:
             _orphan_stdio_pids.add(fake_pid)
 
-        # Should not raise (ProcessLookupError is caught)
-        _kill_orphaned_mcp_children()
+        # Should not raise (ProcessLookupError is caught). Mock signal
+        # delivery so the live-system guard never sees a real external PID.
+        with patch("tools.mcp_tool.os.kill", side_effect=ProcessLookupError):
+            _kill_orphaned_mcp_children()
 
         with _lock:
             assert fake_pid not in _orphan_stdio_pids
@@ -142,7 +144,10 @@ class TestStdioPidTracking:
         mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
         mock_kill.assert_any_call(fake_pid, fake_sigkill)
         assert mock_kill.call_count == 2
-        mock_sleep.assert_called_once_with(2)
+        # The full-suite run can have background MCP reconnect threads that
+        # also call tools.mcp_tool.time.sleep while this test patches it. Only
+        # assert that orphan cleanup performed its 2s grace wait.
+        assert any(call.args == (2,) for call in mock_sleep.call_args_list)
 
         with _lock:
             assert fake_pid not in _orphan_stdio_pids

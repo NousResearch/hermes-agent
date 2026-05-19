@@ -766,7 +766,7 @@ def _finalize_single_query_session(cli, result=None) -> None:
     failed = False
     if isinstance(result, dict):
         interrupted = interrupted or bool(result.get("interrupted"))
-        failed = bool(result.get("failed"))
+        failed = bool(result.get("failed") or result.get("partial"))
 
     if interrupted:
         end_reason = "single_query_interrupted"
@@ -2860,6 +2860,11 @@ class HermesCLI:
         # don't auto-queue another continuation on top of a user-cancelled
         # turn (which would make Ctrl+C feel like it did nothing).
         self._last_turn_interrupted = False
+        # Raw ``run_conversation()`` result from the most recent chat() call.
+        # Single-query finalization needs this because chat() can render an
+        # error string for failed turns; the response text alone is not enough
+        # to decide the DB end_reason accurately.
+        self._last_chat_result: Optional[Dict[str, Any]] = None
         self._should_exit = False
         # /exit --delete: when True, the current session's SQLite history and
         # on-disk transcripts are deleted during shutdown. Set by
@@ -10815,6 +10820,7 @@ class HermesCLI:
         # this to True. Early returns (credential refresh failure, etc.)
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
+        self._last_chat_result = None
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
@@ -11179,6 +11185,7 @@ class HermesCLI:
             time.sleep(0.15)
 
             # Update history with full conversation
+            self._last_chat_result = result if isinstance(result, dict) else None
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
             # If auto-compression fired mid-turn, the agent created a new
@@ -11774,6 +11781,7 @@ class HermesCLI:
         # See constructor note. Mirrored here for the run() path that skips
         # the earlier __init__ branch.
         self._last_turn_interrupted = False
+        self._last_chat_result = None
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
 
@@ -14303,10 +14311,14 @@ def main(
             finalize_result = None
             try:
                 response = cli.chat(query, images=single_query_images or None)
-                finalize_result = {
-                    "failed": response is None,
-                    "interrupted": bool(getattr(cli, "_last_turn_interrupted", False)),
-                }
+                chat_result = getattr(cli, "_last_chat_result", None)
+                if isinstance(chat_result, dict):
+                    finalize_result = chat_result
+                else:
+                    finalize_result = {
+                        "failed": response is None,
+                        "interrupted": bool(getattr(cli, "_last_turn_interrupted", False)),
+                    }
                 cli._print_exit_summary()
             except KeyboardInterrupt:
                 finalize_result = {"interrupted": True, "failed": True}

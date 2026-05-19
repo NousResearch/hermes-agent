@@ -800,3 +800,92 @@ def is_valid_namespace(candidate: Optional[str]) -> bool:
     if not candidate:
         return False
     return bool(_NAMESPACE_RE.match(candidate))
+
+
+# ── Skills Service integration (Plan 003-C) ───────────────────────────────
+
+
+def get_skills_service_url() -> Optional[str]:
+    """Return the Skills Service base URL, or None when running in local mode.
+
+    Reads ``HERMES_SKILLS_SERVICE_URL`` from the environment.  When the env
+    var is absent or empty, callers fall back to local filesystem discovery
+    (today's behavior, unchanged).
+
+    Pattern mirrors how Hermes detects the Atlas service URL.
+
+    Example:
+        url = get_skills_service_url()
+        if url:
+            # call MCP skill tools over HTTP
+        else:
+            # fall back to local SKILL.md files
+    """
+    url = os.environ.get("HERMES_SKILLS_SERVICE_URL", "").strip()
+    return url or None
+
+
+def skills_service_list(
+    scope_filter: Optional[str] = None,
+    tag_filter: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Call the Skills Service list_skills HTTP endpoint.
+
+    Returns the parsed JSON response, or None if the service is unavailable
+    or the request fails.  Callers should fall back to local discovery on
+    None.
+
+    Lazy import of httpx — not available in all hermes environments.
+    """
+    url = get_skills_service_url()
+    if not url:
+        return None
+
+    token = os.environ.get("HERMES_SKILLS_SERVICE_TOKEN", "").strip()
+    params: Dict[str, str] = {}
+    if scope_filter:
+        params["scope"] = scope_filter
+    if tag_filter:
+        params["tag"] = tag_filter
+
+    try:
+        import httpx
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        resp = httpx.get(f"{url}/skills", params=params, headers=headers, timeout=5)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Skills Service list request failed: %s", exc)
+        return None
+
+
+def skills_service_view(
+    name: str,
+    scope: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Call the Skills Service view_skill HTTP endpoint.
+
+    Returns the parsed JSON response (with ``content`` key containing full
+    SKILL.md text), or None if the service is unavailable.  Callers fall
+    back to local SKILL.md reading on None.
+    """
+    url = get_skills_service_url()
+    if not url:
+        return None
+
+    token = os.environ.get("HERMES_SKILLS_SERVICE_TOKEN", "").strip()
+    params: Dict[str, str] = {}
+    if scope:
+        params["scope"] = scope
+
+    try:
+        import httpx
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        resp = httpx.get(f"{url}/skills/{name}", params=params, headers=headers, timeout=5)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Skills Service view request for '%s' failed: %s", name, exc)
+        return None

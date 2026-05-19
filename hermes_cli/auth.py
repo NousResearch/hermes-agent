@@ -2418,13 +2418,17 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     
     Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
     Raises AuthError if no Codex tokens are stored.
+
+    Profile-mode reads use the same central-root fallback as other provider
+    state: ``<root>/profiles/<name>/auth.json`` wins when it contains Codex
+    state, otherwise ``<root>/auth.json`` is read-only fallback. This keeps
+    Codex profiles and kanban workers from needing copied auth.json files.
     """
     if _lock:
         with _auth_store_lock():
-            auth_store = _load_auth_store()
+            state = get_provider_auth_state("openai-codex")
     else:
-        auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "openai-codex")
+        state = get_provider_auth_state("openai-codex")
     if not state:
         raise AuthError(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",

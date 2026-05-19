@@ -75,6 +75,51 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     assert exc.value.code == "codex_auth_missing"
 
 
+def test_read_codex_tokens_falls_back_to_global_auth_for_profile_home(tmp_path, monkeypatch):
+    hermes_root = tmp_path / "hermes"
+    profile_home = hermes_root / "profiles" / "coding"
+    _setup_hermes_auth(hermes_root, access_token="global-access", refresh_token="global-refresh")
+    profile_home.mkdir(parents=True, exist_ok=True)
+    (profile_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    data = _read_codex_tokens()
+
+    assert data["tokens"]["access_token"] == "global-access"
+    assert data["tokens"]["refresh_token"] == "global-refresh"
+
+
+def test_read_codex_tokens_profile_state_shadows_global_auth(tmp_path, monkeypatch):
+    hermes_root = tmp_path / "hermes"
+    profile_home = hermes_root / "profiles" / "coding"
+    _setup_hermes_auth(hermes_root, access_token="global-access", refresh_token="global-refresh")
+    _setup_hermes_auth(profile_home, access_token="profile-access", refresh_token="profile-refresh")
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    data = _read_codex_tokens()
+
+    assert data["tokens"]["access_token"] == "profile-access"
+    assert data["tokens"]["refresh_token"] == "profile-refresh"
+
+
+def test_read_codex_tokens_falls_back_for_ad_hoc_worker_profile_home(tmp_path, monkeypatch):
+    """Kanban workers launch `hermes -p <assignee>`; that resolves to a profile-shaped HERMES_HOME.
+
+    The fallback must depend on the `<root>/profiles/<name>` shape, not on a
+    pre-existing profile object or copied per-profile auth.json.
+    """
+    hermes_root = tmp_path / "hermes"
+    worker_home = hermes_root / "profiles" / "kanban-worker"
+    _setup_hermes_auth(hermes_root, access_token="worker-global-access", refresh_token="worker-global-refresh")
+    worker_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(worker_home))
+
+    data = _read_codex_tokens()
+
+    assert data["tokens"]["access_token"] == "worker-global-access"
+    assert not (worker_home / "auth.json").exists()
+
+
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")

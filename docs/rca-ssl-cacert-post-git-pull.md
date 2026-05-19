@@ -51,8 +51,9 @@ A reinstall rebuilds the ``certifi`` metadata and restores the CA bundle.
 A pre-flight ``check_ssl_ca_bundle()`` guard was added in
 ``agent/ssl_guard.py`` (see :pr:`#<pr_number>`):
 
-* **Fail-fast** — runs before any HTTP client is constructed, inside
-  ``AIAgent.__init__`` (``run_agent.py``).
+* **Fail-fast** — validates ``HERMES_CA_BUNDLE``, ``REQUESTS_CA_BUNDLE``,
+  ``SSL_CERT_FILE``, or the default ``certifi`` bundle before an OpenAI
+  client is constructed.
 * **Catch-fallback** — if the guard is bypassed, ``gateway/run.py`` catches
   ``SSLConfigurationError`` and returns a user-facing message instead of a
   traceback.

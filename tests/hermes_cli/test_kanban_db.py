@@ -305,6 +305,68 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
+def test_detect_crashed_workers_systemic_failure_fast_block(
+    kanban_home, monkeypatch,
+):
+    """When many tasks crash with the same error, trip the breaker faster."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        task_ids = []
+        for i in range(4):
+            tid = kb.create_task(conn, title=f"task-{i}", assignee="a")
+            host = _kb._claimer_id().split(":", 1)[0]
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=? WHERE id=?",
+                (90000 + i, f"{host}:w{i}", tid),
+            )
+            task_ids.append(tid)
+        conn.commit()
+
+        crashed = kb.detect_crashed_workers(conn)
+        assert len(crashed) == 4
+
+        for tid in task_ids:
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked", (
+                f"task {tid} should be blocked (systemic), got {task.status}"
+            )
+
+
+def test_detect_crashed_workers_isolated_failure_normal_retry(
+    kanban_home, monkeypatch,
+):
+    """Below the systemic threshold, tasks retain normal retry budget."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        task_ids = []
+        for i in range(2):
+            tid = kb.create_task(conn, title=f"iso-{i}", assignee="a")
+            host = _kb._claimer_id().split(":", 1)[0]
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=? WHERE id=?",
+                (80000 + i, f"{host}:w{i}", tid),
+            )
+            task_ids.append(tid)
+        conn.commit()
+
+        crashed = kb.detect_crashed_workers(conn)
+        assert len(crashed) == 2
+
+        for tid in task_ids:
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"task {tid} should stay ready (isolated), got {task.status}"
+            )
+
+
 def test_max_runtime_uses_current_run_start_after_retry(kanban_home):
     """A retry should get a fresh max-runtime window.
 

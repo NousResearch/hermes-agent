@@ -6,6 +6,7 @@ Functions:
 - Status: pending, approved, rejected, sent, failed
 - Queue management (add, approve, reject, list)
 - Transaction lifecycle tracking
+- Telegram integration support (count_pending, get_entry)
 
 SAFETY:
 - ALL transactions must go through this queue
@@ -72,11 +73,11 @@ def _get_db() -> sqlite3.Connection:
 
 def add_to_queue(preview: dict) -> int:
     """
-    Add a mint transaction to the approval queue.
+    Add a mint transaction to the approval queue with status=pending.
 
-    Saves the full plan including chain, contract, wallet_label, wallet_address,
-    function_name, quantity, value_wei, gas_limit, gas_price, total_cost,
-    calldata_preview, risk_warnings, created_at, status=pending.
+    Stores: chain, contract, wallet_label, wallet_address, function_name,
+    quantity, value_wei, gas_limit, gas_price, total_cost, calldata_preview,
+    risk_warnings, created_at, status=pending.
 
     Args:
         preview: Transaction preview from mint_planner
@@ -87,11 +88,11 @@ def add_to_queue(preview: dict) -> int:
     conn = _get_db()
     now = datetime.utcnow().isoformat()
 
-    # Extract gas price and total cost
+    # Extract fields
     gas_price_wei = str(preview.get("gas_price_wei", "0"))
     total_cost_wei = str(preview.get("total_cost_wei", "0"))
 
-    # Extract calldata preview (first 66 chars of data field)
+    # Calldata preview (first 66 chars)
     tx_data_raw = preview.get("tx_data", {})
     calldata = tx_data_raw.get("data", "") if isinstance(tx_data_raw, dict) else ""
     calldata_preview = calldata[:66] + "..." if len(calldata) > 66 else calldata
@@ -159,7 +160,6 @@ def approve(entry_id: int, approved_by: str = "manual") -> dict:
     conn.commit()
     conn.close()
 
-    print(f"  Approved: ID #{entry_id}")
     return {"id": entry_id, "status": "approved", "approved_by": approved_by}
 
 
@@ -184,12 +184,11 @@ def reject(entry_id: int, reason: str = "") -> dict:
     conn.commit()
     conn.close()
 
-    print(f"  Rejected: ID #{entry_id}")
     return {"id": entry_id, "status": "rejected", "reason": reason}
 
 
 def mark_sent(entry_id: int, tx_hash: str) -> dict:
-    """Mark transaction as sent."""
+    """Mark transaction as sent and save tx_hash."""
     conn = _get_db()
     now = datetime.utcnow().isoformat()
 
@@ -205,7 +204,7 @@ def mark_sent(entry_id: int, tx_hash: str) -> dict:
 
 
 def mark_failed(entry_id: int, error: str) -> dict:
-    """Mark transaction as failed."""
+    """Mark transaction as failed and save error."""
     conn = _get_db()
     now = datetime.utcnow().isoformat()
 
@@ -253,6 +252,16 @@ def list_queue(status: str = None, limit: int = 50) -> list:
 
     conn.close()
     return [dict(row) for row in rows]
+
+
+def count_pending() -> int:
+    """Count pending entries. Used by Telegram bot for quick status."""
+    conn = _get_db()
+    row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM approval_queue WHERE status = 'pending'"
+    ).fetchone()
+    conn.close()
+    return row["cnt"] if row else 0
 
 
 def get_approved_pending_execution() -> list:

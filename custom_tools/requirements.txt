@@ -12,9 +12,8 @@ cryptography>=41.0.0
 # HTTP requests (Etherscan API)
 requests>=2.28.0
 
-# Telegram bot (future - uncomment when implementing)
-# python-telegram-bot>=20.0
-# aiogram>=3.0
+# Telegram bot
+python-telegram-bot>=20.0
 
 # Utilities
 python-dotenv>=1.0.0

@@ -5,37 +5,44 @@ Modular Web3 tools extending [Hermes Agent](https://github.com/NousResearch/herm
 ## Architecture
 
 ```
-hermes-agent/          (AI core - UNTOUCHED)
-custom_tools/          (Web3 extension modules)
-  check_wallet.py
-  nft_contract_check.py
-  check_token_owner.py
-  unminted_scanner.py
-  contract_analyzer.py
-  wallet_manager.py
-  mint_planner.py
-  approval_queue.py
-  mint_executor.py
-  batch_multi_wallet_executor.py
+hermes-agent/              (AI core - UNTOUCHED)
+custom_tools/              (Web3 extension modules)
+  __init__.py
+  check_wallet.py          - Multi-chain ETH balance checker
+  nft_contract_check.py    - ERC721 contract info
+  check_token_owner.py     - ownerOf / minted detection
+  unminted_scanner.py      - Bulk unminted token scanner
+  contract_analyzer.py     - ABI loader, mint fn/price detection
+  wallet_manager.py        - Encrypted burner wallet management
+  mint_planner.py          - Tx planner + auto-queue pending
+  approval_queue.py        - SQLite approval queue
+  mint_executor.py         - Execute approved-only transactions
+  batch_multi_wallet_executor.py - Multi-wallet batch mint
   telegram_gateway/
-    bot.py
+    __init__.py
+    bot.py                 - Telegram approval bot (full)
+  ecosystem.config.js      - PM2 startup config
+  requirements.txt
+  .env.example
 ```
 
 ## Safety First
 
 **CRITICAL DEFAULTS:**
-- `DRY_RUN=true` - No transactions sent by default
-- All transactions require explicit approval
+- `DRY_RUN=true` — No transactions sent by default
+- All transactions require explicit approval (CLI or Telegram)
 - Private keys are NEVER logged, printed, or exposed
 - Multi-wallet is for YOUR OWN burner wallets only
+- Telegram bot does NOT auto-execute (approval only)
 
 **NEVER:**
-- Bypass allowlist/captcha/anti-bot
-- Bypass signature protection
+- Bypass allowlist/captcha/anti-bot/signature protection
 - Expose or print private keys
-- Auto-send without approval
+- Auto-send transactions without explicit approval
 
-## Quick Start
+---
+
+## Quick Setup
 
 ### 1. Install Dependencies
 
@@ -48,231 +55,183 @@ pip install -r custom_tools/requirements.txt
 
 ```bash
 cp custom_tools/.env.example .env
-# Edit .env with your RPC URLs and API keys
+# Edit .env with your values
 ```
 
 ### 3. Load Environment
 
 ```bash
-# Using python-dotenv (automatic in scripts)
-# Or manually:
 export $(grep -v '^#' .env | xargs)
 ```
 
-## Module Usage
+---
 
-### check_wallet.py - Balance Checker
+## Full Workflow
 
-```bash
-# Check single address
-python -m custom_tools.check_wallet 0xYourAddress
-
-# Check on specific chain
-python -m custom_tools.check_wallet 0xYourAddress --chain base
-
-# Check all configured chains
-python -m custom_tools.check_wallet 0xYourAddress --all-chains
-```
-
-### nft_contract_check.py - Contract Info
+### Step 1: Create Burner Wallets
 
 ```bash
-# Check ERC721 contract
-python -m custom_tools.nft_contract_check 0xContractAddress
-
-# Check on Base chain
-python -m custom_tools.nft_contract_check 0xContractAddress --chain base
-```
-
-### check_token_owner.py - Token Ownership
-
-```bash
-# Check single token
-python -m custom_tools.check_token_owner 0xContract 42
-
-# Check range
-python -m custom_tools.check_token_owner 0xContract 1-100
-
-# Check specific IDs
-python -m custom_tools.check_token_owner 0xContract 1,5,10,42
-```
-
-### unminted_scanner.py - Find Unminted Tokens
-
-```bash
-# Scan range 1-1000
-python -m custom_tools.unminted_scanner 0xContract 1 1000
-
-# With custom delay and chain
-python -m custom_tools.unminted_scanner 0xContract 1 5000 --chain base --delay 0.1
-
-# Export results
-python -m custom_tools.unminted_scanner 0xContract 1 1000 --csv results.csv --json-out results.json
-```
-
-### contract_analyzer.py - Detect Mint Functions
-
-```bash
-# Full analysis
-python -m custom_tools.contract_analyzer 0xContractAddress
-
-# Save analysis
-python -m custom_tools.contract_analyzer 0xContractAddress --json-out analysis.json
-```
-
-### wallet_manager.py - Manage Burner Wallets
-
-```bash
-# Create new burner wallet
 python -m custom_tools.wallet_manager create --label "burner1"
-
-# List all wallets
+python -m custom_tools.wallet_manager create --label "burner2"
+python -m custom_tools.wallet_manager create --label "burner3"
 python -m custom_tools.wallet_manager list
-
-# Check balance
-python -m custom_tools.wallet_manager balance --label "burner1" --chain ethereum
-
-# Import from CSV (format: label,private_key)
-python -m custom_tools.wallet_manager import-csv --file wallets.csv
 ```
 
-### mint_planner.py - Plan Mint Transaction
+### Step 2: Analyze NFT Contract
 
 ```bash
-# Plan mint and auto-save to approval queue (default --queue)
-python -m custom_tools.mint_planner 0xContract --wallet burner1
-
-# With quantity
-python -m custom_tools.mint_planner 0xContract --wallet burner1 --quantity 3
-
-# Override function and price
-python -m custom_tools.mint_planner 0xContract --wallet burner1 --function mint --price-wei 0
-
-# Preview only, do NOT save to queue
-python -m custom_tools.mint_planner 0xContract --wallet burner1 --no-queue
+python -m custom_tools.contract_analyzer 0xNFTContract --chain base
 ```
 
-> **Note:** By default, `mint_planner` saves the plan to the approval queue
-> with `status=pending` and prints the generated approval ID. Use `--no-queue`
-> for preview-only mode.
-
-### approval_queue.py - Transaction Approval
+### Step 3: Scan Unminted Tokens
 
 ```bash
-# List all entries
+python -m custom_tools.unminted_scanner 0xNFTContract 1 1000 --chain base --csv unminted.csv
+```
+
+### Step 4: Plan Mint (Auto-Queues as PENDING)
+
+```bash
+# Single wallet - auto-saves to approval queue
+python -m custom_tools.mint_planner 0xNFTContract --wallet burner1 --function mint --price-wei 0
+
+# Preview only (no save)
+python -m custom_tools.mint_planner 0xNFTContract --wallet burner1 --function mint --price-wei 0 --no-queue
+```
+
+### Step 5: Verify Queue
+
+```bash
 python -m custom_tools.approval_queue list
-
-# List pending only
 python -m custom_tools.approval_queue list --status pending
+```
 
-# Approve
+### Step 6: Approve (CLI or Telegram)
+
+```bash
+# CLI
 python -m custom_tools.approval_queue approve --id 1
 
-# Reject
-python -m custom_tools.approval_queue reject --id 1 --reason "Too expensive"
+# Or via Telegram bot:
+# /approve 1
 ```
 
-### mint_executor.py - Execute Approved Transactions
+### Step 7: Execute Approved Transaction
 
 ```bash
-# Execute single (requires DRY_RUN=false)
+# Dry run (default - simulates)
 python -m custom_tools.mint_executor --id 1
 
+# Real execution
+DRY_RUN=false python -m custom_tools.mint_executor --id 1
+
 # Execute all approved
-python -m custom_tools.mint_executor --all
+DRY_RUN=false python -m custom_tools.mint_executor --all
 ```
 
-### batch_multi_wallet_executor.py - Multi-Wallet Batch
+---
 
+## Batch Multi-Wallet Flow
+
+### Create wallet CSV (`wallets.csv`):
+```csv
+burner1
+burner2
+burner3
+```
+
+### Plan + Queue for all wallets:
 ```bash
-# Plan batch mint
 python -m custom_tools.batch_multi_wallet_executor \
-  --contract 0xAddress \
-  --wallets burner1,burner2,burner3
-
-# From CSV
-python -m custom_tools.batch_multi_wallet_executor \
-  --contract 0xAddress \
+  --contract 0xNFTContract \
   --wallet-csv wallets.csv \
-  --quantity 2
+  --chain base \
+  --function mint \
+  --price-wei 0 \
+  --quantity 1
+```
+This queues each wallet as a separate PENDING approval entry.
 
-# With auto-approve (DANGEROUS - use with caution)
-python -m custom_tools.batch_multi_wallet_executor \
-  --contract 0xAddress \
-  --wallets burner1,burner2 \
-  --auto-approve \
-  --concurrency 2
+### Approve all via CLI:
+```bash
+python -m custom_tools.approval_queue approve --id 1
+python -m custom_tools.approval_queue approve --id 2
+python -m custom_tools.approval_queue approve --id 3
 ```
 
-### telegram_gateway - Approval Bot (Future)
-
+### Or auto-approve + execute:
 ```bash
-# Start bot (placeholder)
+python -m custom_tools.batch_multi_wallet_executor \
+  --contract 0xNFTContract \
+  --wallet-csv wallets.csv \
+  --chain base \
+  --function mint \
+  --price-wei 0 \
+  --auto-approve \
+  --execute \
+  --concurrency 2 \
+  --min-delay 1.0 \
+  --max-delay 3.0 \
+  --report batch_report.json
+```
+
+---
+
+## Telegram Approval Bot
+
+### Setup:
+1. Create a bot via [@BotFather](https://t.me/BotFather)
+2. Get your Telegram user ID via [@userinfobot](https://t.me/userinfobot)
+3. Set in `.env`:
+```env
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+TELEGRAM_ALLOWED_USERS=123456789,987654321
+```
+
+### Start Bot:
+```bash
 python -m custom_tools.telegram_gateway.bot
 ```
 
-## Workflow Example
+### Bot Commands:
+| Command | Description |
+|---------|-------------|
+| `/start` | Welcome + status |
+| `/pending` | List pending approvals with Approve/Reject buttons |
+| `/approve <id>` | Approve entry by ID |
+| `/reject <id> [reason]` | Reject entry with optional reason |
+| `/status <id>` | Check entry status |
 
+### Inline Buttons:
+- ✅ **Approve** — Approve the entry
+- ❌ **Reject** — Reject the entry
+- 👁 **Dry Run Preview** — Show full preview without action
+
+> **Note:** The Telegram bot only approves/rejects. It does NOT execute transactions.
+> Use `mint_executor` to execute after approval.
+
+---
+
+## PM2 Startup
+
+### Start with PM2:
 ```bash
-# 1. Analyze contract
-python -m custom_tools.contract_analyzer 0xNFTContract --chain base
-
-# 2. Scan for unminted tokens
-python -m custom_tools.unminted_scanner 0xNFTContract 1 1000 --chain base
-
-# 3. Create burner wallet
-python -m custom_tools.wallet_manager create --label "test1"
-
-# 4. Fund wallet (manually send ETH)
-
-# 5. Plan mint transaction (auto-queues as PENDING)
-python -m custom_tools.mint_planner 0xNFTContract --wallet test1 --function mint --price-wei 0
-#    -> Shows preview + prints: "Queued as PENDING approval ID #1"
-
-# 6. Verify it's in the queue
-python -m custom_tools.approval_queue list
-
-# 7. Approve
-python -m custom_tools.approval_queue approve --id 1
-
-# 8. Execute (set DRY_RUN=false)
-DRY_RUN=false python -m custom_tools.mint_executor --id 1
-```
-
-### Key Rules:
-- `mint_planner` **plans and queues** but NEVER sends transactions.
-- `mint_executor` **only executes entries with status=approved**.
-- `DRY_RUN=true` is the default — executor will simulate even if approved.
-- Set `DRY_RUN=false` explicitly to send real transactions.
-
-## PM2 / Systemd Startup
-
-### PM2 (for Telegram bot - future)
-
-```json
-// ecosystem.config.js
-{
-  "apps": [{
-    "name": "hermes-telegram-bot",
-    "script": "python",
-    "args": "-m custom_tools.telegram_gateway.bot",
-    "cwd": "/path/to/hermes-agent",
-    "env": {
-      "TELEGRAM_BOT_TOKEN": "your-token",
-      "TELEGRAM_ALLOWED_USERS": "123456789"
-    }
-  }]
-}
-```
-
-```bash
-pm2 start ecosystem.config.js
+cd hermes-agent
+pm2 start custom_tools/ecosystem.config.js
 pm2 save
 pm2 startup
 ```
 
-### Systemd
+### PM2 Commands:
+```bash
+pm2 status                          # Check running processes
+pm2 logs hermes-telegram-bot        # View bot logs
+pm2 restart hermes-telegram-bot     # Restart bot
+pm2 stop hermes-telegram-bot        # Stop bot
+pm2 delete hermes-telegram-bot      # Remove from PM2
+```
 
+### Systemd Alternative:
 ```ini
 # /etc/systemd/system/hermes-telegram.service
 [Unit]
@@ -295,22 +254,110 @@ WantedBy=multi-user.target
 ```bash
 sudo systemctl enable hermes-telegram
 sudo systemctl start hermes-telegram
+sudo journalctl -u hermes-telegram -f
 ```
+
+---
+
+## Module Reference
+
+### check_wallet.py
+```bash
+python -m custom_tools.check_wallet 0xAddress
+python -m custom_tools.check_wallet 0xAddress --chain base
+python -m custom_tools.check_wallet 0xAddress --all-chains
+```
+
+### nft_contract_check.py
+```bash
+python -m custom_tools.nft_contract_check 0xContract --chain base
+```
+
+### check_token_owner.py
+```bash
+python -m custom_tools.check_token_owner 0xContract 42
+python -m custom_tools.check_token_owner 0xContract 1-100
+```
+
+### unminted_scanner.py
+```bash
+python -m custom_tools.unminted_scanner 0xContract 1 1000 --chain base --delay 0.1
+python -m custom_tools.unminted_scanner 0xContract 1 5000 --csv results.csv --json-out results.json
+```
+
+### contract_analyzer.py
+```bash
+python -m custom_tools.contract_analyzer 0xContract --chain base --json-out analysis.json
+```
+
+### wallet_manager.py
+```bash
+python -m custom_tools.wallet_manager create --label "burner1"
+python -m custom_tools.wallet_manager list
+python -m custom_tools.wallet_manager balance --label "burner1" --chain ethereum
+python -m custom_tools.wallet_manager import-csv --file wallets_import.csv
+```
+
+### mint_planner.py
+```bash
+python -m custom_tools.mint_planner 0xContract --wallet burner1 --function mint --price-wei 0
+python -m custom_tools.mint_planner 0xContract --wallet burner1 --no-queue
+```
+
+### approval_queue.py
+```bash
+python -m custom_tools.approval_queue list
+python -m custom_tools.approval_queue list --status pending
+python -m custom_tools.approval_queue approve --id 1
+python -m custom_tools.approval_queue reject --id 1 --reason "Too expensive"
+```
+
+### mint_executor.py
+```bash
+python -m custom_tools.mint_executor --id 1
+DRY_RUN=false python -m custom_tools.mint_executor --id 1
+DRY_RUN=false python -m custom_tools.mint_executor --all
+```
+
+### batch_multi_wallet_executor.py
+```bash
+python -m custom_tools.batch_multi_wallet_executor --contract 0xAddr --wallets w1,w2,w3
+python -m custom_tools.batch_multi_wallet_executor --contract 0xAddr --wallet-csv wallets.csv
+python -m custom_tools.batch_multi_wallet_executor --contract 0xAddr --wallet-csv wallets.csv --auto-approve --execute
+```
+
+---
+
+## Key Rules
+
+1. `mint_planner` **plans and queues** but NEVER sends transactions.
+2. `mint_executor` **only executes entries with status=approved**.
+3. `DRY_RUN=true` is the default — executor simulates even if approved.
+4. Set `DRY_RUN=false` explicitly to send real transactions.
+5. Telegram bot **only approves/rejects** — never executes.
+6. Private keys stored encrypted, never in logs.
+
+---
 
 ## Security Notes
 
-1. **Private Keys**: Stored encrypted with Fernet. Never in plaintext, never in logs.
-2. **Wallet Files**: Stored in `.wallets/` with 0600 permissions.
-3. **Approval Queue**: SQLite in `.data/` - all actions logged with timestamps.
-4. **Telegram**: Only `TELEGRAM_ALLOWED_USERS` can approve transactions.
-5. **Git Safety**: Add `.wallets/`, `.data/`, `.env` to `.gitignore`.
+| Concern | Protection |
+|---------|-----------|
+| Private Keys | Fernet encrypted in `.wallets/`, 0600 permissions |
+| Approval | SQLite queue, all actions logged with timestamps |
+| Telegram | Only `TELEGRAM_ALLOWED_USERS` can approve/reject |
+| Execution | DRY_RUN=true default, requires explicit override |
+| Git Safety | `.wallets/`, `.data/`, `.env` in `.gitignore` |
+
+---
 
 ## Future Roadmap
 
-- [ ] Full Telegram bot implementation (approve/reject via inline buttons)
+- [ ] Telegram: notify on new pending entries
+- [ ] Telegram: execute approved from bot (with confirmation)
 - [ ] OWS (Open Wallet Standard) integration
 - [ ] Multi-chain batch operations
-- [ ] Gas optimization strategies
+- [ ] Gas optimization / EIP-1559 support
 - [ ] MEV protection integration
-- [ ] Autonomous workflow scheduler
 - [ ] Web dashboard for approval queue
+- [ ] Autonomous workflow scheduler

@@ -96,6 +96,50 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun buildsWifiSignalHistoryRowsForTrendCards() {
+        val firstScan = JSONArray().put(
+            JSONObject()
+                .put("ssid", "HermesNet")
+                .put("bssid", "AC:BC:32:12:34:56")
+                .put("bssid_vendor", "Apple")
+                .put("rssi_dbm", -66)
+                .put("frequency_mhz", 5180)
+                .put("channel", 36)
+                .put("band", "5GHz")
+                .put("security_mode", "WPA2"),
+        )
+        val secondScan = JSONArray().put(
+            JSONObject()
+                .put("ssid", "HermesNet")
+                .put("bssid", "AC:BC:32:12:34:56")
+                .put("bssid_vendor", "Apple")
+                .put("rssi_dbm", -55)
+                .put("frequency_mhz", 5180)
+                .put("channel", 36)
+                .put("band", "5GHz")
+                .put("security_mode", "WPA2"),
+        )
+
+        val store = HermesDeviceDiagnosticsBridge.mergeWifiSignalHistory(
+            HermesDeviceDiagnosticsBridge.mergeWifiSignalHistory(JSONObject(), firstScan, 1_000L),
+            secondScan,
+            2_000L,
+        )
+        val rows = HermesDeviceDiagnosticsBridge.wifiSignalHistoryRowsFromStore(store, 2_500L)
+        val row = rows.getJSONObject(0)
+
+        assertEquals("HermesNet", row.getString("ssid"))
+        assertEquals("Apple", row.getString("bssid_vendor"))
+        assertEquals(2, row.getInt("sample_count"))
+        assertEquals(-55, row.getInt("current_rssi_dbm"))
+        assertEquals(-60, row.getInt("average_rssi_dbm"))
+        assertEquals(11, row.getInt("trend_db"))
+        assertEquals("improving", row.getString("trend_label"))
+        assertEquals(2, row.getJSONArray("rssi_series").length())
+        assertEquals(500L, row.getLong("last_seen_ms"))
+    }
+
+    @Test
     fun summarizesBluetoothMetadataForAgentAndCards() {
         assertEquals("near", HermesDeviceDiagnosticsBridge.bluetoothProximityLabel(-48))
         assertEquals("room", HermesDeviceDiagnosticsBridge.bluetoothProximityLabel(-67))

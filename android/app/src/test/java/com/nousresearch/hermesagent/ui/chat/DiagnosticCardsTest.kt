@@ -195,6 +195,47 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesWifiSignalHistoryRowsForExpandableSignalCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Wi-Fi History")
+                        .put("body", "Signal history.")
+                        .put("graph_type", "wifi_signal_history")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("ssid", "HermesNet")
+                                    .put("bssid_vendor", "Apple")
+                                    .put("current_rssi_dbm", -55)
+                                    .put("average_rssi_dbm", -60)
+                                    .put("min_rssi_dbm", -66)
+                                    .put("max_rssi_dbm", -55)
+                                    .put("trend_db", 11)
+                                    .put("trend_label", "improving")
+                                    .put("sample_count", 2)
+                                    .put("band", "5GHz")
+                                    .put("channel", 36),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("HermesNet", row.label)
+        assertEquals("-55 dBm improving", row.valueLabel)
+        assertTrue(row.detail.contains("2 samples"))
+        assertTrue(row.detail.contains("avg -60 dBm"))
+        assertTrue(row.detail.contains("improving +11 dB"))
+        assertTrue(row.fraction > 0.6f)
+    }
+
+    @Test
     fun parsesSensorVectorRowsFromMotionSamples() {
         val content = JSONObject()
             .put(

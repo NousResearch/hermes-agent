@@ -164,6 +164,45 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun compactsWifiSignalHistoryWithoutDroppingTrendMetadata() {
+        val history = JSONArray()
+        repeat(16) { index ->
+            history.put(
+                JSONObject()
+                    .put("ssid", "Lab-$index")
+                    .put("bssid_vendor", "Apple")
+                    .put("current_rssi_dbm", -35 - index)
+                    .put("average_rssi_dbm", -40 - index)
+                    .put("min_rssi_dbm", -50 - index)
+                    .put("max_rssi_dbm", -35 - index)
+                    .put("trend_db", index)
+                    .put("trend_label", "improving")
+                    .put("sample_count", 4)
+                    .put("rssi_series", JSONArray().put(JSONObject().put("observed_at_ms", index.toLong()).put("rssi_dbm", -35 - index))),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "wifi_scan")
+            .put("wifi_history_network_count", 16)
+            .put("wifi_signal_history", history)
+            .put("cards", JSONArray().put(JSONObject().put("title", "Wi-Fi History").put("body", "16 AP trends")))
+            .toString()
+
+        val compacted = NativeToolContextCompressor.compactToolResult(result)
+        val parsed = JSONObject(compacted)
+        val signalHistory = parsed.getJSONObject("wifi_signal_history")
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(16, parsed.getInt("wifi_history_network_count"))
+        assertEquals("array", signalHistory.getString("type"))
+        assertEquals(16, signalHistory.getInt("original_count"))
+        assertEquals(4, signalHistory.getJSONArray("items").length())
+        assertEquals(-35, signalHistory.getJSONArray("items").getJSONObject(0).getInt("current_rssi_dbm"))
+        assertEquals("improving", signalHistory.getJSONArray("items").getJSONObject(0).getString("trend_label"))
+    }
+
+    @Test
     fun compactsBluetoothAndRadioDiagnosticRowsWithoutDroppingSignalMetadata() {
         val devices = JSONArray()
         repeat(30) { index ->

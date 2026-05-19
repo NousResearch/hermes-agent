@@ -1166,10 +1166,10 @@ class NativeToolCallingChatClient(
     private fun systemMessage(toolsEnabled: Boolean): JSONObject {
         val content = if (toolsEnabled) {
             "You are Hermes running inside the native Android app. " +
-                "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata, camera capability checks, Wi-Fi analysis/channel ratings, Bluetooth nearby scans/service metadata, radio capability checks, resource summaries, or Tasker-style automation. " +
+                "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata, camera capability checks, Wi-Fi analysis/channel ratings/signal history, Bluetooth nearby scans/service metadata, radio capability checks, resource summaries, or Tasker-style automation. " +
                 "When writing multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
                 "For HTML/browser work: write the file with file_write_tool, then call android_automation_tool action=open_uri with data_uri set to the workspace filename. " +
-                "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings, Bluetooth nearby devices/service metadata, camera/sensor status plus accelerometer/gyroscope hardware metadata, active overlays, tool catalog, RF capability limits, MediaTek/Snapdragon/SOC context, or phone preflight checks before TikTok/Instagram/Gmail work. " +
+                "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings/signal history, Bluetooth nearby devices/service metadata, camera/sensor status plus accelerometer/gyroscope hardware metadata, active overlays, tool catalog, RF capability limits, MediaTek/Snapdragon/SOC context, or phone preflight checks before TikTok/Instagram/Gmail work. " +
                 "Use hindsight_memory_tool to retain, recall, and reflect durable local memories before or after complex work. " +
                 "Report missing Android permissions honestly. Keep replies brief."
         } else {
@@ -1227,7 +1227,7 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, channel ratings, vendor/OUI metadata and filter facets, nearby Bluetooth devices plus service/manufacturer/proximity metadata, camera capability, sensors with range/resolution/power/sampling-rate metadata, overlay status, SOC/GPU compatibility context, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, channel ratings, signal history, vendor/OUI metadata and filter facets, nearby Bluetooth devices plus service/manufacturer/proximity metadata, camera capability, sensors with range/resolution/power/sampling-rate metadata, overlay status, SOC/GPU compatibility context, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
                         .put("action", stringProp("status, top_apps, wifi_scan, wifi_channel_rating, bluetooth_scan, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
@@ -1429,6 +1429,11 @@ class NativeToolCallingChatClient(
                     "best wi-fi channel",
                     "wifi congestion",
                     "wi-fi congestion",
+                    "wifi history",
+                    "wi-fi history",
+                    "wifi signal history",
+                    "signal over time",
+                    "wifi trend",
                     "wifi vendor",
                     "wi-fi vendor",
                     "wifi oui",
@@ -3063,7 +3068,7 @@ internal object NativeToolContextCompressor {
         return if (asText.length <= MAX_TOOL_RESULT_CONTEXT_CHARS) {
             asText
         } else {
-            compactStringValue(asText, MAX_TOOL_RESULT_CONTEXT_CHARS)
+            validJsonFallback(compacted, originalLength, asText)
         }
     }
 
@@ -3095,7 +3100,7 @@ internal object NativeToolContextCompressor {
         }
         if (key in PRESERVED_ARRAY_KEYS) {
             val items = JSONArray()
-            val keepCount = minOf(value.length(), PRESERVED_ARRAY_ITEM_LIMIT)
+            val keepCount = minOf(value.length(), preservedArrayItemLimit(key))
             for (index in 0 until keepCount) {
                 items.put(compactArrayItem(value.opt(index)))
             }
@@ -3110,6 +3115,27 @@ internal object NativeToolContextCompressor {
             .put("type", "array")
             .put("original_chars", text.length)
             .put("summary", compactStringValue(text, STRING_FIELD_LIMIT))
+    }
+
+    private fun validJsonFallback(compacted: JSONObject, originalLength: Int, compactedText: String): String {
+        val fallback = JSONObject()
+            .put("_hermes_context_compressed", true)
+            .put("_original_chars", originalLength)
+            .put("_compression_level", "summary")
+            .put("_summary", compactStringValue(compactedText, OUTPUT_FIELD_LIMIT))
+        for (key in compacted.keys()) {
+            if (key.startsWith("_") || fallback.has(key)) continue
+            when (val value = compacted.opt(key)) {
+                is String, is Number, is Boolean -> fallback.put(key, value)
+                is JSONArray -> if (key == "cards") fallback.put(key, value)
+            }
+        }
+        return fallback.toString()
+    }
+
+    private fun preservedArrayItemLimit(key: String): Int = when (key) {
+        "wifi_signal_history" -> 4
+        else -> PRESERVED_ARRAY_ITEM_LIMIT
     }
 
     private fun compactArrayItem(value: Any?): Any {
@@ -3210,6 +3236,7 @@ internal object NativeToolContextCompressor {
                 "total_scan_result_count",
                 "wifi_vendor_count",
                 "wifi_filter_count",
+                "wifi_history_network_count",
                 "camera_count",
                 "sensor_count",
                 "sensor_capability_count",
@@ -3274,6 +3301,7 @@ internal object NativeToolContextCompressor {
         "wifi_band_summary",
         "wifi_vendor_summary",
         "wifi_analyzer_filters",
+        "wifi_signal_history",
         "bluetooth_devices",
         "bluetooth_metadata_summary",
         "radio_bands",
@@ -3323,6 +3351,16 @@ internal object NativeToolContextCompressor {
         "channel",
         "security_mode",
         "frequency_hint_mhz",
+        "sample_count",
+        "current_rssi_dbm",
+        "average_rssi_dbm",
+        "min_rssi_dbm",
+        "max_rssi_dbm",
+        "trend_db",
+        "trend_label",
+        "last_seen_ms",
+        "rssi_series",
+        "observed_at_ms",
         "score",
         "rating_label",
         "network_count",

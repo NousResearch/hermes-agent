@@ -62,6 +62,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "wifi_channel_strength" -> wifiRow(row)
                 "wifi_channel_rating" -> wifiChannelRatingRow(row)
                 "wifi_vendor_summary" -> wifiVendorSummaryRow(row)
+                "wifi_signal_history" -> wifiSignalHistoryRow(row)
                 "bluetooth_rssi" -> bluetoothRow(row)
                 "bluetooth_metadata_summary" -> bluetoothMetadataSummaryRow(row)
                 "radio_frequency_capability" -> radioRow(row)
@@ -143,6 +144,31 @@ private fun wifiVendorSummaryRow(row: JSONObject): DiagnosticGraphRow? {
         valueLabel = "$count AP${if (count == 1) "" else "s"}",
         detail = detail.ifBlank { "Wi-Fi vendor/OUI group" },
         fraction = strongestRssi?.let(::dbmFraction) ?: (count / 8f).coerceIn(0.1f, 1f),
+    )
+}
+
+private fun wifiSignalHistoryRow(row: JSONObject): DiagnosticGraphRow? {
+    val currentRssi = row.optNumber("current_rssi_dbm")?.toInt() ?: return null
+    val ssid = row.optString("ssid").takeIf { it.isNotBlank() } ?: row.optString("bssid").ifBlank { "Wi-Fi" }
+    val sampleCount = row.optNumber("sample_count")?.toInt() ?: 1
+    val averageRssi = row.optNumber("average_rssi_dbm")?.toInt()
+    val minRssi = row.optNumber("min_rssi_dbm")?.toInt()
+    val maxRssi = row.optNumber("max_rssi_dbm")?.toInt()
+    val trendDb = row.optNumber("trend_db")?.toInt()
+    val detail = listOfNotNull(
+        row.opt("channel").takeUnless { it == null || it == JSONObject.NULL }?.toString()?.let { "ch $it" },
+        row.optString("band").takeIf { it.isNotBlank() },
+        row.optString("bssid_vendor").takeIf { it.isNotBlank() && it != "Unknown vendor" },
+        "$sampleCount sample${if (sampleCount == 1) "" else "s"}",
+        averageRssi?.let { "avg $it dBm" },
+        if (minRssi != null && maxRssi != null) "range $minRssi..$maxRssi dBm" else null,
+        trendDb?.let { "${row.optString("trend_label").ifBlank { "trend" }} ${if (it > 0) "+" else ""}$it dB" },
+    ).joinToString(" | ")
+    return DiagnosticGraphRow(
+        label = ssid,
+        valueLabel = "$currentRssi dBm ${row.optString("trend_label").ifBlank { "stable" }}",
+        detail = detail.ifBlank { "Wi-Fi signal history" },
+        fraction = dbmFraction(currentRssi),
     )
 }
 

@@ -195,6 +195,8 @@ object HermesDeviceDiagnosticsBridge {
         val bandSummary = wifiBandSummaryJson(allNetworks, channelRatings)
         val vendorSummary = wifiVendorSummaryJson(allNetworks)
         val analyzerFilters = wifiAnalyzerFilterSummaryJson(allNetworks)
+        val historyStore = updateWifiSignalHistory(appContext, allNetworks, System.currentTimeMillis())
+        val signalHistory = wifiSignalHistoryRowsFromStore(historyStore)
         return JSONObject()
             .put("success", true)
             .put("action", actionName)
@@ -204,6 +206,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("total_scan_result_count", allNetworks.length())
             .put("wifi_vendor_count", vendorSummary.length())
             .put("wifi_filter_count", analyzerFilters.length())
+            .put("wifi_history_network_count", signalHistory.length())
             .put("wifi_enabled", wifiManager.isWifiEnabled)
             .put("wifi_scan_permission_status", permissionStatus)
             .put("wifi_networks", networks)
@@ -212,6 +215,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("wifi_band_summary", bandSummary)
             .put("wifi_vendor_summary", vendorSummary)
             .put("wifi_analyzer_filters", analyzerFilters)
+            .put("wifi_signal_history", signalHistory)
             .put("privacy_note", "Vendor/OUI lookup uses local prefix hints from Android scan metadata; no internet lookup is performed.")
             .put(
                 "cards",
@@ -238,6 +242,14 @@ object HermesDeviceDiagnosticsBridge {
                             body = "${vendorSummary.length()} vendor/OUI groups inferred locally from ${allNetworks.length()} scan rows.",
                             graphType = "wifi_vendor_summary",
                             rows = vendorSummary,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Wi-Fi History",
+                            body = "${signalHistory.length()} AP signal history row(s) built from recent scan observations, including average RSSI and trend metadata.",
+                            graphType = "wifi_signal_history",
+                            rows = signalHistory,
                         ),
                     ),
             )
@@ -1408,6 +1420,94 @@ object HermesDeviceDiagnosticsBridge {
             .put(filterFacetJson("ssid", "SSID", ssidCounts) { 0 })
     }
 
+    internal fun mergeWifiSignalHistory(existing: JSONObject, networks: JSONArray, observedAtMs: Long): JSONObject {
+        val records = linkedMapOf<String, JSONObject>()
+        val existingRecords = existing.optJSONArray("networks") ?: JSONArray()
+        for (index in 0 until existingRecords.length()) {
+            val record = existingRecords.optJSONObject(index) ?: continue
+            val key = record.optString("key").ifBlank { wifiHistoryKey(record) }
+            if (key.isNotBlank()) {
+                records[key] = record.put("key", key)
+            }
+        }
+        for (index in 0 until minOf(networks.length(), MAX_WIFI_HISTORY_NETWORKS_PER_SCAN)) {
+            val network = networks.optJSONObject(index) ?: continue
+            val key = wifiHistoryKey(network)
+            if (key.isBlank()) continue
+            val rssi = jsonIntOrNull(network, "rssi_dbm") ?: continue
+            val record = records.getOrPut(key) { JSONObject().put("key", key) }
+            record
+                .put("ssid", network.optString("ssid").ifBlank { "<hidden>" })
+                .put("bssid", network.optString("bssid"))
+                .put("bssid_vendor", network.optString("bssid_vendor").ifBlank { "Unknown vendor" })
+                .put("band", canonicalWifiBandLabel(network.optString("band"), network.optInt("frequency_mhz", 0)))
+                .put("security_mode", network.optString("security_mode").ifBlank { wifiSecurityLabel(network.optString("capabilities")) })
+                .put("frequency_mhz", network.optInt("frequency_mhz", 0))
+                .put("channel", network.opt("channel") ?: JSONObject.NULL)
+            val observations = record.optJSONArray("observations") ?: JSONArray()
+            observations.put(JSONObject().put("observed_at_ms", observedAtMs).put("rssi_dbm", rssi))
+            record.put("observations", trimWifiObservations(observations))
+        }
+        val ordered = records.values
+            .filter { record -> (record.optJSONArray("observations")?.length() ?: 0) > 0 }
+            .sortedWith(
+                compareByDescending<JSONObject> { lastWifiObservationTime(it) }
+                    .thenByDescending { currentWifiRssi(it) ?: Int.MIN_VALUE }
+                    .thenBy { it.optString("ssid") },
+            )
+            .take(MAX_WIFI_HISTORY_NETWORKS)
+        return JSONObject()
+            .put("updated_at_ms", observedAtMs)
+            .put("networks", JSONArray().also { array -> ordered.forEach(array::put) })
+    }
+
+    internal fun wifiSignalHistoryRowsFromStore(store: JSONObject, nowMs: Long = System.currentTimeMillis()): JSONArray {
+        val records = store.optJSONArray("networks") ?: JSONArray()
+        val rows = buildList {
+            for (index in 0 until records.length()) {
+                val record = records.optJSONObject(index) ?: continue
+                val observations = record.optJSONArray("observations") ?: continue
+                val rssiValues = buildList {
+                    for (sampleIndex in 0 until observations.length()) {
+                        jsonIntOrNull(observations.optJSONObject(sampleIndex) ?: continue, "rssi_dbm")?.let(::add)
+                    }
+                }
+                if (rssiValues.isEmpty()) continue
+                val firstRssi = rssiValues.first()
+                val currentRssi = rssiValues.last()
+                val averageRssi = (rssiValues.sum().toDouble() / rssiValues.size).roundToInt()
+                val trendDb = currentRssi - firstRssi
+                val lastSeenMs = (nowMs - lastWifiObservationTime(record)).coerceAtLeast(0L)
+                add(
+                    JSONObject()
+                        .put("ssid", record.optString("ssid").ifBlank { "<hidden>" })
+                        .put("bssid", record.optString("bssid"))
+                        .put("bssid_vendor", record.optString("bssid_vendor").ifBlank { "Unknown vendor" })
+                        .put("band", record.optString("band"))
+                        .put("security_mode", record.optString("security_mode"))
+                        .put("frequency_mhz", record.optInt("frequency_mhz", 0))
+                        .put("channel", record.opt("channel") ?: JSONObject.NULL)
+                        .put("sample_count", rssiValues.size)
+                        .put("current_rssi_dbm", currentRssi)
+                        .put("average_rssi_dbm", averageRssi)
+                        .put("min_rssi_dbm", rssiValues.minOrNull() ?: currentRssi)
+                        .put("max_rssi_dbm", rssiValues.maxOrNull() ?: currentRssi)
+                        .put("trend_db", trendDb)
+                        .put("trend_label", wifiSignalTrendLabel(trendDb))
+                        .put("last_seen_ms", lastSeenMs)
+                        .put("rssi_series", wifiObservationSeries(observations)),
+                )
+            }
+        }
+            .sortedWith(
+                compareByDescending<JSONObject> { it.optInt("current_rssi_dbm", Int.MIN_VALUE) }
+                    .thenByDescending { it.optInt("sample_count", 0) }
+                    .thenBy { it.optString("ssid") },
+            )
+            .take(MAX_WIFI_HISTORY_ROWS)
+        return JSONArray().also { array -> rows.forEach(array::put) }
+    }
+
     internal fun wifiChannelRatingRowsForMeasurements(measurements: List<WifiChannelMeasurement>): JSONArray {
         val usable = measurements
             .filter { it.channel > 0 && it.rssiDbm < 0 }
@@ -1963,6 +2063,71 @@ object HermesDeviceDiagnosticsBridge {
         counts[key] = (counts[key] ?: 0) + 1
     }
 
+    private fun updateWifiSignalHistory(context: Context, networks: JSONArray, observedAtMs: Long): JSONObject {
+        val prefs = context.getSharedPreferences(WIFI_SIGNAL_HISTORY_PREFS, Context.MODE_PRIVATE)
+        val existing = runCatching {
+            JSONObject(prefs.getString(WIFI_SIGNAL_HISTORY_KEY, "{}").orEmpty().ifBlank { "{}" })
+        }.getOrDefault(JSONObject())
+        val updated = mergeWifiSignalHistory(existing, networks, observedAtMs)
+        prefs.edit().putString(WIFI_SIGNAL_HISTORY_KEY, updated.toString()).apply()
+        return updated
+    }
+
+    private fun wifiHistoryKey(row: JSONObject): String {
+        val bssid = row.optString("bssid").trim().lowercase(Locale.US)
+        if (bssid.isNotBlank()) return bssid
+        val ssid = row.optString("ssid").trim().lowercase(Locale.US)
+        val frequency = row.optInt("frequency_mhz", 0)
+        val channel = row.opt("channel")?.toString().orEmpty()
+        return listOf(ssid, frequency.toString(), channel).joinToString("|").takeIf { ssid.isNotBlank() }.orEmpty()
+    }
+
+    private fun trimWifiObservations(observations: JSONArray): JSONArray {
+        val start = (observations.length() - MAX_WIFI_HISTORY_SAMPLES_PER_NETWORK).coerceAtLeast(0)
+        val trimmed = JSONArray()
+        for (index in start until observations.length()) {
+            observations.optJSONObject(index)?.let(trimmed::put)
+        }
+        return trimmed
+    }
+
+    private fun lastWifiObservationTime(record: JSONObject): Long {
+        val observations = record.optJSONArray("observations") ?: return 0L
+        for (index in observations.length() - 1 downTo 0) {
+            val time = observations.optJSONObject(index)?.optLong("observed_at_ms", 0L) ?: 0L
+            if (time > 0L) return time
+        }
+        return 0L
+    }
+
+    private fun currentWifiRssi(record: JSONObject): Int? {
+        val observations = record.optJSONArray("observations") ?: return null
+        for (index in observations.length() - 1 downTo 0) {
+            jsonIntOrNull(observations.optJSONObject(index) ?: continue, "rssi_dbm")?.let { return it }
+        }
+        return null
+    }
+
+    private fun wifiSignalTrendLabel(trendDb: Int): String = when {
+        trendDb >= 5 -> "improving"
+        trendDb <= -5 -> "fading"
+        else -> "stable"
+    }
+
+    private fun wifiObservationSeries(observations: JSONArray): JSONArray {
+        val series = JSONArray()
+        val start = (observations.length() - MAX_WIFI_HISTORY_SERIES_POINTS).coerceAtLeast(0)
+        for (index in start until observations.length()) {
+            val observation = observations.optJSONObject(index) ?: continue
+            series.put(
+                JSONObject()
+                    .put("observed_at_ms", observation.optLong("observed_at_ms", 0L))
+                    .put("rssi_dbm", jsonIntOrNull(observation, "rssi_dbm") ?: JSONObject.NULL),
+            )
+        }
+        return series
+    }
+
     private fun jsonIntOrNull(row: JSONObject, key: String): Int? {
         return when (val value = row.opt(key)) {
             is Number -> value.toInt()
@@ -2106,6 +2271,13 @@ object HermesDeviceDiagnosticsBridge {
     private const val MAX_WIFI_VENDOR_ROWS = 16
     private const val MAX_WIFI_VENDOR_DETAILS = 4
     private const val MAX_WIFI_FILTER_OPTIONS = 12
+    private const val MAX_WIFI_HISTORY_NETWORKS_PER_SCAN = 40
+    private const val MAX_WIFI_HISTORY_NETWORKS = 40
+    private const val MAX_WIFI_HISTORY_ROWS = 16
+    private const val MAX_WIFI_HISTORY_SAMPLES_PER_NETWORK = 12
+    private const val MAX_WIFI_HISTORY_SERIES_POINTS = 8
+    private const val WIFI_SIGNAL_HISTORY_PREFS = "hermes_wifi_signal_history"
+    private const val WIFI_SIGNAL_HISTORY_KEY = "signal_history"
     private const val MAX_BLUETOOTH_RESULTS = 40
     private const val MAX_BLUETOOTH_SERVICE_UUIDS_PER_DEVICE = 8
     private const val MAX_BLUETOOTH_MANUFACTURER_IDS_PER_DEVICE = 8

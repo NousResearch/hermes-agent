@@ -1,0 +1,328 @@
+---
+title: "Руководство по Windows (WSL2)"
+description: "Запустите Hermes Agent на Windows через WSL2: установка, доступ к файловой системе между Windows и Linux, сеть и типовые проблемы"
+sidebar_label: "Windows (WSL2)"
+sidebar_position: 2
+---
+
+# Руководство по Windows (WSL2)
+
+Hermes Agent теперь поддерживает **и нативный Windows, и WSL2**. Эта страница описывает именно путь через WSL2; для нативной установки из PowerShell откройте отдельное **[руководство по нативной Windows-установке](/user-guide/windows-native)**.
+
+**Когда стоит выбрать WSL2 вместо native:**
+- вам нужен встроенный терминал dashboard (`/chat` tab) — эта панель требует POSIX PTY и работает только в WSL2
+- вы ведёте POSIX-heavy разработку и хотите, чтобы сессии Hermes разделяли ту же файловую систему и те же пути, что и ваши инструменты разработки
+- у вас уже есть WSL2, и вы не хотите поддерживать ещё одну отдельную установку
+
+**Когда нативный Windows вполне подходит (или даже лучше):**
+- для интерактивного чата, gateway (Telegram/Discord и т. п.), cron scheduler, browser tool, MCP servers и большинства возможностей Hermes нативный Windows работает нормально
+- вам не хочется каждый раз думать, через какую сторону границы WSL↔Windows вы сейчас ходите
+
+В WSL2 по сути есть два компьютера: ваш Windows-host и Linux VM, которую управляет WSL. Большая часть путаницы возникает тогда, когда вы перестаёте понимать, на какой именно стороне находитесь в конкретный момент.
+
+Этот гид разбирает именно те части этой границы, которые важны для Hermes: установка WSL2, перенос файлов между Windows и Linux, сеть в обе стороны и реальные проблемы, на которые люди натыкаются чаще всего.
+
+## Зачем WSL2, а не нативный Windows
+
+Нативная установка Windows работает прямо в Windows: ваш Windows terminal (PowerShell, Windows Terminal и т. п.), пути Windows filesystem (`C:\Users\…`) и процессы Windows. Hermes использует Git Bash для выполнения shell-команд, и именно так сегодня работают Claude Code и похожие агенты на Windows — это позволяет обойти gap между POSIX и Windows без полной переписки.
+
+WSL2 запускает настоящий Linux kernel в лёгкой виртуальной машине, поэтому Hermes внутри него по сути ведёт себя так же, как на Ubuntu. Это ценно, когда вам нужен настоящий POSIX-environment: `fork`, `/tmp`, UNIX sockets, signal semantics, PTY-backed terminals, `bash`/`zsh` и инструменты вроде `rg`, `git`, `ffmpeg`, которые работают именно так, как вы привыкли на Linux.
+
+Практические следствия WSL2:
+
+- Hermes CLI, gateway, sessions, memory, skills и tool runtimes живут внутри Linux VM
+- Windows-программы (браузеры, нативные приложения, Chrome с вашим залогиненным профилем) живут снаружи
+- Каждый раз, когда вам нужно, чтобы они взаимодействовали — поделиться файлами, открыть URL, управлять Chrome, достучаться до локального model server, показать Hermes gateway телефону — вы пересекаете границу. Именно о таких границах и идёт речь в этом руководстве
+
+## Установите WSL2
+
+В **Admin PowerShell** или Windows Terminal выполните:
+
+```powershell
+wsl --install
+```
+
+На свежем Windows 10 22H2+ или Windows 11 это установит WSL2 kernel, Virtual Machine Platform и Ubuntu по умолчанию. После установки перезагрузитесь. Затем Ubuntu спросит имя и пароль Linux-пользователя — это **новый Linux-аккаунт**, не связанный с вашей Windows-учёткой.
+
+Проверьте, что у вас именно WSL2, а не устаревший WSL1:
+
+```powershell
+wsl --list --verbose
+```
+
+В списке должна быть `VERSION  2`. Если какая-то дистрибуция показывает `VERSION  1`, переведите её:
+
+```powershell
+wsl --set-version Ubuntu 2
+wsl --set-default-version 2
+```
+
+Hermes не работает надёжно на WSL1 — там Linux syscall-ы транслируются на лету, и часть поведения (procfs, signals, network) заметно отличается от настоящего Linux.
+
+### Выбор дистрибутива
+
+Ubuntu LTS — тот вариант, на котором мы тестируем. Debian тоже подходит. Arch и NixOS работают у тех, кому они нужны, но однокомандный установщик предполагает Debian-подобный `apt` — для Nix-пути смотрите [руководство по настройке Nix](/getting-started/nix-setup).
+
+### Включите systemd (рекомендуется)
+
+Hermes gateway и вообще любые long-lived процессы удобнее держать под systemd. В современных сборках WSL включите его один раз внутри дистрибутива:
+
+```bash
+sudo tee /etc/wsl.conf >/dev/null <<'EOF'
+[boot]
+systemd=true
+
+[interop]
+enabled=true
+appendWindowsPath=true
+
+[automount]
+options = "metadata,umask=22,fmask=11"
+EOF
+```
+
+Затем из PowerShell:
+
+```powershell
+wsl --shutdown
+```
+
+Снова откройте терминал WSL. Команда `ps -p 1 -o comm=` должна показать `systemd`.
+
+Опция `metadata` выше важна: без неё файлы на `/mnt/c/...` не могут хранить настоящие Linux permission bits, и из-за этого ломаются вещи вроде `chmod +x` для скриптов на Windows-пути.
+
+### Установите Hermes внутри WSL
+
+Как только у вас открыт shell в WSL2:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+source ~/.bashrc
+hermes
+```
+
+Установщик считает WSL2 обычным Linux — ничего специфичного для WSL делать не нужно. Полная схема установки описана в [Установке](/getting-started/installation).
+
+## Файловая система: как пересекать границу Windows ↔ WSL2
+
+Вот здесь чаще всего и случается путаница. У вас есть **две файловые системы**, и то, куда вы положите файлы, влияет на производительность, корректность и на то, какие инструменты вообще их увидят.
+
+### Два направления
+
+| Направление | Вид изнутри | Что использовать |
+|---|---|---|
+| Windows disk, видимый из WSL | `C:\Users\you\Documents` | `/mnt/c/Users/you/Documents` |
+| WSL disk, видимый из Windows | `/home/you/code` | `\\wsl$\Ubuntu\home\you\code` (или `\\wsl.localhost\Ubuntu\...` на новых сборках) |
+
+Оба варианта реальны и рабочие, но это **не одна и та же файловая система** — под капотом их связывает 9P network protocol. У этого есть серьёзные последствия по скорости и семантике.
+
+### Где хранить Hermes и проекты
+
+**Правило большого пальца: всё Linux-подобное держите внутри Linux filesystem.**
+
+- Hermes install (`~/.hermes/`) — на Linux side. Установщик уже делает именно так.
+- Git-репозитории, с которыми вы работаете из WSL — на Linux side (`~/code/...`, `~/projects/...`).
+- Модели, датасеты, venv — тоже на Linux side.
+
+Что вы выигрываете, если следуете этому правилу:
+
+- **Быстрый I/O.** Операции над `/mnt/c/...` идут через 9P и могут быть в 10–100 раз медленнее, чем на нативном ext4. `git status` на репозитории с 10k файлов, который под `~/code` кажется мгновенным, под `/mnt/c` легко превращается в 15+ секунд.
+- **Корректные права.** Linux permissions на `/mnt/c` эмулируются примерно. Проблемы вроде `ssh`-ключа с ошибкой `bad permissions` или тихо не сработавшего `chmod +x` встречаются постоянно.
+- **Надёжные file watchers.** inotify через 9P работает нестабильно — dev server-ы и тест-раннеры часто пропускают изменения на `/mnt/c`.
+- **Без сюрпризов с case-sensitivity.** Windows-пути обычно case-insensitive; Linux — case-sensitive. Проекты с `Readme.md` и `README.md` ведут себя по-разному в зависимости от стороны.
+
+Кладите всё на `/mnt/c` только если вам **обязательно** нужно, чтобы файл жил на Windows-side — например, вы хотите открыть его в Windows GUI-приложении или Chrome DevTools MCP должен работать из Windows-reachable пути.
+
+### Как переносить файлы туда и обратно
+
+**Из Windows в WSL:** проще всего открыть Explorer и ввести `\\wsl.localhost\Ubuntu` в адресную строку. Дальше можно перетаскивать файлы в `\home\<you>\...`. Или из PowerShell:
+
+```powershell
+wsl cp /mnt/c/Users/you/Downloads/file.pdf ~/incoming/
+```
+
+**Из WSL в Windows:** скопируйте файл в `/mnt/c/Users/<you>/...`, и он сразу появится в Windows Explorer:
+
+```bash
+cp ~/reports/output.pdf /mnt/c/Users/you/Desktop/
+```
+
+**Открыть файл из WSL в Windows-приложении** (GUI-editor, browser и т. п.): используйте `explorer.exe` или `wslview`:
+
+```bash
+sudo apt install wslu     # once — gives you wslview, wslpath, wslopen, etc.
+wslview ~/reports/output.pdf    # opens with the Windows default handler
+explorer.exe .                  # opens the current WSL dir in Windows Explorer
+```
+
+**Конвертировать пути между двумя мирами:**
+
+```bash
+wslpath -w ~/code/project        # → \\wsl.localhost\Ubuntu\home\you\code\project
+wslpath -u 'C:\Users\you'        # → /mnt/c/Users/you
+```
+
+### Line endings, BOMs и git
+
+Если вы редактируете файлы на Windows-side в Windows-редакторе, они могут получить `CRLF` line endings. Когда `bash` или Python на Linux-side читает такие файлы, shell scripts ломаются с `bad interpreter: /bin/bash^M`, а Python может споткнуться о `.env` с BOM.
+
+Лечится это нормальной git config внутри WSL (не на Windows):
+
+```bash
+git config --global core.autocrlf input
+git config --global core.eol lf
+```
+
+Если файлы уже с CRLF:
+
+```bash
+sudo apt install dos2unix
+dos2unix path/to/script.sh
+```
+
+### Что лучше: клонировать внутри WSL или на `/mnt/c`?
+
+Клонируйте внутри WSL. Всегда, если только у вас нет конкретной причины делать иначе. Типичный Hermes workflow (`hermes chat`, tool calls, которые `rg`-ают репозиторий, file watchers, background gateway) будет намного быстрее и надёжнее на `~/code/myrepo`, чем на `/mnt/c/Users/you/myrepo`.
+
+Единственное исключение — **MCP bridges, которые запускают Windows binaries**. Если вы используете `chrome-devtools-mcp` через `cmd.exe` (см. [руководство MCP: WSL → Windows Chrome](/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)), Windows может выдать `UNC` warning, если текущая директория Hermes находится в `~`. В этом случае запускайте Hermes из `/mnt/c/`, чтобы Windows-процесс видел cwd с буквой диска.
+
+## Сеть: WSL ↔ Windows
+
+WSL2 живёт в лёгкой VM со своим network stack. Это значит, что `localhost` внутри WSL — **не то же самое**, что `localhost` на Windows. Для каждого сервиса нужно отдельно решить, в какую сторону идёт трафик, и выбрать подходящий bridge.
+
+Чаще всего встречаются два сценария.
+
+### Сценарий 1 — Hermes в WSL ходит к сервису на Windows
+
+Самый частый случай: у вас на Windows запущен **Ollama, LM Studio или llama-server**, а Hermes внутри WSL должен к нему обращаться.
+
+Подробная инструкция лежит в гайде по провайдерам: **[WSL2 Networking for Local Models →](/integrations/providers#wsl2-networking-windows-users)**
+
+Коротко:
+
+- **Windows 11 22H2+**: включите mirrored networking mode (`networkingMode=mirrored` в `%USERPROFILE%\.wslconfig`, затем `wsl --shutdown`). Тогда `localhost` работает в обе стороны.
+- **Windows 10 и более старые сборки**: используйте Windows host IP (default gateway виртуальной сети WSL) и убедитесь, что сервер на Windows слушает `0.0.0.0`, а не только `127.0.0.1`. Обычно ещё нужен firewall rule на порт.
+
+Полная таблица с bind address для Ollama / LM Studio / vLLM / SGLang, one-liner-ами для firewall, помощниками для динамического IP и workaround для Hyper-V firewall — в ссылке выше. Здесь мы не дублируем всё это заново.
+
+### Сценарий 2 — что-то на Windows (или в LAN) ходит к Hermes в WSL
+
+Это reverse direction и про него обычно говорят меньше, но он нужен для:
+
+- использования Hermes web dashboard из Windows browser;
+- использования **OpenAI-compatible API server** (который даёт `hermes gateway`, если `API_SERVER_ENABLED=true`) из Windows-side tool. См. [страницу API Server](/user-guide/features/api-server);
+- тестирования **messaging gateway** (Telegram, Discord и т. п.), когда платформа присылает webhook на локальный URL — тут чаще всего лучше использовать `cloudflared`/`ngrok`, а не прямой port forwarding.
+
+#### Подсценарий 2a: с самого Windows host
+
+На **Windows 11 22H2+ с включённым mirrored mode** ничего делать не нужно. Процесс в WSL, который слушает `0.0.0.0:8080` (или даже `127.0.0.1:8080`), доступен из Windows browser по `http://localhost:8080`. WSL автоматически пробрасывает bind обратно на host.
+
+В **NAT mode** (Windows 10 / старые Windows 11) стандартный localhost forwarding в WSL2 обычно пробрасывает Linux-side `127.0.0.1` на Windows `localhost`, так что Hermes service, запущенный с `--host 127.0.0.1`, обычно доступен как `http://localhost:PORT` из Windows. Если нет:
+
+- явно привяжитесь к `0.0.0.0` внутри WSL;
+- узнайте IP WSL VM через `ip -4 addr show eth0 | grep inet` и обращайтесь к нему из Windows.
+
+#### Подсценарий 2b: с другого устройства в вашей LAN (телефон, планшет, другой ПК)
+
+Вот это и есть самый неприятный случай. Трафик идёт **LAN device → Windows host → WSL VM**, и вам нужно настроить оба перехода:
+
+1. **Привяжитесь ко всем интерфейсам внутри WSL.** Процесс, слушающий `127.0.0.1`, никогда не будет доступен снаружи VM. Используйте `0.0.0.0`.
+
+2. **Настройте port-forward Windows → WSL VM.** В mirrored mode это делается автоматически. В NAT mode всё нужно прописать вручную, для каждого порта, в Admin PowerShell:
+
+   ```powershell
+   # Grab the WSL VM's current IP (it changes on every WSL restart under NAT)
+   $wslIp = (wsl hostname -I).Trim().Split(' ')[0]
+
+   # Forward Windows port 8080 → WSL:8080
+   netsh interface portproxy add v4tov4 `
+     listenaddress=0.0.0.0 listenport=8080 `
+     connectaddress=$wslIp connectport=8080
+
+   # Allow it through Windows Firewall
+   New-NetFirewallRule -DisplayName "Hermes WSL 8080" `
+     -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
+   ```
+
+   Удалить правило потом можно так: `netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=8080`.
+
+3. **Направьте LAN device на `http://<windows-lan-ip>:8080`.**
+
+Поскольку IP WSL VM при NAT mode меняется после каждого `wsl --shutdown`, одноразовое правило живёт только до следующего рестарта WSL. Для постоянной схемы либо используйте mirrored mode, либо вынесите port-proxy в скрипт, который запускается при входе в Windows.
+
+Для webhook-ов от cloud messaging providers (Telegram `setWebhook`, Slack events и т. п.) не мучайте себя port-forwarding-ом — используйте `cloudflared` tunnels. См. [руководство по webhook-ам](/user-guide/messaging/webhooks).
+
+## Как долго держать Hermes services на Windows
+
+Hermes [Tool Gateway](/user-guide/features/tool-gateway) и API server — long-lived processes. В WSL2 у вас есть несколько вариантов, как держать их живыми.
+
+### Внутри WSL с systemd (рекомендуется)
+
+Если вы включили systemd по инструкции выше, `hermes gateway` и API server работают так же, как на любом Linux. Используйте wizard настройки gateway:
+
+```bash
+hermes gateway setup
+```
+
+Он предложит установить systemd user unit, чтобы gateway стартовал автоматически вместе с WSL.
+
+### Чтобы сам WSL запускался при входе в Windows
+
+WSL VM живёт только пока её кто-то использует. Чтобы gateway оставался доступен даже без открытого окна терминала, запустите WSL process через Task Scheduler при логине Windows:
+
+- **Trigger:** At log on (ваш пользователь)
+- **Action:** Start a program
+  - Program: `C:\Windows\System32\wsl.exe`
+  - Arguments: `-d Ubuntu --exec /bin/sh -c "sleep infinity"`
+
+Так VM будет жить, а systemd-managed gateway останется поднятым. На Windows 11 также работают более новые потоки автозапуска WSL, но `sleep infinity` — самый переносимый вариант.
+
+## GPU passthrough (local models)
+
+WSL2 нативно поддерживает **NVIDIA** GPU начиная с WSL kernel 5.10.43+. Поставьте обычный NVIDIA driver на Windows (Linux NVIDIA driver внутри WSL ставить **не нужно**), и `nvidia-smi` внутри WSL увидит GPU. После этого CUDA toolkits, `torch`, `vllm`, `sglang` и `llama-server` собираются и работают на реальном GPU как обычно.
+
+Поддержка AMD ROCm и Intel Arc внутри WSL2 всё ещё развивается и находится вне тестовой матрицы Hermes — возможно, оно и работает с текущими драйверами, но мы не можем дать надёжную рекомендуемую схему.
+
+Если вы запускаете **Windows-native** local-model server (Ollama for Windows, LM Studio), который уже использует ваш GPU через Windows driver, WSL GPU passthrough вам не нужен вовсе — просто следуйте Сценарию 1 и обращайтесь к нему по сети из WSL.
+
+## Типовые проблемы
+
+**"Connection refused" к моему Windows-hosted Ollama / LM Studio.**
+Смотрите [WSL2 Networking](/integrations/providers#wsl2-networking-windows-users). В девяти случаях из десяти сервер привязан к `127.0.0.1` и его нужно перевести на `0.0.0.0` (для Ollama: `OLLAMA_HOST=0.0.0.0`), либо у вас не хватает firewall rule.
+
+**Сильная медлительность `git status` / `hermes chat` в репозитории.**
+Скорее всего, проект лежит под `/mnt/c/...`. Перенесите его в `~/code/...` (Linux side). Разница по скорости обычно на порядок.
+
+**`bad interpreter: /bin/bash^M` у скриптов.**
+Это CRLF line endings из Windows-редактора. Прогоните `dos2unix script.sh` и задайте `core.autocrlf input` в git config внутри WSL.
+
+**Предупреждение "UNC paths are not supported" от Windows binaries, запущенных через MCP.**
+cwd Hermes находится внутри Linux filesystem, а `cmd.exe` на Windows не знает, что с ним делать. Запускайте Hermes из `/mnt/c/...` в этой сессии либо используйте wrapper, который перед вызовом Windows executable делает `cd` в путь, доступный Windows.
+
+**Clock drift после sleep / hibernate.**
+Часы WSL2 могут отставать на несколько минут после пробуждения хоста, а это ломает всё, что завязано на сертификаты и OAuth. Исправляется так:
+
+```bash
+sudo hwclock -s
+```
+
+Или установите `ntpdate` и запускайте его при логине.
+
+**После включения mirrored mode или при VPN пропадает DNS.**
+Mirrored mode проксирует настройки сети хоста в WSL — если DNS на Windows сломан (VPN split-tunnel, корпоративный resolver), WSL унаследует ту же проблему. Workaround: вручную переопределите `resolv.conf` (поставьте `generateResolvConf=false` в `/etc/wsl.conf`, затем пропишите свой `/etc/resolv.conf` с `1.1.1.1` или DNS вашего VPN).
+
+**`hermes` не найден после установки.**
+Установщик добавляет `~/.local/bin` в PATH через `~/.bashrc`. Чтобы это заработало в текущей сессии, выполните `source ~/.bashrc` (или откройте новый терминал).
+
+**Windows Defender тормозит WSL-файлы.**
+Defender сканирует файлы через 9P-bridge при обращении из Windows, и из-за этого замедление `/mnt/c` только усиливается. Если вы работаете с WSL-файлами только изнутри WSL, это не критично. Если вы часто открываете `\\wsl$\...` из Windows-инструментов, подумайте об исключении пути дистрибутива WSL из real-time scanning.
+
+**Заканчивается диск.**
+WSL2 хранит VM disk как sparse VHDX в `%LOCALAPPDATA%\Packages\...`. Он растёт, но не shrinks автоматически после удаления файлов. Чтобы вернуть место: `wsl --shutdown`, затем из Admin PowerShell выполните `Optimize-VHD -Path <path-to-ext4.vhdx> -Mode Full` (нужны Hyper-V tools) — либо используйте более простой `diskpart` путь, который описан в документации WSL.
+
+## Куда идти дальше
+
+- **[Установка](/getting-started/installation)** — реальные шаги установки (Linux/WSL2/Termux используют один и тот же installer)
+- **[Integrations → Providers → WSL2 Networking](/integrations/providers#wsl2-networking-windows-users)** — canonical deep-dive по сети для local model servers
+- **[Руководство MCP → WSL → Windows Chrome](/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** — управление вашим уже залогиненным Windows Chrome из Hermes в WSL
+- **[Шлюз инструментов](/user-guide/features/tool-gateway)** и **[Веб-панель](/user-guide/features/web-dashboard)** — long-lived services, которые чаще всего хочется открыть из WSL в остальную сеть

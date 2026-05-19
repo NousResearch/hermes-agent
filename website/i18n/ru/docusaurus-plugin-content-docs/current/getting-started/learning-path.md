@@ -1,0 +1,154 @@
+---
+sidebar_position: 3
+title: "Путь обучения"
+description: "Выберите маршрут по документации Hermes Agent в зависимости от опыта и целей"
+---
+
+# Путь обучения
+
+Hermes Agent умеет многое — CLI-ассистент, Telegram/Discord-бот, автоматизация задач, RL training и не только. Эта страница помогает понять, с чего начать и что читать дальше в зависимости от вашего уровня и того, чего вы хотите добиться.
+
+:::tip Начните отсюда
+Если Hermes Agent ещё не установлен, сначала откройте [руководство по установке](/getting-started/installation), а затем пройдите [Быстрый старт](/getting-started/quickstart). Всё, что написано ниже, предполагает уже рабочую установку.
+:::
+
+## Как пользоваться этой страницей
+
+- **Знаете свой уровень?** Перейдите к [таблице по уровню опыта](#by-experience-level) и следуйте рекомендованному порядку чтения.
+- **Есть конкретная цель?** Перейдите к разделу [По сценарию](#by-use-case) и выберите сценарий, который вам подходит.
+- **Просто смотрите вокруг?** Посмотрите таблицу [Ключевые возможности](#key-features-at-a-glance), чтобы быстро понять, что умеет Hermes Agent.
+
+## По уровню опыта {#by-experience-level}
+
+| Уровень | Цель | Рекомендуемое чтение | Время |
+|---|---|---|---|
+| **Начальный** | Встать на ноги, начать базовый чат, пользоваться встроенными инструментами | [Установка](/getting-started/installation) → [Быстрый старт](/getting-started/quickstart) → [Использование CLI](/user-guide/cli) → [Конфигурация](/user-guide/configuration) | ~1 час |
+| **Средний** | Настроить messaging-ботов, освоить продвинутые возможности вроде memory, cron jobs и skills | [Сеансы](/user-guide/sessions) → [Сообщения](/user-guide/messaging) → [Инструменты](/user-guide/features/tools) → [Навыки](/user-guide/features/skills) → [Память](/user-guide/features/memory) → [Cron](/user-guide/features/cron) | ~2–3 часа |
+| **Продвинутый** | Создавать собственные инструменты, писать skills, обучать модели через RL и вносить вклад в проект | [Архитектура](/developer-guide/architecture) → [Добавление инструментов](/developer-guide/adding-tools) → [Создание навыков](/developer-guide/creating-skills) → RL training → [Вклад в проект](/developer-guide/contributing) | ~4–6 часов |
+
+## По сценарию {#by-use-case}
+
+Выберите сценарий, который лучше всего описывает вашу задачу. Каждый пункт ведёт к нужным страницам в том порядке, в каком их лучше читать.
+
+### «Хочу CLI-ассистента для кода»
+
+Используйте Hermes Agent как интерактивный терминальный ассистент для написания, ревью и запуска кода.
+
+1. [Установка](/getting-started/installation)
+2. [Быстрый старт](/getting-started/quickstart)
+3. [Использование CLI](/user-guide/cli)
+4. [Выполнение кода](/user-guide/features/code-execution)
+5. [Файлы контекста](/user-guide/features/context-files)
+6. [Советы и приёмы](/guides/tips)
+
+:::tip
+Передавайте файлы прямо в разговор через context files. Hermes Agent умеет читать, редактировать и запускать код в ваших проектах.
+:::
+
+### «Хочу Telegram/Discord-бота»
+
+Разверните Hermes Agent как бота на любимой messaging platform.
+
+1. [Установка](/getting-started/installation)
+2. [Конфигурация](/user-guide/configuration)
+3. [Обзор messaging](/user-guide/messaging)
+4. [Настройка Telegram](/user-guide/messaging/telegram)
+5. [Настройка Discord](/user-guide/messaging/discord)
+6. [Голосовой режим](/user-guide/features/voice-mode)
+7. [Использование голосового режима с Hermes](/guides/use-voice-mode-with-hermes)
+8. [Безопасность](/user-guide/security)
+
+Для полноценных примеров проектов смотрите:
+- [Daily Briefing Bot](/guides/daily-briefing-bot)
+- [Team Telegram Assistant](/guides/team-telegram-assistant)
+
+### «Хочу автоматизировать задачи»
+
+Запускайте повторяющиеся задачи по расписанию, пакетные процессы или цепочки действий агента.
+
+1. [Быстрый старт](/getting-started/quickstart)
+2. [Планирование задач Cron](/user-guide/features/cron)
+3. [Пакетная обработка](/user-guide/features/batch-processing)
+4. [Делегирование](/user-guide/features/delegation)
+5. [Хуки](/user-guide/features/hooks)
+
+:::tip
+Cron jobs позволяют Hermes Agent запускать задачи по расписанию — ежедневные сводки, периодические проверки, автоматические отчёты — без вашего присутствия.
+:::
+
+### «Хочу писать собственные инструменты/skills»
+
+Расширяйте Hermes Agent своими инструментами и reusable skill-пакетами.
+
+1. [Плагины](/user-guide/features/plugins)
+2. [Создание плагина Hermes](/guides/build-a-hermes-plugin)
+3. [Обзор инструментов](/user-guide/features/tools)
+4. [Обзор навыков](/user-guide/features/skills)
+5. [MCP (Model Context Protocol)](/user-guide/features/mcp)
+6. [Архитектура](/developer-guide/architecture)
+7. [Добавление инструментов](/developer-guide/adding-tools)
+8. [Создание навыков](/developer-guide/creating-skills)
+
+:::tip
+Для большинства пользовательских инструментов лучше начинать с плагинов. Страница [Добавление инструментов](/developer-guide/adding-tools) относится к встроенной core-разработке Hermes, а не к обычному пути пользовательских расширений.
+:::
+
+### «Хочу обучать модели»
+
+Используйте reinforcement learning, чтобы донастроить поведение модели с помощью встроенного RL training pipeline Hermes Agent.
+
+1. [Быстрый старт](/getting-started/quickstart)
+2. [Конфигурация](/user-guide/configuration)
+3. RL training
+4. [Маршрутизация провайдеров](/user-guide/features/provider-routing)
+5. [Архитектура](/developer-guide/architecture)
+
+:::tip
+RL training лучше всего работает, когда вы уже понимаете базовые принципы разговоров и tool calls в Hermes Agent. Если вы новичок, сначала пройдите маршрут для начального уровня.
+:::
+
+### «Хочу использовать его как Python library»
+
+Интегрируйте Hermes Agent в собственные Python-приложения программно.
+
+1. [Установка](/getting-started/installation)
+2. [Быстрый старт](/getting-started/quickstart)
+3. [Руководство по Python-библиотеке](/guides/python-library)
+4. [Архитектура](/developer-guide/architecture)
+5. [Инструменты](/user-guide/features/tools)
+6. [Сеансы](/user-guide/sessions)
+
+## Ключевые возможности в одном месте {#key-features-at-a-glance}
+
+Не уверены, что именно доступно? Вот короткий справочник по основным возможностям:
+
+| Возможность | Что делает | Ссылка |
+|---|---|---|
+| **Инструменты** | Встроенные инструменты, которые агент может вызывать (file I/O, search, shell и т. п.) | [Инструменты](/user-guide/features/tools) |
+| **Навыки** | Устанавливаемые plugin-пакеты, которые добавляют новые возможности | [Навыки](/user-guide/features/skills) |
+| **Память** | Постоянная память между сессиями | [Память](/user-guide/features/memory) |
+| **Файлы контекста** | Передача файлов и директорий в разговор | [Файлы контекста](/user-guide/features/context-files) |
+| **MCP** | Подключение к внешним tool servers через Model Context Protocol | [MCP](/user-guide/features/mcp) |
+| **Cron** | Планирование повторяющихся задач агента | [Cron](/user-guide/features/cron) |
+| **Делегирование** | Запуск подагентов для параллельной работы | [Делегирование](/user-guide/features/delegation) |
+| **Выполнение кода** | Запуск Python-скриптов, которые программно обращаются к инструментам Hermes | [Выполнение кода](/user-guide/features/code-execution) |
+| **Браузер** | Веб-обзор и scraping | [Браузер](/user-guide/features/browser) |
+| **Хуки** | Событийные callbacks и middleware | [Хуки](/user-guide/features/hooks) |
+| **Пакетная обработка** | Пакетная обработка нескольких входов | [Пакетная обработка](/user-guide/features/batch-processing) |
+| **RL training** | Дообучение моделей с reinforcement learning | RL training |
+| **Маршрутизация провайдеров** | Маршрутизация запросов между несколькими LLM-провайдерами | [Маршрутизация провайдеров](/user-guide/features/provider-routing) |
+
+## Что читать дальше
+
+В зависимости от того, где вы сейчас:
+
+- **Только что закончили установку?** → Идите в [Быстрый старт](/getting-started/quickstart), чтобы провести первый разговор.
+- **Закончили быстрый старт?** → Читайте [Использование CLI](/user-guide/cli) и [Конфигурация](/user-guide/configuration), чтобы подстроить систему под себя.
+- **Уже уверенно чувствуете себя на базовом уровне?** → Исследуйте [Инструменты](/user-guide/features/tools), [Навыки](/user-guide/features/skills) и [Память](/user-guide/features/memory), чтобы раскрыть агент по максимуму.
+- **Настраиваете всё для команды?** → Читайте [Безопасность](/user-guide/security) и [Сеансы](/user-guide/sessions), чтобы понять контроль доступа и управление разговорами.
+- **Готовы строить своё?** → Переходите в [Руководство для разработчиков](/developer-guide/architecture), чтобы разобраться во внутренностях и начать вклад в проект.
+- **Нужны практические примеры?** → Посмотрите раздел [Гайды](/guides/tips) — там собраны реальные проекты и советы.
+
+:::tip
+Не обязательно читать всё подряд. Выберите маршрут под свою цель, идите по ссылкам в указанном порядке — и довольно быстро станете продуктивны. К этой странице всегда можно вернуться, когда понадобится следующий шаг.
+:::

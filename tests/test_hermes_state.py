@@ -535,6 +535,112 @@ class TestMessageStorage:
         assert conv[0]["codex_reasoning_items"] == codex_items
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
 
+    # ---- timestamp preservation tests ----
+
+    def test_append_message_explicit_timestamp(self, db):
+        """append_message() with explicit timestamp should store that value."""
+        import time
+
+        db.create_session(session_id="s1", source="cli")
+        explicit_ts = 1700000000.0
+        db.append_message("s1", role="user", content="hello", timestamp=explicit_ts)
+
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 1
+        assert msgs[0]["timestamp"] == explicit_ts
+
+    def test_append_message_default_timestamp(self, db):
+        """append_message() without timestamp should use current time."""
+        import time
+
+        db.create_session(session_id="s1", source="cli")
+        before = time.time()
+        db.append_message("s1", role="user", content="hello")
+        after = time.time()
+
+        msgs = db.get_messages("s1")
+        assert before <= msgs[0]["timestamp"] <= after
+
+    def test_replace_messages_preserves_timestamps(self, db):
+        """replace_messages() should preserve per-message timestamps."""
+        db.create_session(session_id="s1", source="cli")
+
+        original_ts1 = 1700000000.0
+        original_ts2 = 1700000010.0
+
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": "hello", "timestamp": original_ts1},
+                {"role": "assistant", "content": "hi", "timestamp": original_ts2},
+            ],
+        )
+
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 2
+        assert msgs[0]["timestamp"] == original_ts1
+        assert msgs[1]["timestamp"] == original_ts2
+
+    def test_replace_messages_falls_back_to_now(self, db):
+        """replace_messages() for messages without timestamp should use now_ts."""
+        import time
+
+        db.create_session(session_id="s1", source="cli")
+
+        before = time.time()
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": "no timestamp"},
+                {"role": "assistant", "content": "also none"},
+            ],
+        )
+        after = time.time()
+
+        msgs = db.get_messages("s1")
+        assert before <= msgs[0]["timestamp"] <= after
+        assert before <= msgs[1]["timestamp"] <= after
+
+    def test_replace_messages_mixed_timestamps(self, db):
+        """replace_messages() with mixed explicit/default timestamps."""
+        import time
+
+        db.create_session(session_id="s1", source="cli")
+        explicit_ts = 1700000000.0
+
+        before = time.time()
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": "explicit", "timestamp": explicit_ts},
+                {"role": "assistant", "content": "default"},
+            ],
+        )
+        after = time.time()
+
+        msgs = db.get_messages("s1")
+        assert msgs[0]["timestamp"] == explicit_ts
+        assert before <= msgs[1]["timestamp"] <= after
+
+    def test_fork_preserves_timestamps(self, db):
+        """Messages copied via fork/branch should retain original timestamps."""
+        db.create_session(session_id="parent", source="cli")
+        original_ts = 1700000000.0
+        db.append_message("parent", role="user", content="hello", timestamp=original_ts)
+
+        # Simulate fork: get messages, create child, re-insert with timestamp
+        parent_msgs = db.get_messages("parent")
+        db.create_session(session_id="child", source="cli")
+        db.append_message(
+            "child",
+            role=parent_msgs[0]["role"],
+            content=parent_msgs[0]["content"],
+            timestamp=parent_msgs[0].get("timestamp"),
+        )
+
+        child_msgs = db.get_messages("child")
+        assert child_msgs[0]["timestamp"] == original_ts
+
 
 # =========================================================================
 # FTS5 search

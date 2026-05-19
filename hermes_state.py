@@ -1445,6 +1445,7 @@ class SessionDB:
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
+        timestamp: float = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -1489,7 +1490,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
-                    time.time(),
+                    timestamp if timestamp is not None else time.time(),
                     token_count,
                     finish_reason,
                     reasoning,
@@ -1572,7 +1573,7 @@ class SessionDB:
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
-                        now_ts,
+                        msg.get("timestamp", now_ts),
                         msg.get("token_count"),
                         msg.get("finish_reason"),
                         msg.get("reasoning") if role == "assistant" else None,

@@ -1,0 +1,62 @@
+{
+  "28417": {
+    "title": "[Bug]: 使用telegram和微信会话，会话着会自动自动中断，往往一个问答还没结束就中断了，需要很久才能恢复会话，但是也会再次中断",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28417",
+    "seen_at": "2026-05-19T07:53:46.619606+00:00"
+  },
+  "28389": {
+    "title": "NameError: _pool_may_recover_from_rate_limit not imported into extracted agent/conversation_loop.py",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28389",
+    "seen_at": "2026-05-19T07:53:46.619879+00:00"
+  },
+  "28300": {
+    "title": "Modal terminal backend: blocking Modal API called from a running event loop → \"Task was destroyed but it is pending\" / \"no running event loop\"",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28300",
+    "seen_at": "2026-05-19T07:53:46.620973+00:00"
+  },
+  "28662": {
+    "title": "[Bug]: hermes cron list crashes with AttributeError on jobs created via cronjob MCP tool",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28662",
+    "seen_at": "2026-05-19T13:54:50.845139+00:00"
+  },
+  "28647": {
+    "title": "[Bug]: Wechat adapter:  ingest some arxiv paper error",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28647",
+    "seen_at": "2026-05-19T13:54:50.859643+00:00"
+  },
+  "28902": {
+    "title": "OAuth Anthropic Max: <available_skills> system-prompt injection on every turn triggers \"out of extra usage\" 400 when skills/session_search toolsets are active",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28902",
+    "seen_at": "2026-05-19T19:55:52.301310+00:00"
+  },
+  "28890": {
+    "title": "[Bug]: `skills/creative/baoyu-comic` redistributes trademarked comic characters",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28890",
+    "seen_at": "2026-05-19T19:55:52.331421+00:00"
+  },
+  "28886": {
+    "title": "[Bug]: Gateway /model picker does not fetch dynamic Portal API recommendations",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28886",
+    "seen_at": "2026-05-19T19:55:52.331953+00:00"
+  },
+  "28841": {
+    "title": "messages.timestamp is always DB write-time, lost during fork/compress/branch",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28841",
+    "seen_at": "2026-05-19T19:55:52.332777+00:00"
+  },
+  "28834": {
+    "title": "[Bug]: Agent tool calls freeze mid-execution — output stops at [Calling tool: ...] with no response, /goal unblocks",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28834",
+    "seen_at": "2026-05-19T19:55:52.333424+00:00"
+  },
+  "28809": {
+    "title": "feat: cooperative cancellation token for concurrent tool execution",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28809",
+    "seen_at": "2026-05-19T19:55:52.334121+00:00"
+  },
+  "28807": {
+    "title": "No startup reconciliation: sandboxes orphaned by a gateway restart are never reaped",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28807",
+    "seen_at": "2026-05-19T19:55:52.334774+00:00"
+  }
+}

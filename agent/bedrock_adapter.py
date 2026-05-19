@@ -381,6 +381,62 @@ def _model_supports_tool_use(model_id: str) -> bool:
     return not any(pattern in model_lower for pattern in _NON_TOOL_CALLING_PATTERNS)
 
 
+_APPLICATION_PROFILE_FAMILY_CACHE: Dict[str, Optional[str]] = {}
+
+_APPLICATION_PROFILE_ARN_RE = re.compile(
+    r"^arn:aws:bedrock:(?P<region>[\w-]+):\d+:application-inference-profile/[\w-]+$",
+    re.IGNORECASE,
+)
+
+
+def _resolve_application_inference_profile_family(arn: str) -> Optional[str]:
+    """Resolve the foundation-model family (e.g. ``anthropic``) behind an
+    application-inference-profile ARN.
+
+    Application inference profiles are user-defined wrappers around a
+    foundation model (or another inference profile) used for cost allocation
+    and tagging. Their ARN does not contain the underlying model name, so we
+    look it up via ``bedrock.GetInferenceProfile`` and inspect the first
+    referenced ``modelArn``.
+
+    Results are cached in-process. On any failure (network, IAM, unknown
+    shape) we cache ``None`` so callers gracefully fall through to the
+    Converse API path.
+    """
+    if arn in _APPLICATION_PROFILE_FAMILY_CACHE:
+        return _APPLICATION_PROFILE_FAMILY_CACHE[arn]
+
+    match = _APPLICATION_PROFILE_ARN_RE.match(arn)
+    if not match:
+        _APPLICATION_PROFILE_FAMILY_CACHE[arn] = None
+        return None
+    region = match.group("region")
+
+    family: Optional[str] = None
+    try:
+        client = _get_bedrock_control_client(region)
+        resp = client.get_inference_profile(inferenceProfileIdentifier=arn)
+        for entry in resp.get("models", []):
+            model_arn = (entry.get("modelArn") or "").lower()
+            fm = re.search(r"foundation-model/([\w.:-]+)", model_arn)
+            if not fm:
+                continue
+            fm_id = fm.group(1)
+            family = fm_id.split(".", 1)[0] if "." in fm_id else fm_id
+            break
+    except Exception as exc:
+        logger.warning(
+            "Could not resolve application-inference-profile %s family via "
+            "GetInferenceProfile (%s); falling back to Converse path. "
+            "Grant 'bedrock:GetInferenceProfile' for full Anthropic SDK features.",
+            arn,
+            exc,
+        )
+
+    _APPLICATION_PROFILE_FAMILY_CACHE[arn] = family
+    return family
+
+
 def is_anthropic_bedrock_model(model_id: str) -> bool:
     """Return True if the model is an Anthropic Claude model on Bedrock.
 
@@ -393,9 +449,14 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
       - ``us.anthropic.claude-*`` (US inference profiles)
       - ``global.anthropic.claude-*`` (global inference profiles)
       - ``eu.anthropic.claude-*`` (EU inference profiles)
+      - ``arn:aws:bedrock:<region>:<acct>:application-inference-profile/<id>``
+        when the underlying foundation model belongs to the ``anthropic``
+        family (resolved once via GetInferenceProfile and cached).
     """
+    if _APPLICATION_PROFILE_ARN_RE.match(model_id):
+        return _resolve_application_inference_profile_family(model_id) == "anthropic"
+
     model_lower = model_id.lower()
-    # Strip regional prefix if present
     for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
         if model_lower.startswith(prefix):
             model_lower = model_lower[len(prefix):]

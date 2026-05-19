@@ -589,6 +589,21 @@ def resolve_display_context_length(
     Prefer the provider-aware value; fall back to ``model_info.context_window``
     only if the resolver returns nothing.
     """
+    # User-declared per-alias context_length wins.  Allows opaque IDs like
+    # AWS Bedrock application-inference-profile ARNs (whose built-in
+    # heuristics return wrong defaults) to declare their true window in
+    # ``config.yaml model_aliases.<name>.context_length``.
+    try:
+        from hermes_cli.config import load_config as _load_alias_cfg
+        for _alias_entry in (_load_alias_cfg().get("model_aliases") or {}).values():
+            if not isinstance(_alias_entry, dict):
+                continue
+            if _alias_entry.get("model") == model:
+                _alias_ctx = _alias_entry.get("context_length")
+                if _alias_ctx and int(_alias_ctx) > 0:
+                    return int(_alias_ctx)
+    except Exception:
+        pass
     try:
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(

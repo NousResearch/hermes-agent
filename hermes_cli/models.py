@@ -3596,6 +3596,16 @@ def validate_requested_model(
     # Anthropic Messages API: many proxies don't implement /v1/models.
     # Try probing with correct auth; if it fails, accept with a warning.
     if api_mode == "anthropic_messages":
+        # AWS Bedrock runtime does not implement GET /v1/models — model id
+        # validation happens server-side at invoke time.  Skip the probe and
+        # the noisy "could not verify" notice for native bedrock provider.
+        if normalized == "bedrock":
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
         api_models = fetch_api_models(api_key, base_url, api_mode=api_mode)
         if api_models is not None:
             if requested_for_lookup in set(api_models):

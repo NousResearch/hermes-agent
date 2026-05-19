@@ -3640,7 +3640,15 @@ def resolve_provider_client(
                          "no AWS credentials found")
             return None, None
 
-        region = resolve_bedrock_region()
+        # Region priority: config.yaml bedrock.region → AWS_REGION env →
+        # AWS_DEFAULT_REGION → us-east-1.  Mirrors runtime_provider.py so
+        # auxiliary calls hit the same region as the main agent path.
+        try:
+            from hermes_cli.config import load_config as _load_aux_cfg
+            _aux_bedrock_cfg = _load_aux_cfg().get("bedrock", {}) or {}
+            region = (_aux_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
+        except Exception:
+            region = resolve_bedrock_region()
         default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
         final_model = _normalize_resolved_model(model or default_model, provider)
         try:

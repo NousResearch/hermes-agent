@@ -1109,6 +1109,15 @@ def anthropic_prompt_cache_policy(
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
+    # AWS Bedrock application-inference-profile ARNs and bare profile IDs do
+    # not contain "claude" in the string. Resolve them via boto3 so ARN-backed
+    # Claude gets the same prompt-caching treatment as bare model IDs.
+    if not is_claude and provider_lower == "bedrock":
+        try:
+            from agent.bedrock_adapter import is_anthropic_bedrock_model
+            is_claude = is_anthropic_bedrock_model(eff_model)
+        except Exception:
+            pass
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
     # Nous Portal proxies to OpenRouter behind the scenes — identical
     # OpenAI-wire envelope cache_control semantics. Treat it as an

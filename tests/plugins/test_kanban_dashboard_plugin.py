@@ -127,6 +127,44 @@ def test_tenant_filter(client):
     assert total == 1
 
 
+def test_board_query_param_default_overrides_current_board_pointer(client):
+    """Dashboard ``?board=default`` must win even if the CLI's current-board
+    pointer targets a non-default board.
+
+    Regression: selecting the Default board in the dashboard must not fall
+    through to whichever board ``hermes kanban boards switch`` last pinned.
+    """
+    default_task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "default-only"},
+    ).json()["task"]
+
+    kb.create_board("other")
+    other_conn = kb.connect(board="other")
+    try:
+        kb.create_task(other_conn, title="other-only")
+    finally:
+        other_conn.close()
+
+    kb.set_current_board("other")
+
+    current_board = client.get("/api/plugins/kanban/board").json()
+    current_ids = {
+        task["id"]
+        for column in current_board["columns"]
+        for task in column["tasks"]
+    }
+    assert default_task["id"] not in current_ids
+
+    pinned_default = client.get("/api/plugins/kanban/board?board=default").json()
+    pinned_ids = {
+        task["id"]
+        for column in pinned_default["columns"]
+        for task in column["tasks"]
+    }
+    assert pinned_ids == {default_task["id"]}
+
+
 def test_dashboard_select_filters_use_sdk_value_change_handler():
     """Tenant/assignee filters must work with the dashboard SDK Select API.
 
@@ -591,6 +629,56 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         "/api/plugins/kanban/events?token=secret-xyz"
     ) as ws:
         assert ws is not None  # handshake succeeded
+
+
+def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp_path, monkeypatch):
+    """The event stream must honor ``board=default`` even when the global
+    current-board pointer targets a different board.
+
+    This is the live-update half of the dashboard regression: after the UI
+    selects Default, the websocket must not subscribe to the CLI's current
+    non-default board.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    default_conn = kb.connect()
+    try:
+        default_task = kb.create_task(default_conn, title="default-live")
+    finally:
+        default_conn.close()
+
+    kb.create_board("other")
+    other_conn = kb.connect(board="other")
+    try:
+        other_task = kb.create_task(other_conn, title="other-live")
+    finally:
+        other_conn.close()
+
+    kb.set_current_board("other")
+
+    import hermes_cli
+    import types
+
+    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    with c.websocket_connect(
+        "/api/plugins/kanban/events?token=secret-xyz&board=default&since=0"
+    ) as ws:
+        payload = ws.receive_json()
+
+    task_ids = {event["task_id"] for event in payload["events"]}
+    assert default_task in task_ids
+    assert other_task not in task_ids
 
 
 def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):

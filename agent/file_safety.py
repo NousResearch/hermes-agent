@@ -74,7 +74,7 @@ def get_safe_write_root() -> Optional[str]:
         return None
 
 
-def is_write_denied(path: str, home: str | None = None) -> bool:
+def is_write_denied(path: str, home: str | None = None, base_dir: str | None = None) -> bool:
     """Return True if path is blocked by the write denylist or safe root.
 
     Args:
@@ -82,9 +82,15 @@ def is_write_denied(path: str, home: str | None = None) -> bool:
         home: Optional target-environment home directory. When file tools run
             over SSH or another remote backend, this must be the remote home
             rather than the local Hermes process home.
+        base_dir: Optional base directory used to resolve relative paths safely.
     """
     home = os.path.realpath(os.path.expanduser(home or "~"))
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    path_str = os.path.expanduser(str(path))
+    if base_dir and not os.path.isabs(path_str):
+        base = os.path.realpath(os.path.expanduser(str(base_dir)))
+        resolved = os.path.realpath(os.path.join(base, path_str))
+    else:
+        resolved = os.path.realpath(path_str)
 
     if resolved in build_write_denied_paths(home):
         return True

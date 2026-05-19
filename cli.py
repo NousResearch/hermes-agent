@@ -13595,6 +13595,7 @@ class HermesCLI:
         app._on_resize = _resize_clear_ghosts
 
         def spinner_loop():
+            last_idle_refresh = 0.0
             while not self._should_exit:
                 if not self._app:
                     time.sleep(0.1)
@@ -13612,13 +13613,13 @@ class HermesCLI:
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
                 else:
-                    now = _time.monotonic()
+                    now = time.monotonic()
                     if now - last_idle_refresh >= 1.0:
                         last_idle_refresh = now
                         if hasattr(self, "_app") and self._app:
                             self._app.invalidate()
                             self._last_invalidate = now
-                    _time.sleep(0.2)
+                    time.sleep(0.2)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()

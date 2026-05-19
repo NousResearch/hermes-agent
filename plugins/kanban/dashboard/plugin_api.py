@@ -661,10 +661,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 )
             elif s == "blocked":
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
+            elif s == "scheduled":
+                ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
             elif s == "ready":
-                # Re-open a blocked task, or just an explicit status set.
+                # Re-open a blocked/scheduled task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
-                if current and current.status == "blocked":
+                if current and current.status in ("blocked", "scheduled"):
                     ok = kanban_db.unblock_task(conn, task_id)
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
@@ -676,7 +678,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     status_code=400,
                     detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
                 )
-            elif s in {"todo", "triage"}:
+            elif s in ("todo", "triage", "scheduled"):
                 ok = _set_status_direct(conn, task_id, s)
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
@@ -947,7 +949,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         ok = kanban_db.block_task(conn, tid)
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
-                        if cur and cur.status == "blocked":
+                        if cur and cur.status in ("blocked", "scheduled"):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
@@ -961,6 +963,8 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         )
                         results.append(entry)
                         continue
+                    elif s == "scheduled":
+                        ok = kanban_db.schedule_task(conn, tid)
                     elif s in {"todo", "triage"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:

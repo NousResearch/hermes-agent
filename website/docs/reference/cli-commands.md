@@ -405,8 +405,9 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `claim <id>` | Atomically claim a ready task. Prints resolved workspace path. |
 | `comment <id> "<text>"` | Append a comment. The next worker that claims the task reads it as part of its `kanban_show()` response. |
 | `complete <id>` | Mark task done. Flags: `--result`, `--summary`, `--metadata`. |
-| `block <id> "<reason>"` | Mark task blocked. Also appends the reason as a comment. |
-| `unblock <id>` | Return a blocked task to ready. |
+| `block <id> "<reason>"` | Mark task blocked for human input. Also appends the reason as a comment. |
+| `schedule <id> "<reason>"` | Park time-delay/follow-up work in `scheduled` so it is not shown as a human blocker. |
+| `unblock <id>` | Return a blocked or scheduled task to ready (or `todo` if dependencies are still open). |
 | `archive <id>` | Hide from default list. `gc` will remove scratch workspaces. |
 | `tail <id>` | Follow a task's event stream. |
 | `dispatch` | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--failure-limit N`, `--json`. |

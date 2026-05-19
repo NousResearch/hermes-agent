@@ -236,6 +236,34 @@ def test_claim_fails_on_non_ready(kanban_home):
         assert kb.claim_task(conn, t) is None
 
 
+def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="delayed recheck", assignee="ops")
+        assert kb.schedule_task(conn, t, reason="run next week") is True
+        task = kb.get_task(conn, t)
+        assert task.status == "scheduled"
+        assert kb.claim_task(conn, t) is None
+
+        events = kb.list_events(conn, t)
+        assert any(e.kind == "scheduled" and e.payload == {"reason": "run next week"} for e in events)
+
+
+def test_unblock_scheduled_rechecks_parent_gate(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.schedule_task(conn, child, reason="wait until tomorrow") is True
+
+        assert kb.unblock_task(conn, child) is True
+        assert kb.get_task(conn, child).status == "todo"
+
+        kb.complete_task(conn, parent)
+        assert kb.schedule_task(conn, child, reason="second timer") is True
+        assert kb.unblock_task(conn, child) is True
+        assert kb.get_task(conn, child).status == "ready"
+
+
 def test_stale_claim_reclaimed(kanban_home, monkeypatch):
     import signal
     import hermes_cli.kanban_db as _kb

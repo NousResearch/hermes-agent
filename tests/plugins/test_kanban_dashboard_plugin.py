@@ -321,6 +321,28 @@ def test_patch_block_then_unblock(client):
     assert r.json()["task"]["status"] == "ready"
 
 
+def test_patch_schedule_then_unblock(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "scheduled", "block_reason": "run tomorrow"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "scheduled"
+
+    columns = client.get("/api/plugins/kanban/board").json()["columns"]
+    assert "scheduled" in [c["name"] for c in columns]
+    scheduled = next(c for c in columns if c["name"] == "scheduled")
+    assert any(x["id"] == t["id"] for x in scheduled["tasks"])
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "ready"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "ready"
+
+
 def test_patch_drag_drop_move_todo_to_ready(client):
     """Direct status write: the drag-drop path for statuses without a
     dedicated verb (e.g. manually promoting todo -> ready).

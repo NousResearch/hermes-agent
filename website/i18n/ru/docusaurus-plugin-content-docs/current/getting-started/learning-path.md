@@ -51,7 +51,7 @@ Hermes Agent умеет многое — CLI-ассистент, бот для T
 
 1. [Установка](/getting-started/installation)
 2. [Конфигурация](/user-guide/configuration)
-3. [Обзор messaging](/user-guide/messaging)
+3. [Обзор мессенджеров](/user-guide/messaging)
 4. [Настройка Telegram](/user-guide/messaging/telegram)
 5. [Настройка Discord](/user-guide/messaging/discord)
 6. [Голосовой режим](/user-guide/features/voice-mode)

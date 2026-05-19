@@ -76,7 +76,7 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 3. **Устанавливает Node.js 22** (через winget, если он доступен, иначе распаковывает портативный tarball Node в `%LOCALAPPDATA%\hermes\node`). Он нужен для браузерного инструмента и моста WhatsApp.
 4. **Ставит портативный Git** — если `git` уже есть в PATH, установщик использует его; иначе он скачивает урезанный самодостаточный **PortableGit** (~45 МБ, из официального релиза `git-for-windows`) в `%LOCALAPPDATA%\hermes\git`. Без админских прав, без реестра Windows Installer, без какого-либо конфликта с уже установленным Git.
 5. **Клонирует репозиторий** в `%LOCALAPPDATA%\hermes\hermes-agent` и создаёт внутри него виртуальное окружение.
-6. **Tiered `uv pip install`** — сначала пробует `.[all]`, а если `git+https`-зависимость ловит сбой на rate-limited GitHub, откатывается к всё более компактным наборам (`[messaging,dashboard,ext]` → `[messaging]` → `.`). Это убирает режим, когда единичный сбой оставляет вас с урезанной установкой.
+6. **Многоступенчатая установка через `uv pip install`** — сначала пробует `.[all]`, а если `git+https`-зависимость упирается в ограничение GitHub по запросам, откатывается к всё более компактным наборам (`[messaging,dashboard,ext]` → `[messaging]` → `.`). Это убирает режим, когда единичный сбой оставляет вас с урезанной установкой.
 7. **Автоустанавливает messaging SDKs** по `.env` — если присутствуют `TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN` / `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `WHATSAPP_ENABLED`, он запускает `python -m ensurepip --upgrade` и точечные `pip install`, чтобы SDK каждой платформы действительно можно было импортировать.
 8. **Задаёт `HERMES_GIT_BASH_PATH`** на найденный `bash.exe`, чтобы Hermes детерминированно находил его в свежих shell-сессиях.
 9. **Добавляет `%LOCALAPPDATA%\hermes\bin` в User PATH** — так команда `hermes` становится доступна после открытия нового терминала.
@@ -92,7 +92,7 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 | Интерактивный TUI (`hermes --tui`) | ✓ | ✓ |
 | Messaging gateway (Telegram, Discord, Slack, WhatsApp, 15+ платформ) | ✓ | ✓ |
 | Cron scheduler | ✓ | ✓ |
-| Browser tool (Chromium через Node) | ✓ | ✓ |
+| Браузерный инструмент (Chromium через Node) | ✓ | ✓ |
 | MCP-серверы (stdio и HTTP) | ✓ | ✓ |
 | Локальные Ollama / LM Studio / llama-server | ✓ | ✓ (через WSL networking) |
 | Веб-панель (сеансы, задачи, метрики, конфигурация) | ✓ | ✓ |
@@ -214,7 +214,7 @@ hermes gateway uninstall   # Удаляет запись schtasks, ярлык в
 
 ## Браузерный инструмент
 
-Browser tool использует `agent-browser` — Node-помощник для управления Chromium. На Windows:
+Браузерный инструмент использует `agent-browser` — Node-помощник для управления Chromium. На Windows:
 
 - Установщик ставит `agent-browser` в PATH через npm.
 - `shutil.which("agent-browser", path=...)` автоматически находит `.cmd` shim — `CreateProcessW` не умеет запускать shebang без расширения, поэтому Hermes всегда резолвит `.CMD`-обёртку. Не запускайте shebang-файл напрямую; всегда идите через `.cmd`.
@@ -301,8 +301,8 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes"
 **`/edit` по-прежнему ничего не делает после задания `$env:EDITOR`.**
 Вы задали переменную только в текущем процессе; закройте и откройте shell заново либо задайте её на уровне User в System Properties → Environment Variables. Проверить можно через `echo $env:EDITOR` в новом окне PowerShell.
 
-**Browser tool запускается, но инструменты тайм-аутятся.**
-Chromium ставится автоматически при первом запуске. Если установка сорвалась (rate-limited GitHub, сбой на Playwright CDN), запустите `hermes doctor` — он покажет, что именно не хватает, и выведет точную команду `npx playwright install chromium` для исправления.
+**Браузерный инструмент запускается, но инструменты тайм-аутятся.**
+Chromium ставится автоматически при первом запуске. Если установка сорвалась из-за ограничения GitHub по запросам или сбоя на Playwright CDN, запустите `hermes doctor` — он покажет, что именно не хватает, и выведет точную команду `npx playwright install chromium` для исправления.
 
 **`agent-browser` падает с какой-то странной ошибкой версии Node.**
 Установщик разворачивает Node 22 в `%LOCALAPPDATA%\hermes\node`, но в PATH раньше может стоять более старый системный Node 18. Либо поднимите Hermes node dir выше в PATH, либо удалите системную установку, если Node вам больше нигде не нужен.

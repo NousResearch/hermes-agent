@@ -36,7 +36,7 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 1. Если `git` уже есть в PATH, установщик использует его.
 2. Иначе он скачивает портативный **PortableGit** (~50MB, из официального GitHub-релиза `git-for-windows`) и распаковывает его в `%LOCALAPPDATA%\hermes\git`. Админские права не нужны. Всё изолировано и не конфликтует с системным Git, каким бы он ни был. (На 32-битном Windows установщик откатывается на MinGit, потому что PortableGit публикуется только для 64-bit и ARM64; зависящие от bash возможности Hermes на 32-битных хостах работать не будут.)
 
-**Почему не winget?** Раньше Git ставили через `winget install Git.Git`, но winget часто ломается, если системный Git уже частично повреждён именно в тот момент, когда пользователю нужен просто рабочий установщик. Портативный Git обходит winget, реестр установщика Windows и любой уже установленный system Git. Если когда-нибудь сломается сам Git-установщик Hermes, удалите `%LOCALAPPDATA%\hermes\git` и запустите установку заново — без последствий для системы и без сценариев с деинсталляцией.
+**Почему не winget?** Раньше Git ставили через `winget install Git.Git`, но winget часто ломается, если уже установленный системный Git повреждён именно в тот момент, когда пользователю нужен просто рабочий установщик. Портативный Git обходит winget, реестр установщика Windows и любой уже установленный системный Git. Если когда-нибудь сломается сам Git-установщик Hermes, удалите `%LOCALAPPDATA%\hermes\git` и запустите установку заново — без последствий для системы и без сценариев с деинсталляцией.
 
 Установщик также выставляет `HERMES_GIT_BASH_PATH` на найденный `bash.exe`, чтобы Hermes в свежих shell-сессиях детерминированно находил Bash.
 
@@ -67,7 +67,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 - **CLI (`hermes chat`, `hermes setup`, `hermes gateway`, …)** — нативно, использует ваш терминал по умолчанию
 - **Gateway (Telegram, Discord, Slack, …)** — нативно, работает как фоновый PowerShell-процесс
 - **Cron scheduler** — нативно
-- **Browser tool** — нативно (Chromium через Node.js)
+- **Браузерный инструмент** — нативно (Chromium через Node.js)
 - **MCP-серверы** — нативно (поддерживаются и stdio, и HTTP transport)
 - **Dashboard `/chat` terminal pane** — **только WSL2** (использует POSIX PTY; у нативной Windows нет эквивалента). Остальная часть dashboard (сеансы, задачи, метрики) работает нативно — ограничение касается только встроенной PTY-вкладки.
 
@@ -76,7 +76,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 ### Что делает установщик
 
-Установщик автоматически закрывает все базовые шаги: зависимости (Python, Node.js, ripgrep, ffmpeg), клон репозитория, виртуальное окружение, глобальный `hermes` и настройку LLM-провайдера. После этого можно сразу начинать работу.
+Установщик автоматически выполняет все базовые шаги: зависимости (Python, Node.js, ripgrep, ffmpeg), клон репозитория, виртуальное окружение, глобальный `hermes` и настройку LLM-провайдера. После этого можно сразу начинать работу.
 
 #### Схема установки
 
@@ -88,7 +88,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 | Per-user (git installer) | `~/.hermes/hermes-agent/` | `~/.local/bin/hermes` (symlink) | `~/.hermes/` |
 | Root-mode (`sudo curl … \| sudo bash`) | `/usr/local/lib/hermes-agent/` | `/usr/local/bin/hermes` | `/root/.hermes/` (или `$HERMES_HOME`) |
 
-Root-mode **FHS layout** (`/usr/local/lib/…`, `/usr/local/bin/hermes`) совпадает с тем, как обычно раскладывают системные инструменты разработчика в Linux. Это удобно для развёртываний на общей машине, когда одна системная установка должна обслуживать всех пользователей. Персональные настройки (auth, skills, sessions) по-прежнему живут в `~/.hermes/` каждого пользователя или в явном `HERMES_HOME`.
+Схема root-mode по **FHS** (`/usr/local/lib/…`, `/usr/local/bin/hermes`) совпадает с тем, как обычно размещают системные инструменты в Linux. Это удобно для развёртываний на общей машине, когда одна системная установка должна обслуживать всех пользователей. Персональные настройки (auth, skills, sessions) по-прежнему живут в `~/.hermes/` каждого пользователя или в явном `HERMES_HOME`.
 
 ### После установки
 
@@ -188,4 +188,4 @@ hermes setup          # Or run the full setup wizard to configure everything at 
 
 ## Автоопределение способа установки
 
-Hermes сам определяет, был ли он установлен через `pip`, Git installer, Homebrew или NixOS, и `hermes update` выводит соответствующую команду обновления для этого способа. Отдельный env var не нужен — определение строится по схеме установки (Python site-packages, `~/.hermes/hermes-agent/`, Homebrew prefix или путь Nix store). `hermes doctor` тоже показывает распознанный способ в сводке окружения.
+Hermes сам определяет, был ли он установлен через `pip`, Git installer, Homebrew или NixOS, и `hermes update` выводит соответствующую команду обновления для этого способа. Отдельная переменная окружения не нужна — определение строится по схеме установки (Python site-packages, `~/.hermes/hermes-agent/`, Homebrew prefix или путь Nix store). `hermes doctor` тоже показывает распознанный способ в сводке окружения.

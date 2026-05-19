@@ -4312,12 +4312,15 @@ async def post_plugin_visibility(request: Request, name: str, body: _PluginVisib
 
 
 @app.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
-async def serve_plugin_asset(plugin_name: str, file_path: str):
+async def serve_plugin_asset(plugin_name: str, file_path: str, request: Request):
     """Serve static assets from a dashboard plugin directory.
 
     Only serves files from the plugin's ``dashboard/`` subdirectory.
     Path traversal is blocked by checking ``resolve().is_relative_to()``.
+    Requires a valid session token — the route is outside ``/api/`` so the
+    auth middleware does not cover it; gate explicitly.
     """
+    _require_token(request)
     plugins = _get_dashboard_plugins()
     plugin = next((p for p in plugins if p["name"] == plugin_name), None)
     if not plugin:

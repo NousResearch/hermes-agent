@@ -25,6 +25,40 @@ class TestStaticDenyList:
         assert _is_write_denied("/etc/shadow") is True
 
 
+class TestHermesInternalStateDenyList:
+    """Hermes-internal state files must be on the write deny list (VR-001/VR-017).
+
+    An LLM-driven agent that can write_file to config.yaml can disable its
+    own approval system, inject shell hooks, or change the terminal backend —
+    enabling a cascade from prompt injection to arbitrary command execution.
+    """
+
+    def test_config_yaml_is_denied(self):
+        from agent.file_safety import _hermes_home_path
+        config = str(_hermes_home_path() / "config.yaml")
+        assert _is_write_denied(config) is True
+
+    def test_auth_json_is_denied(self):
+        from agent.file_safety import _hermes_home_path
+        auth = str(_hermes_home_path() / "auth.json")
+        assert _is_write_denied(auth) is True
+
+    def test_cron_jobs_json_is_denied(self):
+        from agent.file_safety import _hermes_home_path
+        cron = str(_hermes_home_path() / "cron" / "jobs.json")
+        assert _is_write_denied(cron) is True
+
+    def test_shell_hooks_allowlist_is_denied(self):
+        from agent.file_safety import _hermes_home_path
+        hooks = str(_hermes_home_path() / "shell-hooks-allowlist.json")
+        assert _is_write_denied(hooks) is True
+
+    def test_env_still_denied(self):
+        from agent.file_safety import _hermes_home_path
+        env = str(_hermes_home_path() / ".env")
+        assert _is_write_denied(env) is True
+
+
 class TestSafeWriteRoot:
     """HERMES_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""
 

@@ -104,6 +104,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # the full restoration checklist.
     "tts.edge": ("edge-tts==7.2.7",),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
+    "tts.cartesia": ("cartesia==3.0.2",),
 
     # ─── Speech-to-text providers ──────────────────────────────────────────
     "stt.faster_whisper": (

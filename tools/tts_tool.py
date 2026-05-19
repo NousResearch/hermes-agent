@@ -115,6 +115,25 @@ def _import_openai_client():
     from openai import OpenAI as OpenAIClient
     return OpenAIClient
 
+def _import_cartesia():
+    """Lazy import the Cartesia client. Returns the class or raises ImportError.
+
+    Mirrors :func:`_import_elevenlabs`: calls :func:`tools.lazy_deps.ensure`
+    first so the SDK gets installed on demand when the user picks Cartesia by
+    editing config.yaml directly. Raises ``ImportError`` on lazy-install
+    failure so the dispatch's error-handling path keeps working.
+    """
+    try:
+        from tools.lazy_deps import ensure
+        ensure("tts.cartesia", prompt=False)
+    except ImportError:
+        # lazy_deps module itself missing — fall through to the raw import.
+        pass
+    except Exception as e:  # FeatureUnavailable or any unexpected error
+        raise ImportError(str(e))
+    from cartesia import Cartesia
+    return Cartesia
+
 def _import_mistral_client():
     """Lazy import Mistral client. Returns the class or raises ImportError."""
     from mistralai.client import Mistral
@@ -168,6 +187,13 @@ DEFAULT_XAI_LANGUAGE = "en"
 DEFAULT_XAI_SAMPLE_RATE = 24000
 DEFAULT_XAI_BIT_RATE = 128000
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
+# Cartesia (https://docs.cartesia.ai). sonic-3.5 is the current production
+# default. mp3 @ 44.1kHz/128kbps matches Hermes' default .mp3 output path
+# (Telegram .ogg is produced afterwards via _convert_to_opus).
+DEFAULT_CARTESIA_MODEL = "sonic-3.5"
+DEFAULT_CARTESIA_VOICE_ID = "71a7ad14-091c-4e8e-a314-022ece01c121"
+DEFAULT_CARTESIA_SAMPLE_RATE = 44100
+DEFAULT_CARTESIA_BIT_RATE = 128000
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -339,6 +365,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "edge",
     "elevenlabs",
     "openai",
+    "cartesia",
     "minimax",
     "xai",
     "mistral",
@@ -882,6 +909,94 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         response = client.audio.speech.create(**create_kwargs)
 
         response.stream_to_file(output_path)
+        return output_path
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
+# ===========================================================================
+# Provider: Cartesia (Sonic) TTS
+# ===========================================================================
+def _generate_cartesia(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using Cartesia (Sonic) TTS.
+
+    Cartesia's API does not emit Ogg/Opus, so this writes mp3 (or wav when
+    the caller explicitly asked for a ``.wav`` path). The dispatch converts
+    mp3 -> Ogg/Opus via ffmpeg afterwards when a platform such as Telegram
+    needs a native voice bubble (see ``_convert_to_opus``), exactly like the
+    edge/xai/minimax providers.
+
+    Args:
+        text: Text to convert.
+        output_path: Where to save the audio file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    api_key = (get_env_value("CARTESIA_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "CARTESIA_API_KEY not set. Create a key at https://play.cartesia.ai/keys"
+        )
+
+    car_config = tts_config.get("cartesia", {})
+    model = car_config.get("model", DEFAULT_CARTESIA_MODEL)
+    voice_id = car_config.get("voice_id", DEFAULT_CARTESIA_VOICE_ID)
+    language = car_config.get("language")
+    speed = float(car_config.get("speed", tts_config.get("speed", 1.0)))
+    sample_rate = int(car_config.get("sample_rate", DEFAULT_CARTESIA_SAMPLE_RATE))
+
+    if output_path.endswith(".wav"):
+        output_format = {
+            "container": "wav",
+            "encoding": "pcm_s16le",
+            "sample_rate": sample_rate,
+        }
+    else:
+        output_format = {
+            "container": "mp3",
+            "sample_rate": sample_rate,
+            "bit_rate": int(car_config.get("bit_rate", DEFAULT_CARTESIA_BIT_RATE)),
+        }
+
+    Cartesia = _import_cartesia()
+    client = Cartesia(api_key=api_key)
+
+    generate_kwargs = {
+        "model_id": model,
+        "transcript": text,
+        "voice": {"mode": "id", "id": voice_id},
+        "output_format": output_format,
+    }
+    if language:
+        generate_kwargs["language"] = str(language)
+    if speed != 1.0:
+        # Top-level `speed` is deprecated in the v3 SDK in favour of
+        # generation_config; pass it there to avoid the deprecation path.
+        generate_kwargs["generation_config"] = {"speed": speed}
+
+    try:
+        response = client.tts.generate(**generate_kwargs)
+
+        # tts.generate() returns a BinaryAPIResponse (write_to_file()/read());
+        # the v2-compat tts.bytes() yields raw chunks. Handle every shape so
+        # an SDK minor bump can't silently break audio output.
+        if hasattr(response, "write_to_file"):
+            response.write_to_file(output_path)
+        elif hasattr(response, "read"):
+            with open(output_path, "wb") as f:
+                f.write(response.read())
+        elif isinstance(response, (bytes, bytearray)):
+            with open(output_path, "wb") as f:
+                f.write(response)
+        else:
+            with open(output_path, "wb") as f:
+                for chunk in response:
+                    f.write(chunk if isinstance(chunk, (bytes, bytearray)) else bytes(chunk))
         return output_path
     finally:
         close = getattr(client, "close", None)
@@ -1729,6 +1844,19 @@ def text_to_speech_tool(
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
 
+        elif provider == "cartesia":
+            try:
+                _import_cartesia()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Cartesia provider selected but the 'cartesia' package is not installed. "
+                             "Run 'hermes tools' and select Cartesia under TTS, or install manually: "
+                             "pip install cartesia"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Cartesia (Sonic) TTS...")
+            _generate_cartesia(text, file_str, tts_config)
+
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
@@ -1847,7 +1975,7 @@ def text_to_speech_tool(
                 voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper", "cartesia"}
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)

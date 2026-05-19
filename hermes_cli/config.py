@@ -1102,7 +1102,7 @@ DEFAULT_CONFIG = {
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
     # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "cartesia" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -1115,6 +1115,14 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+        "cartesia": {
+            "model": "sonic-3.5",  # sonic-3.5 (prod) | sonic-3 | sonic-2 | sonic-turbo
+            "voice_id": "71a7ad14-091c-4e8e-a314-022ece01c121",
+            # "language": "en",   # optional ISO code; omit to let Cartesia auto-detect
+            "sample_rate": 44100,  # 8000|16000|22050|24000|44100|48000
+            "bit_rate": 128000,    # mp3 only: 32000|64000|96000|128000|192000
+            # Requires CARTESIA_API_KEY in ~/.hermes/.env — https://play.cartesia.ai/keys
         },
         "xai": {
             "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices

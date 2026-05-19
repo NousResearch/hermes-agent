@@ -79,7 +79,9 @@ Keep under 500 words.
 
 **Cron output location:** `/opt/data/cron/output/041c2bde2ba9/` (latest run: `YYYY-MM-DD_HH-MM-SS.md`). Parse the "## Response" section for the actual job report. The "## Prompt" section is the skill attachment and can be skipped.
 
-**Wiki update requirement:** Each daily job report should update the static HTML page `/opt/data/hermes-pages/wiki/career-opportunities.html` and deploy via Cloudflare Pages direct upload. It should also update `/opt/data/hermes-pages/wiki/business-opportunities.html` with outside-the-box product/business/acquisition/consulting ideas discovered during the search. Do NOT regenerate the wiki from markdown. Copy `/opt/data/hermes-pages/wiki` to `/opt/data/hermes-pages-files/wiki`, then run `export PATH=/opt/data/.nvm/bin:$PATH && /opt/data/.npm-global/bin/wrangler pages deploy /opt/data/hermes-pages-files --project-name hermes-pages --branch main --commit-dirty=true`. Public pages: `https://hermes-pages-d55.pages.dev/wiki/career-opportunities` and `https://hermes-pages-d55.pages.dev/wiki/business-opportunities`.
+**Wiki/page update requirement:** The active public career page is `/opt/data/hermes-pages/career-opportunities.html` (root public page, not the password-protected `/wiki/` copy). Daily job reports should update that static HTML file directly and deploy `/opt/data/hermes-pages` to Cloudflare Pages project `hermes-pages` with wrangler. Preserve public links `/career` and `/business-opportunities`. Keep the page high-contrast and readable. If the system Node is too old, use:
+`export PATH=/opt/data/.nvm/bin:$PATH && /opt/data/.npm-global/bin/wrangler pages deploy /opt/data/hermes-pages --project-name hermes-pages --commit-dirty=true` or `npx -y -p node@22 -p wrangler wrangler pages deploy /opt/data/hermes-pages --project-name hermes-pages --commit-dirty=true`.
+Live page: `https://hermes-pages-d55.pages.dev/career-opportunities`.
 
 ## Company Deep-Dive Workflow
 

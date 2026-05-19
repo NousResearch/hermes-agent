@@ -26,6 +26,7 @@ Usage::
         print(result["transcript"])
 """
 
+import json
 import logging
 import os
 import shlex
@@ -91,6 +92,8 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
+OPENROUTER_STT_BASE_URL = os.getenv("OPENROUTER_STT_BASE_URL", "https://openrouter.ai/api/v1")
+DEFAULT_OPENROUTER_STT_MODEL = os.getenv("STT_OPENROUTER_MODEL", "openai/whisper-large-v3")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -275,6 +278,14 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "openrouter":
+            if get_env_value("OPENROUTER_API_KEY"):
+                return "openrouter"
+            logger.warning(
+                "STT provider 'openrouter' configured but OPENROUTER_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > xai ---
@@ -288,6 +299,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
+    if get_env_value("OPENROUTER_API_KEY"):
+        logger.info("No local STT available, using OpenRouter transcription API")
+        return "openrouter"
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
@@ -811,6 +825,64 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _transcribe_openrouter(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using OpenRouter's /audio/transcriptions endpoint (JSON + base64)."""
+    api_key = get_env_value("OPENROUTER_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "OPENROUTER_API_KEY not set"}
+
+    import base64
+    import urllib.request
+    import urllib.error
+
+    try:
+        with open(file_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode()
+
+        # Detect format from extension
+        ext = Path(file_path).suffix.lower().lstrip(".")
+        fmt_map = {"mp3": "mp3", "wav": "wav", "ogg": "ogg", "webm": "webm",
+                    "m4a": "m4a", "mp4": "mp4", "flac": "flac", "aac": "aac",
+                    "mpga": "mpga", "mpeg": "mpeg"}
+        audio_format = fmt_map.get(ext, ext or "wav")
+
+        payload = json.dumps({
+            "input_audio": {"data": audio_b64, "format": audio_format},
+            "model": model_name,
+            "language": "en",
+        }).encode()
+
+        req = urllib.request.Request(
+            f"{OPENROUTER_STT_BASE_URL}/audio/transcriptions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode())
+
+        transcript_text = result.get("text", "").strip()
+        logger.info("Transcribed %s via OpenRouter API (%s, %d chars)",
+                     Path(file_path).name, model_name, len(transcript_text))
+
+        return {"success": True, "transcript": transcript_text, "provider": "openrouter"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode() if hasattr(e, "read") else ""
+        return {"success": False, "transcript": "", "error": f"OpenRouter API error {e.code}: {body}"}
+    except urllib.error.URLError as e:
+        return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
+    except Exception as e:
+        logger.error("OpenRouter transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+
+
 def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
@@ -878,6 +950,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         # xAI Grok STT doesn't use a model parameter — pass through for logging
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
+
+    if provider == "openrouter":
+        openrouter_cfg = stt_config.get("openrouter", {})
+        model_name = model or openrouter_cfg.get("model", DEFAULT_OPENROUTER_STT_MODEL)
+        return _transcribe_openrouter(file_path, model_name)
 
     # No provider available
     return {

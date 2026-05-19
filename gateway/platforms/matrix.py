@@ -180,6 +180,33 @@ def _looks_like_matrix_image_filename(text: str) -> bool:
     return suffix in _MATRIX_IMAGE_FILENAME_EXTS
 
 
+def _normalize_matrix_bang_command(body: str) -> str:
+    """Map Matrix-friendly ``!command`` text to Hermes' canonical ``/command``.
+
+    Element/Matrix clients reserve leading ``/`` for client-side slash commands,
+    so a bare ``/yolo`` may never reach the bot.  Hermes' gateway dispatcher is
+    slash-based, though, so normalize a leading ``!`` only when it names a real
+    Hermes command/alias.  Unknown exclamations remain normal user text.
+    """
+    if not body.startswith("!"):
+        return body
+
+    head = body.split(maxsplit=1)[0][1:].lower()
+    if not head or "/" in head:
+        return body
+    if "@" in head:
+        head = head.split("@", 1)[0]
+
+    try:
+        from hermes_cli.commands import is_gateway_known_command
+    except Exception:
+        return body
+
+    if not is_gateway_known_command(head):
+        return body
+    return f"/{body[1:]}"
+
+
 def _create_matrix_session(proxy_url: str | None):
     """Create an ``aiohttp.ClientSession`` whose proxy applies to *all* requests.
 
@@ -1781,6 +1808,7 @@ class MatrixAdapter(BasePlatformAdapter):
         body = source_content.get("body", "") or ""
         if not body:
             return
+        body = _normalize_matrix_bang_command(body)
 
         ctx = await self._resolve_message_context(
             room_id,
@@ -1815,9 +1843,10 @@ class MatrixAdapter(BasePlatformAdapter):
                     past_fallback = True
                 stripped.append(line)
             body = "\n".join(stripped) if stripped else body
+            body = _normalize_matrix_bang_command(body)
 
         msg_type = MessageType.TEXT
-        if body.startswith(("!", "/")):
+        if body.startswith("/"):
             msg_type = MessageType.COMMAND
 
         msg_event = MessageEvent(

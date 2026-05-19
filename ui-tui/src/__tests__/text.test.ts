@@ -1,19 +1,21 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  boundedHistoryRenderText,
   boundedLiveRenderText,
   buildToolTrailLine,
   edgePreview,
   estimateRows,
   estimateTokensRough,
   fmtK,
+  hasAnsi,
   isToolTrailResultLine,
   lastCotTrailIndex,
   parseToolTrailResultLine,
   pasteTokenLabel,
+  sanitizeAnsiForRender,
   sameToolTrailGroup,
   splitToolDuration,
+  stripAnsi,
   thinkingPreview
 } from '../lib/text.js'
 
@@ -84,6 +86,46 @@ describe('estimateTokensRough', () => {
   })
 })
 
+describe('ANSI sanitizers', () => {
+  const ESC = String.fromCharCode(27)
+  const BEL = String.fromCharCode(7)
+
+  it('strips CSI/OSC/control bytes from plain previews', () => {
+    const sample = `A${ESC}[31mB${ESC}[39m${ESC}[2J${ESC}]0;title${BEL}C${ESC}[?25lD`
+
+    expect(stripAnsi(sample)).toBe('ABCD')
+  })
+
+  it('strips incomplete CSI prefixes and carriage returns', () => {
+    const sample = `A${ESC}[31mB${ESC}[12;${ESC}[CD\rE`
+
+    expect(stripAnsi(sample)).toBe('ABDE')
+  })
+
+  it('keeps SGR color spans but removes cursor controls for Ansi rendering', () => {
+    const sample = `A${ESC}[31mB${ESC}[39m${ESC}[2J${ESC}]0;title${BEL}${ESC}[?25lC`
+
+    expect(sanitizeAnsiForRender(sample)).toBe(`A${ESC}[31mB${ESC}[39mC`)
+  })
+
+  it('keeps valid SGR while removing dangling CSI and carriage returns', () => {
+    const sample = `A${ESC}[31mB${ESC}[12;${ESC}[39mC\rD`
+
+    expect(sanitizeAnsiForRender(sample)).toBe(`A${ESC}[31mB${ESC}[39mCD`)
+  })
+
+  it('strips multi-byte non-CSI ESC sequences without leaving trailing bytes', () => {
+    const sample = `A${ESC}(0B${ESC}%GC${ESC})0D`
+
+    expect(stripAnsi(sample)).toBe('ABCD')
+    expect(sanitizeAnsiForRender(sample)).toBe('ABCD')
+  })
+
+  it('detects non-CSI escape prefixes too', () => {
+    expect(hasAnsi(`ok${ESC}Ppayload${ESC}\\`)).toBe(true)
+  })
+})
+
 describe('thinkingPreview', () => {
   it('adds paragraph breaks before markdown thinking headings', () => {
     const raw =
@@ -114,15 +156,6 @@ describe('boundedLiveRenderText', () => {
     expect(out).toContain('c\nd')
     expect(out).toContain('omitted 2 lines')
     expect(out).not.toContain('a\nb')
-  })
-})
-
-describe('boundedHistoryRenderText', () => {
-  it('uses a non-live omission label for completed history', () => {
-    const out = boundedHistoryRenderText('abcdefghij', { maxChars: 4, maxLines: 10 })
-
-    expect(out).toContain('[showing tail; omitted')
-    expect(out).not.toContain('live tail')
   })
 })
 

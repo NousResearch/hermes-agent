@@ -158,12 +158,22 @@ def test_codex_stream_postlude_error_still_falls_back():
 
 
 # ---------------------------------------------------------------------------
-# Fix B: friendly entitlement message
+# Fix B: surface xAI's entitlement body verbatim (no editorializing)
+#
+# The original PR #26644 appended a hint that led with "X Premium+ does NOT
+# include xAI API access — only standalone SuperGrok subscribers can use this
+# provider."  xAI announced on 2026-05-16 that X Premium subs now work in
+# Hermes (https://x.ai/news/grok-hermes), making that hint actively wrong:
+# a Premium+ user hitting a real entitlement issue (no Grok sub, wrong tier,
+# exhausted quota) would be misdirected to switch subscriptions when their
+# Premium sub is in fact valid.  We now surface xAI's own body text verbatim
+# (which already says "Manage subscriptions at https://grok.com/?_s=usage")
+# and leave the diagnosis to xAI's wording.
 # ---------------------------------------------------------------------------
 
 
-def test_summarize_api_error_decorates_xai_entitlement_403():
-    """xAI's OAuth 403 must end with the subscribe-or-switch hint."""
+def test_summarize_api_error_surfaces_xai_entitlement_body_verbatim():
+    """xAI's OAuth 403 body must surface as-is, with no Hermes-side hint."""
     from run_agent import AIAgent
 
     error = RuntimeError(
@@ -173,14 +183,15 @@ def test_summarize_api_error_decorates_xai_entitlement_403():
         "subscriptions at https://grok.com'}"
     )
     summary = AIAgent._summarize_api_error(error)
+    # xAI's own body text must reach the user — they need it to diagnose.
     assert "do not have an active Grok subscription" in summary
-    assert "SuperGrok" in summary
-    assert "/model" in summary
-    assert "https://grok.com" in summary
+    # No stale claim that X Premium is incompatible with Hermes.
+    assert "X Premium+ does NOT include" not in summary
+    assert "standalone SuperGrok subscribers" not in summary
 
 
-def test_summarize_api_error_decorates_xai_body_message():
-    """SDK-style error with structured body must also get the hint."""
+def test_summarize_api_error_xai_body_message_unwrapped():
+    """SDK-style error with structured body surfaces the message cleanly."""
     from run_agent import AIAgent
 
     class _XaiErr(Exception):
@@ -197,17 +208,9 @@ def test_summarize_api_error_decorates_xai_body_message():
 
     summary = AIAgent._summarize_api_error(_XaiErr("403"))
     assert "HTTP 403" in summary
-    assert "SuperGrok / X Premium" in summary
-
-
-def test_summarize_api_error_idempotent_for_entitlement_hint():
-    """Decorating twice must not double up the hint."""
-    from run_agent import AIAgent
-
-    raw = "HTTP 403: do not have an active Grok subscription"
-    once = AIAgent._decorate_xai_entitlement_error(raw)
-    twice = AIAgent._decorate_xai_entitlement_error(once)
-    assert once == twice
+    assert "do not have an active Grok subscription" in summary
+    # No editorializing on top of xAI's own wording.
+    assert "X Premium+ does NOT include" not in summary
 
 
 def test_summarize_api_error_passes_through_unrelated_errors():
@@ -219,6 +222,62 @@ def test_summarize_api_error_passes_through_unrelated_errors():
     assert "SuperGrok" not in summary
     assert "grok.com" not in summary
     assert "upstream is sad" in summary
+
+
+# ---------------------------------------------------------------------------
+# Fix D: _StreamErrorEvent xAI entitlement classified as auth, not retryable
+#
+# run_codex_create_stream_fallback raises _StreamErrorEvent (status_code=None)
+# when the Responses stream emits a ``type=error`` SSE frame.  Before this
+# fix, classify_api_error had no match for "grok subscription" in its pattern
+# lists, so it returned FailoverReason.unknown (retryable=True) — burning
+# max_retries before the agent stopped.  _is_entitlement_failure was never
+# called because it only runs when FailoverReason.auth is returned.
+# ---------------------------------------------------------------------------
+
+
+def test_classify_api_error_stream_event_grok_subscription_is_auth():
+    """_StreamErrorEvent with xAI subscription message classifies as auth/non-retryable.
+
+    The SSE error path has status_code=None, so _classify_by_status is
+    skipped.  The explicit pattern added at step 1 must fire first and
+    return auth/non-retryable so _is_entitlement_failure can stop the loop.
+    """
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent(
+        "You have either run out of available resources or do not have an "
+        "active Grok subscription. Manage subscriptions at https://grok.com",
+        code="The caller does not have permission to execute the specified operation",
+    )
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason == FailoverReason.auth
+    assert result.retryable is False
+    assert result.should_fallback is True
+
+
+def test_classify_api_error_stream_event_resources_exhausted_grok_is_auth():
+    """'out of available resources' + 'grok' variant also classifies as auth."""
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent(
+        "You have run out of available resources for Grok.",
+    )
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason == FailoverReason.auth
+    assert result.retryable is False
+
+
+def test_classify_api_error_stream_event_unrelated_not_reclassified():
+    """An unrelated _StreamErrorEvent must not be caught by the xAI guard."""
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent("Internal server error — try again later")
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason != FailoverReason.auth
 
 
 # ---------------------------------------------------------------------------
@@ -349,3 +408,243 @@ def test_codex_transport_native_codex_still_replays_reasoning_in_input():
     assert reasoning_items[0]["encrypted_content"] == "enc_blob"
     # Native Codex still asks for encrypted_content back.
     assert "reasoning.encrypted_content" in kwargs.get("include", [])
+
+
+# ---------------------------------------------------------------------------
+# Fix D: entitlement 403 must NOT trigger credential-pool refresh loop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # The exact wire text RaidenTyler and Don Piedro captured.
+        "You have either run out of available resources or do not have an "
+        "active Grok subscription. Manage at https://grok.com",
+        # Permission-style variant from the same 403 body.
+        "The caller does not have permission to execute the specified "
+        "operation for grok-4.3",
+    ],
+)
+def test_is_entitlement_failure_matches_real_xai_bodies(message):
+    from run_agent import AIAgent
+
+    assert AIAgent._is_entitlement_failure(
+        {"message": message, "reason": "permission_denied"},
+        403,
+    )
+
+
+def test_is_entitlement_failure_false_for_status_other_than_401_403():
+    """200/429/500 must never be classified as entitlement, even if body matches."""
+    from run_agent import AIAgent
+
+    body = {
+        "message": "do not have an active Grok subscription",
+    }
+    assert not AIAgent._is_entitlement_failure(body, 500)
+    assert not AIAgent._is_entitlement_failure(body, 429)
+    assert not AIAgent._is_entitlement_failure(body, 200)
+
+
+def test_is_entitlement_failure_false_for_unrelated_auth_errors():
+    """A real auth failure (expired token, wrong key) must keep refreshing."""
+    from run_agent import AIAgent
+
+    # Generic Anthropic-style auth failure
+    assert not AIAgent._is_entitlement_failure(
+        {"message": "Invalid API key", "reason": "authentication_error"},
+        401,
+    )
+    # OAuth token expired
+    assert not AIAgent._is_entitlement_failure(
+        {"message": "Token has expired", "reason": "unauthorized"},
+        401,
+    )
+    # Empty context
+    assert not AIAgent._is_entitlement_failure({}, 401)
+    assert not AIAgent._is_entitlement_failure(None, 401)
+
+
+def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
+    """The recovery path must NOT call pool.try_refresh_current() on entitlement 403.
+
+    Before the fix, an unsubscribed xAI OAuth account would burn the agent
+    loop indefinitely: refresh → 403 → refresh → 403, infinitely.  With
+    the entitlement guard, recovery returns False so the error surfaces
+    normally with the friendly hint from _summarize_api_error.
+    """
+    from run_agent import AIAgent
+    from agent.error_classifier import FailoverReason
+
+    agent = _make_codex_agent()
+
+    # Wire a fake credential pool that records refresh attempts.
+    refresh_calls = {"n": 0}
+
+    class _FakePool:
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            return MagicMock(id="should_not_be_called")
+
+        def mark_exhausted_and_rotate(self, **_kwargs):
+            return None
+
+        def has_available(self):
+            return False
+
+    agent._credential_pool = _FakePool()
+
+    error_context = {
+        "reason": "The caller does not have permission to execute the specified operation",
+        "message": "You have either run out of available resources or do not have an "
+                   "active Grok subscription. Manage at https://grok.com",
+    }
+
+    recovered, _retried_429 = agent._recover_with_credential_pool(
+        status_code=403,
+        has_retried_429=False,
+        classified_reason=FailoverReason.auth,
+        error_context=error_context,
+    )
+
+    assert recovered is False, "Entitlement 403 must surface, not silently recover"
+    assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on entitlement 403"
+
+
+def test_recover_with_credential_pool_skips_refresh_on_bare_403_for_xai_oauth():
+    """A bare HTTP 403 from ``xai-oauth`` (no keyword match) must NOT loop refresh.
+
+    Regression for #26847 — xAI's backend has been seen to 403 standard
+    SuperGrok subscribers with a terser body that doesn't contain any of
+    the existing entitlement keywords ("do not have an active Grok
+    subscription", etc.). Before the defense-in-depth guard, the recovery
+    path would happily mint a fresh token, get a fresh 403, and spin.
+    """
+    from run_agent import AIAgent
+    from agent.error_classifier import FailoverReason
+
+    agent = _make_codex_agent()
+    assert agent.provider == "xai-oauth"
+
+    refresh_calls = {"n": 0}
+
+    class _FakePool:
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            return MagicMock(id="should_not_be_called")
+
+        def mark_exhausted_and_rotate(self, **_kwargs):
+            return None
+
+        def has_available(self):
+            return False
+
+    agent._credential_pool = _FakePool()
+
+    error_context = {
+        "reason": "forbidden",
+        "message": "Forbidden",
+    }
+    assert not AIAgent._is_entitlement_failure(error_context, 403), (
+        "Pre-condition: bare 'Forbidden' body must NOT match the keyword "
+        "heuristic — otherwise this test isn't covering the defense-in-depth path."
+    )
+
+    recovered, _retried_429 = agent._recover_with_credential_pool(
+        status_code=403,
+        has_retried_429=False,
+        classified_reason=FailoverReason.auth,
+        error_context=error_context,
+    )
+
+    assert recovered is False, "Bare 403 on xai-oauth must surface, not refresh-loop"
+    assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on xai-oauth 403"
+
+
+def test_recover_with_credential_pool_still_refreshes_genuine_auth_failure():
+    """Regression guard: legitimate auth errors must still trigger refresh."""
+    from run_agent import AIAgent
+    from agent.error_classifier import FailoverReason
+
+    agent = _make_codex_agent()
+
+    refresh_calls = {"n": 0}
+
+    class _FakePool:
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            # Return a fake refreshed entry — semantically "refresh worked"
+            entry = MagicMock()
+            entry.id = "entry_refreshed"
+            return entry
+
+        def mark_exhausted_and_rotate(self, **_kwargs):
+            return None
+
+        def has_available(self):
+            return False
+
+    agent._credential_pool = _FakePool()
+    # _swap_credential is called by the recovery path — stub it out
+    agent._swap_credential = MagicMock()
+
+    error_context = {
+        "reason": "authentication_error",
+        "message": "Invalid API key",
+    }
+
+    recovered, _retried_429 = agent._recover_with_credential_pool(
+        status_code=401,
+        has_retried_429=False,
+        classified_reason=FailoverReason.auth,
+        error_context=error_context,
+    )
+
+    assert recovered is True, "Genuine auth failure must still recover via refresh"
+    assert refresh_calls["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix E: grok-4.3 context length must be 1M, not 256K
+# ---------------------------------------------------------------------------
+
+
+def test_grok_4_3_context_length_is_1m():
+    """grok-4.3 ships with 1M context per docs.x.ai/developers/models/grok-4.3.
+
+    Hermes' substring-match fallback used to return 256k (from the
+    "grok-4" catch-all) which under-reported the model's real capacity.
+    """
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+    # The entry exists with the expected value.
+    assert DEFAULT_CONTEXT_LENGTHS["grok-4.3"] == 1_000_000
+
+    # And longest-first substring matching resolves grok-4.3 and
+    # grok-4.3-latest to the new value, NOT the grok-4 catch-all.
+    for slug in ("grok-4.3", "grok-4.3-latest"):
+        matched_key = max(
+            (k for k in DEFAULT_CONTEXT_LENGTHS if k in slug.lower()),
+            key=len,
+        )
+        assert matched_key == "grok-4.3", (
+            f"Expected longest-first match to land on grok-4.3 for {slug}, "
+            f"got {matched_key}"
+        )
+        assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 1_000_000
+
+
+def test_grok_4_still_resolves_to_256k():
+    """Regression guard: grok-4 (non-.3) must still resolve to 256k."""
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+    for slug in ("grok-4", "grok-4-0709"):
+        matched_key = max(
+            (k for k in DEFAULT_CONTEXT_LENGTHS if k in slug.lower()),
+            key=len,
+        )
+        # grok-4-0709 contains "grok-4" but not "grok-4.3"; matched key
+        # must be "grok-4" (or a more specific variant family if one is
+        # ever added).  The 256k contract must hold.
+        assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 256_000

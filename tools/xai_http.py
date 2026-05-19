@@ -14,12 +14,11 @@ def get_env_value(name: str, default=None):
     """
     try:
         from hermes_cli.config import get_env_value as _hermes_get_env_value
-    except Exception:
-        _hermes_get_env_value = None
-    if _hermes_get_env_value is not None:
         value = _hermes_get_env_value(name)
         if value is not None:
             return value
+    except Exception:
+        pass
     return os.environ.get(name, default)
 
 

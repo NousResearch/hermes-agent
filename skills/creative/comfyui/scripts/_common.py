@@ -592,7 +592,7 @@ def _http_once(
                 # Build a new request with cleaned headers
                 clean_headers = {
                     k: v for k, v in req2.header_items()
-                    if k.lower() not in ("x-api-key", "authorization", "cookie")
+                    if k.lower() not in {"x-api-key", "authorization", "cookie"}
                 }
                 new_req = urllib.request.Request(newurl, headers=clean_headers, method="GET")
                 return new_req
@@ -743,13 +743,13 @@ def safe_path_join(base: Path, *parts: str) -> Path:
 
 def media_type_from_filename(filename: str) -> str:
     ext = Path(filename).suffix.lower()
-    if ext in (".mp4", ".webm", ".avi", ".mov", ".mkv", ".gif", ".webp"):
+    if ext in {".mp4", ".webm", ".avi", ".mov", ".mkv", ".gif", ".webp"}:
         return "video"
-    if ext in (".wav", ".mp3", ".flac", ".ogg", ".m4a"):
+    if ext in {".wav", ".mp3", ".flac", ".ogg", ".m4a"}:
         return "audio"
-    if ext in (".glb", ".obj", ".ply", ".gltf"):
+    if ext in {".glb", ".obj", ".ply", ".gltf"}:
         return "3d"
-    if ext in (".json", ".txt", ".md"):
+    if ext in {".json", ".txt", ".md"}:
         return "text"
     return "image"
 

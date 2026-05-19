@@ -180,6 +180,7 @@ AUTHOR_MAP = {
     "237601532+chromalinx@users.noreply.github.com": "chromalinx",  # PR #27014 salvage (commands for groups+DM)
     "booker1207@gmail.com": "booker1207",  # PR #25132 salvage (gate profile bots by allowed topics)
     "kiranvk2011@gmail.com": "kiranvk-2011",  # PR #24815 salvage (image documents → vision)
+    "kosmonaut-t@centrum.cz": "rak135",  # PR #25960 salvage (Windows /restart)
     "282919977+eliteworkstation94-ai@users.noreply.github.com": "eliteworkstation94-ai",  # PR #28157 salvage (group reply session splits)
     "androidhtml@yandex.com": "hllqkb",
     "25840394+Bongulielmi@users.noreply.github.com": "Bongulielmi",

@@ -1498,3 +1498,44 @@
   font-size: 0.7rem;
   cursor: pointer;
 }
+
+/* ---- Trash drop zone ------------------------------------------------- */
+
+.hermes-kanban-trash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.75rem 0.5rem;
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-card) 85%, transparent);
+  color: var(--color-muted-foreground);
+  font-size: 0.75rem;
+  min-height: 80px;
+  opacity: 0.5;
+  transition: opacity 120ms ease, border-color 120ms ease, background-color 120ms ease;
+  user-select: none;
+  pointer-events: none;
+}
+
+.hermes-kanban-trash--active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.hermes-kanban-trash--drop {
+  border-color: var(--color-destructive, #d14a4a);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 8%, var(--color-card));
+  color: var(--color-destructive, #d14a4a);
+}
+
+.hermes-kanban-trash-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.hermes-kanban-trash-label {
+  font-weight: 500;
+}

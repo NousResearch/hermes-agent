@@ -1569,7 +1569,14 @@ def _rich_text_from_ansi(text: str) -> _RichText:
 def _strip_markdown_syntax(text: str) -> str:
     """Best-effort markdown marker removal for plain-text display."""
     plain = _rich_text_from_ansi(text or "").plain
-    plain = re.sub(r"^\s{0,3}(?:[-*_]\s*){3,}$", "", plain, flags=re.MULTILINE)
+    # Avoid stripping cron-style expressions like "* * * * *" as if they were
+    # Markdown horizontal rules. CommonMark treats three or more "*" as an HR,
+    # but in Hermes output it's common to display cron schedules verbatim.
+    #
+    # Keep the behavior for "-" / "_" HR markers, and only strip "*" HR lines
+    # when there are exactly 3 asterisks (with optional whitespace).
+    plain = re.sub(r"^\s{0,3}(?:[-_]\s*){3,}$", "", plain, flags=re.MULTILINE)
+    plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
     # Preserve blockquotes, lists, and checkboxes because they carry structure.
     plain = re.sub(r"(```+|~~~+)", "", plain)
@@ -1580,7 +1587,9 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"(?<!\w)___([^_]+)___(?!\w)", r"\1", plain)
     plain = re.sub(r"\*\*([^*]+)\*\*", r"\1", plain)
     plain = re.sub(r"(?<!\w)__([^_]+)__(?!\w)", r"\1", plain)
-    plain = re.sub(r"\*([^*]+)\*", r"\1", plain)
+    # Only strip `*emphasis*` markers when the inner text is non-whitespace.
+    # This avoids corrupting cron expressions like "* * * * *".
+    plain = re.sub(r"\*([^\s*][^*]*?[^\s*])\*", r"\1", plain)
     plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)

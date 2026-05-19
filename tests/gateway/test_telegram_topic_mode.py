@@ -1175,13 +1175,15 @@ def test_recover_returns_none_for_known_topic(tmp_path):
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="222")) is None
 
 
-def test_recover_rewrites_unknown_thread_id_to_most_recent(tmp_path):
-    # Cross-topic Reply leak: inbound thread_id is a Telegram-only id we never bound.
+def test_recover_preserves_unknown_thread_id_for_new_topic(tmp_path):
+    # A newly-created Telegram DM topic arrives with a real, previously-unbound
+    # message_thread_id. It must become its own session lane rather than being
+    # rewritten to whichever older topic was most recently active.
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
 
-    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) == "222"
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) is None
 
 
 def test_recover_rewrites_lobby_thread_id_to_most_recent(tmp_path):

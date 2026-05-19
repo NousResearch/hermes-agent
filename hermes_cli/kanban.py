@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
 
@@ -312,6 +313,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    # --- swarm ---
+    p_swarm = sub.add_parser(
+        "swarm",
+        help="Create a Kanban Swarm v1 graph (parallel workers → verifier → synthesizer)",
+    )
+    p_swarm.add_argument("goal", help="Swarm goal / final outcome")
+    p_swarm.add_argument(
+        "--worker",
+        action="append",
+        default=[],
+        metavar="PROFILE:TITLE[:SKILL,SKILL]",
+        help="Parallel worker card (repeatable)",
+    )
+    p_swarm.add_argument("--verifier", required=True, help="Verifier profile")
+    p_swarm.add_argument("--synthesizer", required=True, help="Synthesizer/writer profile")
+    p_swarm.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_swarm.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_swarm.add_argument("--created-by", default=None, help="Creator/anchor profile")
+    p_swarm.add_argument("--idempotency-key", default=None, help="Dedup key for the root card")
+    p_swarm.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
     p_list = sub.add_parser("list", aliases=["ls"], help="List tasks")
@@ -778,6 +800,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     handlers = {
         "init":     _cmd_init,
         "create":   _cmd_create,
+        "swarm":    _cmd_swarm,
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
@@ -1209,6 +1232,37 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
+def _cmd_swarm(args: argparse.Namespace) -> int:
+    try:
+        workers = [ks.parse_worker_arg(raw) for raw in (args.worker or [])]
+    except ValueError as exc:
+        print(f"kanban swarm: {exc}", file=sys.stderr)
+        return 2
+    if not workers:
+        print("kanban swarm: at least one --worker is required", file=sys.stderr)
+        return 2
+    with kb.connect() as conn:
+        created = ks.create_swarm(
+            conn,
+            goal=args.goal,
+            workers=workers,
+            verifier_assignee=args.verifier,
+            synthesizer_assignee=args.synthesizer,
+            tenant=args.tenant,
+            created_by=args.created_by or _profile_author(),
+            priority=args.priority,
+            idempotency_key=getattr(args, "idempotency_key", None),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(f"Swarm root: {created.root_id}")
+        print("Workers: " + ", ".join(created.worker_ids))
+        print(f"Verifier: {created.verifier_id}")
+        print(f"Synthesizer: {created.synthesizer_id}")
     return 0
 
 

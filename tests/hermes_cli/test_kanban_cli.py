@@ -201,6 +201,24 @@ def test_kanban_in_autocomplete_table():
     assert "dispatch" in subs
 
 
+def test_kanban_autocomplete_includes_live_subcommands():
+    from prompt_toolkit.document import Document
+
+    from hermes_cli.commands import SlashCommandCompleter
+
+    completer = SlashCommandCompleter()
+    doc = Document("/kanban sp", cursor_position=len("/kanban sp"))
+    texts = {c.text for c in completer.get_completions(doc, None)}
+
+    assert "specify" in texts
+
+    doc = Document("/kanban re", cursor_position=len("/kanban re"))
+    texts = {c.text for c in completer.get_completions(doc, None)}
+
+    assert "reclaim" in texts
+    assert "reassign" in texts
+
+
 def test_kanban_not_gateway_only():
     # kanban is available in BOTH CLI and gateway surfaces.
     from hermes_cli.commands import COMMAND_REGISTRY

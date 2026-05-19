@@ -84,6 +84,45 @@ def get_current_session_key(default: str = "default") -> str:
     return get_session_env("HERMES_SESSION_KEY", default)
 
 
+def get_env_immune_session_key() -> str:
+    """Return the per-turn session key from context-local state ONLY.
+
+    Unlike :func:`get_current_session_key`, this NEVER falls back to the
+    process-global ``os.environ['HERMES_SESSION_KEY']``. It reads, in order:
+
+    1. ``tools.approval._approval_session_key`` contextvar
+       (bound by gateway / api_server / tui / WebUI Option 1 before the
+       agent turn; propagated into background-spawn worker threads via
+       ``contextvars.copy_context()`` in ``agent/tool_executor.py``).
+    2. ``gateway.session_context._SESSION_KEY`` contextvar — but ONLY when
+       it was explicitly bound (not the ``_UNSET`` sentinel and not the
+       empty "cleared" marker). ``get_session_env`` cannot be reused here
+       because it intentionally falls through to ``os.environ`` on
+       ``_UNSET``; that fallback is the exact race vector this helper
+       exists to bypass.
+
+    Returns ``""`` when no per-turn session-identity contextvar was bound
+    (CLI / cron / plain tests / pre-Option-1 WebUI). Empty is the safe
+    sentinel: callers stamp it onto ``ProcessSession.spawn_session_id``
+    and the WebUI Option 3 wakeup-routing safety net treats an absent
+    env-immune owner as a pure pass-through (never suppresses a valid
+    wakeup). This value is therefore immune to a concurrent turn
+    overwriting the process-global env slot mid-turn.
+    """
+    session_key = _approval_session_key.get()
+    if session_key:
+        return session_key
+    try:
+        from gateway.session_context import _SESSION_KEY, _UNSET
+
+        value = _SESSION_KEY.get()
+        if value is not _UNSET and value:
+            return str(value)
+    except Exception:
+        pass
+    return ""
+
+
 def _get_session_platform() -> str:
     """Return the current gateway platform from contextvars/env fallback."""
     try:

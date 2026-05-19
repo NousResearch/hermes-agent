@@ -92,6 +92,16 @@ class ProcessSession:
     command: str                                 # Original command string
     task_id: str = ""                           # Task/sandbox isolation key
     session_key: str = ""                       # Gateway session key (for reset protection)
+    # Env-immune spawn-time owner session id. Captured at spawn from
+    # context-local state ONLY (never the process-global
+    # os.environ['HERMES_SESSION_KEY']), so a concurrent turn mutating that
+    # global slot cannot corrupt it. Empty when the caller bound no per-turn
+    # session-identity contextvar (CLI / cron / plain tests / pre-Option-1
+    # WebUI) — an empty value is the safe sentinel: the WebUI Option 3
+    # wakeup-routing safety net treats "no env-immune owner" as a pure
+    # pass-through and never suppresses a valid wakeup. See
+    # tools.approval.get_env_immune_session_key() for the capture contract.
+    spawn_session_id: str = ""
     pid: Optional[int] = None                   # OS process ID
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
     env_ref: Any = None                         # Reference to the environment object
@@ -478,6 +488,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        spawn_session_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -494,6 +505,7 @@ class ProcessRegistry:
             command=command,
             task_id=task_id,
             session_key=session_key,
+            spawn_session_id=spawn_session_id,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
         )
@@ -612,6 +624,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        spawn_session_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -629,6 +642,7 @@ class ProcessRegistry:
             command=command,
             task_id=task_id,
             session_key=session_key,
+            spawn_session_id=spawn_session_id,
             cwd=cwd,
             started_at=time.time(),
             env_ref=env,
@@ -1312,6 +1326,7 @@ class ProcessRegistry:
                             "started_at": s.started_at,
                             "task_id": s.task_id,
                             "session_key": s.session_key,
+                            "spawn_session_id": s.spawn_session_id,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
                             "watcher_user_id": s.watcher_user_id,
@@ -1371,6 +1386,7 @@ class ProcessRegistry:
                     command=entry.get("command", "unknown"),
                     task_id=entry.get("task_id", ""),
                     session_key=entry.get("session_key", ""),
+                    spawn_session_id=entry.get("spawn_session_id", ""),
                     pid=pid,
                     pid_scope=pid_scope,
                     cwd=entry.get("cwd"),

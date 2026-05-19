@@ -1923,10 +1923,21 @@ def terminal_tool(
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
-            from tools.approval import get_current_session_key
+            from tools.approval import (
+                get_current_session_key,
+                get_env_immune_session_key,
+            )
             from tools.process_registry import process_registry
 
             session_key = get_current_session_key(default="")
+            # Env-immune spawn owner: contextvar-only, never the racy
+            # process-global os.environ['HERMES_SESSION_KEY']. Stamped onto
+            # ProcessSession.spawn_session_id so the WebUI Option 3
+            # wakeup-routing safety net can cross-check the (historically
+            # racy) session_key-resolved target against the true spawn
+            # owner. Empty for CLI/cron/non-bound callers -> Option 3 stays
+            # a pure pass-through (never suppresses a valid wakeup).
+            spawn_session_id = get_env_immune_session_key()
             effective_cwd = workdir or cwd
             try:
                 if env_type == "local":
@@ -1937,6 +1948,7 @@ def terminal_tool(
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
+                        spawn_session_id=spawn_session_id,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -1945,6 +1957,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        spawn_session_id=spawn_session_id,
                     )
 
                 result_data = {

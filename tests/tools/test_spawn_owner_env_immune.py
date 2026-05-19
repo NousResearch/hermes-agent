@@ -159,8 +159,26 @@ def test_concurrent_turns_capture_their_own_spawn_owner_under_env_race():
     a_bound = threading.Event()
 
     def turn(my_sid: str, label: str, other_started: threading.Event):
-        # Each turn runs in its own thread with its own contextvar copy,
-        # exactly as agent/tool_executor.py copy_context() worker does.
+        # R3-C1: a plain threading.Thread does NOT copy the parent context
+        # (each worker thread starts from the ContextVar default, not a
+        # snapshot of the parent). This is deliberate and correct for what
+        # THIS test verifies: each turn INDEPENDENTLY binds its own
+        # _approval_session_key inside its own thread context, then both
+        # threads concurrently race the raw process-global
+        # os.environ['HERMES_SESSION_KEY'] slot (see the interleave below).
+        # The invariant under test is that get_env_immune_session_key()
+        # resolves from the per-context contextvar binding and is immune to
+        # that concurrent raw-env overwrite -- it only ever calls
+        # _approval_session_key.get(), so an independent per-thread .set()
+        # exercises the exact same read path a copy_context()-propagated
+        # binding would. The contextvars.copy_context() PROPAGATION path
+        # (parent binds, background spawn inherits) is agent/tool_executor's
+        # concern and is not what this regression pins; restructuring to
+        # copy_context().run() here would require serially pre-binding two
+        # distinct parent contexts and would destroy the live two-thread
+        # concurrent os.environ interleaving the pre-fix RED counter-proof
+        # depends on. Hence: faithful, accurate comment over a structural
+        # change that would weaken the race fidelity.
         tok = _approval_session_key.set(my_sid)
         try:
             # Mimic streaming.py turn-start writing the racy global slot.
@@ -207,6 +225,23 @@ def test_concurrent_turns_capture_their_own_spawn_owner_under_env_race():
         ta = threading.Thread(target=turn, args=("sid-A", "A", other_started))
         tb = threading.Thread(target=turn, args=("sid-B", "B", other_started))
         ta.start(); tb.start(); ta.join(timeout=5); tb.join(timeout=5)
+
+        # R3-C2: surface a barrier deadlock / scheduling stall as a clear,
+        # informative failure BEFORE the captured-dict assertions below.
+        # Without this, a worker that never finished its internal
+        # wait(timeout=2) would leave captured[...] absent and the test
+        # would fail with an opaque "None != 'sid-A'" instead of naming the
+        # real cause (thread did not complete).
+        assert not ta.is_alive(), (
+            "Turn A thread did not finish within join(timeout=5) -- barrier "
+            "deadlock or scheduling stall; captured-owner assertions below "
+            "are unreliable because the race never completed."
+        )
+        assert not tb.is_alive(), (
+            "Turn B thread did not finish within join(timeout=5) -- barrier "
+            "deadlock or scheduling stall; captured-owner assertions below "
+            "are unreliable because the race never completed."
+        )
 
         assert captured.get("A") == "sid-A", (
             f"Turn A captured {captured.get('A')!r} (expected 'sid-A'). "

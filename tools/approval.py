@@ -116,6 +116,18 @@ def get_env_immune_session_key() -> str:
     if session_key:
         return session_key
     try:
+        # R3-C3: this import is INTENTIONALLY lazy, not redundant defensive
+        # coding. tools.approval has NO module-top gateway import -- every
+        # gateway.session_context reference in this module is deferred
+        # (get_current_session_key, _get_session_platform, here). approval.py
+        # is imported very early (before plugins/gateway are wired up) and
+        # `import gateway.session_context` transitively pulls gateway/__init__
+        # (config + session + delivery). Hoisting to module top would make
+        # approval.py -- a safety-critical, early-loaded module -- hard-fail
+        # in bare/minimal contexts where the gateway stack isn't importable.
+        # The except-ImportError below is the graceful "" degrade for exactly
+        # that case; keeping the import lazy and local is consistent with the
+        # rest of this module, not an inconsistency to fix.
         from gateway.session_context import get_bound_session_key_or_none
 
         value = get_bound_session_key_or_none()

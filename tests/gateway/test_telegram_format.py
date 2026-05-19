@@ -855,6 +855,11 @@ def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=
     adapter.config = config
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._mention_patterns = adapter._compile_mention_patterns()
+    # PR db50af910 added a TELEGRAM_ALLOWED_USERS allowlist gate to
+    # _should_process_message. These tests aren't exercising the auth
+    # gate — they're exercising the guest-mode mention/allowed_chats
+    # logic that runs after — so stub the user authz to always allow.
+    adapter._is_callback_user_authorized = lambda *_a, **_kw: True
     return adapter
 
 

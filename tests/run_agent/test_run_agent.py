@@ -1103,6 +1103,20 @@ class TestToolUseEnforcementConfig:
         prompt = agent._build_system_prompt()
         assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
 
+    def test_auto_injects_for_qwen(self):
+        """Qwen models default to chatty/hallucinatory tool use without enforcement."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="qwen/qwen-plus", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_auto_injects_for_deepseek(self):
+        """DeepSeek models default to chatty/hallucinatory tool use without enforcement."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="deepseek/deepseek-r1", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
     def test_auto_injects_execution_guidance_for_grok(self):
         """Grok also gets OPENAI_MODEL_EXECUTION_GUIDANCE (verification,
         mandatory_tool_use, act_dont_ask). Same failure modes as GPT in

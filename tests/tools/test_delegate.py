@@ -624,6 +624,43 @@ class TestDelegateObservability(unittest.TestCase):
             # List content does not match the conservative error detector.
             self.assertEqual(trace[0]["status"], "ok")
 
+    def test_tool_trace_dict_error_content_still_detected(self):
+        """Already-parsed dict content with an `error` key must still be flagged as error.
+
+        Regression guard for Copilot's review point on #28658: a naive
+        str(content) coercion would produce Python repr with single quotes,
+        which json.loads cannot parse, so _looks_like_error_output() would
+        silently miss the dict-error pattern. The normalize step must
+        preserve JSON structure (json.dumps) so the conservative error
+        detector continues to work on structured tool output.
+        """
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "failed",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"cmd": "x"}'}}
+                    ]},
+                    # Already-parsed dict (not a JSON string) with structured error.
+                    {"role": "tool", "tool_call_id": "tc_1", "content": {"error": "command not found"}},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test dict error", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            self.assertEqual(len(trace), 1)
+            self.assertEqual(trace[0]["status"], "error")
+
     def test_parallel_tool_calls_paired_correctly(self):
         """Parallel tool calls should each get their own result via tool_call_id matching."""
         parent = _make_mock_parent(depth=0)

@@ -1655,10 +1655,17 @@ def _run_single_child(
                 elif msg.get("role") == "tool":
                     content = msg.get("content", "")
                     if not isinstance(content, str):
-                        content = str(content)
+                        # Preserve JSON structure so _looks_like_error_output's
+                        # dict-error detection still works (str() on a dict
+                        # produces Python repr with single quotes, which
+                        # json.loads cannot parse).
+                        try:
+                            content = json.dumps(content)
+                        except (TypeError, ValueError):
+                            content = str(content)
                     is_error = _looks_like_error_output(content)
                     result_meta = {
-                        "result_bytes": len(content),
+                        "result_bytes": len(content.encode("utf-8", errors="replace")),
                         "status": "error" if is_error else "ok",
                     }
                     # Match by tool_call_id for parallel calls

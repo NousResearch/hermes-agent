@@ -139,15 +139,22 @@ python -m custom_tools.wallet_manager import-csv --file wallets.csv
 ### mint_planner.py - Plan Mint Transaction
 
 ```bash
-# Plan mint (DRY_RUN by default)
+# Plan mint and auto-save to approval queue (default --queue)
 python -m custom_tools.mint_planner 0xContract --wallet burner1
 
 # With quantity
 python -m custom_tools.mint_planner 0xContract --wallet burner1 --quantity 3
 
 # Override function and price
-python -m custom_tools.mint_planner 0xContract --wallet burner1 --function publicMint --price-wei 50000000000000000
+python -m custom_tools.mint_planner 0xContract --wallet burner1 --function mint --price-wei 0
+
+# Preview only, do NOT save to queue
+python -m custom_tools.mint_planner 0xContract --wallet burner1 --no-queue
 ```
+
+> **Note:** By default, `mint_planner` saves the plan to the approval queue
+> with `status=pending` and prints the generated approval ID. Use `--no-queue`
+> for preview-only mode.
 
 ### approval_queue.py - Transaction Approval
 
@@ -214,19 +221,29 @@ python -m custom_tools.contract_analyzer 0xNFTContract --chain base
 python -m custom_tools.unminted_scanner 0xNFTContract 1 1000 --chain base
 
 # 3. Create burner wallet
-python -m custom_tools.wallet_manager create --label "mint_wallet_1"
+python -m custom_tools.wallet_manager create --label "test1"
 
 # 4. Fund wallet (manually send ETH)
 
-# 5. Plan mint transaction
-python -m custom_tools.mint_planner 0xNFTContract --wallet mint_wallet_1 --chain base
+# 5. Plan mint transaction (auto-queues as PENDING)
+python -m custom_tools.mint_planner 0xNFTContract --wallet test1 --function mint --price-wei 0
+#    -> Shows preview + prints: "Queued as PENDING approval ID #1"
 
-# 6. Review and approve
+# 6. Verify it's in the queue
+python -m custom_tools.approval_queue list
+
+# 7. Approve
 python -m custom_tools.approval_queue approve --id 1
 
-# 7. Execute (set DRY_RUN=false)
+# 8. Execute (set DRY_RUN=false)
 DRY_RUN=false python -m custom_tools.mint_executor --id 1
 ```
+
+### Key Rules:
+- `mint_planner` **plans and queues** but NEVER sends transactions.
+- `mint_executor` **only executes entries with status=approved**.
+- `DRY_RUN=true` is the default — executor will simulate even if approved.
+- Set `DRY_RUN=false` explicitly to send real transactions.
 
 ## PM2 / Systemd Startup
 

@@ -25,11 +25,20 @@ class _CABundleCandidate:
     source: str
 
 
-def _ssl_err(message: str) -> "SSLConfigurationError":
+def _ssl_err(message: str, *, instruction: str | None = None):
     """Build an :class:`agent.errors.SSLConfigurationError`."""
     from agent.errors import SSLConfigurationError
 
-    return SSLConfigurationError(message)
+    return SSLConfigurationError(message, instruction=instruction)
+
+
+def _instruction_for_source(source: str) -> str | None:
+    if source in _CA_BUNDLE_ENV_VARS:
+        return (
+            f"Unset {source} or point it at a valid PEM CA bundle, then restart Hermes.\n"
+            "Doc:  docs/rca-ssl-cacert-post-git-pull.md"
+        )
+    return None
 
 
 def _resolve_ca_bundle() -> _CABundleCandidate:
@@ -67,7 +76,8 @@ def check_ssl_ca_bundle() -> None:
 
     if not ca_bundle or not os.path.isfile(ca_bundle) or os.path.getsize(ca_bundle) == 0:
         raise _ssl_err(
-            f"CA certificate bundle from {source} is missing or empty: {ca_bundle}."
+            f"CA certificate bundle from {source} is missing or empty: {ca_bundle}.",
+            instruction=_instruction_for_source(source),
         )
 
     # Try to load the bundle into an SSL context — this is the operation
@@ -76,7 +86,8 @@ def check_ssl_ca_bundle() -> None:
         ctx = ssl.create_default_context(cafile=ca_bundle)
     except Exception as exc:
         raise _ssl_err(
-            f"CA certificate bundle from {source} at {ca_bundle} cannot be loaded: {exc}."
+            f"CA certificate bundle from {source} at {ca_bundle} cannot be loaded: {exc}.",
+            instruction=_instruction_for_source(source),
         )
 
     # Paranoid check: ensure at least one certificate was parsed.
@@ -87,7 +98,8 @@ def check_ssl_ca_bundle() -> None:
         if source != "certifi":
             raise _ssl_err(
                 f"CA certificate bundle from {source} at {ca_bundle} did not load "
-                "any CA certificates."
+                "any CA certificates.",
+                instruction=_instruction_for_source(source),
             )
         try:
             fallback = ssl.create_default_context()

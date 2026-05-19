@@ -8821,8 +8821,8 @@ class GatewayRunner:
             if _ssl_err_cls is not None and isinstance(e, _ssl_err_cls):
                 logger.warning("SSL CA configuration issue: %s", e)
                 return (
-                    "⚠️ SSL certificate bundle issue detected. "
-                    "Run `pip install -e .` and restart."
+                    "⚠️ SSL certificate bundle issue detected.\n\n"
+                    f"{e}"
                 )
             logger.exception("Agent error in session %s", session_key)
             error_type = type(e).__name__

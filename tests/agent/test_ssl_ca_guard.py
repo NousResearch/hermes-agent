@@ -89,6 +89,7 @@ def test_check_ssl_rejects_missing_explicit_env_bundle(
 
     err = str(exc_info.value)
     assert "SSL_CERT_FILE" in err
+    assert "Unset SSL_CERT_FILE" in err
     assert "missing" in err.lower() or "empty" in err.lower()
 
 

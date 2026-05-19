@@ -787,6 +787,10 @@ def init_agent(
                 else:
                     print("⚠️  Warning: API key appears invalid or missing")
         except Exception as e:
+            from agent.errors import SSLConfigurationError
+
+            if isinstance(e, SSLConfigurationError):
+                raise
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
     
     # Provider fallback chain — ordered list of backup providers tried

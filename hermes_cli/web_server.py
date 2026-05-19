@@ -1074,7 +1074,15 @@ async def set_model_assignment(body: ModelAssignment):
             model_cfg["provider"] = provider
             model_cfg["default"] = model
             # Clear stale base_url so the resolver picks the provider's own default.
-            if "base_url" in model_cfg and model_cfg.get("base_url"):
+            # EXCEPTION: provider="custom" has no provider default; clearing the
+            # base_url here strands the config with an unresolvable endpoint and
+            # silently fails every primary-model request until the fallback chain
+            # masks it. Custom callers must keep their explicit base_url.
+            if (
+                "base_url" in model_cfg
+                and model_cfg.get("base_url")
+                and provider != "custom"
+            ):
                 model_cfg["base_url"] = ""
             # Also clear hardcoded context_length override — new model may have
             # a different context window.

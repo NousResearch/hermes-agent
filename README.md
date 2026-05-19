@@ -12,33 +12,41 @@
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
 </p>
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+**Hermes Agent is a self-improving AI agent from [Nous Research](https://nousresearch.com).** It remembers useful facts, learns reusable skills from completed work, searches past sessions, and can run from your laptop, a VPS, a GPU box, or a serverless sandbox. Use it in the terminal or from messaging apps like Telegram and Discord.
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (AI-native cloud for Model API, Agent Sandbox, and GPU Cloud), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
+Use [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai), [NovitaAI](https://novita.ai), [NVIDIA NIM](https://build.nvidia.com), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or any OpenAI-compatible endpoint. Switch models with `hermes model`.
+
+## Version and platform support
+
+- Current package version: **0.13.0**
+- Python: **3.11+**
+- Primary platforms: Linux, macOS, WSL2
+- Also supported: Android/Termux through the documented manual install path
+- Native Windows: **early beta** through the PowerShell installer. WSL2 remains the smoothest Windows path.
 
 <table>
-<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
-<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
-<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
-<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Seven terminal backends — local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
-<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
+<tr><td><b>Terminal-first</b></td><td>TUI with multiline editing, slash commands, history, interrupts, and streaming tool output.</td></tr>
+<tr><td><b>Messaging gateway</b></td><td>Use the same agent from Telegram, Discord, Slack, WhatsApp, Signal, Email, and CLI.</td></tr>
+<tr><td><b>Memory and skills</b></td><td>Persistent memory, cross-session search, self-improving skills, and optional <a href="https://github.com/plastic-labs/honcho">Honcho</a> user modeling. Skills follow the <a href="https://agentskills.io">agentskills.io</a> standard.</td></tr>
+<tr><td><b>Scheduled work</b></td><td>Run recurring reports, audits, backups, and reminders with the built-in cron scheduler.</td></tr>
+<tr><td><b>Parallel agents</b></td><td>Spawn isolated subagents and run Python scripts that call Hermes tools through RPC.</td></tr>
+<tr><td><b>Flexible execution</b></td><td>Run commands locally, in Docker, over SSH, or in Singularity, Modal, Daytona, and Vercel Sandbox backends.</td></tr>
+<tr><td><b>Research workflows</b></td><td>Generate and compress tool-use trajectories for training and evaluation.</td></tr>
 </table>
 
 ---
 
-## Quick Install
+## Quick install
 
-### Linux, macOS, WSL2, Termux
+### Linux, macOS, WSL2
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-### Windows (native, PowerShell) — Early Beta
+### Windows native PowerShell early beta
 
-> **Heads up:** Native Windows support is **early beta**. It installs and runs, but hasn't been road-tested as broadly as our Linux/macOS/WSL2 paths. Please [file issues](https://github.com/NousResearch/hermes-agent/issues) when you hit rough edges. For the most battle-tested Windows setup today, run the Linux/macOS one-liner above inside **WSL2**.
+Native Windows support is **early beta**. The installer sets up Hermes, Python, Node.js, ripgrep, ffmpeg, and Git Bash without admin access. For the smoothest Windows experience, use WSL2 and run the Linux command above.
 
 Run this in PowerShell:
 
@@ -46,13 +54,11 @@ Run this in PowerShell:
 irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
 ```
 
-The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install).  Hermes uses this bundled Git Bash to run shell commands.
+The installer uses an existing Git install when available. Otherwise it downloads a portable MinGit bundle to `%LOCALAPPDATA%\hermes\git`.
 
-If you already have Git installed, the installer detects it and uses that instead.  Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
+### Android / Termux
 
-> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
->
-> **Windows:** Native Windows is supported as an **early beta** — the PowerShell one-liner above installs everything, but expect rough edges and please file issues when you hit them. If you'd rather use WSL2 (our most battle-tested Windows path), the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.  The only Hermes feature that currently needs WSL2 specifically is the browser-based dashboard chat pane (it uses a POSIX PTY — classic CLI and gateway both run natively).
+Follow the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). Termux uses a curated `.[termux]` extra to avoid Android-incompatible voice dependencies.
 
 After installation:
 

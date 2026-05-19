@@ -12,33 +12,53 @@
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-lightgrey?style=for-the-badge" alt="English"></a>
 </p>
 
-**由 [Nous Research](https://nousresearch.com) 构建的自进化 AI 代理。** 它是唯一内置学习闭环的智能代理——从经验中创建技能，在使用中改进技能，主动持久化知识，搜索过往对话，并在跨会话中逐步构建对你的深度理解。可以在 $5 的 VPS 上运行，也可以在 GPU 集群上运行，或者使用几乎零成本的 Serverless 基础设施。它不绑定你的笔记本——你可以在 Telegram 上与它对话，而它在云端 VM 上工作。
+**Hermes Agent 是 [Nous Research](https://nousresearch.com) 构建的自进化 AI 代理。** 它能记住有用信息，从完成的任务中沉淀可复用技能，搜索过往会话，并运行在笔记本、VPS、GPU 主机或 Serverless 沙箱中。你可以在终端里使用它，也可以从 Telegram、Discord 等消息平台与它对话。
 
-支持任意模型——[Nous Portal](https://portal.nousresearch.com)、[OpenRouter](https://openrouter.ai)（200+ 模型）、[NVIDIA NIM](https://build.nvidia.com)（Nemotron）、[小米 MiMo](https://platform.xiaomimimo.com)、[z.ai/GLM](https://z.ai)、[Kimi/Moonshot](https://platform.moonshot.ai)、[MiniMax](https://www.minimax.io)、[Hugging Face](https://huggingface.co)、OpenAI，或自定义端点。使用 `hermes model` 即可切换——无需改代码，无锁定。
+支持 [Nous Portal](https://portal.nousresearch.com)、[OpenRouter](https://openrouter.ai)、[NovitaAI](https://novita.ai)、[NVIDIA NIM](https://build.nvidia.com)、[小米 MiMo](https://platform.xiaomimimo.com)、[z.ai/GLM](https://z.ai)、[Kimi/Moonshot](https://platform.moonshot.ai)、[MiniMax](https://www.minimax.io)、[Hugging Face](https://huggingface.co)、OpenAI，或任意 OpenAI 兼容端点。使用 `hermes model` 切换模型。
+
+## 版本与平台支持
+
+- 当前包版本：**0.13.0**
+- Python：**3.11+**
+- 主力平台：Linux、macOS、WSL2
+- Android/Termux：使用文档里的手动安装路径
+- 原生 Windows：**早期 beta**，可通过 PowerShell 安装器使用。Windows 上推荐优先使用 WSL2。
 
 <table>
-<tr><td><b>真正的终端界面</b></td><td>完整的 TUI，支持多行编辑、斜杠命令自动补全、对话历史、中断重定向和流式工具输出。</td></tr>
-<tr><td><b>随你所在</b></td><td>Telegram、Discord、Slack、WhatsApp、Signal 和 CLI——全部从单个网关进程运行。语音备忘录转写、跨平台对话连续性。</td></tr>
-<tr><td><b>闭环学习</b></td><td>代理管理记忆并定期自我提醒。复杂任务后自动创建技能。技能在使用中自我改进。FTS5 会话搜索配合 LLM 摘要实现跨会话回溯。<a href="https://github.com/plastic-labs/honcho">Honcho</a> 辩证式用户建模。兼容 <a href="https://agentskills.io">agentskills.io</a> 开放标准。</td></tr>
-<tr><td><b>定时自动化</b></td><td>内置 cron 调度器，支持向任何平台投递。日报、夜间备份、周审计——全部用自然语言描述，无人值守运行。</td></tr>
-<tr><td><b>委派与并行</b></td><td>生成隔离子代理处理并行工作流。编写 Python 脚本通过 RPC 调用工具，将多步管道压缩为零上下文开销的轮次。</td></tr>
-<tr><td><b>随处运行</b></td><td>六种终端后端——本地、Docker、SSH、Daytona、Singularity 和 Modal。Daytona 和 Modal 提供 Serverless 持久化——代理环境空闲时休眠、按需唤醒，空闲期间几乎零成本。$5 VPS 或 GPU 集群都能跑。</td></tr>
-<tr><td><b>研究就绪</b></td><td>批量轨迹生成、轨迹压缩——用于训练下一代工具调用模型。</td></tr>
+<tr><td><b>终端优先</b></td><td>TUI 支持多行编辑、斜杠命令、历史记录、中断和流式工具输出。</td></tr>
+<tr><td><b>消息网关</b></td><td>同一个代理可从 Telegram、Discord、Slack、WhatsApp、Signal、Email 和 CLI 使用。</td></tr>
+<tr><td><b>记忆与技能</b></td><td>持久记忆、跨会话搜索、自改进技能，以及可选的 <a href="https://github.com/plastic-labs/honcho">Honcho</a> 用户建模。技能兼容 <a href="https://agentskills.io">agentskills.io</a> 标准。</td></tr>
+<tr><td><b>定时任务</b></td><td>内置 cron 调度器可运行日报、审计、备份和提醒。</td></tr>
+<tr><td><b>并行代理</b></td><td>生成隔离子代理，也可编写 Python 脚本通过 RPC 调用 Hermes 工具。</td></tr>
+<tr><td><b>灵活执行</b></td><td>命令可在本地、Docker、SSH、Singularity、Modal、Daytona 和 Vercel Sandbox 后端运行。</td></tr>
+<tr><td><b>研究工作流</b></td><td>生成和压缩工具调用轨迹，用于训练与评测。</td></tr>
 </table>
 
 ---
 
 ## 快速安装
 
+### Linux、macOS、WSL2
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-支持 Linux、macOS、WSL2 和 Android (Termux)。安装程序会自动处理平台特定的配置。
+### 原生 Windows PowerShell 早期 beta
 
-> **Android / Termux：** 已测试的手动安装路径请参考 [Termux 指南](https://hermes-agent.nousresearch.com/docs/getting-started/termux)。在 Termux 上，Hermes 会安装精选的 `.[termux]` 扩展，因为完整的 `.[all]` 扩展会拉取 Android 不兼容的语音依赖。
->
-> **Windows：** 原生 Windows 不受支持。请安装 [WSL2](https://learn.microsoft.com/zh-cn/windows/wsl/install) 并运行上述命令。
+原生 Windows 支持处于 **早期 beta**。安装器会配置 Hermes、Python、Node.js、ripgrep、ffmpeg 和 Git Bash，无需管理员权限。Windows 上推荐优先使用 WSL2 并运行上面的 Linux 命令。
+
+在 PowerShell 中运行：
+
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+```
+
+如果系统已有 Git，安装器会直接使用。否则会下载便携版 MinGit 到 `%LOCALAPPDATA%\hermes\git`。
+
+### Android / Termux
+
+请参考 [Termux 指南](https://hermes-agent.nousresearch.com/docs/getting-started/termux)。Termux 使用精选的 `.[termux]` 扩展，以避开 Android 兼容性受限的语音依赖。
 
 安装后：
 

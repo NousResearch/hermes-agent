@@ -144,7 +144,7 @@ def test_spawn_session_id_stamped_and_immune_to_later_env_race(registry, monkeyp
         _approval_session_key.reset(token)
 
 
-def test_concurrent_turns_capture_their_own_spawn_owner_under_env_race(monkeypatch):
+def test_concurrent_turns_capture_their_own_spawn_owner_under_env_race():
     """Deterministic two-turn race: each turn binds its own
     ``_approval_session_key`` and, even when the other turn stamps the
     process-global env slot in the documented "lock released, agent still
@@ -180,33 +180,47 @@ def test_concurrent_turns_capture_their_own_spawn_owner_under_env_race(monkeypat
         finally:
             _approval_session_key.reset(tok)
 
-    # C3: establish the baseline env slot via monkeypatch from the MAIN
-    # thread before any worker starts. pytest's monkeypatch guarantees
-    # HERMES_SESSION_KEY is restored to its pre-test value (or removed) at
-    # teardown even if a worker thread raises mid-race, so this test cannot
-    # leak the racing value into subsequent tests. The worker threads still
-    # mutate os.environ directly on purpose: that IS the concurrent
-    # process-global race this regression simulates, and
-    # get_env_immune_session_key() must ignore it. monkeypatch owns only
-    # the cleanup guarantee, never the race itself — semantics and the
-    # pre-fix RED counter-proof are unchanged.
-    monkeypatch.setenv("HERMES_SESSION_KEY", "pre-race-baseline-sid")
-    # Both threads intentionally share this single event (A waits on it,
-    # B sets it); the name reflects "the other turn has started" from
-    # whichever thread's perspective is reading it.
-    other_started = threading.Event()
-    ta = threading.Thread(target=turn, args=("sid-A", "A", other_started))
-    tb = threading.Thread(target=turn, args=("sid-B", "B", other_started))
-    ta.start(); tb.start(); ta.join(timeout=5); tb.join(timeout=5)
+    # C2 (round 2): the cleanup contract is kept LOCAL and explicit with a
+    # try/finally that snapshots and restores os.environ['HERMES_SESSION_KEY']
+    # by hand, instead of relying on pytest's monkeypatch.
+    #
+    # Why not monkeypatch here: the worker threads below mutate os.environ
+    # DIRECTLY (not via monkeypatch) on purpose — that raw process-global
+    # write IS the concurrent race this regression simulates, and
+    # get_env_immune_session_key() must ignore it. monkeypatch is not
+    # thread-safe and only tracks values IT set, so whichever worker writes
+    # last would leave its sid in os.environ until teardown; the cleanup
+    # guarantee would be neither local nor obvious. The explicit
+    # try/finally below restores the exact pre-test state (value or absence)
+    # even if a worker thread raises mid-race, so this test cannot leak the
+    # racing value into subsequent tests. Semantics and the pre-fix RED
+    # counter-proof are unchanged — only the cleanup mechanism is now a
+    # self-contained, interrupt-safe contract visible at the call site.
+    _had_key = "HERMES_SESSION_KEY" in os.environ
+    _saved = os.environ.get("HERMES_SESSION_KEY", "")
+    try:
+        os.environ["HERMES_SESSION_KEY"] = "pre-race-baseline-sid"
+        # Both threads intentionally share this single event (A waits on
+        # it, B sets it); the name reflects "the other turn has started"
+        # from whichever thread's perspective is reading it.
+        other_started = threading.Event()
+        ta = threading.Thread(target=turn, args=("sid-A", "A", other_started))
+        tb = threading.Thread(target=turn, args=("sid-B", "B", other_started))
+        ta.start(); tb.start(); ta.join(timeout=5); tb.join(timeout=5)
 
-    assert captured.get("A") == "sid-A", (
-        f"Turn A captured {captured.get('A')!r} (expected 'sid-A'). "
-        "Env-immune spawn-owner capture is leaking the process-global "
-        "env race — the xsession misroute is NOT prevented."
-    )
-    assert captured.get("B") == "sid-B", (
-        f"Turn B captured {captured.get('B')!r} (expected 'sid-B')."
-    )
+        assert captured.get("A") == "sid-A", (
+            f"Turn A captured {captured.get('A')!r} (expected 'sid-A'). "
+            "Env-immune spawn-owner capture is leaking the process-global "
+            "env race — the xsession misroute is NOT prevented."
+        )
+        assert captured.get("B") == "sid-B", (
+            f"Turn B captured {captured.get('B')!r} (expected 'sid-B')."
+        )
+    finally:
+        if not _had_key:
+            os.environ.pop("HERMES_SESSION_KEY", None)
+        else:
+            os.environ["HERMES_SESSION_KEY"] = _saved
 
 
 # ---------------------------------------------------------------------------

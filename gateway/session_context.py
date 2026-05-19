@@ -162,3 +162,35 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_bound_session_key_or_none() -> "str | None":
+    """Return the explicitly-bound session key, or ``None`` when unbound.
+
+    Public, env-immune accessor for the per-turn session identity. This
+    is the contract ``tools.approval.get_env_immune_session_key`` needs
+    and the reason it previously had to reach into this module's private
+    ``_SESSION_KEY`` / ``_UNSET`` names:
+
+    * Unlike :func:`get_session_env`, this NEVER falls back to
+      ``os.environ``. That fallback (triggered when the contextvar still
+      holds the ``_UNSET`` sentinel) is the exact concurrent
+      process-global race vector the env-immune capture exists to bypass,
+      so it cannot be reused here.
+    * Returns ``None`` when ``_SESSION_KEY`` was never bound in this
+      context (CLI / cron / plain tests / pre-Option-1 WebUI), letting
+      callers treat "no per-turn identity" distinctly from an explicitly
+      cleared empty string.
+    * Returns the bound value otherwise — including the empty string a
+      :func:`clear_session_vars` leaves behind (callers decide how to
+      treat that; the env-immune helper treats it as "no owner").
+
+    Exposing this keeps the cross-module API explicit: a future rename of
+    the underscore-prefixed internals stays contained in this module, and
+    any change to *this* public name is a deliberate, reviewable API break
+    rather than a silent ``AttributeError`` swallowed downstream.
+    """
+    value = _SESSION_KEY.get()
+    if value is _UNSET:
+        return None
+    return value

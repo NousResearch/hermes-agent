@@ -94,12 +94,15 @@ def get_env_immune_session_key() -> str:
        (bound by gateway / api_server / tui / WebUI Option 1 before the
        agent turn; propagated into background-spawn worker threads via
        ``contextvars.copy_context()`` in ``agent/tool_executor.py``).
-    2. ``gateway.session_context._SESSION_KEY`` contextvar — but ONLY when
-       it was explicitly bound (not the ``_UNSET`` sentinel and not the
-       empty "cleared" marker). ``get_session_env`` cannot be reused here
-       because it intentionally falls through to ``os.environ`` on
-       ``_UNSET``; that fallback is the exact race vector this helper
-       exists to bypass.
+    2. ``gateway.session_context.get_bound_session_key_or_none()`` — the
+       public env-immune accessor. It returns the bound session key, or
+       ``None`` when ``_SESSION_KEY`` was never bound in this context.
+       ``get_session_env`` cannot be reused here because it intentionally
+       falls through to ``os.environ`` for the unbound case; that
+       fallback is the exact race vector this helper exists to bypass.
+       Calling the public accessor (instead of importing the private
+       ``_SESSION_KEY`` / ``_UNSET`` names) keeps the cross-module
+       contract explicit and refactor-safe.
 
     Returns ``""`` when no per-turn session-identity contextvar was bound
     (CLI / cron / plain tests / pre-Option-1 WebUI). Empty is the safe
@@ -113,10 +116,10 @@ def get_env_immune_session_key() -> str:
     if session_key:
         return session_key
     try:
-        from gateway.session_context import _SESSION_KEY, _UNSET
+        from gateway.session_context import get_bound_session_key_or_none
 
-        value = _SESSION_KEY.get()
-        if value is not _UNSET and value:
+        value = get_bound_session_key_or_none()
+        if value:
             return str(value)
     except ImportError:
         # The only expected failure: the gateway module isn't importable
@@ -132,7 +135,7 @@ def get_env_immune_session_key() -> str:
         # stays a pure pass-through and never suppresses a valid wakeup.
         logger.debug(
             "get_env_immune_session_key: unexpected error reading "
-            "gateway.session_context._SESSION_KEY; falling back to \"\"",
+            "gateway.session_context bound session key; falling back to \"\"",
             exc_info=True,
         )
     return ""

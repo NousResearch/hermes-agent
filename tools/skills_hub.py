@@ -2358,12 +2358,17 @@ class LobeHubSource(SkillSource):
 class BrowseShSource(SkillSource):
     """Discover and install site-specific browser automation skills from browse.sh.
 
-    browse.sh (https://browse.sh) is Browserbase's catalog of 169+ SKILL.md files
+    browse.sh (https://browse.sh) is Browserbase's catalog of 200+ SKILL.md files
     that describe how to automate specific websites (Airbnb, Amazon, arXiv, etc.).
-    Each skill has a sourceUrl pointing to the raw SKILL.md on GitHub.
+    The catalog lives at ``/api/skills`` and each skill's actual SKILL.md content
+    is fetched via ``/api/skills/{slug}`` which returns a ``skillMdUrl`` field
+    pointing at a CDN-hosted blob — the catalog's ``sourceUrl`` field is a GitHub
+    HTML URL whose underlying repository is not always public, so it cannot be
+    relied on for content fetch.
     """
 
     CATALOG_URL = "https://browse.sh/api/skills"
+    SKILL_DETAIL_URL = "https://browse.sh/api/skills/{slug}"
     _CACHE_KEY = "browse_sh_catalog"
 
     def source_id(self) -> str:
@@ -2454,20 +2459,22 @@ class BrowseShSource(SkillSource):
         item = next((i for i in catalog if i.get("slug") == slug), None)
         if not item:
             return None
-        source_url = item.get("sourceUrl", "")
-        if not source_url:
-            return None
-        # Convert GitHub HTML URL to raw URL if needed
-        raw_url = self._to_raw_url(source_url)
-        if not raw_url:
+
+        # Resolve the actual SKILL.md content URL via the per-skill detail
+        # endpoint, which returns a ``skillMdUrl`` (CDN blob). The catalog's
+        # ``sourceUrl`` is a GitHub HTML link whose underlying repo is not
+        # reliably public, so we don't use it for content.
+        md_url = self._resolve_skill_md_url(slug, item)
+        if not md_url:
             return None
         try:
-            resp = httpx.get(raw_url, timeout=20, follow_redirects=True)
+            resp = httpx.get(md_url, timeout=20, follow_redirects=True)
             if resp.status_code != 200:
                 return None
             content = resp.text
         except httpx.HTTPError:
             return None
+
         meta = self._item_to_meta(item)
         name = meta.name if meta else slug.split("/")[-1]
         return SkillBundle(
@@ -2479,30 +2486,43 @@ class BrowseShSource(SkillSource):
             metadata={
                 "slug": slug,
                 "hostname": item.get("hostname", ""),
-                "source_url": source_url,
+                "source_url": item.get("sourceUrl", ""),
+                "skill_md_url": md_url,
             },
         )
+
+    def _resolve_skill_md_url(self, slug: str, item: Dict) -> Optional[str]:
+        """Resolve the SKILL.md content URL for a slug.
+
+        Primary path: hit ``/api/skills/{slug}`` and read ``skillMdUrl``.
+        Fallback: if the catalog item already has a ``raw.githubusercontent.com``
+        ``sourceUrl`` (some entries may), use it directly.
+        """
+        try:
+            detail = httpx.get(
+                self.SKILL_DETAIL_URL.format(slug=slug),
+                timeout=20,
+                follow_redirects=True,
+            )
+            if detail.status_code == 200:
+                data = detail.json()
+                if isinstance(data, dict):
+                    md_url = data.get("skillMdUrl")
+                    if isinstance(md_url, str) and md_url.startswith("http"):
+                        return md_url
+        except (httpx.HTTPError, json.JSONDecodeError):
+            pass
+
+        source_url = item.get("sourceUrl", "") if isinstance(item, dict) else ""
+        if source_url and "raw.githubusercontent.com" in source_url:
+            return source_url
+        return None
 
     def _slug_from_identifier(self, identifier: str) -> str:
         """Extract slug from identifier like 'browse-sh/airbnb.com/search-listings-abc'."""
         if identifier.startswith("browse-sh/"):
             return identifier[len("browse-sh/"):]
         return identifier
-
-    def _to_raw_url(self, url: str) -> Optional[str]:
-        """Convert a GitHub HTML URL to a raw.githubusercontent.com URL."""
-        if "raw.githubusercontent.com" in url:
-            return url
-        # https://github.com/owner/repo/blob/branch/path -> raw URL
-        import re
-        m = re.match(
-            r"https://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)",
-            url,
-        )
-        if m:
-            owner, repo, branch, path = m.groups()
-            return f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-        return None
 
 
 # ---------------------------------------------------------------------------

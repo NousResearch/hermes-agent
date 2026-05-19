@@ -15,12 +15,13 @@ from pathlib import Path
 from typing import Any, Deque, Optional
 from urllib.parse import unquote, urlparse
 
-import acp
-from acp.schema import (
+from acp_adapter import acp_compat as acp
+from acp_adapter.acp_compat import (
     AgentCapabilities,
     AgentMessageChunk,
     AgentThoughtChunk,
     AuthenticateResponse,
+    AuthMethodAgent,
     AvailableCommand,
     AvailableCommandsUpdate,
     BlobResourceContents,
@@ -61,6 +62,7 @@ from acp.schema import (
     UsageUpdate,
     UserMessageChunk,
 )
+from hermes_constants import is_wsl
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
 from acp_adapter.events import (
@@ -150,8 +152,8 @@ def _path_from_file_uri(uri: str) -> Path | None:
     """Convert local file URIs/paths from ACP clients into a readable Path.
 
     Zed may send POSIX file URIs from Linux/WSL workspaces or Windows-ish paths
-    when launched through wsl.exe. Translate the common Windows drive form to
-    /mnt/<drive>/... so Hermes running in WSL can read it.
+    when launched through wsl.exe. Translate the common Windows drive form only
+    when Hermes itself is running in WSL; native Windows keeps drive paths.
     """
     raw = (uri or "").strip()
     if not raw:
@@ -169,14 +171,22 @@ def _path_from_file_uri(uri: str) -> Path | None:
         path_text = unquote(raw)
 
     # file:///C:/Users/... or C:\Users\...
-    if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
-        drive = path_text[1].lower()
-        rest = path_text[3:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
-    if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
-        drive = path_text[0].lower()
-        rest = path_text[2:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+    if os.name == "nt":
+        if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
+            return Path(path_text[1:])
+        if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
+            return Path(path_text)
+        return Path(path_text)
+
+    if is_wsl():
+        if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
+            drive = path_text[1].lower()
+            rest = path_text[3:].lstrip("/\\").replace("\\", "/")
+            return Path("/mnt") / drive / rest
+        if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
+            drive = path_text[0].lower()
+            rest = path_text[2:].lstrip("/\\").replace("\\", "/")
+            return Path("/mnt") / drive / rest
 
     return Path(path_text)
 
@@ -187,10 +197,10 @@ def _decode_text_bytes(data: bytes, mime_type: str | None) -> str | None:
         return None
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
         try:
-            return data.decode(encoding)
+            return data.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
         except UnicodeDecodeError:
             continue
-    return data.decode("utf-8", errors="replace")
+    return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _format_resource_text(

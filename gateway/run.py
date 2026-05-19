@@ -175,6 +175,22 @@ def _float_env(name: str, default: float) -> float:
         return float(default)
 
 
+def _int_env(name: str, default: int) -> int:
+    """Read an env var as int, falling back to ``default`` on typos/empty.
+
+    A misconfigured env var (e.g. ``HERMES_MAX_ITERATIONS=abc`` or an empty
+    value left over after a stale ``.env`` edit) must not crash a background
+    task spawn or a gateway agent turn.  Unset/empty also falls back.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return int(default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def _is_fresh_gateway_interruption(
     value: Any,
     *,
@@ -3332,7 +3348,7 @@ class GatewayRunner:
         # config.yaml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
         try:
-            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            _effective_max_iter = _int_env("HERMES_MAX_ITERATIONS", 90)
             logger.info(
                 "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
                 "or HERMES_MAX_ITERATIONS from .env, or default 90)",
@@ -10881,7 +10897,7 @@ class GatewayRunner:
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
             pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = _int_env("HERMES_MAX_ITERATIONS", 90)
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -15356,8 +15372,10 @@ class GatewayRunner:
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            # Read from env var or use default (same as CLI). _int_env falls
+            # back to 90 if the value is missing or malformed so a stale .env
+            # entry can never abort a gateway turn with ValueError.
+            max_iterations = _int_env("HERMES_MAX_ITERATIONS", 90)
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.

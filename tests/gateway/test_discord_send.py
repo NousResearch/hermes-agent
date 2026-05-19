@@ -46,6 +46,39 @@ from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
 
 @pytest.mark.asyncio
+async def test_send_uses_embed_metadata_on_first_chunk(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    embed_payload = {"title": "Cron: watchdog", "description": "state changed"}
+    embed_obj = object()
+    sent_msg = SimpleNamespace(id=1234)
+    send_calls = []
+
+    async def fake_send(*, content, reference=None, embed=None):
+        send_calls.append({"content": content, "reference": reference, "embed": embed})
+        return sent_msg
+
+    import gateway.platforms.discord as discord_mod
+
+    monkeypatch.setattr(discord_mod.discord.Embed, "from_dict", MagicMock(return_value=embed_obj), raising=False)
+    channel = SimpleNamespace(send=AsyncMock(side_effect=fake_send))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send(
+        "555",
+        "",
+        metadata={"discord_embed": embed_payload},
+    )
+
+    assert result.success is True
+    discord_mod.discord.Embed.from_dict.assert_called_once_with(embed_payload)
+    assert send_calls == [{"content": None, "reference": None, "embed": embed_obj}]
+
+
+@pytest.mark.asyncio
 async def test_send_retries_without_reference_when_reply_target_is_system_message():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
 

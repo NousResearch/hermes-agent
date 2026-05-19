@@ -511,6 +511,79 @@ _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 
+_DISCORD_EMBED_PREFIX = "HERMES_DISCORD_EMBED:"
+
+
+def _extract_discord_embed_payload(content: str) -> tuple[str, dict | None]:
+    """Extract a structured Discord embed marker from cron output.
+
+    Script-only jobs need a stdout-compatible way to request rich Discord
+    delivery while preserving plain-text fallback for every other platform. A
+    line beginning ``HERMES_DISCORD_EMBED:`` contains JSON for Discord's embed
+    API; that line is stripped from delivered text.
+    """
+    embed = None
+    kept_lines = []
+    for line in (content or "").splitlines():
+        if line.startswith(_DISCORD_EMBED_PREFIX):
+            raw = line[len(_DISCORD_EMBED_PREFIX):].strip()
+            if raw and embed is None:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        embed = parsed
+                except Exception as exc:
+                    logger.warning("Failed to parse Discord embed cron marker: %s", exc)
+            continue
+        kept_lines.append(line)
+    return "\n".join(kept_lines).strip(), embed
+
+
+def _cron_wrapped_content(job: dict, content: str, *, wrap_response: bool) -> str:
+    if not wrap_response:
+        return content
+    task_name = job.get("name", job["id"])
+    job_id = job.get("id", "")
+    return (
+        f"Cronjob Response: {task_name}\n"
+        f"(job_id: {job_id})\n"
+        f"-------------\n\n"
+        f"{content}\n\n"
+        f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+    )
+
+
+def _truncate_discord_embed_text(text: str, limit: int = 4096) -> str:
+    """Clamp text to Discord embed limits without chopping mid-character."""
+    cleaned = (text or "").strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    suffix = "\n… truncated"
+    return cleaned[: max(0, limit - len(suffix))].rstrip() + suffix
+
+
+def _build_default_discord_cron_embed(job: dict, content: str) -> dict:
+    """Build a generic native Discord embed for plain cron output.
+
+    Script jobs can still override this with ``HERMES_DISCORD_EMBED:``. This
+    default keeps Discord deliveries out of the noisy ``Cronjob Response`` text
+    wrapper while preserving the full plain-text wrapper for other platforms.
+    """
+    task_name = str(job.get("name") or job.get("id") or "cron job")
+    job_id = str(job.get("id") or "")
+    title = f"Cron: {task_name}"
+    if len(title) > 256:
+        title = title[:253].rstrip() + "..."
+    embed = {
+        "title": title,
+        "description": _truncate_discord_embed_text(content),
+        "color": 0x5865F2,
+    }
+    if job_id:
+        embed["footer"] = {"text": f"job_id: {job_id}"}
+    return embed
+
+
 def _send_media_via_adapter(
     adapter,
     chat_id: str,
@@ -597,22 +670,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
+    raw_content, discord_embed = _extract_discord_embed_payload(content)
+    explicit_discord_embed = discord_embed is not None
+
     if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
-        )
+        delivery_content = _cron_wrapped_content(job, raw_content, wrap_response=True)
     else:
-        delivery_content = content
+        delivery_content = raw_content
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    discord_media_files, discord_cleaned_content = BasePlatformAdapter.extract_media(raw_content)
+    if discord_embed is None:
+        discord_embed = _build_default_discord_cron_embed(job, discord_cleaned_content)
 
     try:
         config = load_gateway_config()
@@ -665,12 +736,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            send_metadata = {"thread_id": thread_id} if thread_id else {}
+            use_discord_embed = platform_name.lower() == "discord" and discord_embed
+            if use_discord_embed:
+                target_text = discord_cleaned_content if explicit_discord_embed else ""
+                target_media_files = discord_media_files
+            else:
+                target_text = cleaned_delivery_content
+                target_media_files = media_files
+            if use_discord_embed:
+                send_metadata["discord_embed"] = discord_embed
+            send_metadata = send_metadata or None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
-                text_to_send = cleaned_delivery_content.strip()
+                text_to_send = target_text.strip()
                 adapter_ok = True
-                if text_to_send:
+                if text_to_send or (platform_name.lower() == "discord" and discord_embed):
                     from agent.async_utils import safe_schedule_threadsafe
                     future = safe_schedule_threadsafe(
                         runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
@@ -706,11 +787,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             delivery_errors.append(msg)
 
                 # Send extracted media files as native attachments via the live adapter
-                if adapter_ok and media_files:
+                if adapter_ok and target_media_files:
                     _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
-                        media_files,
+                        target_media_files,
                         send_metadata,
                         loop,
                         job,
@@ -727,8 +808,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
+            if platform_name.lower() == "discord" and discord_embed:
+                standalone_content = discord_cleaned_content if explicit_discord_embed else ""
+                standalone_media_files = discord_media_files
+            else:
+                standalone_content = cleaned_delivery_content
+                standalone_media_files = media_files
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                standalone_content,
+                thread_id=thread_id,
+                media_files=standalone_media_files,
+                discord_embed=discord_embed if platform_name.lower() == "discord" else None,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -738,7 +833,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    future = pool.submit(
+                        asyncio.run,
+                        _send_to_platform(
+                            platform,
+                            pconfig,
+                            chat_id,
+                            standalone_content,
+                            thread_id=thread_id,
+                            media_files=standalone_media_files,
+                            discord_embed=discord_embed if platform_name.lower() == "discord" else None,
+                        ),
+                    )
                     result = future.result(timeout=30)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"

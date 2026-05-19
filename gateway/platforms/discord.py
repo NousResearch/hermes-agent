@@ -1413,6 +1413,9 @@ class DiscordAdapter(BasePlatformAdapter):
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            discord_embed = None
+            if metadata and isinstance(metadata.get("discord_embed"), dict):
+                discord_embed = discord.Embed.from_dict(metadata["discord_embed"])
 
             message_ids = []
             reference = None
@@ -1433,10 +1436,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs = {
+                        "content": (chunk if chunk else None) if discord_embed else chunk,
+                        "reference": chunk_reference,
+                    }
+                    if discord_embed is not None and i == 0:
+                        send_kwargs["embed"] = discord_embed
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -1455,10 +1461,13 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        retry_kwargs = {
+                            "content": (chunk if chunk else None) if discord_embed else chunk,
+                            "reference": None,
+                        }
+                        if discord_embed is not None and i == 0:
+                            retry_kwargs["embed"] = discord_embed
+                        msg = await channel.send(**retry_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))

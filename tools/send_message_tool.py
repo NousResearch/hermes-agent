@@ -547,7 +547,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, discord_embed=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -640,12 +640,17 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
+            send_kwargs = {
+                "media_files": media_files if is_last else [],
+                "thread_id": thread_id,
+            }
+            if discord_embed is not None and i == 0:
+                send_kwargs["discord_embed"] = discord_embed
             result = await _send_discord(
                 pconfig.token,
                 chat_id,
                 chunk,
-                media_files=media_files if is_last else [],
-                thread_id=thread_id,
+                **send_kwargs,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1043,7 +1048,7 @@ def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
     return _DISCORD_CHANNEL_TYPE_PROBE_CACHE.get(str(chat_id))
 
 
-async def _send_discord(token, chat_id, message, thread_id=None, media_files=None):
+async def _send_discord(token, chat_id, message, thread_id=None, media_files=None, discord_embed=None):
     """Send a single message via Discord REST API (no websocket client needed).
 
     Chunking is handled by _send_to_platform() before this is called.
@@ -1073,6 +1078,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         auth_headers = {"Authorization": f"Bot {token}"}
         json_headers = {**auth_headers, "Content-Type": "application/json"}
         media_files = media_files or []
+        embeds = [discord_embed] if isinstance(discord_embed, dict) else []
         last_data = None
         warnings = []
 
@@ -1137,6 +1143,8 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                             for idx, path in enumerate(valid_media)
                         ]
                         starter_message = {"content": message, "attachments": attachments_meta}
+                        if embeds:
+                            starter_message["embeds"] = embeds
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
 
                         form = aiohttp.FormData()
@@ -1168,7 +1176,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                             headers=json_headers,
                             json={
                                 "name": thread_name,
-                                "message": {"content": message},
+                                "message": {k: v for k, v in {"content": message, "embeds": embeds or None}.items() if v},
                             },
                             **_req_kw,
                         ) as resp:
@@ -1194,8 +1202,11 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
-            if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+            if message.strip() or embeds or not media_files:
+                payload = {"content": message}
+                if embeds:
+                    payload["embeds"] = embeds
+                async with session.post(url, headers=json_headers, json=payload, **_req_kw) as resp:
                     if resp.status not in {200, 201}:
                         body = await resp.text()
                         return _error(f"Discord API error ({resp.status}): {body}")

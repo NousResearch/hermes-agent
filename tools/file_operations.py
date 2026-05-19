@@ -1240,6 +1240,41 @@ class ShellFileOperations(FileOperations):
             dirs_created=dirs_created,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
+            warning=self._check_git_baseline(path),
+        )
+
+    def _check_git_baseline(self, file_path: str) -> Optional[str]:
+        """Check whether the git working tree has uncommitted changes.
+
+        Returns a warning string when the file is inside a dirty git
+        work tree so the model can be aware of unsaved versioned state.
+        Returns None when git is unavailable, not a work tree, or clean.
+        """
+        # Check git availability
+        git_check = self._exec("command -v git", timeout=5)
+        if git_check.exit_code != 0 or not git_check.stdout.strip():
+            return None
+
+        # Check if inside a work tree
+        work_tree = self._exec("git rev-parse --is-inside-work-tree", timeout=5)
+        if work_tree.exit_code != 0 or work_tree.stdout.strip().lower() != "true":
+            return None
+
+        # Get branch name
+        branch_result = self._exec("git rev-parse --abbrev-ref HEAD", timeout=5)
+        branch = (branch_result.stdout.strip() or "unknown")
+        if branch == "HEAD":  # detached HEAD
+            return None
+
+        # Check dirty state
+        status_result = self._exec("git status --porcelain", timeout=5)
+        if status_result.exit_code != 0 or not status_result.stdout.strip():
+            return None  # clean
+
+        return (
+            f"The git working tree at {file_path} is dirty "
+            f"(branch: {branch}). Uncommitted changes exist — consider "
+            f"reviewing them before testing or merging."
         )
     
     # =========================================================================

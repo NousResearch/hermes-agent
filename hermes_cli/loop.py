@@ -681,3 +681,8 @@ def delete_loop(session_id: str, uid: Optional[str] = None) -> bool:
         return False
     _del_all_loop_meta(session_id)
     return True
+
+
+# Public aliases for external callers (tests, gateway)
+save_loop = _save_loop
+load_loop = _load_loop

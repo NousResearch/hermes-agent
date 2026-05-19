@@ -3607,12 +3607,26 @@ class AIAgent:
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
         of assistant tool-call messages that omit ``reasoning_content`` (refs
         #15250, #17400). Xiaomi MiMo thinking mode has the same requirement.
+
+        Result cached on the AIAgent instance keyed by (provider, model,
+        base_url); invalidated whenever ``switch_model()`` /
+        ``_try_activate_fallback()`` mutate any of those. This is hot — the
+        agent loop hits ~16 invocations per turn, each of which would
+        otherwise re-run ~5 ``base_url_host_matches`` (and therefore
+        ``urlparse``) calls under it. Caching drops the per-turn cost from
+        ~5us × 16 = ~80us to <1us.
         """
-        return (
+        key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
+        cached = getattr(self, "_thinking_pad_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        result = (
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
             or self._needs_mimo_tool_reasoning()
         )
+        self._thinking_pad_cache = (key, result)
+        return result
 
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.

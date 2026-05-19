@@ -39,6 +39,12 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.firecrawl.dev"
 
+# Integration tag sent on every browser-session create so Firecrawl can
+# attribute Hermes usage. Mirrors FIRECRAWL_INTEGRATION_TAG in the web
+# plugin; kept here rather than imported to keep the two firecrawl
+# plugins import-independent.
+FIRECRAWL_INTEGRATION_TAG = "hermes"
+
 
 class FirecrawlBrowserProvider(BrowserProvider):
     """Firecrawl (https://firecrawl.dev) cloud browser backend.
@@ -80,7 +86,10 @@ class FirecrawlBrowserProvider(BrowserProvider):
     def create_session(self, task_id: str) -> Dict[str, object]:
         ttl = int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
 
-        body: Dict[str, object] = {"ttl": ttl}
+        body: Dict[str, object] = {
+            "ttl": ttl,
+            "integration": FIRECRAWL_INTEGRATION_TAG,
+        }
 
         try:
             response = requests.post(

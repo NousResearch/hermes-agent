@@ -865,8 +865,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     session_id           TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id);
-
 CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
     child_id   TEXT NOT NULL,
@@ -1170,14 +1168,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # created from within an agent loop that propagated
         # ``HERMES_SESSION_ID`` (e.g. ACP). NULL on legacy rows and on any
         # creation path that doesn't set the env var (CLI, dashboard).
-        # Index keeps per-session list queries cheap.
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_session_id "
-            "ON tasks(session_id)"
-        )
+    # Keep this out of SCHEMA_SQL: on legacy DBs, CREATE TABLE IF NOT EXISTS
+    # leaves tasks unchanged, so an index on a newly-added column must be
+    # created only after the additive migration has guaranteed the column
+    # exists. Run unconditionally so fresh DBs and partially-migrated DBs
+    # both get the index.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_session_id "
+        "ON tasks(session_id)"
+    )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -5656,6 +5658,15 @@ def _to_epoch(val) -> Optional[int]:
         return int(dt.timestamp())
     except (ValueError, OSError):
         return None
+
+
+def _safe_int(val) -> Optional[int]:
+    """Backward-compatible timestamp integer normalizer used by tests/plugins.
+
+    `_to_epoch` grew ISO-8601 support, but callers still import the older
+    helper name when they only need safe int-or-None behavior.
+    """
+    return _to_epoch(val)
 
 
 def task_age(task: Task) -> dict:

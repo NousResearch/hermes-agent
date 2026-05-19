@@ -34,6 +34,16 @@ from hermes_cli.kanban import run_slash
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    # Mirror the real default Hermes home enough for dispatcher spawn tests:
+    # bundled kanban workers should preload the kanban-worker skill when it is
+    # resolvable.  Tests that need an absent skill can remove this stub or
+    # monkeypatch _kanban_worker_skill_available directly.
+    skill_dir = home / "skills" / "devops" / "kanban-worker"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: kanban-worker\n---\n# Kanban worker\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
@@ -3141,6 +3151,76 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
     conn.close()
 
 
+def test_connect_migrates_legacy_db_without_session_id_before_indexing(tmp_path):
+    """connect() must add tasks.session_id before creating its index.
+
+    Regression coverage for legacy boards created before session_id existed:
+    SCHEMA_SQL runs before the additive migrator, and CREATE TABLE IF NOT
+    EXISTS leaves the old tasks table untouched. Keeping idx_tasks_session_id
+    in SCHEMA_SQL made connect() fail with ``no such column: session_id``.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "legacy-no-session-id.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("""
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                body TEXT,
+                assignee TEXT,
+                status TEXT NOT NULL,
+                priority INTEGER DEFAULT 0,
+                created_by TEXT,
+                created_at INTEGER NOT NULL,
+                started_at INTEGER,
+                completed_at INTEGER,
+                workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+                workspace_path TEXT,
+                branch_name TEXT,
+                claim_lock TEXT,
+                claim_expires INTEGER,
+                tenant TEXT,
+                result TEXT,
+                idempotency_key TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                worker_pid INTEGER,
+                last_failure_error TEXT,
+                max_runtime_seconds INTEGER,
+                last_heartbeat_at INTEGER,
+                current_run_id INTEGER,
+                workflow_template_id TEXT,
+                current_step_key TEXT,
+                skills TEXT,
+                model_override TEXT,
+                max_retries INTEGER
+            )
+        """)
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) "
+            "VALUES ('legacy', 'old task', 'ready', 1)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    migrated = kb.connect(db_path)
+    try:
+        cols = {r[1] for r in migrated.execute("PRAGMA table_info(tasks)")}
+        assert "session_id" in cols
+        idx = migrated.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'index' AND name = 'idx_tasks_session_id'"
+        ).fetchone()
+        assert idx is not None
+        assert migrated.execute(
+            "SELECT session_id FROM tasks WHERE id = 'legacy'"
+        ).fetchone()[0] is None
+    finally:
+        migrated.close()
+
+
 def test_legacy_spawn_failure_columns_are_copied_not_renamed(tmp_path):
     """Legacy failure counters survive migration without fragile column renames."""
     import sqlite3
@@ -3618,6 +3698,7 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
             "kanban": {
                 "dispatch_in_gateway": True,
                 "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
             }
         },
     )

@@ -795,6 +795,23 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     aggregate = scan.get("aggregate", {})
     state = load_state() if not is_partial else {"unlocks": {}}
     unlocks = state.setdefault("unlocks", {})
+
+    # Merge scanned counters with persisted lifetime counters using max().
+    # This ensures session pruning cannot reduce lifetime achievement progress
+    # (issue #28661). Once a counter reaches a value, it never goes backward.
+    if not is_partial:
+        persisted_counters = state.get("lifetime_counters", {})
+        merged = {}
+        all_keys = set(aggregate.keys()) | set(persisted_counters.keys())
+        for key in all_keys:
+            scanned_val = aggregate.get(key, 0)
+            persisted_val = persisted_counters.get(key, 0)
+            try:
+                merged[key] = max(int(scanned_val or 0), int(persisted_val or 0))
+            except (TypeError, ValueError):
+                merged[key] = scanned_val
+        aggregate = merged
+        state["lifetime_counters"] = aggregate
     now = int(time.time())
     evaluated = []
     for definition in ACHIEVEMENTS:

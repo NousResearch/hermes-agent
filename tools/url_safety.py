@@ -23,6 +23,7 @@ Limitations (documented, not fixable at pre-flight level):
     where redirect handling is on their servers.
 """
 
+import concurrent.futures
 import ipaddress
 import logging
 import os
@@ -232,10 +233,12 @@ def is_always_blocked_url(url: str) -> bool:
         # Hostname → resolve and check every answer.  DNS failure is NOT
         # always-blocked (caller's ordinary path handles that).
         try:
-            addr_info = socket.getaddrinfo(
-                hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
-            )
-        except socket.gaierror:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    socket.getaddrinfo, hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+                )
+                addr_info = future.result(timeout=5)
+        except (socket.gaierror, concurrent.futures.TimeoutError):
             return False
 
         for _family, _, _, _, sockaddr in addr_info:
@@ -302,11 +305,18 @@ def is_safe_url(url: str) -> bool:
 
         # Try to resolve and check IP
         try:
-            addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    socket.getaddrinfo, hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+                )
+                addr_info = future.result(timeout=5)
         except socket.gaierror:
             # DNS resolution failed — fail closed. If DNS can't resolve it,
             # the HTTP client will also fail, so blocking loses nothing.
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
+            return False
+        except concurrent.futures.TimeoutError:
+            logger.warning("Blocked request — DNS resolution timed out for: %s", hostname)
             return False
 
         for family, _, _, _, sockaddr in addr_info:

@@ -2718,6 +2718,7 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
         return FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _home: True)
 
     conn = kb.connect()
     try:
@@ -2987,6 +2988,7 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
         return FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _home: True)
 
     conn = kb.connect()
     try:
@@ -3036,6 +3038,7 @@ def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monke
         return FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _home: True)
 
     conn = kb.connect()
     try:
@@ -3626,6 +3629,7 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
             "kanban": {
                 "dispatch_in_gateway": True,
                 "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
             }
         },
     )
@@ -3673,13 +3677,12 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 1
     assert not any("tick failed on board" in msg for msg in messages)
     assert not any(record.exc_info for record in caplog.records)
-    # First tick connect (dispatch) + two probes per `_has_ready_work` call
-    # (ready then review, both via _kb.connect). The second dispatch tick
-    # skips the dispatch connect because the corrupt board fingerprint is
-    # disabled, but the ready/review probes still each connect. PR f55d94a1e
-    # added the review-column probe alongside the existing ready-column
-    # probe, bumping this from 3 → 5.
-    assert calls["connect"] == 5
+    # First tick connect (dispatch) + one ready-work probe per
+    # `_has_ready_work` call. The second dispatch tick skips the dispatch
+    # connect because the corrupt board fingerprint is disabled, but the
+    # ready-work probe still connects. Auto-decompose is disabled for this
+    # runner, so no review-column probe is expected here.
+    assert calls["connect"] == 3
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,22 @@
+name: davinci-resolve
+version: 0.2.0
+description: Control DaVinci Resolve Studio live, or generate importable interchange files for free DaVinci Resolve.
+author: "Sam Wasserman"
+kind: standalone
+platforms:
+  - macos
+provides_tools:
+  - resolve_capabilities
+  - resolve_launch
+  - resolve_probe
+  - resolve_project_summary
+  - resolve_import_media
+  - resolve_create_timeline
+  - resolve_append_to_current_timeline
+  - resolve_add_timeline_marker
+  - resolve_scan_media_folder
+  - resolve_create_scripted_timeline
+  - resolve_render_timeline
+  - resolve_render_status
+  - resolve_generate_fcpxml_timeline
+  - resolve_generate_marker_csv

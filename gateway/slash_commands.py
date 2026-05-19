@@ -1184,6 +1184,23 @@ class GatewaySlashCommandsMixin:
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
 
+        # Intercept reserved status/info subcommands before switch_model() so
+        # `/model status` doesn't persist a literal model named "status" (#28489).
+        model_status_aliases = {"status", "info", "current", "show"}
+        if model_input.lower() in model_status_aliases and not explicit_provider:
+            provider_label = get_label(current_provider)
+            return "\n".join([
+                t(
+                    "gateway.model.current_label",
+                    model=current_model or "unknown",
+                    provider=provider_label,
+                ),
+                "",
+                t("gateway.model.usage_switch_model"),
+                t("gateway.model.usage_switch_provider"),
+                t("gateway.model.usage_persist"),
+            ])
+
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it

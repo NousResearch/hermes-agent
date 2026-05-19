@@ -1156,6 +1156,62 @@ class TestToolUseEnforcementConfig:
             assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
 
 
+class TestModelSpecificExecutionGuidance:
+    """Tests for the model-family gate that selects which execution-discipline
+    guidance block (Google vs OpenAI/Codex) is appended after the base
+    TOOL_USE_ENFORCEMENT_GUIDANCE.
+    """
+
+    def _make_agent(self, model):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"tool_use_enforcement": "auto"}},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_grok_receives_openai_execution_guidance(self):
+        """Grok narrates intent without emitting tool_use under the base
+        enforcement block alone; the OpenAI block's <tool_persistence> and
+        <verification> sections close that gap.
+        """
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+
+        agent = self._make_agent(model="xai/grok-4.3")
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_gpt_still_receives_openai_execution_guidance(self):
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+
+        agent = self._make_agent(model="openai/gpt-4.1")
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_gemini_does_not_receive_openai_execution_guidance(self):
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+
+        agent = self._make_agent(model="google/gemini-2.5-pro")
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE not in prompt
+
+
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):
         agent._cached_system_prompt = "cached value"

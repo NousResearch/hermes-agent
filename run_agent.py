@@ -12053,6 +12053,22 @@ class AIAgent:
                     summary_response = self._anthropic_messages_create(_ant_kw)
                     _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_summary_result.content or "").strip()
+                elif self.api_mode == "bedrock_converse":
+                    from agent.bedrock_adapter import (
+                        _get_bedrock_runtime_client,
+                        normalize_converse_response,
+                    )
+                    _bsum_transport = self._get_transport()
+                    _bsum_kwargs = _bsum_transport.build_kwargs(
+                        model=self.model, messages=api_messages, tools=None,
+                        max_tokens=self.max_tokens, region=getattr(self, "_bedrock_region", None) or "us-east-1",
+                    )
+                    _bsum_region = _bsum_kwargs.pop("__bedrock_region__", "us-east-1")
+                    _bsum_kwargs.pop("__bedrock_converse__", None)
+                    _bsum_client = _get_bedrock_runtime_client(_bsum_region)
+                    _bsum_raw = _bsum_client.converse(**_bsum_kwargs)
+                    _bsum_result = _bsum_transport.normalize_response(normalize_converse_response(_bsum_raw))
+                    final_response = (_bsum_result.content or "").strip()
                 else:
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
                     _summary_result = self._get_transport().normalize_response(summary_response)
@@ -12083,6 +12099,22 @@ class AIAgent:
                     retry_response = self._anthropic_messages_create(_ant_kw2)
                     _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_retry_result.content or "").strip()
+                elif self.api_mode == "bedrock_converse":
+                    from agent.bedrock_adapter import (
+                        _get_bedrock_runtime_client,
+                        normalize_converse_response,
+                    )
+                    _bretry_transport = self._get_transport()
+                    _bretry_kwargs = _bretry_transport.build_kwargs(
+                        model=self.model, messages=api_messages, tools=None,
+                        max_tokens=self.max_tokens, region=getattr(self, "_bedrock_region", None) or "us-east-1",
+                    )
+                    _bretry_region = _bretry_kwargs.pop("__bedrock_region__", "us-east-1")
+                    _bretry_kwargs.pop("__bedrock_converse__", None)
+                    _bretry_client = _get_bedrock_runtime_client(_bretry_region)
+                    _bretry_raw = _bretry_client.converse(**_bretry_kwargs)
+                    _bretry_result = _bretry_transport.normalize_response(normalize_converse_response(_bretry_raw))
+                    final_response = (_bretry_result.content or "").strip()
                 else:
                     summary_kwargs = {
                         "model": self.model,

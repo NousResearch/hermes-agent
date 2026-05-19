@@ -46,7 +46,7 @@ const renderPlain = (node: React.ReactNode) => {
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
     expect(matches('say _hi_ there')).toEqual(['_hi_'])
-    expect(matches('very __bold__ move')).toEqual(['__bold__'])
+    expect(matches('very __bold move__ today')).toEqual(['__bold move__'])
     expect(matches('(_paren_) and [_bracket_]')).toEqual(['_paren_', '_bracket_'])
   })
 
@@ -56,6 +56,12 @@ describe('INLINE_RE emphasis', () => {
     expect(matches(path)).toEqual([])
     expect(matches('snake_case_var and MY_CONST')).toEqual([])
     expect(matches('foo__bar__baz')).toEqual([])
+  })
+
+  it('keeps Python dunder identifiers literal', () => {
+    expect(matches('if __name__ == "__main__":')).toEqual([])
+    expect(matches('def __init__(self):')).toEqual([])
+    expect(matches('print(__file__)')).toEqual([])
   })
 
   it('still matches asterisk emphasis intraword', () => {
@@ -93,7 +99,12 @@ describe('stripInlineMarkup', () => {
   it('strips word-boundary emphasis only', () => {
     expect(stripInlineMarkup('say _hi_ there')).toBe('say hi there')
     expect(stripInlineMarkup('browser_screenshot_ecc.png')).toBe('browser_screenshot_ecc.png')
-    expect(stripInlineMarkup('__bold__ and foo__bar__')).toBe('bold and foo__bar__')
+    expect(stripInlineMarkup('__bold move__ and foo__bar__')).toBe('bold move and foo__bar__')
+  })
+
+  it('preserves Python dunder identifiers', () => {
+    expect(stripInlineMarkup('if __name__ == "__main__":')).toBe('if __name__ == "__main__":')
+    expect(stripInlineMarkup('class X: def __init__(self): pass')).toBe('class X: def __init__(self): pass')
   })
 
   it('leaves ~!/~? kaomoji alone and still handles real subscript', () => {
@@ -215,6 +226,24 @@ describe('Md wrapping', () => {
     )
 
     expect(lines.some(line => line.startsWith(' hi  ok'))).toBe(true)
+  })
+
+  it('renders Python dunder identifiers literally outside code fences', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: 'if __name__ == "__main__":\n    obj.__init__()'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('if __name__ == "__main__":')
+    expect(rendered).toContain('obj.__init__()')
   })
 })
 

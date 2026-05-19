@@ -308,6 +308,43 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     assert child_after["status"] == "ready"
 
 
+def test_reopening_parent_demotes_ready_child(client):
+    """Reopening a completed parent must invalidate ready children immediately.
+
+    The dispatcher re-checks parent completion on claim, but the dashboard
+    should not keep showing a stale child as ready after an operator drags
+    its parent back out of done for more work.
+    """
+    parent = client.post("/api/plugins/kanban/tasks", json={"title": "p"}).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "c", "parents": [parent["id"]]},
+    ).json()["task"]
+    assert child["status"] == "todo"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done"},
+    )
+    assert r.status_code == 200
+
+    child_after_done = client.get(
+        f"/api/plugins/kanban/tasks/{child['id']}"
+    ).json()["task"]
+    assert child_after_done["status"] == "ready"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "todo"},
+    )
+    assert r.status_code == 200
+
+    child_after_reopen = client.get(
+        f"/api/plugins/kanban/tasks/{child['id']}"
+    ).json()["task"]
+    assert child_after_reopen["status"] == "todo"
+
+
 def test_patch_reassign(client):
     t = client.post(
         "/api/plugins/kanban/tasks",

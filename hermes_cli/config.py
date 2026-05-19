@@ -3169,30 +3169,23 @@ def get_compatible_custom_providers(
 
     return compatible
 
-
-def get_custom_provider_context_length(
-    model: str,
-    base_url: str,
-    custom_providers: Optional[List[Dict[str, Any]]] = None,
-    config: Optional[Dict[str, Any]] = None,
-) -> Optional[int]:
-    """Look up a per-model ``context_length`` override from ``custom_providers``.
+def get_custom_provider_model_field(
+    field: str,
+    model: str | None = None,
+    base_url: str | None = None,
+    *,
+    custom_providers: list | None = None,
+    config: dict | None = None,
+    value_type: type = int,
+    positive_only: bool = True,
+) -> int | None:
+    """Look up a per-model field override from ``custom_providers``.
 
     Matches any entry whose ``base_url`` equals ``base_url`` (trailing-slash
-    insensitive) and returns ``custom_providers[i].models.<model>.context_length``
+    insensitive) and returns ``custom_providers[i].models.<model>.<field>``
     if present and valid.  Returns ``None`` when no override applies.
 
-    This is the single source of truth for custom-provider context overrides,
-    used by:
-      * ``AIAgent.__init__`` (startup resolution)
-      * ``AIAgent.switch_model`` (mid-session ``/model`` switch)
-      * ``hermes_cli.model_switch.resolve_display_context_length`` (``/model`` confirmation display)
-      * ``gateway.run._format_session_info`` (``/info`` display)
-      * ``agent.model_metadata.get_model_context_length`` (when custom_providers is threaded through)
-
-    Before this helper existed, the lookup was duplicated in ``run_agent.py``'s
-    startup path only; every other path (notably ``/model`` switch) fell back
-    to the 128K default.  See #15779.
+    Generic helper used for both ``context_length`` and ``max_tokens`` lookups.
     """
     if not model or not base_url:
         return None
@@ -3223,16 +3216,64 @@ def get_custom_provider_context_length(
         model_cfg = models.get(model)
         if not isinstance(model_cfg, dict):
             continue
-        raw_ctx = model_cfg.get("context_length")
-        if raw_ctx is None:
+        raw_val = model_cfg.get(field)
+        if raw_val is None:
             continue
         try:
-            ctx = int(raw_ctx)
+            val = value_type(raw_val)
         except (TypeError, ValueError):
             continue
-        if ctx > 0:
-            return ctx
+        if positive_only and val <= 0:
+            continue
+        return val
     return None
+
+
+def get_custom_provider_context_length(
+    model: str | None = None,
+    base_url: str | None = None,
+    custom_providers: list | None = None,
+    config: dict | None = None,
+) -> int | None:
+    """Look up a per-model ``context_length`` override from ``custom_providers``.
+
+    Matches any entry whose ``base_url`` equals ``base_url`` (trailing-slash
+    insensitive) and returns ``custom_providers[i].models.<model>.context_length``
+    if present and valid.  Returns ``None`` when no override applies.
+
+    This is the single source of truth for custom-provider context overrides,
+    used by:
+      * ``AIAgent.__init__`` (startup resolution)
+      * ``AIAgent.switch_model`` (mid-session ``/model`` switch)
+      * ``hermes_cli.model_switch.resolve_display_context_length`` (``/model`` confirmation display)
+      * ``gateway.run._format_session_info`` (``/info`` display)
+      * ``agent.model_metadata.get_model_context_length`` (when custom_providers is threaded through)
+
+    Before this helper existed, the lookup was duplicated in ``run_agent.py``'s
+    startup path only; every other path (notably ``/model`` switch) fell back
+    to the 128K default.  See #15779.
+    """
+    return get_custom_provider_model_field(
+        "context_length", model, base_url,
+        custom_providers=custom_providers, config=config,
+    )
+
+
+def get_custom_provider_max_tokens(
+    model: str | None = None,
+    base_url: str | None = None,
+    custom_providers: list | None = None,
+    config: dict | None = None,
+) -> int | None:
+    """Look up a per-model ``max_tokens`` override from ``custom_providers``.
+
+    Symmetric to ``get_custom_provider_context_length`` but for the output
+    token limit.  Returns ``None`` when no override applies.
+    """
+    return get_custom_provider_model_field(
+        "max_tokens", model, base_url,
+        custom_providers=custom_providers, config=config,
+    )
 
 
 def check_config_version() -> Tuple[int, int]:

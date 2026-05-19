@@ -205,6 +205,11 @@ curl -s -X POST https://api.linear.app/graphql \
   }' | python3 -m json.tool
 ```
 
+The script’s `create-issue` command also resolves `--label` and `--assignee`
+values before mutation:
+`--label` is matched against label `name` and sent as `labelIds`; `--assignee`
+is matched against user `name` or `email` and sent as `assigneeId`.
+
 ### Update issue status
 First get the target state UUID from the workflow states query above, then:
 ```bash

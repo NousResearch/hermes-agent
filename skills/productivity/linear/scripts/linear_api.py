@@ -131,6 +131,28 @@ def _resolve_team_id(key_or_name: str) -> str | None:
     return None
 
 
+def _resolve_label_id(name: str) -> str | None:
+    """Map a label name to UUID."""
+    q = "query { issueLabels(first: 200) { nodes { id name } } }"
+    labels = gql(q).get("issueLabels", {}).get("nodes", [])
+    nl = name.lower()
+    for label in labels:
+        if label["name"].lower() == nl:
+            return label["id"]
+    return None
+
+
+def _resolve_assignee_id(name_or_email: str) -> str | None:
+    """Map assignee name or email to UUID."""
+    q = "query { users(first: 200) { nodes { id name email } } }"
+    users = gql(q).get("users", {}).get("nodes", [])
+    nl = name_or_email.lower()
+    for user in users:
+        if user["name"].lower() == nl or (user.get("email", "") or "").lower() == nl:
+            return user["id"]
+    return None
+
+
 def cmd_list_projects(args: argparse.Namespace) -> None:
     if args.team:
         tid = _resolve_team_id(args.team)
@@ -229,7 +251,18 @@ def cmd_create_issue(args: argparse.Namespace) -> None:
         inp["priority"] = args.priority
     if args.parent:
         inp["parentId"] = args.parent
-    # TODO: label + assignee name->id lookup (omitted for v1 brevity)
+    if args.label:
+        label_id = _resolve_label_id(args.label)
+        if not label_id:
+            sys.stderr.write(f"Label not found: {args.label}\n")
+            sys.exit(1)
+        inp["labelIds"] = [label_id]
+    if args.assignee:
+        assignee_id = _resolve_assignee_id(args.assignee)
+        if not assignee_id:
+            sys.stderr.write(f"Assignee not found: {args.assignee}\n")
+            sys.exit(1)
+        inp["assigneeId"] = assignee_id
 
     q = """mutation($input: IssueCreateInput!) {
       issueCreate(input: $input) {

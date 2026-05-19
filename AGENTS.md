@@ -853,6 +853,10 @@ Isolation model:
 - After `kanban.failure_limit` consecutive non-success attempts on the
   same task (default: 2), the dispatcher auto-blocks it to prevent spin
   loops.
+- `kanban.max_in_progress: N` (`N >= 1`; unset = unlimited) caps how
+  many tasks may sit in `running` at once; useful for slow workers
+  (local LLMs, resource-constrained hosts). Non-integer or `< 1` values
+  are logged as invalid and ignored — `0` does not pause spawning.
 
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 

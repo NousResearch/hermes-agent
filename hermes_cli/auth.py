@@ -129,6 +129,7 @@ DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:43827/spotify/callback"
 SPOTIFY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/spotify"
 SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
 SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+AUTH_HTTP_RETRY_COUNT = 3
 
 XAI_OAUTH_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth"
 OAUTH_OVER_SSH_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh"
@@ -157,6 +158,32 @@ GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
 # provider as configured. This sentinel is sent only to LM Studio, never to
 # any remote service.
 LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
+
+
+def _auth_http_client(
+    *,
+    timeout: Any = None,
+    headers: Optional[Dict[str, str]] = None,
+    verify: Any = True,
+    **kwargs: Any,
+) -> httpx.Client:
+    """Build an auth HTTP client that retries connection setup across IPs."""
+    transport = httpx.HTTPTransport(retries=AUTH_HTTP_RETRY_COUNT, verify=verify)
+    return httpx.Client(timeout=timeout, headers=headers, transport=transport, **kwargs)
+
+
+def _auth_http_request(
+    method: str,
+    url: str,
+    *,
+    timeout: Any = None,
+    headers: Optional[Dict[str, str]] = None,
+    verify: Any = True,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Execute a one-shot auth HTTP request with the retry-enabled transport."""
+    with _auth_http_client(timeout=timeout, headers=headers, verify=verify) as client:
+        return client.request(method, url, **kwargs)
 
 
 # =============================================================================
@@ -645,7 +672,8 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
     for ep_id, base_url, probe_models, label in ZAI_ENDPOINTS:
         for model in probe_models:
             try:
-                resp = httpx.post(
+                resp = _auth_http_request(
+                    "POST",
                     f"{base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
@@ -1908,7 +1936,8 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
         )
 
     try:
-        response = httpx.post(
+        response = _auth_http_request(
+            "POST",
             QWEN_OAUTH_TOKEN_URL,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -2563,7 +2592,8 @@ def _spotify_exchange_code_for_tokens(
     timeout_seconds: float = 20.0,
 ) -> Dict[str, Any]:
     try:
-        response = httpx.post(
+        response = _auth_http_request(
+            "POST",
             f"{accounts_base_url}/api/token",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={
@@ -2617,7 +2647,8 @@ def _refresh_spotify_oauth_state(
     client_id = _spotify_client_id(state=state)
     accounts_base_url = _spotify_accounts_base_url(state)
     try:
-        response = httpx.post(
+        response = _auth_http_request(
+            "POST",
             f"{accounts_base_url}/api/token",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={
@@ -3143,7 +3174,7 @@ def refresh_codex_oauth_pure(
         )
 
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+    with _auth_http_client(timeout=timeout, headers={"Accept": "application/json"}) as client:
         response = client.post(
             CODEX_OAUTH_TOKEN_URL,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -3464,7 +3495,8 @@ def _xai_validate_oauth_endpoint(url: str, *, field: str) -> str:
 
 def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
     try:
-        response = httpx.get(
+        response = _auth_http_request(
+            "GET",
             XAI_OAUTH_DISCOVERY_URL,
             headers={"Accept": "application/json"},
             timeout=timeout_seconds,
@@ -3534,7 +3566,7 @@ def refresh_xai_oauth_pure(
     # with a clear error so the user can re-run `hermes model` to refetch.
     _xai_validate_oauth_endpoint(endpoint, field="token_endpoint")
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+    with _auth_http_client(timeout=timeout, headers={"Accept": "application/json"}) as client:
         response = client.post(
             endpoint,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -4477,7 +4509,7 @@ def fetch_nous_models(
 ) -> List[str]:
     """Fetch available model IDs from the Nous inference API."""
     timeout = httpx.Timeout(timeout_seconds)
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+    with _auth_http_client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
         response = client.get(
             f"{inference_base_url.rstrip('/')}/models",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -4593,7 +4625,7 @@ def resolve_nous_access_token(
                 )
 
             timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
-            with httpx.Client(
+            with _auth_http_client(
                 timeout=timeout,
                 headers={"Accept": "application/json"},
                 verify=verify,
@@ -4693,7 +4725,7 @@ def refresh_nous_oauth_pure(
     verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
     timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
 
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+    with _auth_http_client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
         min_agent_key_ttl = max(60, int(min_key_ttl_seconds))
         legacy_session_keys = _nous_legacy_session_keys_forced()
         current_invoke_jwt_usable = (
@@ -4964,7 +4996,7 @@ def resolve_nous_runtime_credentials(
             refresh_token_fp=_token_fingerprint(state.get("refresh_token")),
         )
 
-        with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+        with _auth_http_client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
 
@@ -6337,7 +6369,8 @@ def _xai_oauth_exchange_code_for_tokens(
         data["code_challenge_method"] = "S256"
 
     try:
-        response = httpx.post(
+        response = _auth_http_request(
+            "POST",
             token_endpoint,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -6569,7 +6602,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
 
     # Step 1: Request device code
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with _auth_http_client(timeout=httpx.Timeout(15.0)) as client:
             resp = client.post(
                 f"{issuer}/api/accounts/deviceauth/usercode",
                 json={"client_id": client_id},
@@ -6612,7 +6645,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     code_resp = None
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with _auth_http_client(timeout=httpx.Timeout(15.0)) as client:
             while _time.monotonic() - start < max_wait:
                 _time.sleep(poll_interval)
                 poll_resp = client.post(
@@ -6653,7 +6686,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
         )
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with _auth_http_client(timeout=httpx.Timeout(15.0)) as client:
             token_resp = client.post(
                 CODEX_OAUTH_TOKEN_URL,
                 data={
@@ -6864,7 +6897,7 @@ def _minimax_oauth_login(
     print(f"Starting Hermes login via MiniMax ({region}) OAuth...")
     print(f"Portal: {portal_base_url}")
 
-    with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
+    with _auth_http_client(timeout=httpx.Timeout(timeout_seconds),
                       headers={"Accept": "application/json"},
                       follow_redirects=True) as client:
         code_data = _minimax_request_user_code(
@@ -6945,7 +6978,7 @@ def _refresh_minimax_oauth_state(
         return state
 
     portal_base_url = state["portal_base_url"]
-    with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
+    with _auth_http_client(timeout=httpx.Timeout(timeout_seconds),
                       follow_redirects=True) as client:
         response = client.post(
             f"{portal_base_url}/oauth/token",
@@ -7108,7 +7141,7 @@ def _nous_device_code_login(
     elif ca_bundle:
         print(f"TLS verification: custom CA bundle ({ca_bundle})")
 
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+    with _auth_http_client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
         device_data, scope = _request_nous_device_code_with_scope_fallback(
             client=client,
             portal_base_url=portal_base_url,

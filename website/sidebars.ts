@@ -89,6 +89,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/vision',
             'user-guide/features/image-generation',
             'user-guide/features/tts',
+            'user-guide/features/deliverable-mode',
           ],
         },
         {
@@ -153,6 +154,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/creative/creative-architecture-diagram',
                     'user-guide/skills/bundled/creative/creative-ascii-art',
                     'user-guide/skills/bundled/creative/creative-ascii-video',
+                    'user-guide/skills/bundled/creative/creative-baoyu-article-illustrator',
                     'user-guide/skills/bundled/creative/creative-baoyu-comic',
                     'user-guide/skills/bundled/creative/creative-baoyu-infographic',
                     'user-guide/skills/bundled/creative/creative-claude-design',

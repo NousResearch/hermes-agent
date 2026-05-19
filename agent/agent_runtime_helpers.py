@@ -606,7 +606,22 @@ def recover_with_credential_pool(
         return False, True
 
     if effective_reason == FailoverReason.auth:
-        if agent._is_entitlement_failure(error_context, status_code):
+        # Subscription/entitlement 403s look like auth failures on the wire
+        # but refresh cannot fix them — the OAuth token is already valid,
+        # the account simply lacks the entitlement.  Without this guard,
+        # ``try_refresh_current()`` keeps minting fresh tokens against the
+        # same unsubscribed account and the main agent loop spins re-issuing
+        # the same 403 until the user Ctrl+C's.
+        #
+        # Defense-in-depth for #26847: xAI's backend has been seen to 403
+        # standard SuperGrok subscribers with bodies that don't match the
+        # existing entitlement keyword set in ``_is_entitlement_failure``.
+        # Any 403 against ``xai-oauth`` is treated as entitlement here so
+        # the refresh loop can't spin in those cases either.
+        is_entitlement = agent._is_entitlement_failure(error_context, status_code)
+        if not is_entitlement and status_code == 403 and (agent.provider or "") == "xai-oauth":
+            is_entitlement = True
+        if is_entitlement:
             _ra().logger.info(
                 "Credential %s — entitlement-shaped 403 from %s; "
                 "skipping pool refresh (account lacks subscription, "
@@ -1390,10 +1405,16 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
         except Exception:
             _sm_custom_providers = None
+        # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
+        # token provider). ``get_model_context_length`` expects a
+        # string for its live-probe paths; for Foundry the context
+        # length normally resolves via config or static catalogs and
+        # never hits a probe, but coerce to empty string defensively.
+        _ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
         new_context_length = get_model_context_length(
             agent.model,
             base_url=agent.base_url,
-            api_key=agent.api_key,
+            api_key=_ctx_api_key,
             provider=agent.provider,
             config_context_length=getattr(agent, "_config_context_length", None),
             custom_providers=_sm_custom_providers,
@@ -1402,7 +1423,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             model=agent.model,
             context_length=new_context_length,
             base_url=agent.base_url,
-            api_key=getattr(agent, "api_key", ""),
+            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
@@ -1503,6 +1524,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             query=function_args.get("query", ""),
             role_filter=function_args.get("role_filter"),
             limit=function_args.get("limit", 3),
+            session_id=function_args.get("session_id"),
+            around_message_id=function_args.get("around_message_id"),
+            window=function_args.get("window", 5),
+            sort=function_args.get("sort"),
             db=session_db,
             current_session_id=agent.session_id,
         )

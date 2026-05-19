@@ -158,8 +158,9 @@ def _browser_candidate_path_dirs() -> list[str]:
     """Return ordered browser CLI PATH candidates shared by discovery and execution."""
     hermes_home = get_hermes_home()
     hermes_node_bin = str(hermes_home / "node" / "bin")
+    hermes_node_root = str(hermes_home / "node")
     hermes_nm_bin = str(hermes_home / "node_modules" / ".bin")
-    return [hermes_node_bin, hermes_nm_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
+    return [hermes_node_bin, hermes_node_root, hermes_nm_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
 
 
 def _merge_browser_path(existing_path: str = "") -> str:
@@ -1827,6 +1828,12 @@ def _find_agent_browser() -> str:
             if not recheck:
                 hermes_nm = str(get_hermes_home() / "node_modules" / ".bin")
                 recheck = shutil.which("agent-browser", path=hermes_nm)
+            if not recheck:
+                hermes_node_bin = str(get_hermes_home() / "node" / "bin")
+                recheck = shutil.which("agent-browser", path=hermes_node_bin)
+            if not recheck:
+                hermes_node_root = str(get_hermes_home() / "node")
+                recheck = shutil.which("agent-browser", path=hermes_node_root)
             if recheck:
                 _cached_agent_browser = recheck
                 _agent_browser_resolved = True

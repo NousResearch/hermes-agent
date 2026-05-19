@@ -1,0 +1,26 @@
+hermes_agent:
+  services:
+    chat:
+      name: Chat
+      description: Invia un messaggio a Hermes Agent
+      fields:
+        message:
+          name: Messaggio
+          description: Il messaggio da inviare
+    execute_skill:
+      name: Esegui Skill
+      description: Esegui una skill di Hermes Agent
+      fields:
+        skill_name:
+          name: Nome Skill
+          description: Il nome della skill da eseguire
+        args:
+          name: Argomenti
+          description: Argomenti per la skill
+    query:
+      name: Query
+      description: Fai una domanda a Hermes Agent
+      fields:
+        message:
+          name: Messaggio
+          description: La domanda da fare

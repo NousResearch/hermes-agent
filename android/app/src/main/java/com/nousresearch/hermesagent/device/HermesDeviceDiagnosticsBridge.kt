@@ -321,7 +321,17 @@ object HermesDeviceDiagnosticsBridge {
             .put("available_sensor_types", JSONArray(available))
             .put("sensor_samples", samples)
             .put("supported_watcher_types", JSONArray(SENSOR_TYPE_LABELS.keys))
-            .put("cards", JSONArray().put(card("Sensors", "${samples.length()} one-shot sensor samples captured or marked unavailable.")))
+            .put(
+                "cards",
+                JSONArray().put(
+                    graphCard(
+                        title = "Motion Sensors",
+                        body = "${samples.length()} one-shot accelerometer, gyroscope, magnetic, light, or proximity rows captured for the agent.",
+                        graphType = "sensor_vector",
+                        rows = samples,
+                    ),
+                ),
+            )
     }
 
     fun cameraStatusJson(context: Context): JSONObject {
@@ -376,8 +386,9 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 JSONObject()
                     .put("band", "External SDR")
-                    .put("supported", true)
+                    .put("supported", false)
                     .put("sampled", false)
+                    .put("requires_external_hardware", true)
                     .put("reason", "Attach an SDR or vendor radio bridge over USB/Bluetooth/Wi-Fi for broad RF, AM, FM, or microwave spectrum data."),
             )
         return JSONObject()

@@ -78,6 +78,20 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getBoolean("requires_external_sdr_for_broad_rf"))
         assertTrue(result.getJSONArray("radio_bands").toString().contains("FM broadcast"))
         assertEquals("signal_graph_card", result.getJSONArray("cards").getJSONObject(0).getString("type"))
+        assertFalse(result.getJSONArray("radio_bands").getJSONObject(2).getBoolean("supported"))
+        assertTrue(result.getJSONArray("radio_bands").getJSONObject(2).getBoolean("requires_external_hardware"))
+    }
+
+    @Test
+    fun sensorSnapshotCreatesGraphRowsForMotionCards() {
+        val result = HermesDeviceDiagnosticsBridge.sensorSnapshotJson(context)
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("sensor_snapshot", result.getString("action"))
+        val card = result.getJSONArray("cards").getJSONObject(0)
+        assertEquals("signal_graph_card", card.getString("type"))
+        assertEquals("sensor_vector", card.getString("graph_type"))
+        assertEquals(result.getJSONArray("sensor_samples").length(), card.getInt("row_count"))
     }
 
     @Test

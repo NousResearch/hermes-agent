@@ -12,6 +12,7 @@ import android.text.format.DateFormat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -52,6 +54,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -75,7 +78,6 @@ import com.nousresearch.hermesagent.ui.settings.SettingsViewModel
 import com.nousresearch.hermesagent.ui.shell.AppSection
 import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 import java.io.File
 
 @Composable
@@ -1026,24 +1028,118 @@ private fun CompactActivityRow(
                 Text(if (expanded) "Hide" else "Details", style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.72f))
             }
             diagnosticCards.take(3).forEach { card ->
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        text = card.title,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        text = card.body,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = contentColor.copy(alpha = 0.78f),
-                    )
-                }
+                DiagnosticSummaryCard(
+                    card = card,
+                    expanded = expanded,
+                    contentColor = contentColor,
+                )
             }
             if (expanded) {
                 Text(
                     text = content.take(360),
                     style = MaterialTheme.typography.bodySmall,
                     color = contentColor.copy(alpha = 0.72f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticSummaryCard(
+    card: DiagnosticCardSummary,
+    expanded: Boolean,
+    contentColor: androidx.compose.ui.graphics.Color,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = card.title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (card.rowCount > 0) {
+                Text(
+                    text = "${card.rowCount}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = contentColor.copy(alpha = 0.62f),
+                )
+            }
+        }
+        Text(
+            text = card.body,
+            style = MaterialTheme.typography.bodySmall,
+            color = contentColor.copy(alpha = 0.78f),
+            maxLines = if (expanded) 3 else 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (expanded && card.rows.isNotEmpty()) {
+            DiagnosticMiniGraph(card = card, contentColor = contentColor)
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticMiniGraph(
+    card: DiagnosticCardSummary,
+    contentColor: androidx.compose.ui.graphics.Color,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        card.rows.take(8).forEach { row ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = row.label,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = contentColor.copy(alpha = 0.84f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = row.valueLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(contentColor.copy(alpha = 0.12f)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(row.fraction.coerceIn(0.05f, 1f))
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.82f)),
+                    )
+                }
+                Text(
+                    text = row.detail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = contentColor.copy(alpha = 0.58f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -1061,35 +1157,6 @@ private fun hasToolActivity(content: String): Boolean {
         "bluetooth_scan" in lower ||
         "radio_signal_status" in lower ||
         "sensor_snapshot" in lower
-}
-
-private data class DiagnosticCardSummary(
-    val title: String,
-    val body: String,
-)
-
-private fun extractDiagnosticCards(content: String): List<DiagnosticCardSummary> {
-    val parsed = runCatching { JSONObject(content.trim()) }.getOrNull() ?: return emptyList()
-    val cards = parsed.optJSONArray("cards") ?: return emptyList()
-    return buildList {
-        for (index in 0 until cards.length()) {
-            val card = cards.optJSONObject(index) ?: continue
-            val title = card.optString("title").takeIf { it.isNotBlank() } ?: continue
-            val graphType = card.optString("graph_type").takeIf { it.isNotBlank() }
-            val rowCount = card.optInt("row_count", -1)
-            val body = buildString {
-                append(card.optString("body").ifBlank { "Diagnostic card available." })
-                if (graphType != null || rowCount >= 0) {
-                    append(" ")
-                    append("[")
-                    append(graphType ?: "graph")
-                    if (rowCount >= 0) append(", $rowCount rows")
-                    append("]")
-                }
-            }
-            add(DiagnosticCardSummary(title = title, body = body))
-        }
-    }
 }
 
 @Composable

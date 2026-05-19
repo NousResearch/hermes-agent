@@ -892,6 +892,7 @@ def _auth_lock_path() -> Path:
 
 
 _auth_lock_holder = threading.local()
+_xai_oauth_lock_holder = threading.local()
 
 
 @contextmanager
@@ -978,6 +979,29 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
         _auth_lock_holder,
         timeout_seconds,
         "Timed out waiting for auth store lock",
+    ):
+        yield
+
+
+def _xai_oauth_auth_file_path() -> Path:
+    """Return the shared xAI OAuth auth store path.
+
+    xAI OAuth refresh tokens are single-use.  Profile-local copies race each
+    other: the first profile to refresh rotates the token and leaves every
+    other profile with a revoked refresh token.  Store xAI OAuth state in the
+    global root auth.json so all profiles and agents share one rotating token
+    pair.
+    """
+    return _global_auth_file_path() or _auth_file_path()
+
+
+@contextmanager
+def _xai_oauth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    with _file_lock(
+        _xai_oauth_auth_file_path().with_suffix(".lock"),
+        _xai_oauth_lock_holder,
+        timeout_seconds,
+        "Timed out waiting for shared xAI OAuth auth store lock",
     ):
         yield
 
@@ -3179,49 +3203,51 @@ def resolve_codex_runtime_credentials(
 # =============================================================================
 
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+    def _read_from_shared_store() -> Dict[str, Any]:
+        auth_store = _load_auth_store(_xai_oauth_auth_file_path())
+        state = _load_provider_state(auth_store, "xai-oauth")
+        if not state:
+            raise AuthError(
+                "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok Subscription) in `hermes model`.",
+                provider="xai-oauth",
+                code="xai_auth_missing",
+                relogin_required=True,
+            )
+        tokens = state.get("tokens")
+        if not isinstance(tokens, dict):
+            raise AuthError(
+                "xAI OAuth state is missing tokens. Re-authenticate with `hermes model`.",
+                provider="xai-oauth",
+                code="xai_auth_invalid_shape",
+                relogin_required=True,
+            )
+        access_token = str(tokens.get("access_token", "") or "").strip()
+        refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+        if not access_token:
+            raise AuthError(
+                "xAI OAuth state is missing access_token. Re-authenticate with `hermes model`.",
+                provider="xai-oauth",
+                code="xai_auth_missing_access_token",
+                relogin_required=True,
+            )
+        if not refresh_token:
+            raise AuthError(
+                "xAI OAuth state is missing refresh_token. Re-authenticate with `hermes model`.",
+                provider="xai-oauth",
+                code="xai_auth_missing_refresh_token",
+                relogin_required=True,
+            )
+        return {
+            "tokens": tokens,
+            "last_refresh": state.get("last_refresh"),
+            "discovery": state.get("discovery") or {},
+            "redirect_uri": state.get("redirect_uri"),
+        }
+
     if _lock:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-    else:
-        auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "xai-oauth")
-    if not state:
-        raise AuthError(
-            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok Subscription) in `hermes model`.",
-            provider="xai-oauth",
-            code="xai_auth_missing",
-            relogin_required=True,
-        )
-    tokens = state.get("tokens")
-    if not isinstance(tokens, dict):
-        raise AuthError(
-            "xAI OAuth state is missing tokens. Re-authenticate with `hermes model`.",
-            provider="xai-oauth",
-            code="xai_auth_invalid_shape",
-            relogin_required=True,
-        )
-    access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_token = str(tokens.get("refresh_token", "") or "").strip()
-    if not access_token:
-        raise AuthError(
-            "xAI OAuth state is missing access_token. Re-authenticate with `hermes model`.",
-            provider="xai-oauth",
-            code="xai_auth_missing_access_token",
-            relogin_required=True,
-        )
-    if not refresh_token:
-        raise AuthError(
-            "xAI OAuth state is missing refresh_token. Re-authenticate with `hermes model`.",
-            provider="xai-oauth",
-            code="xai_auth_missing_refresh_token",
-            relogin_required=True,
-        )
-    return {
-        "tokens": tokens,
-        "last_refresh": state.get("last_refresh"),
-        "discovery": state.get("discovery") or {},
-        "redirect_uri": state.get("redirect_uri"),
-    }
+        with _xai_oauth_store_lock():
+            return _read_from_shared_store()
+    return _read_from_shared_store()
 
 
 def _save_xai_oauth_tokens(
@@ -3233,8 +3259,9 @@ def _save_xai_oauth_tokens(
 ) -> None:
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    with _xai_oauth_store_lock():
+        auth_file = _xai_oauth_auth_file_path()
+        auth_store = _load_auth_store(auth_file)
         state = _load_provider_state(auth_store, "xai-oauth") or {}
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
@@ -3243,8 +3270,29 @@ def _save_xai_oauth_tokens(
             state["discovery"] = discovery
         if redirect_uri:
             state["redirect_uri"] = redirect_uri
-        _save_provider_state(auth_store, "xai-oauth", state)
-        _save_auth_store(auth_store)
+        _store_provider_state(auth_store, "xai-oauth", state, set_active=False)
+        auth_file.parent.mkdir(parents=True, exist_ok=True)
+        auth_store["version"] = AUTH_STORE_VERSION
+        auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(auth_store, ensure_ascii=False, indent=2) + "\n"
+        tmp_path = auth_file.with_name(f"{auth_file.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+        fd = os.open(
+            str(tmp_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            atomic_replace(tmp_path, auth_file)
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
@@ -3480,7 +3528,7 @@ def resolve_xai_oauth_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _xai_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+        with _xai_oauth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
             data = _read_xai_oauth_tokens(_lock=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()

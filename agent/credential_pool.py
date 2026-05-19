@@ -562,12 +562,8 @@ class CredentialPool:
         if self.provider != "xai-oauth" or entry.source != "loopback_pkce":
             return entry
         try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, "xai-oauth")
-            if not isinstance(state, dict):
-                return entry
-            tokens = state.get("tokens")
+            data = auth_mod._read_xai_oauth_tokens()
+            tokens = data.get("tokens")
             if not isinstance(tokens, dict):
                 return entry
             store_access = tokens.get("access_token", "")
@@ -579,8 +575,8 @@ class CredentialPool:
                 or (store_refresh and store_refresh != entry_refresh)
             ):
                 logger.debug(
-                    "Pool entry %s: syncing xAI OAuth tokens from auth.json "
-                    "(refreshed by another process)",
+                    "Pool entry %s: syncing xAI OAuth tokens from shared auth.json "
+                    "(refreshed by another process/profile)",
                     entry.id,
                 )
                 field_updates: Dict[str, Any] = {
@@ -593,8 +589,8 @@ class CredentialPool:
                     "last_error_message": None,
                     "last_error_reset_at": None,
                 }
-                if state.get("last_refresh"):
-                    field_updates["last_refresh"] = state["last_refresh"]
+                if data.get("last_refresh"):
+                    field_updates["last_refresh"] = data["last_refresh"]
                 updated = replace(entry, **field_updates)
                 self._replace_entry(entry, updated)
                 self._persist()
@@ -697,6 +693,22 @@ class CredentialPool:
         whatever provider happened to refresh last, not whatever the
         user actually chose.
         """
+        # xAI OAuth is shared at the global Hermes root across profiles; write
+        # token rotations there before touching the profile-local auth store.
+        if self.provider == "xai-oauth" and entry.source == "loopback_pkce":
+            try:
+                auth_mod._save_xai_oauth_tokens(
+                    {
+                        "access_token": entry.access_token,
+                        "refresh_token": entry.refresh_token,
+                        "token_type": "Bearer",
+                    },
+                    last_refresh=entry.last_refresh,
+                )
+            except Exception as exc:
+                logger.debug("Failed to sync xAI OAuth pool entry back to shared auth store: %s", exc)
+            return
+
         # Only sync entries that were seeded *from* a singleton.  Manually
         # added pool entries (source="manual:*") are independent credentials
         # and must not write back to the singleton.

@@ -47,7 +47,7 @@ hermes model
 hermes
 ```
 
-After the first login, credentials are stored under `~/.hermes/auth.json` and refreshed automatically before they expire.
+After the first login, credentials are stored under the global root `~/.hermes/auth.json` and refreshed automatically before they expire. Named profiles reuse that same xAI OAuth state instead of keeping independent refresh-token copies, because xAI refresh tokens are single-use and must rotate from one canonical store.
 
 ## Logging In Manually
 
@@ -80,8 +80,8 @@ See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) for the full step-by-st
 
 1. Hermes opens your browser to `accounts.x.ai`.
 2. You sign in (or confirm your existing session) and approve access.
-3. xAI redirects back to Hermes and the tokens are saved to `~/.hermes/auth.json`.
-4. From then on, Hermes refreshes the access token in the background — you stay signed in until you `hermes auth remove xai-oauth` or revoke access from your xAI account settings.
+3. xAI redirects back to Hermes and the tokens are saved to the global root `~/.hermes/auth.json`.
+4. From then on, Hermes refreshes the access token in the background — you stay signed in until you `hermes auth remove xai-oauth` or revoke access from your xAI account settings. Named profiles read and write this same canonical xAI token pair so one profile's refresh is immediately visible to the others.
 
 ## Checking Login Status
 

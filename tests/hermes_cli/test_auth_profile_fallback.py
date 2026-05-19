@@ -276,6 +276,106 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 
 
 # ---------------------------------------------------------------------------
+# xAI OAuth — shared singleton reads/writes
+# ---------------------------------------------------------------------------
+
+
+def test_xai_oauth_tokens_read_from_global_root_in_profile_mode(profile_env):
+    """xAI OAuth is a singleton auth state; profile agents inherit the root login."""
+    from hermes_cli.auth import _read_xai_oauth_tokens
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "xai-oauth": {
+            "tokens": {
+                "access_token": "xai-global-access",
+                "refresh_token": "xai-global-refresh",
+            },
+            "last_refresh": "2026-05-19T00:00:00Z",
+        },
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    data = _read_xai_oauth_tokens()
+
+    assert data["tokens"]["access_token"] == "xai-global-access"
+    assert data["tokens"]["refresh_token"] == "xai-global-refresh"
+    assert data["last_refresh"] == "2026-05-19T00:00:00Z"
+
+
+def test_xai_oauth_token_save_targets_global_root_not_profile(profile_env):
+    """Refresh-token rotation must be shared because xAI refresh tokens are single-use."""
+    from hermes_cli.auth import _save_xai_oauth_tokens
+
+    _write(profile_env["global"] / "auth.json", {
+        "version": 1,
+        "active_provider": "anthropic",
+        "providers": {
+            "anthropic": {"access_token": "anthropic-global"},
+            "xai-oauth": {
+                "tokens": {
+                    "access_token": "xai-old-access",
+                    "refresh_token": "xai-old-refresh",
+                },
+            },
+        },
+    })
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    _save_xai_oauth_tokens(
+        {
+            "access_token": "xai-new-access",
+            "refresh_token": "xai-new-refresh",
+            "token_type": "Bearer",
+        },
+        last_refresh="2026-05-19T01:00:00Z",
+    )
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+
+    assert global_data["providers"]["xai-oauth"]["tokens"]["access_token"] == "xai-new-access"
+    assert global_data["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "xai-new-refresh"
+    assert global_data["providers"]["xai-oauth"]["last_refresh"] == "2026-05-19T01:00:00Z"
+    # Saving xAI's shared singleton must not silently flip the user's active provider.
+    assert global_data["active_provider"] == "anthropic"
+    assert "xai-oauth" not in profile_data.get("providers", {})
+
+
+def test_xai_oauth_refresh_written_by_one_profile_is_visible_to_another(profile_env, monkeypatch):
+    from hermes_cli.auth import _read_xai_oauth_tokens, _save_xai_oauth_tokens
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "xai-oauth": {
+            "tokens": {
+                "access_token": "xai-old-access",
+                "refresh_token": "xai-old-refresh",
+            },
+        },
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    _save_xai_oauth_tokens(
+        {
+            "access_token": "xai-rotated-access",
+            "refresh_token": "xai-rotated-refresh",
+            "token_type": "Bearer",
+        },
+        last_refresh="2026-05-19T02:00:00Z",
+    )
+
+    other_profile = profile_env["global"] / "profiles" / "reviewer"
+    other_profile.mkdir(parents=True)
+    _write(other_profile / "auth.json", _make_auth_store(providers={}))
+    monkeypatch.setenv("HERMES_HOME", str(other_profile))
+
+    data = _read_xai_oauth_tokens()
+
+    assert data["tokens"]["access_token"] == "xai-rotated-access"
+    assert data["tokens"]["refresh_token"] == "xai-rotated-refresh"
+    assert data["last_refresh"] == "2026-05-19T02:00:00Z"
+
+
+# ---------------------------------------------------------------------------
 # Classic mode — no fallback path should ever trigger
 # ---------------------------------------------------------------------------
 

@@ -16,12 +16,72 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
 
 
+def _write_auth_file(path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2))
+
+
 def _jwt_with_claims(claims: dict) -> str:
     def _part(payload: dict) -> str:
         raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
+
+
+def test_xai_oauth_pool_entry_syncs_from_global_root_singleton(tmp_path, monkeypatch):
+    """Profile-local xAI pool entries must see rotations from the shared root store."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    global_root = tmp_path / ".hermes"
+    profile_home = global_root / "profiles" / "coder"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    _write_auth_file(global_root / "auth.json", {
+        "version": 1,
+        "providers": {
+            "xai-oauth": {
+                "tokens": {
+                    "access_token": "shared-access",
+                    "refresh_token": "shared-refresh",
+                },
+                "last_refresh": "2026-05-19T02:00:00Z",
+            }
+        },
+    })
+    _write_auth_file(profile_home / "auth.json", {
+        "version": 1,
+        "credential_pool": {
+            "xai-oauth": [
+                {
+                    "id": "xai-profile",
+                    "label": "loopback_pkce",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "loopback_pkce",
+                    "access_token": "stale-access",
+                    "refresh_token": "stale-refresh",
+                    "last_status": "exhausted",
+                    "last_status_at": time.time(),
+                }
+            ]
+        },
+    })
+
+    from agent.credential_pool import load_pool
+
+    entry = load_pool("xai-oauth").select()
+
+    assert entry is not None
+    assert entry.access_token == "shared-access"
+    assert entry.refresh_token == "shared-refresh"
+    assert entry.last_refresh == "2026-05-19T02:00:00Z"
+    assert entry.last_status is None
+
+    profile_data = json.loads((profile_home / "auth.json").read_text())
+    persisted = profile_data["credential_pool"]["xai-oauth"][0]
+    assert persisted["access_token"] == "shared-access"
+    assert persisted["refresh_token"] == "shared-refresh"
+    assert persisted["last_status"] is None
 
 
 def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypatch):

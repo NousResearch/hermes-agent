@@ -28,6 +28,17 @@ from tools.registry import registry, tool_error, tool_result
 logger = logging.getLogger(__name__)
 
 
+def _get_dataset_ids(config: Dict[str, Any]) -> list:
+    """从配置中提取并规范化 default_dataset_ids，确保返回 list[str]。
+    
+    兼容环境变量注入的逗号分隔字符串（如 "kb-1,kb-2,kb-3"）和原生列表格式。
+    """
+    raw = config.get("default_dataset_ids", [])
+    if isinstance(raw, str):
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    return raw
+
+
 def _get_config() -> Dict[str, Any]:
     """获取知识库配置，从 config.yaml 加载"""
     logger.info("📋 正在加载知识库配置...")
@@ -55,10 +66,14 @@ def _get_config() -> Dict[str, Any]:
                 retrieval_url = api_url
             if not kb_list_url and base_url:
                 kb_list_url = f"{base_url.rstrip('/')}/knowledge_bases/list"
+            raw_ids = _get_dataset_ids(kr_config)
+            default_ids = _get_dataset_ids(config)
+            dataset_ids = raw_ids if raw_ids else default_ids
+            
             config.update({
                 "retrieval_url": retrieval_url,
                 "kb_list_url": kb_list_url,
-                "default_dataset_ids": kr_config.get("default_dataset_ids", config["default_dataset_ids"]),
+                "default_dataset_ids": dataset_ids,
                 "top_k": kr_config.get("top_k", config["top_k"]),
             })
             logger.info("✅ 已从 config.yaml 加载知识库配置")
@@ -107,7 +122,7 @@ def knowledge_retrieval(query: str, kb_ids: Optional[list] = None) -> str:
         return tool_error("知识库未配置。请在 config.yaml 中配置 retrieval_url")
 
     # 动态选择数据集 ID：优先使用传入的参数，否则使用默认配置
-    target_dataset_ids = kb_ids if kb_ids else config.get("default_dataset_ids", [])
+    target_dataset_ids = kb_ids if kb_ids else _get_dataset_ids(config)
     if not target_dataset_ids:
         return tool_error("未指定数据集。请在 config.yaml 中配置 default_dataset_ids 或传入 kb_ids 参数")
 
@@ -174,7 +189,7 @@ def list_datasets() -> str:
     if not kb_list_url:
         return tool_error("知识库未配置。请在 config.yaml 中配置 kb_list_url")
 
-    target_dataset_ids = config.get("default_dataset_ids", [])
+    target_dataset_ids = _get_dataset_ids(config)
     if not target_dataset_ids:
         return tool_error("未指定数据集。请在 config.yaml 中配置 default_dataset_ids")
 
@@ -273,7 +288,7 @@ def _update_knowledge_retrieval_schema():
     try:
         config = _get_config()
         kb_list_url = config.get("kb_list_url", "")
-        target_dataset_ids = config.get("default_dataset_ids", [])
+        target_dataset_ids = _get_dataset_ids(config)
         
         kb_ids_enum = []
         kb_desc_lines = []

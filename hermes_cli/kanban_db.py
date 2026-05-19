@@ -865,8 +865,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     session_id           TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id);
-
 CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
     child_id   TEXT NOT NULL,
@@ -937,8 +935,6 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_tenant          ON tasks(tenant);
-CREATE INDEX IF NOT EXISTS idx_tasks_idempotency     ON tasks(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
@@ -1170,14 +1166,20 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # created from within an agent loop that propagated
         # ``HERMES_SESSION_ID`` (e.g. ACP). NULL on legacy rows and on any
         # creation path that doesn't set the env var (CLI, dashboard).
-        # Index keeps per-session list queries cheap.
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_session_id "
-            "ON tasks(session_id)"
-        )
+
+    # Indexes over additive task columns must be created after the columns
+    # exist. Keeping them in SCHEMA_SQL breaks legacy boards because
+    # CREATE TABLE IF NOT EXISTS does not add new columns to existing tables.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
+    )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).

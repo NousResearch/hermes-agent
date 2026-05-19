@@ -1653,7 +1653,9 @@ def _run_single_child(
                         if tc_id:
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
-                    content = msg.get("content", "")
+                    content = msg.get("content") or ""
+                    if not isinstance(content, str):
+                        content = str(content)
                     is_error = _looks_like_error_output(content)
                     result_meta = {
                         "result_bytes": len(content),

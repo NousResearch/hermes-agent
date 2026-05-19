@@ -1593,10 +1593,12 @@
                   saveSettings({ auto_decompose: !!e.target.checked });
                 },
               }),
-              settings.auto_decompose ? "Auto (default)" : "Manual",
+              "Auto-decompose triage tasks",
             ),
             h("div", { className: "text-[10px] text-muted-foreground" },
-              "When on, the dispatcher decomposes new triage tasks automatically."),
+              settings.auto_decompose
+                ? "The dispatcher decomposes new triage tasks automatically."
+                : "Triage tasks stay in triage until you click ⚗ Decompose."),
           ),
         ) : h("div", { className: "text-xs text-muted-foreground" },
           "Loading…"),

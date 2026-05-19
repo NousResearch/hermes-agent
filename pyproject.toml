@@ -236,7 +236,7 @@ markers = [
 # the deadlock — the suite then completes cleanly. The 60s cap is large
 # enough that no legitimate test trips it; if a test exceeds it that's a
 # real bug worth surfacing as a Timeout failure.
-addopts = "-m 'not integration' -n auto --timeout=30 --timeout-method=thread"
+addopts = "-m 'not integration' -n auto --timeout=30 --timeout-method=signal"
 
 [tool.ty.environment]
 python-version = "3.13"

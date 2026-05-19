@@ -358,6 +358,11 @@ _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
+# If the model calls the exact same tool batch >= this many times consecutively
+# deep into a turn, skip execution and ask it to conclude with existing evidence.
+_TOOL_BATCH_GUARD_MIN_API_CALLS = 8
+_TOOL_BATCH_REPEAT_LIMIT = 3
+
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
 # process, not once per AIAgent instantiation.  Without this, long-running
 # gateway processes leak one OS thread per incoming message and eventually
@@ -1405,6 +1410,12 @@ class AIAgent:
         self._executing_tools = False
         self._tool_guardrails = ToolCallGuardrailController()
         self._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+
+        # Tool-loop guard state (reset each conversation turn)
+        self._last_tool_batch_signature: str | None = None
+        self._same_tool_batch_count: int = 0
+        self._tool_loop_guard_triggered: bool = False
+        self._tool_loop_guard_nudged: bool = False
 
         # Interrupt mechanism for breaking out of tool loops
         self._interrupt_requested = False
@@ -10872,6 +10883,62 @@ class AIAgent:
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
 
+    def _tool_batch_signature(self, tool_calls: list) -> str:
+        sig_parts = []
+        for tc in tool_calls or []:
+            name = getattr(getattr(tc, "function", None), "name", "") or ""
+            raw_args = getattr(getattr(tc, "function", None), "arguments", "{}")
+            try:
+                parsed = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except Exception:
+                parsed = raw_args
+            try:
+                norm_args = json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            except Exception:
+                norm_args = str(parsed)
+            sig_parts.append(f"{name}:{norm_args}")
+        return "|".join(sig_parts)
+
+    def _apply_tool_loop_guard(self, assistant_message, messages: list, api_call_count: int) -> bool:
+        """Detect repetitive identical tool batches and short-circuit execution.
+
+        Returns True when guard was triggered and execution should be skipped.
+        """
+        signature = self._tool_batch_signature(getattr(assistant_message, "tool_calls", []))
+        if signature and signature == self._last_tool_batch_signature:
+            self._same_tool_batch_count += 1
+        else:
+            self._last_tool_batch_signature = signature
+            self._same_tool_batch_count = 1
+
+        repetitive = (
+            api_call_count >= _TOOL_BATCH_GUARD_MIN_API_CALLS
+            and self._same_tool_batch_count >= _TOOL_BATCH_REPEAT_LIMIT
+        )
+        if not repetitive:
+            return False
+
+        self._tool_loop_guard_triggered = True
+        msg = (
+            "[Skipped repetitive tool loop guard: the same tool call batch was "
+            "requested repeatedly with unchanged arguments. Use existing results "
+            "and provide the best possible final answer.]"
+        )
+        logger.warning(
+            "Repetitive tool-loop guard triggered: api_call=%s repeat_count=%s signature=%s",
+            api_call_count,
+            self._same_tool_batch_count,
+            signature[:200],
+        )
+        for tc in getattr(assistant_message, "tool_calls", []) or []:
+            messages.append({
+                "role": "tool",
+                "content": msg,
+                "tool_call_id": tc.id,
+            })
+        self._touch_activity("repetitive tool-loop guard triggered")
+        return True
+
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.
 
@@ -10884,6 +10951,9 @@ class AIAgent:
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
+            if self._apply_tool_loop_guard(assistant_message, messages, api_call_count):
+                return
+
             if not _should_parallelize_tool_batch(tool_calls):
                 return self._execute_tool_calls_sequential(
                     assistant_message, messages, effective_task_id, api_call_count
@@ -12193,6 +12263,10 @@ class AIAgent:
         self._unicode_sanitization_passes = 0
         self._tool_guardrails.reset_for_turn()
         self._tool_guardrail_halt_decision = None
+        self._last_tool_batch_signature = None
+        self._same_tool_batch_count = 0
+        self._tool_loop_guard_triggered = False
+        self._tool_loop_guard_nudged = False
         # True until the server rejects an image_url content part with an error
         # like "Only 'text' content type is supported."  Set to False on first
         # rejection and kept False for the rest of the session so we never re-send
@@ -15268,6 +15342,21 @@ class AIAgent:
                             pass
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                    if self._tool_loop_guard_triggered and not self._tool_loop_guard_nudged:
+                        self._tool_loop_guard_nudged = True
+                        self._emit_status(
+                            "⚠️ Repetitive tool loop detected — asking model to conclude with existing results."
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[System: You are repeatedly issuing the same tool calls with "
+                                "unchanged arguments. Stop calling tools and provide the best "
+                                "possible final answer using existing results. If critical data "
+                                "is still missing, state exactly what is missing.]"
+                            ),
+                        })
 
                     if self._tool_guardrail_halt_decision is not None:
                         decision = self._tool_guardrail_halt_decision

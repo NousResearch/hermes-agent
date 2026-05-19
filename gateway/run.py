@@ -659,6 +659,13 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
+from gateway.busy_queue import (
+    event_fingerprint as _busy_event_fingerprint,
+    extract_priority as _busy_extract_priority,
+    load_busy_queue_config as _busy_load_config,
+    priority_rank as _busy_priority_rank,
+)
+from gateway.busy_queue_store import FileBusyQueueStore
 
 
 logger = logging.getLogger(__name__)
@@ -1249,7 +1256,19 @@ class GatewayRunner:
         # are promoted one-at-a-time after each run's drain.  Cleared on
         # /new and /reset.  /model and other mid-session operations
         # preserve the queue.
-        self._queued_events: Dict[str, List[MessageEvent]] = {}
+        self._queued_events: Dict[str, List[dict]] = {}
+        self._busy_queue_config = self._load_busy_queue_config()
+        self._busy_queue_path = Path(
+            os.path.expanduser(
+                str(
+                    self._busy_queue_config.get(
+                        "storage_path",
+                        str(_hermes_home / "queues" / "busy_queue.json"),
+                    )
+                )
+            )
+        )
+        self._load_persistent_busy_queue()
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
@@ -2052,6 +2071,7 @@ class GatewayRunner:
             queued_events.setdefault(session_key, []).append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+        self._persist_busy_queue()
 
     def _promote_queued_event(
         self,
@@ -2079,6 +2099,7 @@ class GatewayRunner:
         next_queued = overflow.pop(0)
         if not overflow:
             queued_events.pop(session_key, None)
+        self._persist_busy_queue()
         if pending_event is None:
             return next_queued
         if adapter is not None and hasattr(adapter, "_pending_messages"):
@@ -2556,6 +2577,37 @@ class GatewayRunner:
             for session_key, agent in self._running_agents.items()
             if agent is not _AGENT_PENDING_SENTINEL
         }
+
+    @staticmethod
+    def _load_busy_queue_config() -> dict:
+        return _busy_load_config(_hermes_home)
+
+    @staticmethod
+    def _extract_priority(text: str, default: str = "P1") -> str:
+        return _busy_extract_priority(text, default)
+
+    @staticmethod
+    def _priority_rank(priority: str) -> int:
+        return _busy_priority_rank(priority)
+
+    @staticmethod
+    def _event_fingerprint(event: "MessageEvent") -> str:
+        return _busy_event_fingerprint(event)
+
+    def _persist_busy_queue(self) -> None:
+        try:
+            FileBusyQueueStore(self._busy_queue_path, self._event_fingerprint).save(self._queued_events or {})
+        except Exception as exc:
+            logger.debug("Failed to persist busy queue: %s", exc)
+
+    def _load_persistent_busy_queue(self) -> None:
+        try:
+            self._queued_events = FileBusyQueueStore(
+                self._busy_queue_path,
+                self._event_fingerprint,
+            ).load()
+        except Exception as exc:
+            logger.debug("Failed to load busy queue file: %s", exc)
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self.adapters.get(event.source.platform)

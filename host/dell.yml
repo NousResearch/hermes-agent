@@ -10,6 +10,17 @@
     hermes_sudoers_file: /etc/sudoers.d/restart-hermes-stack
     hermes_restart_user: hermes
 
+    # Optional: install a host-side Hermes CLI wrapper so you can run
+    # `hermes` commands directly on the host terminal.
+    #
+    # If true, this playbook installs a wrapper at `hermes_host_cli_path`.
+    # Set `hermes_install_default_cli_symlink` to true only if you want
+    # `/usr/local/bin/hermes` itself to point at the wrapper.
+    hermes_install_host_cli_wrapper: true
+    hermes_install_default_cli_symlink: false
+    hermes_host_cli_path: /usr/local/bin/hermes-host
+    hermes_default_cli_path: /usr/local/bin/hermes
+
     # Optional extras:
     # - Add systemd services to restart if your host runs Hermes components as units.
     # - Keep this list empty if Docker Compose is the only supervisor.
@@ -103,6 +114,41 @@
             log "No compose file or systemd services configured; nothing to restart"
             exit 1
           fi
+
+    - name: Install a host-side Hermes CLI wrapper
+      ansible.builtin.copy:
+        dest: "{{ hermes_host_cli_path }}"
+        mode: '0755'
+        owner: root
+        group: root
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          STACK_DIR="{{ hermes_stack_dir }}"
+          if [ -x "$STACK_DIR/.venv/bin/hermes" ]; then
+            exec "$STACK_DIR/.venv/bin/hermes" "$@"
+          elif [ -x "$STACK_DIR/venv/bin/hermes" ]; then
+            exec "$STACK_DIR/venv/bin/hermes" "$@"
+          elif [ -x "$STACK_DIR/.venv/bin/python" ]; then
+            exec "$STACK_DIR/.venv/bin/python" -m hermes_cli.main "$@"
+          elif [ -x "$STACK_DIR/venv/bin/python" ]; then
+            exec "$STACK_DIR/venv/bin/python" -m hermes_cli.main "$@"
+          else
+            echo "Hermes CLI not found under $STACK_DIR/.venv or $STACK_DIR/venv" >&2
+            exit 1
+          fi
+      when: hermes_install_host_cli_wrapper | bool
+
+    - name: Optionally point the default hermes command at the host wrapper
+      ansible.builtin.file:
+        src: "{{ hermes_host_cli_path }}"
+        dest: "{{ hermes_default_cli_path }}"
+        state: link
+        force: true
+      when:
+        - hermes_install_host_cli_wrapper | bool
+        - hermes_install_default_cli_symlink | bool
 
     - name: Allow the restart user to run only the restart hook without a password
       ansible.builtin.copy:

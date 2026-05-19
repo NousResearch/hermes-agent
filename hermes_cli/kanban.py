@@ -324,6 +324,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_list.add_argument("--archived", action="store_true",
                         help="Include archived tasks")
     p_list.add_argument("--json", action="store_true")
+    p_list.add_argument(
+        "--sort",
+        default=None,
+        choices=sorted(kb.VALID_SORT_ORDERS.keys()),
+        help="Sort order for listed tasks (default: priority)",
+    )
 
     # --- show ---
     p_show = sub.add_parser("show", help="Show a task with comments + events")
@@ -1220,6 +1226,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             status=args.status,
             tenant=args.tenant,
             include_archived=args.archived,
+            order_by=getattr(args, "sort", None),
         )
     if getattr(args, "json", False):
         print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))

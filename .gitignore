@@ -37,6 +37,11 @@ agent-browser/
 *.ppk
 *.pem
 privvy*
+
+# Hermes Web3 Tools - sensitive data
+.wallets/
+.data/
+custom_tools/.env
 images/
 __pycache__/
 hermes_agent.egg-info/

@@ -1235,6 +1235,22 @@ AUTHOR_MAP = {
     "yannsunn@users.noreply.github.com": "yannsunn",  # PR #28064 salvage (xai proxy upstream)
     "yannsunn1116@gmail.com": "yannsunn",
     "asdlem@users.noreply.github.com": "asdlem",  # PR #27852 salvage (clarify full text in body)
+    # batch salvage (May 2026 LHF run, group 9)
+    "1779909+jdelmerico@users.noreply.github.com": "jdelmerico",  # PR #28278 salvage (signal require_mention)
+    "20639347+justemu@users.noreply.github.com": "justemu",  # PR #27996 salvage (matrix thread_require_mention)
+    "justemu@users.noreply.github.com": "justemu",
+    "57024493+YuanHanzhong@users.noreply.github.com": "YuanHanzhong",  # PR #28029 salvage (dashboard scrollback)
+    "YuanHanzhong@users.noreply.github.com": "YuanHanzhong",
+    "1663402+noctilust@users.noreply.github.com": "noctilust",  # PR #28080 salvage (stale TUI resume env)
+    "1663402+freeurmind@users.noreply.github.com": "noctilust",
+    "35164907+MoonJuhan@users.noreply.github.com": "MoonJuhan",  # PR #28288 salvage (unreadable JSONL transcripts)
+    "codemike@naver.com": "MoonJuhan",
+    "201563152+outsourc-e@users.noreply.github.com": "outsourc-e",  # PR #28164 salvage (cron emoji ZWJ)
+    "201803425+Zyrixtrex@users.noreply.github.com": "Zyrixtrex",  # PR #28275 salvage (Google OAuth timeout)
+    "zyrixtrex@gmail.com": "Zyrixtrex",
+    "120500656+ooovenenoso@users.noreply.github.com": "ooovenenoso",  # PR #28256 salvage (tool loop recovery hints)
+    "120500656+oooindefatigable@users.noreply.github.com": "ooovenenoso",
+    "vanthinh6886@gmail.com": "vanthinh6886",  # PR #28018 salvage (yaml/flock/atomic write guards)
 }
 
 

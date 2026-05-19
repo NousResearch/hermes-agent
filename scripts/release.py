@@ -166,7 +166,7 @@ AUTHOR_MAP = {
     "ysfalweshcan@gmail.com": "Junass1",
     "bartokmagic@proton.me": "Bartok9",
     "bartok9@users.noreply.github.com": "Bartok9",
-    "pepelax@users.noreply.github.com": "pepelax",  # PR #25419 salvage (send_message TELEGRAM_PROXY)
+    "erhanyasarx@gmail.com": "erhnysr",  # PR #25198 salvage (tool-progress flood-control)
     "androidhtml@yandex.com": "hllqkb",
     "25840394+Bongulielmi@users.noreply.github.com": "Bongulielmi",
     "jonathan.troyer@overmatch.com": "JTroyerOvermatch",

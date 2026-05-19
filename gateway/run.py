@@ -1433,6 +1433,7 @@ class GatewayRunner:
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
+        self._show_background_review_in_chat = self._load_show_background_review_in_chat()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
@@ -2689,6 +2690,30 @@ class GatewayRunner:
             return "priority"
         logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
+
+    @staticmethod
+    def _load_show_background_review_in_chat() -> bool:
+        """Load show_background_review_in_chat from config.yaml display section.
+
+        Controls whether the gateway forwards background self-improvement review
+        messages (e.g. "💾 Self-improvement review: User profile updated") to the
+        subject's chat. Defaults to False — this is a TUI debug signal that leaks
+        internal state to end users on messaging platforms (Telegram, Signal, etc.).
+
+        Set ``display.show_background_review_in_chat: true`` to opt in.
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                raw = cfg_get(cfg, "display", "show_background_review_in_chat")
+                if raw is True:
+                    return True
+        except Exception:
+            pass
+        return False
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -16365,7 +16390,8 @@ class GatewayRunner:
                             return
                 _deliver_bg_review_message(message)
 
-            agent.background_review_callback = _bg_review_send
+            if self._show_background_review_in_chat:
+                agent.background_review_callback = _bg_review_send
             # Register the release hook on the adapter so base.py's finally
             # block can fire it after delivering the main response.
             if _status_adapter and session_key:

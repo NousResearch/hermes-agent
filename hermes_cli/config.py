@@ -13,7 +13,6 @@ This module provides:
 """
 
 import copy
-import json
 import logging
 import os
 import platform
@@ -478,6 +477,11 @@ def _ensure_hermes_home_managed(home: Path):
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    "acp": {
+        # ACP clients can provide MCP server definitions per session. Stdio
+        # transports execute local commands, so only operator config can opt in.
+        "allow_client_stdio_mcp_servers": False,
+    },
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
@@ -4080,89 +4084,6 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
         node = node[key]
     return node
 
-
-TERMINAL_CONFIG_ENV_MAP = {
-    "backend": "TERMINAL_ENV",
-    "env_type": "TERMINAL_ENV",
-    "cwd": "TERMINAL_CWD",
-    "timeout": "TERMINAL_TIMEOUT",
-    "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-    "docker_image": "TERMINAL_DOCKER_IMAGE",
-    "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-    "docker_env": "TERMINAL_DOCKER_ENV",
-    "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-    "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-    "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-    "modal_image": "TERMINAL_MODAL_IMAGE",
-    "modal_mode": "TERMINAL_MODAL_MODE",
-    "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-    "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
-    "ssh_host": "TERMINAL_SSH_HOST",
-    "ssh_user": "TERMINAL_SSH_USER",
-    "ssh_port": "TERMINAL_SSH_PORT",
-    "ssh_key": "TERMINAL_SSH_KEY",
-    "container_cpu": "TERMINAL_CONTAINER_CPU",
-    "container_memory": "TERMINAL_CONTAINER_MEMORY",
-    "container_disk": "TERMINAL_CONTAINER_DISK",
-    "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-    "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-    "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-    "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-}
-
-
-def apply_terminal_config_env_bridge(config: Optional[Dict[str, Any]] = None) -> None:
-    """Bridge explicit ``terminal`` config.yaml settings to ``TERMINAL_*`` env vars.
-
-    ``terminal_tool`` intentionally reads backend settings from environment
-    variables.  Non-classic entry points (TUI, ACP, direct ``run_agent`` imports)
-    must still honor config.yaml without importing the heavyweight classic CLI.
-    Only values explicitly present in config.yaml are bridged, and explicit
-    terminal config remains authoritative over stale ``.env`` values.
-    """
-    if config is None and os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
-        return
-
-    try:
-        raw_config = read_raw_config() if config is None else config
-        raw_config = _expand_env_vars(raw_config)
-    except Exception:
-        logger.debug("Failed to read terminal config for env bridge", exc_info=True)
-        return
-
-    terminal_config = (
-        raw_config.get("terminal", {}) if isinstance(raw_config, dict) else {}
-    )
-    if not isinstance(terminal_config, dict) or not terminal_config:
-        return
-
-    terminal_config = dict(terminal_config)
-    if "backend" in terminal_config:
-        terminal_config["env_type"] = terminal_config["backend"]
-
-    env_type = (
-        str(terminal_config.get("env_type", os.getenv("TERMINAL_ENV", "local"))).strip()
-        or "local"
-    )
-    cwd_placeholders = {".", "auto", "cwd"}
-    if "cwd" in terminal_config:
-        cwd = terminal_config["cwd"]
-        if str(cwd) in cwd_placeholders:
-            if env_type == "local":
-                terminal_config["cwd"] = os.getcwd()
-            else:
-                terminal_config.pop("cwd", None)
-        elif isinstance(cwd, str):
-            terminal_config["cwd"] = os.path.expanduser(cwd)
-
-    for config_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
-        if config_key not in terminal_config:
-            continue
-        value = terminal_config[config_key]
-        if isinstance(value, (list, dict)):
-            os.environ[env_var] = json.dumps(value)
-        else:
-            os.environ[env_var] = str(value)
 
 
 def read_raw_config() -> Dict[str, Any]:

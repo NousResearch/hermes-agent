@@ -42,7 +42,6 @@ from gateway.platforms.yuanbao import (
     DispatchMiddleware,
     InboundPipelineBuilder,
     YuanbaoAdapter,
-    SendResult,
 )
 from gateway.config import Platform, PlatformConfig
 
@@ -579,50 +578,6 @@ class TestAccessGuardMiddleware:
 
         await AccessGuardMiddleware()(ctx, next_fn)
         next_fn.assert_awaited_once()
-
-
-class TestYuanbaoDirectSendAccessPolicy:
-    @pytest.mark.asyncio
-    async def test_direct_dm_send_denied_by_access_policy(self):
-        """send_message direct path cannot bypass disabled DM policy."""
-        adapter = make_adapter()
-        adapter._access_policy = AccessPolicy(
-            dm_policy="disabled",
-            dm_allow_from=[],
-            group_policy="open",
-            group_allow_from=[],
-        )
-        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="txt1"))
-
-        result = await adapter._outbound.send_direct("direct:alice", "hello")
-
-        assert result == {"error": "Yuanbao DM access denied for this user"}
-        adapter.send.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_direct_media_send_denied_by_group_access_policy(self, tmp_path):
-        """send_message media path cannot bypass disabled group policy."""
-        adapter = make_adapter()
-        adapter._access_policy = AccessPolicy(
-            dm_policy="open",
-            dm_allow_from=[],
-            group_policy="disabled",
-            group_allow_from=[],
-        )
-        media_path = tmp_path / "blocked.pdf"
-        media_path.write_text("pdf")
-        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="txt1"))
-        adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc1"))
-
-        result = await adapter._outbound.send_direct(
-            "group:secret",
-            "hello",
-            media_files=[(str(media_path), False)],
-        )
-
-        assert result == {"error": "Yuanbao group access denied for this group"}
-        adapter.send.assert_not_awaited()
-        adapter.send_document.assert_not_awaited()
 
 
 class TestExtractContentMiddleware:

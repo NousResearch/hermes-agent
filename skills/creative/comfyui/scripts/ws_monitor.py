@@ -32,7 +32,7 @@ import json
 import struct
 import sys
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import (  # noqa: E402
@@ -50,8 +50,6 @@ IMAGE_TYPE_JPEG = 1
 IMAGE_TYPE_PNG = 2
 
 # ANSI escape codes (works on most modern terminals)
-REDACTED_SECRET = "[REDACTED_SECRET]"
-
 RESET = "\033[0m"
 DIM = "\033[2m"
 BOLD = "\033[1m"
@@ -59,17 +57,6 @@ GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RED = "\033[31m"
 CYAN = "\033[36m"
-
-
-def redact_url_secrets(url: str) -> str:
-    """Return a log-safe URL with secret-bearing query values masked."""
-    parsed = urlparse(url)
-    sensitive_keys = {"token", "api_key", "apikey", "key", "access_token"}
-    query = [
-        (key, REDACTED_SECRET if key.lower() in sensitive_keys else value)
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-    ]
-    return urlunparse(parsed._replace(query=urlencode(query, safe="[]")))
 
 
 def fmt_color(s: str, color: str, *, color_on: bool = True) -> str:
@@ -164,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         preview_dir.mkdir(parents=True, exist_ok=True)
         log(f"Saving previews to {preview_dir}")
 
-    log(f"Connecting to {redact_url_secrets(ws_url)} (client_id={client_id})")
+    log(f"Connecting to {ws_url} (client_id={client_id})")
     if args.prompt_id:
         log(f"Filtering messages to prompt_id={args.prompt_id}")
 

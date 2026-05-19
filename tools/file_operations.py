@@ -1045,7 +1045,7 @@ class ShellFileOperations(FileOperations):
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
-        
+
         # Apply operations
         result = apply_v4a_operations(operations, self)
         return result

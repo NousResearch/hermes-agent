@@ -2,7 +2,7 @@ import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, typ
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { STARTUP_RESUME_ID } from '../config/env.js'
+import { STARTUP_RESUME_ID, TERMUX_HISTORY_MAX, TERMUX_TUI_MODE } from '../config/env.js'
 import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
@@ -46,12 +46,12 @@ const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
 const MAX_HEIGHT_CACHE_BUCKETS = 12
 
-const capHistory = (items: Msg[]): Msg[] => {
-  if (items.length <= MAX_HISTORY) {
+const capHistory = (items: Msg[], maxHistory: number): Msg[] => {
+  if (items.length <= maxHistory) {
     return items
   }
 
-  return items[0]?.kind === 'intro' ? [items[0]!, ...items.slice(-(MAX_HISTORY - 1))] : items.slice(-MAX_HISTORY)
+  return items[0]?.kind === 'intro' ? [items[0]!, ...items.slice(-(maxHistory - 1))] : items.slice(-maxHistory)
 }
 
 const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
@@ -74,6 +74,7 @@ export function useMainApp(gw: GatewayClient) {
   const { exit } = useApp()
   const { stdout } = useStdout()
   const [cols, setCols] = useState(stdout?.columns ?? 80)
+  const maxHistory = TERMUX_TUI_MODE ? TERMUX_HISTORY_MAX : MAX_HISTORY
 
   useEffect(() => {
     if (!stdout) {
@@ -307,8 +308,8 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const appendMessage = useCallback(
-    (msg: Msg) => setHistoryItems(prev => capHistory(appendTranscriptMessage(prev, msg))),
-    []
+    (msg: Msg) => setHistoryItems(prev => capHistory(appendTranscriptMessage(prev, msg), maxHistory)),
+    [maxHistory]
   )
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system', text }), [appendMessage])
@@ -819,7 +820,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const appStatus = useMemo(
     () => ({
-      cwdLabel: fmtCwdBranch(cwd, gitBranch),
+      cwdLabel: fmtCwdBranch(cwd, gitBranch, TERMUX_TUI_MODE ? Math.max(16, Math.min(30, Math.floor(cols * 0.42))) : 40),
       goodVibesTick,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
@@ -831,6 +832,7 @@ export function useMainApp(gw: GatewayClient) {
       voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
     }),
     [
+      cols,
       cwd,
       gitBranch,
       goodVibesTick,

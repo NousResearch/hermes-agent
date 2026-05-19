@@ -7,6 +7,7 @@ import { $delegationState } from '../app/delegationStore.js'
 import type { IndicatorStyle } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
@@ -24,6 +25,8 @@ const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 // jitter when the ticker rotates between short/long verbs.
 export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
 export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+export const DURATION_PAD_LEN = 7 // e.g. "9s", "1m 05s", "59m 59s"
+export const padTickerDuration = (ms: number) => fmtDuration(ms).padStart(DURATION_PAD_LEN, ' ')
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -112,7 +115,9 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
   // space is harmless.
-  const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
+  const durationSegment = startedAt
+    ? ` · ${TERMUX_TUI_MODE ? padTickerDuration(now - startedAt) : fmtDuration(now - startedAt)}`
+    : ''
 
   return (
     <Text color={color}>

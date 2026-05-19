@@ -1588,6 +1588,8 @@ def list_tasks(
     include_archived: bool = False,
     limit: Optional[int] = None,
     order_by: Optional[str] = None,
+    workflow_template_id: Optional[str] = None,
+    current_step_key: Optional[str] = None,
 ) -> list[Task]:
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[Any] = []
@@ -1605,6 +1607,12 @@ def list_tasks(
     if session_id is not None:
         query += " AND session_id = ?"
         params.append(session_id)
+    if workflow_template_id is not None:
+        query += " AND workflow_template_id = ?"
+        params.append(workflow_template_id)
+    if current_step_key is not None:
+        query += " AND current_step_key = ?"
+        params.append(current_step_key)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
     if order_by is not None:
@@ -5854,17 +5862,31 @@ def list_runs(
     task_id: str,
     *,
     include_active: bool = True,
+    state_type: Optional[str] = None,
+    state_name: Optional[str] = None,
 ) -> list[Run]:
     """Return all runs for ``task_id`` in start order.
 
     ``include_active=True`` (default) includes the currently-running
     attempt if any. Set False to return only closed runs (useful for
     "how many prior attempts have there been?" checks).
+
+    When ``state_type`` and ``state_name`` are set, restrict to rows
+    where that column equals ``state_name`` (``state_type`` is
+    ``status`` or ``outcome``). Both must be passed together.
     """
+    if (state_type is None) ^ (state_name is None):
+        raise ValueError("state_type and state_name must both be set or both omitted")
+    if state_type is not None:
+        if state_type not in ("status", "outcome"):
+            raise ValueError("state_type must be 'status' or 'outcome'")
     q = "SELECT * FROM task_runs WHERE task_id = ?"
     params: list[Any] = [task_id]
     if not include_active:
         q += " AND ended_at IS NOT NULL"
+    if state_type is not None:
+        q += f" AND {state_type} = ?"
+        params.append(state_name)
     q += " ORDER BY started_at ASC, id ASC"
     rows = conn.execute(q, params).fetchall()
     return [Run.from_row(r) for r in rows]

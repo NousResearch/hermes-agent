@@ -1027,6 +1027,47 @@ def test_tenant_column_filters_listings(kanban_home):
     assert [t.title for t in biz_b] == ["b1"]
 
 
+def test_list_tasks_filters_workflow_template_and_step(kanban_home):
+    with kb.connect() as conn:
+        ta = kb.create_task(conn, title="alpha")
+        tb = kb.create_task(conn, title="beta")
+        conn.execute(
+            "UPDATE tasks SET workflow_template_id=?, current_step_key=? WHERE id=?",
+            ("wf1", "step_x", ta),
+        )
+        conn.execute(
+            "UPDATE tasks SET workflow_template_id=?, current_step_key=? WHERE id=?",
+            ("wf1", "step_y", tb),
+        )
+        conn.commit()
+        by_wf = kb.list_tasks(conn, workflow_template_id="wf1")
+        by_step = kb.list_tasks(conn, current_step_key="step_x")
+    assert {x.id for x in by_wf} == {ta, tb}
+    assert [x.id for x in by_step] == [ta]
+
+
+def test_list_runs_state_filter_requires_pair_and_valid_type(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="alice")
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="both"):
+            kb.list_runs(conn, tid, state_type="status", state_name=None)
+        with pytest.raises(ValueError, match="both"):
+            kb.list_runs(conn, tid, state_type=None, state_name="done")
+        with pytest.raises(ValueError, match="state_type"):
+            kb.list_runs(conn, tid, state_type="nope", state_name="done")
+
+
+def test_list_runs_filters_by_outcome_value(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="alice")
+        kb.complete_task(conn, tid, summary="ok")
+        matching = kb.list_runs(conn, tid, state_type="outcome", state_name="completed")
+        empty = kb.list_runs(conn, tid, state_type="outcome", state_name="blocked")
+    assert matching
+    assert not empty
+
+
 def test_tenant_propagates_to_events(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="tenant-task", tenant="biz-a")

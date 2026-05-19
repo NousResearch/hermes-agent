@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json as jsonlib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -212,6 +213,68 @@ def test_list_triage_ids(kanban_home):
     assert set(ids_all) == {a, b}
     ids_tenant = spec.list_triage_ids(tenant="proj-1")
     assert ids_tenant == [b]
+
+
+class _FakeSqliteConn:
+    """Minimal sqlite-like object whose context manager does NOT close().
+
+    Mirrors ``sqlite3.Connection`` behavior closely enough to catch
+    accidental reliance on ``with conn:`` for lifecycle management.
+    """
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def test_list_triage_ids_closes_connection_even_when_connect_returns_sqlite_like_ctx():
+    fake_conn = _FakeSqliteConn()
+
+    with patch.object(spec.kb, "connect", return_value=fake_conn), patch.object(
+        spec.kb, "list_tasks", return_value=[],
+    ):
+        assert spec.list_triage_ids() == []
+
+    assert fake_conn.closed is True
+
+
+def test_specify_task_unknown_id_closes_connection_even_when_connect_returns_sqlite_like_ctx():
+    fake_conn = _FakeSqliteConn()
+
+    with patch.object(spec.kb, "connect", return_value=fake_conn), patch.object(
+        spec.kb, "get_task", return_value=None,
+    ):
+        outcome = spec.specify_task("t_missing")
+
+    assert outcome.ok is False
+    assert "unknown task" in outcome.reason
+    assert fake_conn.closed is True
+
+
+def test_specify_task_happy_path_closes_write_connection_for_sqlite_like_ctx():
+    read_conn = _FakeSqliteConn()
+    write_conn = _FakeSqliteConn()
+    task = SimpleNamespace(id="t_demo", status="triage", title="rough", body="")
+
+    content = jsonlib.dumps({"title": "clean", "body": "body"})
+    p, _ = _patch_aux_client(content)
+
+    with p, patch.object(spec.kb, "connect", side_effect=[read_conn, write_conn]), patch.object(
+        spec.kb, "get_task", return_value=task,
+    ), patch.object(spec.kb, "specify_triage_task", return_value=True):
+        outcome = spec.specify_task("t_demo", author="ace")
+
+    assert outcome.ok is True
+    assert read_conn.closed is True
+    assert write_conn.closed is True
 
 
 # ---------------------------------------------------------------------------

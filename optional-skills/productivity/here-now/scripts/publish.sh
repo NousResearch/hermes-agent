@@ -417,7 +417,6 @@ STATE_TMP=$(mktemp "$STATE_DIR/state.json.XXXXXX")
 echo "$STATE" | "$JQ_BIN" '.' > "$STATE_TMP"
 chmod 600 "$STATE_TMP" 2>/dev/null || true
 mv "$STATE_TMP" "$STATE_FILE"
-echo "$STATE" | "$JQ_BIN" '.' > "$STATE_FILE"
 
 # Output
 echo "$SITE_URL"

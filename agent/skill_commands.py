@@ -257,6 +257,11 @@ def _build_skill_message(
         parts.append("")
         parts.append(f"[Runtime note: {runtime_note}]")
 
+    termux_warning = str(loaded_skill.get("termux_compat_warning") or "").strip()
+    if termux_warning:
+        parts.append("")
+        parts.append(f"[Termux compatibility note: {termux_warning}]")
+
     return "\n".join(parts)
 
 

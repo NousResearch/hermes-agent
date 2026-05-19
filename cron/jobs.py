@@ -292,6 +292,51 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(target_tz)
 
 
+def _cron_matches_datetime(schedule: Dict[str, Any], dt: datetime) -> bool:
+    """Return whether ``dt`` is an exact occurrence for a cron schedule."""
+    if schedule.get("kind") != "cron" or not HAS_CRONITER:
+        return False
+
+    expr = schedule.get("expr")
+    if not expr:
+        return False
+
+    try:
+        match = getattr(croniter, "match", None)
+        if match:
+            return bool(match(expr, dt))
+        return croniter(expr, dt - timedelta(seconds=1)).get_next(datetime) == dt
+    except Exception:
+        return False
+
+
+def _repair_cron_next_run_timezone(
+    job: Dict[str, Any],
+    next_run_dt: datetime,
+    now: datetime,
+) -> Optional[str]:
+    """Rebase migrated cron timestamps to Hermes' current wall-clock timezone.
+
+    Cron expressions describe local wall-clock times.  If a recurring cron job
+    persisted ``21:00`` with an old UTC offset, comparing the old instant after
+    Hermes moves timezones can make the job appear due hours early.  Keep the
+    stored wall-clock fields and attach the current Hermes timezone, then let
+    normal due/stale handling decide whether to run or fast-forward.
+    """
+    schedule = job.get("schedule", {})
+    if schedule.get("kind") != "cron":
+        return None
+
+    if next_run_dt.utcoffset() == now.utcoffset():
+        return None
+
+    rebased = next_run_dt.replace(tzinfo=now.tzinfo)
+    if not _cron_matches_datetime(schedule, rebased):
+        return None
+
+    return rebased.isoformat()
+
+
 def _recoverable_oneshot_run_at(
     schedule: Dict[str, Any],
     now: datetime,
@@ -1020,7 +1065,24 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     needs_save = True
                     break
 
-        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+        stored_next_run_dt = datetime.fromisoformat(next_run)
+        next_run_dt = _ensure_aware(stored_next_run_dt)
+        repaired_next = _repair_cron_next_run_timezone(job, stored_next_run_dt, now)
+        if repaired_next and repaired_next != next_run:
+            next_run = repaired_next
+            next_run_dt = _ensure_aware(datetime.fromisoformat(repaired_next))
+            logger.info(
+                "Job '%s' had next_run_at in an old timezone offset; "
+                "repairing to current wall-clock run at %s",
+                job.get("name", job["id"]),
+                repaired_next,
+            )
+            for rj in raw_jobs:
+                if rj["id"] == job["id"]:
+                    rj["next_run_at"] = repaired_next
+                    needs_save = True
+                    break
+
         if next_run_dt <= now:
             schedule = job.get("schedule", {})
             kind = schedule.get("kind")

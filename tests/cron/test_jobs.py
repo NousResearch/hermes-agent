@@ -684,6 +684,76 @@ class TestGetDueJobs:
         due = get_due_jobs()
         assert len(due) == 0
 
+    def test_cron_next_run_old_timezone_offset_is_repaired_before_due_check(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        pytest.importorskip("croniter")
+        current_tz = timezone(timedelta(hours=2))
+        old_tz = timezone(timedelta(hours=10))
+        now = datetime(2026, 5, 19, 13, 2, 0, tzinfo=current_tz)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "cron-tz-migrate",
+                "name": "Tuesday evening",
+                "prompt": "...",
+                "schedule": {"kind": "cron", "expr": "0 21 * * 2", "display": "0 21 * * 2"},
+                "schedule_display": "0 21 * * 2",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-05-12T21:00:00+10:00",
+                "next_run_at": datetime(2026, 5, 19, 21, 0, 0, tzinfo=old_tz).isoformat(),
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        assert get_due_jobs() == []
+        repaired = datetime.fromisoformat(get_job("cron-tz-migrate")["next_run_at"])
+        assert repaired == datetime(2026, 5, 19, 21, 0, 0, tzinfo=current_tz)
+
+    def test_cron_next_run_timezone_repair_still_fast_forwards_stale_wall_time(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        pytest.importorskip("croniter")
+        current_tz = timezone(timedelta(hours=2))
+        old_tz = timezone(timedelta(hours=10))
+        now = datetime(2026, 5, 19, 23, 30, 0, tzinfo=current_tz)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "cron-tz-stale",
+                "name": "Tuesday evening stale",
+                "prompt": "...",
+                "schedule": {"kind": "cron", "expr": "0 21 * * 2", "display": "0 21 * * 2"},
+                "schedule_display": "0 21 * * 2",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-05-12T21:00:00+10:00",
+                "next_run_at": datetime(2026, 5, 19, 21, 0, 0, tzinfo=old_tz).isoformat(),
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        assert get_due_jobs() == []
+        fast_forwarded = datetime.fromisoformat(get_job("cron-tz-stale")["next_run_at"])
+        assert fast_forwarded == datetime(2026, 5, 26, 21, 0, 0, tzinfo=current_tz)
+
     def test_disabled_not_returned(self, tmp_cron_dir):
         job = create_job(prompt="Disabled", schedule="every 1h")
         jobs = load_jobs()

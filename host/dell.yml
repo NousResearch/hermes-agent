@@ -1,0 +1,130 @@
+---
+- name: Configure a restricted host restart hook for Hermes
+  hosts: all
+  become: true
+
+  vars:
+    # Adjust these to match the host layout.
+    hermes_stack_dir: /opt/data/hermes-agent
+    hermes_restart_script: /usr/local/bin/restart-hermes-stack
+    hermes_sudoers_file: /etc/sudoers.d/restart-hermes-stack
+    hermes_restart_user: hermes
+
+    # Optional extras:
+    # - Add systemd services to restart if your host runs Hermes components as units.
+    # - Keep this list empty if Docker Compose is the only supervisor.
+    hermes_systemd_services: []
+
+    # Compose is the default restart path when a compose file is present.
+    hermes_compose_files:
+      - docker-compose.yml
+      - docker-compose.yaml
+      - compose.yml
+      - compose.yaml
+
+  tasks:
+    - name: Ensure restart user exists (for sudoers ownership/reference)
+      ansible.builtin.user:
+        name: "{{ hermes_restart_user }}"
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+      when: hermes_restart_user != "root"
+
+    - name: Install the restricted Hermes restart script
+      ansible.builtin.copy:
+        dest: "{{ hermes_restart_script }}"
+        mode: '0755'
+        owner: root
+        group: root
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          STACK_DIR="{{ hermes_stack_dir }}"
+          SERVICE_LIST=({% for svc in hermes_systemd_services %}{{ svc | quote }} {% endfor %})
+          COMPOSE_FILES=(
+            {% for file in hermes_compose_files %}
+            {{ file | quote }}
+            {% endfor %}
+          )
+
+          log() {
+            printf '[restart-hermes-stack] %s\n' "$*"
+          }
+
+          run_git_update() {
+            if [ -d "$STACK_DIR/.git" ]; then
+              log "Updating git checkout in $STACK_DIR"
+              git -C "$STACK_DIR" pull --ff-only
+            else
+              log "Skipping git pull (no .git directory at $STACK_DIR)"
+            fi
+          }
+
+          run_compose_restart() {
+            if ! command -v docker >/dev/null 2>&1; then
+              return 1
+            fi
+
+            local compose_file=""
+            for f in "${COMPOSE_FILES[@]}"; do
+              if [ -f "$STACK_DIR/$f" ]; then
+                compose_file="$f"
+                break
+              fi
+            done
+
+            if [ -z "$compose_file" ]; then
+              return 1
+            fi
+
+            log "Restarting Docker Compose stack using $compose_file"
+            cd "$STACK_DIR"
+            docker compose -f "$compose_file" up -d --force-recreate --remove-orphans
+          }
+
+          run_systemd_restart() {
+            if [ "${#SERVICE_LIST[@]}" -eq 0 ]; then
+              return 1
+            fi
+
+            log "Restarting systemd services: ${SERVICE_LIST[*]}"
+            systemctl restart "${SERVICE_LIST[@]}"
+          }
+
+          run_git_update
+
+          if run_compose_restart; then
+            log "Docker Compose restart complete"
+          elif run_systemd_restart; then
+            log "systemd restart complete"
+          else
+            log "No compose file or systemd services configured; nothing to restart"
+            exit 1
+          fi
+
+    - name: Allow the restart user to run only the restart hook without a password
+      ansible.builtin.copy:
+        dest: "{{ hermes_sudoers_file }}"
+        mode: '0440'
+        owner: root
+        group: root
+        content: |
+          {{ hermes_restart_user }} ALL=(root) NOPASSWD: {{ hermes_restart_script }}
+        validate: 'visudo -cf %s'
+
+    - name: Restrict sudoers file permissions
+      ansible.builtin.file:
+        path: "{{ hermes_sudoers_file }}"
+        owner: root
+        group: root
+        mode: '0440'
+
+    - name: Show what was installed
+      ansible.builtin.debug:
+        msg:
+          - "Installed restart script: {{ hermes_restart_script }}"
+          - "Installed sudoers rule: {{ hermes_sudoers_file }}"
+          - "Restart user: {{ hermes_restart_user }}"
+          - "Stack directory: {{ hermes_stack_dir }}"

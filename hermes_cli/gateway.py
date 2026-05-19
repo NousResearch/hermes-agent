@@ -2116,6 +2116,28 @@ def _setup_standard_platform(platform: dict):
         if not prompt_yes_no(f"  Reconfigure {label}?", False):
             return
 
+    auto_token_saved = False
+    if platform.get("key") == "telegram":
+        print()
+        print_info("  Telegram can be configured automatically with a managed bot:")
+        print_info("  [1] Automatic (scan QR → confirm in Telegram → done)")
+        print_info("  [2] Manual BotFather token")
+        choice = prompt("  Choice [1/2]", default="1")
+        if choice.strip() == "1":
+            try:
+                from hermes_cli.telegram_managed_bot import auto_setup_telegram_bot
+            except ImportError:
+                print_warning("  Automatic setup is unavailable in this install.")
+            else:
+                token = auto_setup_telegram_bot()
+                if token:
+                    save_env_value(token_var, token)
+                    print_success("  Saved TELEGRAM_BOT_TOKEN")
+                    auto_token_saved = True
+                else:
+                    print()
+                    print_info("  Falling back to manual setup...")
+
     allowed_val_set = None  # Track if user set an allowlist (for home channel offer)
 
     for var in platform["vars"]:
@@ -2124,6 +2146,10 @@ def _setup_standard_platform(platform: dict):
         existing = get_env_value(var["name"])
         if existing and var["name"] != token_var:
             print_info(f"  Current: {existing}")
+
+        if auto_token_saved and var["name"] == token_var:
+            print_info("  Token saved by automatic setup.")
+            continue
 
         # Allowlist fields get special handling for the deny-by-default security model
         if var.get("is_allowlist"):

@@ -1,60 +1,57 @@
-"""Telegram Managed Bot — automatic bot creation via Bot API 9.6.
+"""Telegram Managed Bot onboarding client.
 
-Uses Telegram's Managed Bots feature to create bots for users without
-manual BotFather interaction.  The flow:
-
-1. CLI generates a pairing nonce and a t.me/newbot deep link.
-2. User opens the link in Telegram and confirms bot creation.
-3. A Nous-hosted manager bot receives the ``managed_bot`` update,
-   calls ``getManagedBotToken``, and stores the token keyed by nonce.
-4. CLI polls the pairing API and retrieves the token.
-5. Token is saved to ``.env`` — zero manual copy-paste.
-
-Requires:
-  - A Nous-hosted manager bot with Bot Management Mode enabled.
-  - A pairing API (Cloudflare Worker + KV or equivalent) at
-    ``MANAGED_BOT_API_URL``.
+Uses Telegram's Managed Bots feature to create a user-owned child bot without
+manual BotFather token copy-paste. Hermes talks only to the Nous onboarding
+service; the raw Telegram token is saved locally after one-time retrieval.
 """
 
 from __future__ import annotations
 
+import os
 import secrets
-import string
 import sys
 import time
 import urllib.parse
+from dataclasses import dataclass
 from typing import Optional
 
 import httpx
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 # Default pairing API base URL (Nous-hosted Cloudflare Worker).
-# Override via config.yaml ``telegram.managed_bot_api_url`` for self-hosted.
+# Override for PoC/staging with TELEGRAM_ONBOARDING_URL.
 DEFAULT_API_URL = "https://setup.hermes-agent.nousresearch.com"
+TELEGRAM_ONBOARDING_URL_ENV = "TELEGRAM_ONBOARDING_URL"
 
-# The Nous-hosted manager bot username (without @).
+# The Nous-hosted manager bot username (without @). The backend returns the
+# actual deep link, so this is only used by local helpers/tests.
 DEFAULT_MANAGER_BOT = "HermesSetupBot"
 
-# How long to poll before giving up (seconds).
+DEFAULT_BOT_NAME = "Hermes Agent"
 DEFAULT_POLL_TIMEOUT = 180
-
-# Poll interval (seconds).
 POLL_INTERVAL = 2
 
-# ---------------------------------------------------------------------------
-# QR code rendering
-# ---------------------------------------------------------------------------
+_USERNAME_SLUG_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
+
+
+@dataclass(frozen=True)
+class TelegramPairing:
+    """Pairing record returned by the Telegram onboarding service."""
+
+    pairing_id: str
+    poll_token: str
+    suggested_username: str
+    deep_link: str
+    qr_payload: str
+    expires_at: str | None = None
+
+
+def _api_url(api_url: str | None = None) -> str:
+    """Resolve the onboarding API URL, honoring the PoC env override."""
+    return (api_url or os.environ.get(TELEGRAM_ONBOARDING_URL_ENV) or DEFAULT_API_URL).rstrip("/")
 
 
 def render_qr_terminal(url: str) -> str:
-    """Render a URL as a QR code string suitable for terminal output.
-
-    Uses the ``qrcode`` library if available, otherwise returns an empty
-    string (caller should fall back to printing the URL directly).
-    """
+    """Render a URL as a QR code string suitable for terminal output."""
     try:
         import io
 
@@ -76,40 +73,35 @@ def render_qr_terminal(url: str) -> str:
         return ""
 
 
-def print_qr_code(url: str) -> None:
+def print_qr_code(url: str, *, include_link: bool = True) -> None:
     """Print a QR code to stdout, with URL fallback if qrcode is missing."""
     qr_text = render_qr_terminal(url)
     if qr_text:
         print(qr_text)
     else:
-        print(f"  (Install 'qrcode' for a scannable QR code: pip install qrcode)")
-    print(f"  Link: {url}")
+        print("  (Install 'qrcode' for a scannable QR code: pip install qrcode)")
+    if include_link:
+        print(f"  Link: {url}")
 
 
-# ---------------------------------------------------------------------------
-# Deep link generation
-# ---------------------------------------------------------------------------
+def generate_username_slug(length: int = 16) -> str:
+    """Generate a base32-ish slug for Telegram username correlation.
 
-
-def _random_suffix(length: int = 4) -> str:
-    """Generate a short random alphanumeric suffix for bot usernames."""
-    alphabet = string.ascii_lowercase + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
+    Sixteen characters from a 32-symbol alphabet gives 80 bits of entropy while
+    keeping ``hermes_<slug>_bot`` under Telegram's 32-character username limit.
+    """
+    return "".join(secrets.choice(_USERNAME_SLUG_ALPHABET) for _ in range(length))
 
 
 def generate_bot_username(profile_name: Optional[str] = None) -> str:
-    """Generate a suggested bot username like ``hermes_work_a7f3_bot``.
+    """Generate a secure suggested bot username like ``hermes_<slug>_bot``.
 
-    Telegram requires bot usernames to end with ``bot`` and be 5-32 chars.
+    ``profile_name`` is accepted for backward compatibility with the original
+    PoC, but is intentionally not embedded in the username. The username has to
+    carry enough entropy for backend correlation.
     """
-    base = "hermes"
-    suffix = _random_suffix()
-    if profile_name and profile_name != "default":
-        # Sanitize profile name for Telegram username rules (a-z, 0-9, _)
-        clean = "".join(c if c.isalnum() else "_" for c in profile_name.lower())
-        clean = clean[:12]  # Keep it short
-        return f"{base}_{clean}_{suffix}_bot"
-    return f"{base}_{suffix}_bot"
+    _ = profile_name
+    return f"hermes_{generate_username_slug()}_bot"
 
 
 def generate_deep_link(
@@ -117,12 +109,14 @@ def generate_deep_link(
     suggested_username: Optional[str] = None,
     suggested_name: Optional[str] = None,
 ) -> str:
-    """Build the ``t.me/newbot`` deep link for managed bot creation.
-
-    Format: ``https://t.me/newbot/{manager_bot}/{suggested_username}[?name={name}]``
-    """
+    """Build a ``t.me/newbot`` deep link for managed bot creation."""
+    manager = manager_bot.lstrip("@")
     username = suggested_username or generate_bot_username()
-    base_url = f"https://t.me/newbot/{manager_bot}/{username}"
+    base_url = (
+        "https://t.me/newbot/"
+        f"{urllib.parse.quote(manager)}/"
+        f"{urllib.parse.quote(username)}"
+    )
 
     if suggested_name:
         params = urllib.parse.urlencode({"name": suggested_name})
@@ -130,112 +124,130 @@ def generate_deep_link(
     return base_url
 
 
-# ---------------------------------------------------------------------------
-# Pairing protocol (client side)
-# ---------------------------------------------------------------------------
-
-
 def generate_pairing_nonce() -> str:
-    """Generate a cryptographically random pairing nonce (32 hex chars)."""
+    """Generate a legacy-compatible random nonce string.
+
+    The new protocol uses service-created ``pairing_id`` + bearer
+    ``poll_token`` instead of a path nonce, but this helper is harmless and
+    still useful for callers/tests that need a generic random id.
+    """
     return secrets.token_hex(16)
 
 
-def register_pairing(api_url: str, nonce: str, timeout: float = 10.0) -> bool:
-    """Register a pairing nonce with the pairing API.
+def create_pairing(
+    api_url: str | None = None,
+    bot_name: str = DEFAULT_BOT_NAME,
+    timeout: float = 10.0,
+) -> TelegramPairing | None:
+    """Create a Telegram onboarding pairing.
 
-    ``POST /pair``  body: ``{"nonce": "..."}``
-
-    Returns True on success, False on failure.
+    ``POST /v1/telegram/pairings`` returns the deep link, QR payload, public
+    pairing id, and secret poll token. The token is only used as a bearer
+    credential while polling.
     """
     try:
         resp = httpx.post(
-            f"{api_url}/pair",
-            json={"nonce": nonce},
+            f"{_api_url(api_url)}/v1/telegram/pairings",
+            json={"bot_name": bot_name},
             timeout=timeout,
         )
-        return resp.status_code in (200, 201)
-    except httpx.HTTPError:
-        return False
+        if resp.status_code not in (200, 201):
+            return None
+        data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    required = ("pairing_id", "poll_token", "suggested_username", "deep_link")
+    if not all(isinstance(data.get(key), str) and data.get(key) for key in required):
+        return None
+
+    qr_payload = data.get("qr_payload") or data["deep_link"]
+    if not isinstance(qr_payload, str):
+        return None
+
+    expires_at = data.get("expires_at")
+    return TelegramPairing(
+        pairing_id=data["pairing_id"],
+        poll_token=data["poll_token"],
+        suggested_username=data["suggested_username"],
+        deep_link=data["deep_link"],
+        qr_payload=qr_payload,
+        expires_at=expires_at if isinstance(expires_at, str) else None,
+    )
+
+
+def poll_pairing_once(
+    api_url: str | None,
+    pairing: TelegramPairing,
+    timeout: float = 10.0,
+) -> str | None:
+    """Poll the onboarding service once. Returns the token when ready."""
+    resp = httpx.get(
+        f"{_api_url(api_url)}/v1/telegram/pairings/{pairing.pairing_id}",
+        headers={"Authorization": f"Bearer {pairing.poll_token}"},
+        timeout=timeout,
+    )
+    if resp.status_code != 200:
+        return None
+
+    data = resp.json()
+    if data.get("status") != "ready":
+        return None
+    token = data.get("token")
+    return token if isinstance(token, str) and token else None
 
 
 def poll_for_token(
-    api_url: str,
-    nonce: str,
+    api_url: str | None,
+    pairing: TelegramPairing,
     timeout: float = DEFAULT_POLL_TIMEOUT,
     interval: float = POLL_INTERVAL,
 ) -> Optional[str]:
-    """Poll the pairing API until the bot token is available or timeout.
-
-    ``GET /pair/{nonce}`` → 200 with ``{"token": "..."}`` when ready,
-    404 while waiting.
-
-    Returns the bot token string on success, None on timeout/failure.
-    """
+    """Poll the pairing API until the bot token is available or timeout."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            resp = httpx.get(
-                f"{api_url}/pair/{nonce}",
-                timeout=10.0,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                token = data.get("token")
-                if token:
-                    return token
-            # 404 = not yet ready, keep polling
-        except httpx.HTTPError:
-            pass  # Network hiccup, retry
+            token = poll_pairing_once(api_url, pairing)
+            if token:
+                return token
+        except (httpx.HTTPError, ValueError):
+            pass
         time.sleep(interval)
     return None
 
 
-# ---------------------------------------------------------------------------
-# Orchestrator — called from setup wizard
-# ---------------------------------------------------------------------------
-
-
 def auto_setup_telegram_bot(
-    api_url: str = DEFAULT_API_URL,
+    api_url: str | None = None,
     manager_bot: str = DEFAULT_MANAGER_BOT,
     profile_name: Optional[str] = None,
     poll_timeout: float = DEFAULT_POLL_TIMEOUT,
 ) -> Optional[str]:
-    """Run the full automatic Telegram bot creation flow.
-
-    1. Generate nonce + suggested username.
-    2. Register the nonce with the pairing API.
-    3. Print the QR code / deep link for the user.
-    4. Poll until the token arrives (or timeout).
-
-    Returns the bot token on success, None on failure/timeout.
-    """
-    nonce = generate_pairing_nonce()
-    username = generate_bot_username(profile_name)
-    deep_link = generate_deep_link(
-        manager_bot=manager_bot,
-        suggested_username=username,
-        suggested_name="Hermes Agent",
-    )
-
-    # Embed the nonce in the pairing API so the manager bot can match it.
-    # The manager bot receives the suggested_username from Telegram's
-    # managed_bot update and uses it to look up the nonce.
-    if not register_pairing(api_url, nonce):
-        print("  ✗ Could not reach the Hermes setup service.")
+    """Run the full automatic Telegram bot creation flow."""
+    _ = manager_bot, profile_name
+    resolved_api_url = _api_url(api_url)
+    print()
+    print(f"  Contacting Hermes Telegram onboarding service: {resolved_api_url}")
+    sys.stdout.flush()
+    pairing = create_pairing(resolved_api_url)
+    if not pairing:
+        print("  ✗ Could not reach the Hermes Telegram onboarding service.")
         print("    Try the manual setup instead, or check your network.")
         return None
 
+    print("  ✓ Pairing created")
+    print("  Rendering QR code...")
+    sys.stdout.flush()
     print()
     print("  Scan this QR code with your phone, or open the link below:")
     print()
-    print_qr_code(deep_link)
+    print_qr_code(pairing.qr_payload, include_link=False)
+    print()
+    print(f"  Link: {pairing.deep_link}")
     print()
     print("  When Telegram opens, tap 'Create Bot' to confirm.")
-    print("  (You can edit the bot name and username before confirming)")
+    print("  (You can edit the bot display name before confirming)")
     print()
 
-    # Animated waiting
     spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     start = time.monotonic()
     deadline = start + poll_timeout
@@ -244,21 +256,18 @@ def auto_setup_telegram_bot(
     while time.monotonic() < deadline:
         char = spinner_chars[idx % len(spinner_chars)]
         elapsed = int(time.monotonic() - start)
-        remaining = int(poll_timeout - elapsed)
+        remaining = max(0, int(poll_timeout - elapsed))
         sys.stdout.write(f"\r  {char} Waiting for bot creation... ({remaining}s remaining) ")
         sys.stdout.flush()
         idx += 1
 
         try:
-            resp = httpx.get(f"{api_url}/pair/{nonce}", timeout=10.0)
-            if resp.status_code == 200:
-                data = resp.json()
-                token = data.get("token")
-                if token:
-                    sys.stdout.write("\r  ✓ Bot created successfully!                              \n")
-                    sys.stdout.flush()
-                    return token
-        except httpx.HTTPError:
+            token = poll_pairing_once(resolved_api_url, pairing)
+            if token:
+                sys.stdout.write("\r  ✓ Bot created successfully!                              \n")
+                sys.stdout.flush()
+                return token
+        except (httpx.HTTPError, ValueError):
             pass
         time.sleep(POLL_INTERVAL)
 

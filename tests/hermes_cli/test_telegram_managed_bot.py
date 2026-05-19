@@ -2,70 +2,45 @@
 
 from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from hermes_cli.telegram_managed_bot import (
-    DEFAULT_API_URL,
     DEFAULT_MANAGER_BOT,
+    TELEGRAM_ONBOARDING_URL_ENV,
+    TelegramPairing,
+    create_pairing,
     generate_bot_username,
     generate_deep_link,
     generate_pairing_nonce,
+    poll_for_token,
     print_qr_code,
-    register_pairing,
     render_qr_terminal,
 )
 
 
-# ---------------------------------------------------------------------------
-# Username generation
-# ---------------------------------------------------------------------------
-
-
 class TestGenerateBotUsername:
-    def test_default_format(self):
+    def test_secure_default_format(self):
         name = generate_bot_username()
         assert name.startswith("hermes_")
         assert name.endswith("_bot")
-        # Should be short enough for Telegram (max 32 chars)
+        assert len(name) == len("hermes_") + 16 + len("_bot")
         assert len(name) <= 32
-        assert len(name) >= 5
 
-    def test_with_profile_name(self):
+    def test_profile_name_not_embedded(self):
         name = generate_bot_username("work")
-        assert "work" in name
+        assert "work" not in name
         assert name.startswith("hermes_")
         assert name.endswith("_bot")
 
-    def test_default_profile_ignored(self):
-        name = generate_bot_username("default")
-        assert "default" not in name
-        assert name.startswith("hermes_")
-        assert name.endswith("_bot")
-
-    def test_profile_name_sanitized(self):
-        name = generate_bot_username("My Cool-Profile!")
-        assert name.startswith("hermes_")
-        assert name.endswith("_bot")
-        # Special chars should be replaced with underscores
-        assert "!" not in name
-        assert "-" not in name
-
-    def test_long_profile_name_truncated(self):
-        name = generate_bot_username("a" * 50)
-        assert len(name) <= 32
+    def test_slug_uses_telegram_safe_base32_chars(self):
+        name = generate_bot_username()
+        slug = name.removeprefix("hermes_").removesuffix("_bot")
+        assert len(slug) == 16
+        assert set(slug) <= set("abcdefghijklmnopqrstuvwxyz234567")
 
     def test_uniqueness(self):
         names = {generate_bot_username() for _ in range(20)}
-        # Random suffix should produce unique names
         assert len(names) == 20
-
-
-# ---------------------------------------------------------------------------
-# Deep link generation
-# ---------------------------------------------------------------------------
 
 
 class TestGenerateDeepLink:
@@ -78,7 +53,7 @@ class TestGenerateDeepLink:
 
     def test_with_name(self):
         link = generate_deep_link(
-            manager_bot="TestBot",
+            manager_bot="@TestBot",
             suggested_username="my_bot",
             suggested_name="My Agent",
         )
@@ -96,19 +71,13 @@ class TestGenerateDeepLink:
             suggested_username="test_bot",
             suggested_name="Hermes & Friends",
         )
-        # Ampersand should be URL-encoded
-        assert "Hermes+%26+Friends" in link or "Hermes+&+Friends" not in link
-
-
-# ---------------------------------------------------------------------------
-# Pairing nonce
-# ---------------------------------------------------------------------------
+        assert "Hermes+%26+Friends" in link
 
 
 class TestPairingNonce:
     def test_length(self):
         nonce = generate_pairing_nonce()
-        assert len(nonce) == 32  # 16 bytes = 32 hex chars
+        assert len(nonce) == 32
 
     def test_hex_chars(self):
         nonce = generate_pairing_nonce()
@@ -119,98 +88,118 @@ class TestPairingNonce:
         assert len(nonces) == 100
 
 
-# ---------------------------------------------------------------------------
-# QR code rendering
-# ---------------------------------------------------------------------------
-
-
 class TestQRCode:
     def test_render_returns_string(self):
-        """If qrcode is installed, should return non-empty string."""
         result = render_qr_terminal("https://example.com")
-        # qrcode may or may not be installed in test env
         if result:
             assert isinstance(result, str)
             assert len(result) > 10
 
     def test_render_graceful_without_qrcode(self):
-        """Should return empty string if qrcode not installed."""
         with patch.dict("sys.modules", {"qrcode": None}):
-            # Force ImportError
-            result = render_qr_terminal("https://example.com")
-            # May still succeed if qrcode is cached; that's fine
+            render_qr_terminal("https://example.com")
 
     def test_print_qr_code_with_url(self, capsys):
-        """Should at minimum print the URL."""
         print_qr_code("https://t.me/newbot/Bot/test_bot")
         captured = capsys.readouterr()
         assert "https://t.me/newbot/Bot/test_bot" in captured.out
 
 
-# ---------------------------------------------------------------------------
-# Pairing API client
-# ---------------------------------------------------------------------------
-
-
-class TestRegisterPairing:
+class TestCreatePairing:
     def test_success(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 201
-        with patch("hermes_cli.telegram_managed_bot.httpx.post", return_value=mock_resp):
-            assert register_pairing("https://api.example.com", "abc123") is True
+        mock_resp.json.return_value = {
+            "pairing_id": "abcdefghijklmnop",
+            "poll_token": "secret-token",
+            "suggested_username": "hermes_abcdefghijklmnop_bot",
+            "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_abcdefghijklmnop_bot?name=Hermes+Agent",
+            "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_abcdefghijklmnop_bot?name=Hermes+Agent",
+            "expires_at": "2026-05-18T00:00:00.000Z",
+        }
+
+        with patch("hermes_cli.telegram_managed_bot.httpx.post", return_value=mock_resp) as post:
+            pairing = create_pairing("https://api.example.com", bot_name="Hermes Agent")
+
+        assert pairing == TelegramPairing(
+            pairing_id="abcdefghijklmnop",
+            poll_token="secret-token",
+            suggested_username="hermes_abcdefghijklmnop_bot",
+            deep_link="https://t.me/newbot/HermesSetupBot/hermes_abcdefghijklmnop_bot?name=Hermes+Agent",
+            qr_payload="https://t.me/newbot/HermesSetupBot/hermes_abcdefghijklmnop_bot?name=Hermes+Agent",
+            expires_at="2026-05-18T00:00:00.000Z",
+        )
+        post.assert_called_once_with(
+            "https://api.example.com/v1/telegram/pairings",
+            json={"bot_name": "Hermes Agent"},
+            timeout=10.0,
+        )
 
     def test_failure_status(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 500
         with patch("hermes_cli.telegram_managed_bot.httpx.post", return_value=mock_resp):
-            assert register_pairing("https://api.example.com", "abc123") is False
+            assert create_pairing("https://api.example.com") is None
 
-    def test_network_error(self):
-        import httpx
+    def test_invalid_payload(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        mock_resp.json.return_value = {"pairing_id": "missing-poll-token"}
+        with patch("hermes_cli.telegram_managed_bot.httpx.post", return_value=mock_resp):
+            assert create_pairing("https://api.example.com") is None
 
-        with patch(
-            "hermes_cli.telegram_managed_bot.httpx.post",
-            side_effect=httpx.ConnectError("connection refused"),
-        ):
-            assert register_pairing("https://api.example.com", "abc123") is False
+    def test_uses_env_override(self, monkeypatch):
+        monkeypatch.setenv(TELEGRAM_ONBOARDING_URL_ENV, "https://worker.example")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        with patch("hermes_cli.telegram_managed_bot.httpx.post", return_value=mock_resp) as post:
+            create_pairing()
+        assert post.call_args.args[0] == "https://worker.example/v1/telegram/pairings"
 
 
 class TestPollForToken:
-    def test_immediate_success(self):
-        from hermes_cli.telegram_managed_bot import poll_for_token
+    def pairing(self):
+        return TelegramPairing(
+            pairing_id="abcdefghijklmnop",
+            poll_token="secret-token",
+            suggested_username="hermes_abcdefghijklmnop_bot",
+            deep_link="https://t.me/newbot/HermesSetupBot/hermes_abcdefghijklmnop_bot",
+            qr_payload="https://t.me/newbot/HermesSetupBot/hermes_abcdefghijklmnop_bot",
+        )
 
+    def test_immediate_success(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {"token": "123:ABCdef"}
+        mock_resp.json.return_value = {"status": "ready", "token": "123:ABCdef"}
 
-        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp):
+        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp) as get:
             with patch("hermes_cli.telegram_managed_bot.time.sleep"):
-                token = poll_for_token("https://api.example.com", "nonce123", timeout=5)
-                assert token == "123:ABCdef"
+                token = poll_for_token("https://api.example.com", self.pairing(), timeout=5)
+
+        assert token == "123:ABCdef"
+        assert get.call_args.args[0] == "https://api.example.com/v1/telegram/pairings/abcdefghijklmnop"
+        assert get.call_args.kwargs["headers"] == {"Authorization": "Bearer secret-token"}
 
     def test_timeout_returns_none(self):
-        from hermes_cli.telegram_managed_bot import poll_for_token
-
         mock_resp = MagicMock()
-        mock_resp.status_code = 404
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "waiting"}
 
         with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp):
             with patch("hermes_cli.telegram_managed_bot.time.sleep"):
                 with patch("hermes_cli.telegram_managed_bot.time.monotonic") as mock_time:
-                    # Simulate immediate timeout
                     mock_time.side_effect = [0, 0, 999]
-                    token = poll_for_token("https://api.example.com", "nonce123", timeout=1)
+                    token = poll_for_token("https://api.example.com", self.pairing(), timeout=1)
                     assert token is None
 
     def test_eventual_success(self):
-        from hermes_cli.telegram_managed_bot import poll_for_token
-
         not_ready = MagicMock()
-        not_ready.status_code = 404
+        not_ready.status_code = 200
+        not_ready.json.return_value = {"status": "waiting"}
 
         ready = MagicMock()
         ready.status_code = 200
-        ready.json.return_value = {"token": "789:XYZabc"}
+        ready.json.return_value = {"status": "ready", "token": "789:XYZabc"}
 
         call_count = 0
 
@@ -223,23 +212,12 @@ class TestPollForToken:
 
         with patch("hermes_cli.telegram_managed_bot.httpx.get", side_effect=fake_get):
             with patch("hermes_cli.telegram_managed_bot.time.sleep"):
-                token = poll_for_token("https://api.example.com", "nonce123", timeout=30)
+                token = poll_for_token("https://api.example.com", self.pairing(), timeout=30)
                 assert token == "789:XYZabc"
 
 
-# ---------------------------------------------------------------------------
-# Setup wizard integration
-# ---------------------------------------------------------------------------
-
-
 class TestSetupTelegramAuto:
-    def test_returns_none_on_import_error(self):
-        """_setup_telegram_auto should return None if module import fails."""
+    def test_setup_helper_exists(self):
         from hermes_cli.setup import _setup_telegram_auto
 
-        with patch(
-            "hermes_cli.setup._setup_telegram_auto.__module__",
-            side_effect=ImportError,
-        ):
-            # Just verify the function exists and is callable
-            assert callable(_setup_telegram_auto)
+        assert callable(_setup_telegram_auto)

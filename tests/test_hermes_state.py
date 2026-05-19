@@ -267,6 +267,23 @@ class TestMessageStorage:
             ).fetchone()
         assert row["content"] == "plain text"
 
+    def test_replace_messages_persists_tool_name(self, db):
+        """`replace_messages` (used by /retry, /undo, /compress) must write
+        tool_name to the DB for messages built by make_tool_result_message."""
+        from agent.tool_dispatch_helpers import make_tool_result_message
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": "do something"},
+                make_tool_result_message("web_search", "some results", "c1"),
+            ],
+        )
+
+        msgs = db.get_messages("s1")
+        tool_msg = next(m for m in msgs if m["role"] == "tool")
+        assert tool_msg["tool_name"] == "web_search"
+
     def test_replace_messages_handles_multimodal_content(self, db):
         """`replace_messages` (used by /retry, /undo, /compress) must also
         handle list content without crashing."""

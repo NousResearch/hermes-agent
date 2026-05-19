@@ -830,10 +830,11 @@ kanban task.
   `unlink`, `comment`, `complete`, `block`, `unblock`, `archive`,
   `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
   `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
-- **Worker toolset:** `tools/kanban_tools.py` exposes `kanban_show`,
-  `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`,
-  `kanban_create`, `kanban_link` — gated by `HERMES_KANBAN_TASK` so
-  the schema only appears for processes actually running as a worker.
+- **Worker/orchestrator toolset:** `tools/kanban_tools.py` exposes
+  `kanban_show`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`,
+  `kanban_comment`, `kanban_create`, `kanban_link`; profiles that
+  explicitly enable the `kanban` toolset outside a dispatcher-spawned
+  task also get `kanban_list` and `kanban_unblock` for board routing.
 - **Dispatcher:** long-lived loop that (default every 60s) reclaims
   stale claims, promotes ready tasks, atomically claims, and spawns
   assigned profiles. Runs **inside the gateway** by default via
@@ -849,8 +850,9 @@ Isolation model:
 - **Tenant** is a soft namespace *within* a board — one specialist
   fleet can serve multiple businesses with workspace-path + memory-key
   isolation.
-- After ~5 consecutive spawn failures on the same task the dispatcher
-  auto-blocks it to prevent spin loops.
+- After `kanban.failure_limit` consecutive non-success attempts on the
+  same task (default: 2), the dispatcher auto-blocks it to prevent spin
+  loops.
 
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 

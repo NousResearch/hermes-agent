@@ -290,7 +290,7 @@ Three reasons:
 2. **No shell-quoting fragility.** Passing `--metadata '{"files": [...]}'` through shlex + argparse is a latent footgun. Structured tool args skip it entirely.
 3. **Better errors.** Tool results are structured JSON the model can reason about, not stderr strings it has to parse.
 
-**Zero schema footprint on normal sessions.** A regular `hermes chat` session has zero `kanban_*` tools in its schema. The `check_fn` on each tool only returns True when `HERMES_KANBAN_TASK` is set, which only happens when the dispatcher spawned this process. No tool bloat for users who never touch kanban.
+**Zero schema footprint on normal sessions.** A regular `hermes chat` session has zero `kanban_*` tools in its schema unless the active profile explicitly enables the `kanban` toolset for orchestrator work. Dispatcher-spawned task workers get task-scoped tools because `HERMES_KANBAN_TASK` is set; orchestrator profiles get the broader routing surface through config. No tool bloat for users who never touch kanban.
 
 The `kanban-worker` and `kanban-orchestrator` skills teach the model which tool to call when and in what order.
 

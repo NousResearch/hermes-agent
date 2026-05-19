@@ -384,7 +384,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 |------|---------|
 | `--board <slug>` | Operate on a specific board. Defaults to the current board (set via `hermes kanban boards switch`, the `HERMES_KANBAN_BOARD` env var, or `default`). |
 
-**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/docs/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
+**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/docs/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list` and `kanban_unblock`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
 
 | Action | Purpose |
 |--------|---------|

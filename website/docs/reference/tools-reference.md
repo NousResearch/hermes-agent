@@ -118,17 +118,19 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 
 ## `kanban` toolset
 
-Registered only when the agent is spawned by the kanban dispatcher (`HERMES_KANBAN_TASK` env set). Lets workers mark tasks done with structured handoffs, block for human input, heartbeat during long ops, comment on threads, and (for orchestrators) fan out into child tasks. See [Kanban Multi-Agent](/docs/user-guide/features/kanban) for the full workflow.
+Registered when the agent is either (a) spawned by the kanban dispatcher (`HERMES_KANBAN_TASK` env set) or (b) running in a profile that explicitly enables the `kanban` toolset. Task-scoped workers use lifecycle tools for their assigned task; orchestrator profiles additionally get board-routing tools like `kanban_list` and `kanban_unblock`. See [Kanban Multi-Agent](/docs/user-guide/features/kanban) for the full workflow.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `kanban_show` | Show the active kanban task assigned to this worker (title, description, comments, dependencies). | `HERMES_KANBAN_TASK` |
-| `kanban_complete` | Mark the current task done with a structured handoff payload (results, artifacts, follow-ups). | `HERMES_KANBAN_TASK` |
-| `kanban_block` | Block the current task on a question for the user — the dispatcher pauses, surfaces the question, and resumes once a human replies. | `HERMES_KANBAN_TASK` |
-| `kanban_heartbeat` | Send a progress heartbeat during a long-running operation so the dispatcher knows the worker is still alive. | `HERMES_KANBAN_TASK` |
-| `kanban_comment` | Add a comment to the task thread without changing its state — useful for surfacing intermediate findings. | `HERMES_KANBAN_TASK` |
-| `kanban_create` | (Orchestrator only) Fan out child tasks from the current task. | `HERMES_KANBAN_TASK` + orchestrator role |
-| `kanban_link` | (Orchestrator only) Link related tasks together (blocks/blocked-by/related). | `HERMES_KANBAN_TASK` + orchestrator role |
+| `kanban_show` | Show the active kanban task assigned to this worker (title, description, comments, dependencies). | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_list` | List board tasks with filters. Orchestrator-only; hidden from dispatcher-spawned task workers. | profile with `kanban` toolset |
+| `kanban_complete` | Mark the current task done with a structured handoff payload (results, artifacts, follow-ups). | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_block` | Block the current task on a question for the user — the dispatcher pauses, surfaces the question, and resumes once a human replies. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_heartbeat` | Send a progress heartbeat during a long-running operation so the dispatcher knows the worker is still alive. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_comment` | Add a comment to the task thread without changing its state — useful for surfacing intermediate findings. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_create` | Fan out child tasks from the current task. Used by orchestrators and follow-up-spawning workers. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_link` | Link tasks with a parent → child dependency edge. | `HERMES_KANBAN_TASK` or `kanban` toolset |
+| `kanban_unblock` | Return a blocked task to `ready`. Orchestrator-only; hidden from dispatcher-spawned task workers. | profile with `kanban` toolset |
 
 ## `memory` toolset
 

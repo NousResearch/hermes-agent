@@ -108,6 +108,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
         tool_guidance.append(SKILLS_GUIDANCE)
+    # Advisor strategy — inject Anthropic-recommended timing + advice-handling
+    # guidance so the executor knows *when* and *how* to call ask_advisor.
+    if "ask_advisor" in agent.valid_tool_names:
+        from tools.advisor_tool import EXECUTOR_ADVISOR_PROMPT
+        tool_guidance.append(EXECUTOR_ADVISOR_PROMPT)
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see

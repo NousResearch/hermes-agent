@@ -7,16 +7,19 @@ choice, or repeated failure, it can call ``ask_advisor`` to get guidance from a
 more capable model — *without* yielding control.  The advisor returns text
 advice; the executor decides what to do with it.
 
-Design inspired by Anthropic's Advisor Strategy:
+Design based on Anthropic's Advisor Strategy:
     https://claude.com/blog/the-advisor-strategy
+    https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
 
 Key properties
 --------------
 * **Executor retains control** — the advisor never calls tools or modifies state.
-* **Lightweight** — a single chat-completions call (~500-1000 tokens per query).
+* **Lightweight** — a single chat-completions call (~400–700 text tokens per query).
 * **Model-agnostic** — works with any OpenAI-compatible advisor model.
 * **Message sanitization** — executor messages (tool_calls, tool roles) are
   cleaned into plain text before sending to the advisor.
+* **Output trimming** — advisor is instructed to keep guidance concise (under
+  ~80 words target) to minimize token cost, following Anthropic's recommendation.
 
 Config (config.yaml)::
 
@@ -162,23 +165,73 @@ def _sanitize_for_advisor(messages: List[dict], max_tool_output_chars: int = 600
 
 # ---------------------------------------------------------------------------
 # Default advisor system prompt
+# Based on Anthropic's recommended advisor system prompt:
+# https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
 # ---------------------------------------------------------------------------
 
 _DEFAULT_ADVISOR_SYSTEM_PROMPT = """\
-You are a senior technical advisor. An AI assistant (the "executor") is working \
-on a task and has asked for your guidance.
+You are a senior technical advisor. An AI coding assistant (the "executor") is \
+working on a task and has asked for your guidance.
 
-Your job:
-1. Analyse the current progress and identify the core difficulty.
-2. Give concrete, actionable advice the executor can follow immediately.
-3. Point out blind spots or risks the executor may have missed.
-4. If the current approach is sound, confirm briefly — no need to pad.
+You see the executor's full conversation context: the task, every action taken, \
+and every result observed. Your job is to provide focused, actionable guidance.
 
 Rules:
 - You do NOT execute anything. Only give advice.
-- Be specific enough that the executor can act on your suggestion directly.
-- Keep it concise — the executor pays per token.
-- If the question is unclear, ask for clarification rather than guessing."""
+- Be concise and concrete — the executor needs to act, not read.
+- If the current approach is sound, confirm briefly and point out pitfalls to watch for.
+- If the approach has issues, explain specifically what to change and why.
+- If the question is unclear, ask for clarification rather than guessing.
+- Target under 80 words unless the complexity genuinely requires more."""
+
+
+# ---------------------------------------------------------------------------
+# Executor system prompt appendix
+# Based on Anthropic's suggested system prompt for coding tasks:
+# https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool#suggested-system-prompt-for-coding-tasks
+#
+# This text should be injected into the executor's system prompt when
+# ask_advisor is available in the tool list.
+# ---------------------------------------------------------------------------
+
+EXECUTOR_ADVISOR_PROMPT = """\
+
+Timing guidance: You have access to an `ask_advisor` tool backed by a stronger \
+reviewer model. When you call ask_advisor, your conversation history is \
+automatically forwarded — they see the task, every tool call you've made, \
+every result you've seen.
+
+Call ask_advisor BEFORE substantive work — before writing, before committing \
+to an interpretation, before building on an assumption. If the task requires \
+orientation first (finding files, fetching a source, seeing what's there), do \
+that, then call ask_advisor. Orientation is not substantive work. Writing, \
+editing, and declaring an answer are.
+
+Also call ask_advisor:
+- When you believe the task is complete. BEFORE this call, make your \
+deliverable durable: write the file, save the result, commit the change. The \
+advisor call takes time; if the session ends during it, a durable result \
+persists and an unwritten one doesn't.
+- When stuck — errors recurring, approach not converging, results that don't fit.
+- When considering a change of approach.
+
+On tasks longer than a few steps, call ask_advisor at least once before \
+committing to an approach and once before declaring done. On short reactive \
+tasks where the next action is dictated by tool output you just read, you \
+don't need to keep calling — the advisor adds most of its value on the first \
+call, before the approach crystallizes.
+
+How to treat the advice: Give the advice serious weight. If you follow a step \
+and it fails empirically, or you have primary-source evidence that contradicts \
+a specific claim (the file says X, the paper states Y), adapt. A passing \
+self-test is not evidence the advice is wrong — it's evidence your test \
+doesn't check what the advice is checking.
+
+If you've already retrieved data pointing one way and the advisor points \
+another: don't silently switch. Surface the conflict in one more advisor call — \
+"I found X, you suggest Y, which constraint breaks the tie?" The advisor saw \
+your evidence but may have underweighted it; a reconcile call is cheaper than \
+committing to the wrong branch."""
 
 
 # ---------------------------------------------------------------------------
@@ -253,8 +306,9 @@ def call_advisor(
     context_msgs = clean[-max_context_msgs:]
 
     # ---- Build advisor prompt ----
+    system_content = config.get("system_prompt") or _DEFAULT_ADVISOR_SYSTEM_PROMPT
     advisor_messages: List[dict] = [
-        {"role": "system", "content": config.get("system_prompt") or _DEFAULT_ADVISOR_SYSTEM_PROMPT},
+        {"role": "system", "content": system_content},
     ]
 
     if context_msgs:
@@ -269,9 +323,18 @@ def call_advisor(
             "content": f"Executor's conversation context (recent):\n{context_summary}",
         })
 
+    # ---- User question with urgency ----
+    user_content = f"Urgency: {urgency}\n\nMy question: {question}"
+
+    # Anthropic's recommended trimming technique: embed a direct instruction
+    # to the advisor in the user message for concise output. They found this
+    # more effective than relying on max_tokens alone.
+    # https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool#trimming-advisor-output-length
+    user_content += "\n\n(Advisor: please keep your guidance under 80 words — I need a focused starting point, not a comprehensive plan.)"
+
     advisor_messages.append({
         "role": "user",
-        "content": f"Urgency: {urgency}\n\nMy question: {question}",
+        "content": user_content,
     })
 
     # ---- API call ----
@@ -324,17 +387,21 @@ def _make_use_counter():
 
 # ---------------------------------------------------------------------------
 # OpenAI function-calling schema
+# Updated based on Anthropic's recommended "no parameters" approach:
+# The original Anthropic advisor tool takes NO parameters — the server
+# constructs the advisor's view automatically. Since we're client-side,
+# we keep `question` and `urgency` for non-Claude models that benefit from
+# explicit prompts, but the description emphasizes that context is automatic.
 # ---------------------------------------------------------------------------
 
 ASK_ADVISOR_SCHEMA = {
     "name": "ask_advisor",
     "description": (
-        "Ask a more capable AI model for advice. Use when you are unsure of the "
-        "best approach, facing a complex architecture decision, or stuck after "
-        "multiple failed attempts. The advisor sees your conversation context and "
-        "returns actionable guidance — it does NOT execute anything. "
-        "State: (1) what you've tried, (2) the difficulty, (3) what kind of "
-        "advice you need."
+        "Ask a more capable AI model for guidance. Your full conversation "
+        "history is automatically forwarded — they see the task, every action "
+        "you've taken, and every result. Call BEFORE substantive work (writing, "
+        "committing to an approach) and BEFORE declaring done. Also call when "
+        "stuck or considering a change of approach. State what you need guidance on."
     ),
     "parameters": {
         "type": "object",
@@ -342,8 +409,8 @@ ASK_ADVISOR_SCHEMA = {
             "question": {
                 "type": "string",
                 "description": (
-                    "Your specific question for the advisor. Include: "
-                    "current progress, what's difficult, and the type of guidance you need."
+                    "What you need guidance on. Be specific: current progress, "
+                    "what's difficult, and the type of advice you need."
                 ),
             },
             "urgency": {

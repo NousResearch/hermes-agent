@@ -7662,6 +7662,11 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
                 return await self._handle_subgoal_command(event)
 
+            # /loop is safe mid-run — it manages cron schedules (control-plane
+            # only — doesn't interrupt the running turn).
+            if _cmd_def_inner and _cmd_def_inner.name == "loop":
+                return await self._handle_loop_command(event)
+
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
             # the tool-progress display mode for the ongoing stream.
@@ -8074,6 +8079,9 @@ class GatewayRunner:
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
+
+        if canonical == "loop":
+            return await self._handle_loop_command(event)
 
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
@@ -12166,6 +12174,127 @@ class GatewayRunner:
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
+
+    async def _handle_loop_command(self, event: MessageEvent) -> str:
+        """Handle /loop — manage recurring scheduled prompts via the cron system.
+
+        Subcommands: list, pause, resume, remove.
+        Default: /loop <schedule> <prompt> creates a new loop job.
+        No args: shows usage and current loop jobs.
+        """
+        import asyncio
+        import json
+        from tools.cronjob_tools import cronjob
+
+        # Strip /loop or loop prefix from event text
+        text = (event.text or "").strip()
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        if text.startswith("loop"):
+            text = text[len("loop"):].lstrip()
+
+        # No args → usage + list
+        if not text:
+            usage = (
+                "*/loop <schedule> <prompt>*\n"
+                "Subcommands: `list`, `pause <id>`, `resume <id>`, `remove <id>`\n"
+                "Example: `/loop 30m check deployment status`"
+            )
+            result = await asyncio.to_thread(cronjob, action="list", include_disabled=True)
+            data = json.loads(result)
+            jobs = [j for j in data.get("jobs", []) if j.get("name", "").startswith("loop:")]
+            if jobs:
+                lines = [f"{len(jobs)} loop job(s):"]
+                for j in jobs:
+                    state = j.get("state", "active")
+                    icon = "\u25b6" if state == "active" else "\u23f8"
+                    lines.append(
+                        f"{icon} `{j['job_id']}` \u2014 {j.get('schedule', '?')} \u2014 {j.get('name', '')}"
+                    )
+                return usage + "\n\n" + "\n".join(lines)
+            return usage + "\n\nNo loop jobs"
+
+        parts = text.split(None, 1)
+        sub = parts[0].lower()
+
+        # /loop list — filter jobs by loop: prefix
+        if sub == "list":
+            result = await asyncio.to_thread(cronjob, action="list", include_disabled=True)
+            data = json.loads(result)
+            jobs = [j for j in data.get("jobs", []) if j.get("name", "").startswith("loop:")]
+            if not jobs:
+                return "No loop jobs found"
+            lines = ["*Loop Jobs:*"]
+            for j in jobs:
+                state = j.get("state", "active")
+                icon = "\u25b6" if state == "active" else "\u23f8"
+                lines.append(
+                    f"{icon} `{j['job_id']}` \u2014 {j.get('schedule', '?')} \u2014 {j.get('name', '')}"
+                )
+            return "\n".join(lines)
+
+        # /loop pause <id>
+        if sub == "pause":
+            if len(parts) < 2 or not parts[1].strip():
+                return "Usage: `/loop pause <job_id>`"
+            job_id = parts[1].strip().split()[0]
+            result = await asyncio.to_thread(
+                cronjob, action="pause", job_id=job_id, reason="paused from /loop"
+            )
+            data = json.loads(result)
+            if data.get("success"):
+                name = data.get("job", {}).get("name", job_id)
+                return f"\u23f8 Paused loop job `{name}`"
+            return f"Failed to pause: {data.get('error', 'unknown')}"
+
+        # /loop resume <id>
+        if sub == "resume":
+            if len(parts) < 2 or not parts[1].strip():
+                return "Usage: `/loop resume <job_id>`"
+            job_id = parts[1].strip().split()[0]
+            result = await asyncio.to_thread(cronjob, action="resume", job_id=job_id)
+            data = json.loads(result)
+            if data.get("success"):
+                name = data.get("job", {}).get("name", job_id)
+                next_run = data.get("job", {}).get("next_run_at", "")
+                msg = f"\u25b6 Resumed loop job `{name}`"
+                if next_run:
+                    msg += f"\nNext run: {next_run}"
+                return msg
+            return f"Failed to resume: {data.get('error', 'unknown')}"
+
+        # /loop remove <id>
+        if sub == "remove":
+            if len(parts) < 2 or not parts[1].strip():
+                return "Usage: `/loop remove <job_id>`"
+            job_id = parts[1].strip().split()[0]
+            result = await asyncio.to_thread(cronjob, action="remove", job_id=job_id)
+            data = json.loads(result)
+            if data.get("success"):
+                name = data.get("removed_job", {}).get("name", job_id)
+                return f"\U0001f5d1 Removed loop job `{name}`"
+            return f"Failed to remove: {data.get('error', 'unknown')}"
+
+        # Default: /loop <schedule> <prompt>
+        schedule = sub
+        if len(parts) < 2 or not parts[1].strip():
+            return "Usage: `/loop <schedule> <prompt>`\nExample: `/loop 30m check deployment status`"
+        prompt = parts[1].strip()
+        name = f"loop: {prompt}"
+        result = await asyncio.to_thread(
+            cronjob, action="create", schedule=schedule, prompt=prompt,
+            name=name, deliver="origin"
+        )
+        data = json.loads(result)
+        if data.get("success"):
+            job_id = data.get("job_id", "")
+            sched = data.get("schedule", schedule)
+            next_run = data.get("next_run_at", "")
+            msg = f"\u2705 Loop job created\n`{job_id}` \u2014 every {sched}"
+            if next_run:
+                msg += f"\nNext run: {next_run}"
+            return msg
+        return f"\u26a0 Failed to create loop: {data.get('error', 'unknown')}"
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""

@@ -112,7 +112,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),
     "search.firecrawl": ("firecrawl-py==4.17.0",),
-    "google.genai": ("google-genai==2.2.0",),
+    "search.gemini": ("google-genai==2.2.0",),
     "search.parallel": ("parallel-web==0.6.0",),
 
     # ─── TTS providers ─────────────────────────────────────────────────────

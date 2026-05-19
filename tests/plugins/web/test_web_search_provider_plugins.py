@@ -32,6 +32,8 @@ import pytest
 def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip every web-provider env var so is_available() returns False."""
     for k in (
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
         "BRAVE_SEARCH_API_KEY",
         "SEARXNG_URL",
         "TAVILY_API_KEY",
@@ -209,7 +211,6 @@ class TestIsAvailable:
         monkeypatch.setenv("GOOGLE_API_KEY", "fake-key")
         p = get_provider("gemini")
         assert p.is_available()
-
     def test_exa_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider

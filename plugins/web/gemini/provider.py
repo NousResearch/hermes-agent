@@ -49,7 +49,7 @@ def _get_gemini_client() -> Any:
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
 
-        _lazy_ensure("google.genai", prompt=False)
+        _lazy_ensure("search.gemini", prompt=False)
     except ImportError:
         pass
     except Exception as exc:  # noqa: BLE001
@@ -106,7 +106,7 @@ class GeminiWebSearchProvider(WebSearchProvider):
                 if res.is_redirect and "location" in res.headers:
                     return res.headers["location"]
         except Exception as e:
-            logger.debug(f"Failed to resolve vertex url {url}: {e}")
+            logger.debug("Failed to resolve vertex url %s: %s", url, e)
         return url
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
@@ -137,10 +137,11 @@ class GeminiWebSearchProvider(WebSearchProvider):
             # or in the chunks. We'll extract URLs from grounding chunks if available.
             # But we also just return the summarized answer as the main description.
             
+            import urllib.parse
             # Provide the generated answer as the first result.
             if response.text:
                 web_results.append({
-                    "url": "https://google.com/search?q=" + query.replace(" ", "+"),
+                    "url": "https://google.com/search?q=" + urllib.parse.quote_plus(query),
                     "title": "Gemini Grounded Answer",
                     "description": response.text,
                     "position": 1,
@@ -160,7 +161,7 @@ class GeminiWebSearchProvider(WebSearchProvider):
                                     "position": len(web_results) + 1,
                                 })
             except Exception as e:
-                logger.debug(f"Failed to extract grounding chunks: {e}")
+                logger.debug("Failed to extract grounding chunks: %s", e)
 
             # Fallback if no results at all
             if not web_results:
@@ -239,11 +240,16 @@ class GeminiWebSearchProvider(WebSearchProvider):
         return {
             "name": "Gemini Google Search Grounding",
             "badge": "free tier available",
-            "tag": "Google Search grounded generation using Gemini API.",
+            "tag": "Google Search grounded generation using Gemini API. Supports GEMINI_API_KEY or GOOGLE_API_KEY.",
             "env_vars": [
                 {
                     "key": "GEMINI_API_KEY",
                     "prompt": "Gemini API key",
+                    "url": "https://aistudio.google.com/app/apikey",
+                },
+                {
+                    "key": "GOOGLE_API_KEY",
+                    "prompt": "Google API key",
                     "url": "https://aistudio.google.com/app/apikey",
                 },
             ],

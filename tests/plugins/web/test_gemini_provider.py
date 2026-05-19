@@ -53,3 +53,58 @@ def test_extract_unconfigured(monkeypatch):
     results = provider.extract(["https://example.com"])
     assert len(results) == 1
     assert "environment variable not set" in results[0]["error"]
+
+from unittest.mock import MagicMock, patch
+
+def test_search_success(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    provider = GeminiWebSearchProvider()
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = "This is a grounded answer."
+    
+    mock_chunk = MagicMock()
+    mock_chunk.web.uri = "https://example.com/source"
+    mock_chunk.web.title = "Example Source"
+    
+    mock_candidate = MagicMock()
+    mock_candidate.grounding_metadata.grounding_chunks = [mock_chunk]
+    mock_response.candidates = [mock_candidate]
+    
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("plugins.web.gemini.provider._get_gemini_client", return_value=mock_client):
+        result = provider.search("test query")
+        
+        assert result["success"]
+        assert len(result["data"]["web"]) == 2
+        
+        ans = result["data"]["web"][0]
+        assert ans["title"] == "Gemini Grounded Answer"
+        assert ans["description"] == "This is a grounded answer."
+        assert "test+query" in ans["url"]
+        
+        src = result["data"]["web"][1]
+        assert src["url"] == "https://example.com/source"
+        assert src["title"] == "Example Source"
+        assert src["description"] == "Supporting source"
+
+def test_extract_success(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    provider = GeminiWebSearchProvider()
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = "This is extracted content."
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("plugins.web.gemini.provider._get_gemini_client", return_value=mock_client):
+        results = provider.extract(["https://example.com/test"])
+        
+        assert len(results) == 1
+        res = results[0]
+        assert res["url"] == "https://example.com/test"
+        assert res["content"] == "This is extracted content."
+        assert res["title"] == "Gemini Extraction: https://example.com/test"
+        assert "error" not in res

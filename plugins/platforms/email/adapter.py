@@ -361,6 +361,12 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
         # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
+
+        # When True, skip the connect()-time pre-fill so existing UNSEEN mail
+        # is picked up on the first poll.  Default False = upstream behaviour.
+        self._process_existing = bool(extra.get("process_existing", False))
+
+        # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
@@ -437,13 +443,19 @@ class EmailAdapter(BasePlatformAdapter):
                 snapshot = self._seen_uids_snapshot.get(self._address)
                 if is_reconnect and snapshot is not None:
                     # Same-process reconnect: restore the previous adapter's baseline so mail that
-                    # arrived during the outage stays eligible for the next poll.
+                    # arrived during the outage stays eligible for the next poll. Orthogonal to
+                    # process_existing below: that knob is about the STARTUP backlog, this branch
+                    # is about a mid-session outage.
                     self._seen_uids = set(snapshot)
                     passed = "[Email] IMAP reconnect test passed. Restored %d seen UIDs; messages received during the outage will be processed."
-                else:  # first connect (or no snapshot): mark all existing messages seen
+                elif not self._process_existing:  # first connect (or no snapshot): mark all existing messages seen
                     status, data = imap.uid("search", None, "ALL")
                     self._seen_uids.update(data[0].split() if status == "OK" and data and data[0] else ())
                     passed = "[Email] IMAP connection test passed. %d existing messages skipped."
+                else:
+                    # Pre-fill skipped on purpose: process_existing leaves _seen_uids empty so the
+                    # pre-existing UNSEEN backlog is picked up on the first poll.
+                    passed = "[Email] process_existing=true — will process pre-existing UNSEEN mail on first poll."
                 self._trim_seen_uids()
                 logger.info(passed, len(self._seen_uids))
             self._seen_uids_snapshot[self._address] = set(self._seen_uids)

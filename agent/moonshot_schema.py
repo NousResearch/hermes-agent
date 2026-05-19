@@ -166,6 +166,14 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
 
 def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     """Infer a reasonable ``type`` if this schema node has none."""
+    # JSON Schema allows ``type`` to be a list (union type, e.g.
+    # ["number", "string"]).  Moonshot only accepts scalar types, so
+    # flatten the union by taking the first entry.  This must happen
+    # *before* the set-membership check below, because lists are
+    # unhashable and would crash with TypeError.  See #28787, #28291.
+    if "type" in node and isinstance(node["type"], list):
+        node["type"] = node["type"][0] if node["type"] else "string"
+
     if "type" in node and node["type"] not in {None, ""}:
         return node
 

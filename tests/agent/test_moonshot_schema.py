@@ -118,6 +118,30 @@ class TestMissingTypeFilled:
         assert "type" not in out["properties"]["payload"]
         assert out["properties"]["payload"]["$ref"] == "#/$defs/Payload"
 
+    def test_union_type_list_flattened_to_first(self):
+        """JSON Schema union types (``type: ["number", "string"]``) must
+        be flattened to a scalar before the set-membership guard, because
+        lists are unhashable.  See #28787, #28291."""
+        params = {
+            "type": "object",
+            "properties": {
+                "value": {"type": ["number", "string"]},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["value"]["type"] == "number"
+
+    def test_empty_union_type_defaults_to_string(self):
+        """An empty union type list should fall back to ``string``."""
+        params = {
+            "type": "object",
+            "properties": {
+                "empty": {"type": []},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["empty"]["type"] == "string"
+
 
 class TestAnyOfParentType:
     """Rule 2: type must not appear at the anyOf parent level.

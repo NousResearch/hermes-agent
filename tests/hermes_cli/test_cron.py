@@ -5,7 +5,7 @@ from argparse import Namespace
 import pytest
 
 from cron.jobs import create_job, get_job, list_jobs
-from hermes_cli.cron import cron_command
+from hermes_cli.cron import cron_command, cron_list
 
 
 @pytest.fixture()
@@ -111,3 +111,26 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+    def test_list_tolerates_none_repeat_and_string_schedule(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            "cron.jobs.list_jobs",
+            lambda include_disabled=False: [
+                {
+                    "id": "job-1",
+                    "name": "Legacy job",
+                    "schedule": "every 60m",
+                    "repeat": None,
+                    "deliver": "local",
+                    "enabled": True,
+                }
+            ],
+        )
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1234])
+
+        cron_list()
+
+        out = capsys.readouterr().out
+        assert "Legacy job" in out
+        assert "every 60m" in out
+        assert "∞" in out

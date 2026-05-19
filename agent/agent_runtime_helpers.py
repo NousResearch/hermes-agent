@@ -1427,6 +1427,20 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        # Re-apply per-model custom_providers override for display and
+        # downstream paths that read _config_context_length directly.
+        if _sm_custom_providers and agent.base_url:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+                _cp_ctx = get_custom_provider_context_length(
+                    agent.model,
+                    agent.base_url,
+                    _sm_custom_providers,
+                )
+                if _cp_ctx:
+                    agent._config_context_length = _cp_ctx
+            except Exception:
+                pass
 
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None

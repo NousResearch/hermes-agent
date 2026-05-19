@@ -7565,6 +7565,7 @@ class GatewayRunner:
             _hyg_provider = None
             _hyg_base_url = None
             _hyg_api_key = None
+            _hyg_custom_providers = None
             _hyg_data = {}
             try:
                 _hyg_data = _load_gateway_config()
@@ -7616,32 +7617,28 @@ class GatewayRunner:
                 except Exception:
                     pass
 
-                # Check custom_providers per-model context_length
-                # (same fallback as run_agent.py lines 1171-1189).
-                # Must run after runtime resolution so _hyg_base_url is set.
-                if _hyg_config_context_length is None and _hyg_base_url:
+                # Per-model custom_providers context_length — after runtime
+                # resolution so _hyg_base_url matches the active endpoint.
+                if _hyg_config_context_length is None and _hyg_base_url and _hyg_model:
                     try:
+                        from hermes_cli.config import (
+                            get_compatible_custom_providers as _gw_gcp,
+                            get_custom_provider_context_length,
+                        )
                         try:
-                            from hermes_cli.config import get_compatible_custom_providers as _gw_gcp
                             _hyg_custom_providers = _gw_gcp(_hyg_data)
                         except Exception:
                             _hyg_custom_providers = _hyg_data.get("custom_providers")
                             if not isinstance(_hyg_custom_providers, list):
                                 _hyg_custom_providers = []
-                        for _cp in _hyg_custom_providers:
-                            if not isinstance(_cp, dict):
-                                continue
-                            _cp_url = (_cp.get("base_url") or "").rstrip("/")
-                            if _cp_url and _cp_url == _hyg_base_url.rstrip("/"):
-                                _cp_models = _cp.get("models", {})
-                                if isinstance(_cp_models, dict):
-                                    _cp_model_cfg = _cp_models.get(_hyg_model, {})
-                                    if isinstance(_cp_model_cfg, dict):
-                                        _cp_ctx = _cp_model_cfg.get("context_length")
-                                        if _cp_ctx is not None:
-                                            _hyg_config_context_length = int(_cp_ctx)
-                                break
-                    except (TypeError, ValueError):
+                        _cp_ctx = get_custom_provider_context_length(
+                            _hyg_model,
+                            _hyg_base_url,
+                            _hyg_custom_providers,
+                        )
+                        if _cp_ctx:
+                            _hyg_config_context_length = _cp_ctx
+                    except Exception:
                         pass
             except Exception:
                 pass
@@ -7653,6 +7650,7 @@ class GatewayRunner:
                     api_key=_hyg_api_key or "",
                     config_context_length=_hyg_config_context_length,
                     provider=_hyg_provider or "",
+                    custom_providers=_hyg_custom_providers,
                 )
                 _compress_token_threshold = int(
                     _hyg_context_length * _hyg_threshold_pct
@@ -8407,41 +8405,6 @@ class GatewayRunner:
         except Exception:
             pass
 
-        # Also check custom_providers for context_length when top-level model.context_length is not set
-        if config_context_length is None and data:
-            try:
-                custom_providers = data.get("custom_providers", [])
-                if custom_providers:
-                    for cp in custom_providers:
-                        if not isinstance(cp, dict):
-                            continue
-                        cp_model = cp.get("model") or ""
-                        cp_models = cp.get("models") or {}
-                        # Match provider model to current model
-                        if cp_model and cp_model == model:
-                            raw_cp_ctx = cp.get("context_length")
-                            if raw_cp_ctx is not None:
-                                try:
-                                    config_context_length = int(raw_cp_ctx)
-                                    break
-                                except (TypeError, ValueError):
-                                    pass
-                        # Also check per-model context_length
-                        if isinstance(cp_models, dict):
-                            model_entry = cp_models.get(model)
-                            if isinstance(model_entry, dict):
-                                model_ctx = model_entry.get("context_length")
-                            else:
-                                model_ctx = model_entry
-                            if model_ctx is not None and isinstance(model_ctx, (int, float)):
-                                try:
-                                    config_context_length = int(model_ctx)
-                                    break
-                                except (TypeError, ValueError):
-                                    pass
-            except Exception:
-                pass
-
         # Resolve runtime credentials for probing
         try:
             runtime = _resolve_runtime_agent_kwargs()
@@ -8450,6 +8413,17 @@ class GatewayRunner:
             api_key = runtime.get("api_key")
         except Exception:
             pass
+
+        if config_context_length is None and base_url:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+                _cp_ctx = get_custom_provider_context_length(
+                    model, base_url, custom_provs
+                )
+                if _cp_ctx:
+                    config_context_length = _cp_ctx
+            except Exception:
+                pass
 
         context_length = get_model_context_length(
             model,

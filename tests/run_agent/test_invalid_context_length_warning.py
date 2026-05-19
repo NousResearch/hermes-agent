@@ -110,5 +110,6 @@ def test_custom_providers_valid_context_length():
             custom_providers=custom_providers,
             model="gpt5.4",
         )
+    assert agent._config_context_length == 256000
     for c in mock_logger.warning.call_args_list:
         assert "Invalid" not in str(c)

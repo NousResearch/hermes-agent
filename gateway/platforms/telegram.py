@@ -2897,6 +2897,39 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return
 
+        # --- send_message callback buttons (cb:payload) ---
+        # Agent-sent buttons via send_message(tool) with callback_data="cb:..."
+        # Strip the cb: prefix and inject the payload as a user message.
+        if data.startswith("cb:"):
+            payload = data[3:]  # strip "cb:"
+            caller_id = str(getattr(query.from_user, "id", ""))
+            user_display = getattr(query.from_user, "first_name", "User")
+
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized.")
+                return
+
+            await query.answer(text=f"✓ {payload[:60]}")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass  # non-fatal
+
+            # Inject payload as user message into the running conversation
+            from gateway.platforms.base import MessageEvent, MessageType
+            event = MessageEvent(
+                text=payload,
+                message_type=MessageType.TEXT,
+            )
+            await self.handle_message(event)
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return

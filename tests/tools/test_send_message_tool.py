@@ -141,6 +141,7 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
             force_document=False,
+            buttons=None,
         )
 
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
@@ -180,6 +181,7 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
             force_document=False,
+            buttons=None,
         )
 
     def test_mirror_receives_current_session_user_id(self):

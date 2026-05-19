@@ -138,6 +138,21 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+            },
+            "buttons": {
+                "type": "array",
+                "description": "Optional inline keyboard buttons for Telegram. Array of rows, each row is an array of {text, callback_data}. Use cb: prefix: [[{\"text\":\"✅ Yes\",\"callback_data\":\"cb:yes\"},{\"text\":\"❌ No\",\"callback_data\":\"cb:no\"}]]",
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "callback_data": {"type": "string"}
+                        },
+                        "required": ["text", "callback_data"]
+                    }
+                }
             }
         },
         "required": []
@@ -168,6 +183,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    buttons = args.get("buttons")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -284,6 +300,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                buttons=buttons,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -515,7 +532,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, buttons=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -593,6 +610,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
                 force_document=force_document,
+                buttons=buttons,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -754,7 +772,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, buttons=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -763,7 +781,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     instead, bypassing MarkdownV2 conversion.
     """
     try:
-        from telegram import Bot
+        from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
         from telegram.constants import ParseMode
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
@@ -813,6 +831,27 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if disable_link_previews:
             thread_kwargs["disable_web_page_preview"] = True
 
+        # Build inline keyboard markup from buttons
+        reply_markup = None
+        if buttons and isinstance(buttons, list):
+            try:
+                rows = []
+                for row in buttons:
+                    if isinstance(row, list):
+                        btn_row = []
+                        for btn in row:
+                            if isinstance(btn, dict) and "text" in btn and "callback_data" in btn:
+                                btn_row.append(InlineKeyboardButton(
+                                    text=str(btn["text"]),
+                                    callback_data=str(btn["callback_data"]),
+                                ))
+                        if btn_row:
+                            rows.append(btn_row)
+                if rows:
+                    reply_markup = InlineKeyboardMarkup(rows)
+            except Exception:
+                pass
+
         last_msg = None
         warnings = []
 
@@ -821,7 +860,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 last_msg = await _send_telegram_message_with_retry(
                     bot,
                     chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **thread_kwargs
+                    parse_mode=send_parse_mode, reply_markup=reply_markup, **thread_kwargs
                 )
             except Exception as md_error:
                 # Parse failed, fall back to plain text
@@ -842,7 +881,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
                         chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **thread_kwargs
+                        parse_mode=None, reply_markup=reply_markup, **thread_kwargs
                     )
                 else:
                     raise

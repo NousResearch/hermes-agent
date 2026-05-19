@@ -252,6 +252,81 @@ def test_seed_command_refuses_before_restate_approval(hermes_home):
     assert not (hermes_home / "kanban.db").exists()
 
 
+def test_plain_reply_routes_to_bound_active_interview_session(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command, handle_ouro_intake_plain_reply
+
+    origin = {
+        "platform": "discord",
+        "chat_id": "channel-1",
+        "thread_id": "thread-1",
+        "user_id": "user-1",
+        "user_name": "tester",
+        "chat_type": "thread",
+    }
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester", origin=origin)
+    assert started.action == "interview_started"
+
+    updated = handle_ouro_intake_plain_reply("A와 B에 가까워", actor="tester", origin=origin)
+
+    assert updated is not None
+    assert updated.action == "interview_updated"
+    assert updated.session_id == started.session_id
+    assert "Updated /ouro-intake session" in updated.message
+
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    session = sessions[started.session_id]
+    assert session["turns"][-1]["answer"] == "A와 B에 가까워"
+    assert session["origin_binding"]["key"] == "discord|channel-1|thread-1|user-1"
+
+
+def test_plain_reply_does_not_capture_other_user_or_slash_command(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command, handle_ouro_intake_plain_reply
+
+    origin = {"platform": "discord", "chat_id": "c", "thread_id": "t", "user_id": "u1", "user_name": "tester"}
+    other = {"platform": "discord", "chat_id": "c", "thread_id": "t", "user_id": "u2", "user_name": "other"}
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester", origin=origin)
+    assert started.session_id
+
+    assert handle_ouro_intake_plain_reply("A와 B", actor="other", origin=other) is None
+    assert handle_ouro_intake_plain_reply("/help", actor="tester", origin=origin) is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_routes_plain_reply_to_active_ouro_intake_session(hermes_home):
+    from gateway.run import GatewayRunner
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import Platform, SessionSource
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="channel-1",
+        chat_type="thread",
+        user_id="user-1",
+        user_name="tester",
+        thread_id="thread-1",
+    )
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester", origin={
+        "platform": "discord",
+        "chat_id": "channel-1",
+        "thread_id": "thread-1",
+        "user_id": "user-1",
+        "user_name": "tester",
+        "chat_type": "thread",
+    })
+    assert started.session_id
+
+    runner = object.__new__(GatewayRunner)
+    event = MessageEvent(text="A와 B에 가까워", message_type=MessageType.TEXT, source=source, message_id="m2")
+
+    result = await runner._maybe_handle_ouro_intake_plain_reply(event)
+
+    assert result is not None
+    assert "Updated /ouro-intake session" in result
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    assert sessions[started.session_id]["turns"][-1]["answer"] == "A와 B에 가까워"
+
+
 @pytest.mark.asyncio
 async def test_gateway_handler_routes_raw_args_to_controller(monkeypatch):
     from gateway.run import GatewayRunner
@@ -260,8 +335,8 @@ async def test_gateway_handler_routes_raw_args_to_controller(monkeypatch):
 
     calls = []
 
-    def fake_handle(raw_args, *, actor=None):
-        calls.append((raw_args, actor))
+    def fake_handle(raw_args, *, actor=None, origin=None):
+        calls.append((raw_args, actor, origin))
         return SimpleNamespace(message="handled by ouro controller")
 
     monkeypatch.setattr(ouro_intake, "handle_ouro_intake_command", fake_handle)
@@ -275,7 +350,7 @@ async def test_gateway_handler_routes_raw_args_to_controller(monkeypatch):
     result = await runner._handle_ouro_intake_command(event)
 
     assert result == "handled by ouro controller"
-    assert calls == [("goal:test project:bo", "tester")]
+    assert calls == [("goal:test project:bo", "tester", {"platform": "", "chat_id": "c1", "thread_id": "", "user_id": "u1", "user_name": "tester", "chat_type": ""})]
 
 
 def test_cli_handler_routes_raw_args_to_controller(monkeypatch):
@@ -286,8 +361,8 @@ def test_cli_handler_routes_raw_args_to_controller(monkeypatch):
     calls = []
     printed = []
 
-    def fake_handle(raw_args, *, actor=None):
-        calls.append((raw_args, actor))
+    def fake_handle(raw_args, *, actor=None, origin=None):
+        calls.append((raw_args, actor, origin))
         return SimpleNamespace(message="cli handled")
 
     monkeypatch.setattr(ouro_intake, "handle_ouro_intake_command", fake_handle)
@@ -296,5 +371,5 @@ def test_cli_handler_routes_raw_args_to_controller(monkeypatch):
     should_continue = object.__new__(HermesCLI).process_command("/ouro-intake goal:test project:bo")
 
     assert should_continue is True
-    assert calls == [("goal:test project:bo", "local-cli")]
+    assert calls == [("goal:test project:bo", "local-cli", None)]
     assert printed == ["cli handled"]

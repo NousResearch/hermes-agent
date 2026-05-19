@@ -7037,6 +7037,11 @@ class GatewayRunner:
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
+        if not command and event.message_type == MessageType.TEXT:
+            _ouro_plain_reply = await self._maybe_handle_ouro_intake_plain_reply(event)
+            if _ouro_plain_reply is not None:
+                return _ouro_plain_reply
+
         if self._is_telegram_topic_root_lobby(source):
             # Debounce the lobby reminder so a user who forgets about
             # topic mode and fires ten prompts doesn't get ten copies.
@@ -8775,6 +8780,39 @@ class GatewayRunner:
         return result.message
 
 
+
+    async def _maybe_handle_ouro_intake_plain_reply(self, event: MessageEvent) -> str | None:
+        """Route normal same-thread replies into an active /ouro-intake interview.
+
+        This preserves the intended interview UX: only the first turn needs the
+        slash command; subsequent plain text from the same origin advances the
+        active interview until Restate/Seed gates finish.  Slash commands and
+        messages without a bound active intake session fall through unchanged.
+        """
+        import asyncio
+        from gateway.ouro_intake import (
+            handle_ouro_intake_plain_reply,
+            origin_from_source,
+        )
+
+        if event.is_command():
+            return None
+        source = getattr(event, "source", None)
+        actor = None
+        if source is not None:
+            actor = (
+                getattr(source, "user_name", None)
+                or getattr(source, "user_id", None)
+                or getattr(source, "chat_id", None)
+            )
+        result = await asyncio.to_thread(
+            handle_ouro_intake_plain_reply,
+            event.text or "",
+            origin=origin_from_source(source),
+            actor=actor,
+        )
+        return result.message if result is not None else None
+
     async def _handle_ouro_intake_command(self, event: MessageEvent) -> str:
         """Handle /ouro-intake through the admission-only Kanban controller."""
         import asyncio
@@ -8788,10 +8826,13 @@ class GatewayRunner:
                 or getattr(source, "user_id", None)
                 or getattr(source, "chat_id", None)
             )
+        from gateway.ouro_intake import origin_from_source
+
         result = await asyncio.to_thread(
             handle_ouro_intake_command,
             event.get_command_args(),
             actor=actor,
+            origin=origin_from_source(source),
         )
         return result.message
 

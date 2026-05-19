@@ -73,6 +73,8 @@ _VAGUE_RE = re.compile(r"\b(improve|better|robust|easy|clean|nice|적당|잘|개
 
 AMBIGUITY_READY_THRESHOLD = 0.20
 SENSITIVE_READY_THRESHOLD = 0.15
+ACTIVE_SESSION_TTL_SECONDS = 24 * 60 * 60
+_ACTIVE_STATUSES = {"interviewing", "restate_pending"}
 
 
 @dataclass(frozen=True)
@@ -167,6 +169,81 @@ def _save_sessions(sessions: dict[str, Any]) -> None:
 def _session_id_for(values: dict[str, Any]) -> str:
     raw = f"{time.time_ns()}:{values.get('goal','')}:{values.get('project','bo')}"
     return "oi_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def origin_from_source(source: Any) -> dict[str, Any] | None:
+    """Return stable origin fields for binding an intake session to a chat thread.
+
+    Kept in this module so gateway routing and tests use the same matching
+    semantics as the controller.  Message ids are intentionally excluded: the
+    binding is to the conversation surface and author, not a single message.
+    """
+
+    if source is None:
+        return None
+    platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None))
+    return {
+        "platform": str(platform or ""),
+        "chat_id": str(getattr(source, "chat_id", "") or ""),
+        "thread_id": str(getattr(source, "thread_id", "") or ""),
+        "user_id": str(getattr(source, "user_id", "") or ""),
+        "user_name": str(getattr(source, "user_name", "") or ""),
+        "chat_type": str(getattr(source, "chat_type", "") or ""),
+    }
+
+
+def _origin_key(origin: dict[str, Any] | None) -> str | None:
+    if not isinstance(origin, dict):
+        return None
+    platform = str(origin.get("platform") or "").strip()
+    chat_id = str(origin.get("chat_id") or "").strip()
+    thread_id = str(origin.get("thread_id") or "").strip()
+    user = str(origin.get("user_id") or origin.get("user_name") or "").strip()
+    if not platform or not chat_id or not user:
+        return None
+    return "|".join([platform, chat_id, thread_id, user])
+
+
+def _active_session_for_origin(origin: dict[str, Any] | None, *, now: int | None = None) -> tuple[str, dict[str, Any]] | None:
+    key = _origin_key(origin)
+    if key is None:
+        return None
+    now = int(now or time.time())
+    candidates: list[tuple[int, str, dict[str, Any]]] = []
+    for session_id, session in _load_sessions().items():
+        if not isinstance(session, dict):
+            continue
+        if session.get("status") not in _ACTIVE_STATUSES:
+            continue
+        binding = session.get("origin_binding") if isinstance(session.get("origin_binding"), dict) else None
+        if not binding or binding.get("key") != key:
+            continue
+        expires_at = int(binding.get("expires_at") or 0)
+        if expires_at and expires_at < now:
+            continue
+        candidates.append((int(session.get("updated_at") or session.get("created_at") or 0), str(session_id), session))
+    if not candidates:
+        return None
+    _, session_id, session = sorted(candidates, reverse=True)[0]
+    return session_id, session
+
+
+def handle_ouro_intake_plain_reply(text: str, *, origin: dict[str, Any] | None = None, actor: str | None = None) -> OuroIntakeResult | None:
+    """Route a normal same-thread/user message into an active intake interview.
+
+    Returns None when no active bound /ouro-intake session exists, allowing the
+    gateway to continue normal agent routing. Slash commands are never captured
+    here; explicit /ouro-intake seed/admit/cancel style controls stay commands.
+    """
+
+    answer = (text or "").strip()
+    if not answer or answer.startswith("/"):
+        return None
+    active = _active_session_for_origin(origin)
+    if active is None:
+        return None
+    session_id, _session = active
+    return _answer_interview(f"session:{session_id} answer:{shlex.quote(answer)}", actor=actor)
 
 
 def _score_dimension(*, clarity: float, weight: float, name: str, reason: str) -> dict[str, Any]:
@@ -597,7 +674,7 @@ def _readback(conn: Any, task_id: str) -> dict[str, Any]:
     }
 
 
-def _start_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
+def _start_interview(raw_args: str, *, actor: str | None, origin: dict[str, Any] | None = None) -> OuroIntakeResult:
     values = _parse_args(raw_args)
     if not str(values.get("goal") or "").strip():
         return OuroIntakeResult(
@@ -634,6 +711,12 @@ def _start_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
         "status": status,
         "restate": _restate_goal(values) if status == "restate_pending" else None,
         "ambiguity_ledger": review["ambiguity_ledger"],
+        "origin_binding": {
+            "key": _origin_key(origin),
+            "origin": origin or {},
+            "created_at": int(time.time()),
+            "expires_at": int(time.time()) + ACTIVE_SESSION_TTL_SECONDS,
+        } if _origin_key(origin) else None,
     }
     _save_sessions(sessions)
     if status == "restate_pending":
@@ -850,7 +933,7 @@ def _admit_seed(raw_args: str) -> OuroIntakeResult:
     )
 
 
-def handle_ouro_intake_command(raw_args: str = "", *, actor: str | None = None) -> OuroIntakeResult:
+def handle_ouro_intake_command(raw_args: str = "", *, actor: str | None = None, origin: dict[str, Any] | None = None) -> OuroIntakeResult:
     """Run explicit Ouroboros-style intake without granting execution authority."""
 
     raw_args = (raw_args or "").strip()
@@ -872,5 +955,5 @@ def handle_ouro_intake_command(raw_args: str = "", *, actor: str | None = None) 
     if subcommand == "admit":
         return _admit_seed(rest)
     if subcommand == "start":
-        return _start_interview(rest, actor=actor)
-    return _start_interview(raw_args, actor=actor)
+        return _start_interview(rest, actor=actor, origin=origin)
+    return _start_interview(raw_args, actor=actor, origin=origin)

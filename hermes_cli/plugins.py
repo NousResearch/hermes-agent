@@ -1274,6 +1274,20 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
+        try:
+            from hermes_cli.nemo_flow_telemetry import (
+                record_hook as _record_nemo_flow_hook,
+            )
+
+            _record_nemo_flow_hook(hook_name, kwargs)
+        except Exception as exc:
+            logger.debug(
+                "NeMo-Flow telemetry bridge failed for hook '%s': %s",
+                hook_name,
+                exc,
+                exc_info=True,
+            )
+
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
         for cb in callbacks:

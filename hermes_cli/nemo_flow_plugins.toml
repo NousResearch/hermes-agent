@@ -1,0 +1,38 @@
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 1
+
+[components.config.atof]
+enabled = false
+filename = "events.jsonl"
+mode = "append"
+
+[components.config.atif]
+enabled = false
+agent_name = "Hermes Agent"
+agent_version = "0.13.0"
+filename_template = "trajectory-{session_id}.json"
+
+[components.config.opentelemetry]
+enabled = false
+service_name = "hermes-agent"
+service_namespace = "agent"
+service_version = "0.13.0"
+timeout_millis = 3000
+
+[components.config.openinference]
+enabled = false
+service_name = "hermes-agent"
+service_namespace = "agent"
+service_version = "0.13.0"
+timeout_millis = 3000
+
+[components.config.policy]
+unknown_component = "warn"
+unknown_field = "warn"
+unsupported_value = "error"

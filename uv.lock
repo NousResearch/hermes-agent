@@ -1957,6 +1957,7 @@ dependencies = [
     { name = "fire" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
+    { name = "nemo-flow" },
     { name = "openai" },
     { name = "prompt-toolkit" },
     { name = "psutil" },
@@ -2209,6 +2210,7 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'dev'", specifier = "==1.26.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==1.26.0" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
+    { name = "nemo-flow", specifier = "==0.2.0rc3" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "openai", specifier = "==2.24.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
@@ -3287,6 +3289,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/59/96/45218c2fdec4c9f22178f905086e85ef1a6d63862dcc3cd68eb60f1867f5/narwhals-2.18.1.tar.gz", hash = "sha256:652a1fcc9d432bbf114846688884c215f17eb118aa640b7419295d2f910d2a8b", size = 620578, upload-time = "2026-03-24T15:11:25.456Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/c3/06490e98393dcb4d6ce2bf331a39335375c300afaef526897881fbeae6ab/narwhals-2.18.1-py3-none-any.whl", hash = "sha256:a0a8bb80205323851338888ba3a12b4f65d352362c8a94be591244faf36504ad", size = 444952, upload-time = "2026-03-24T15:11:23.801Z" },
+]
+
+[[package]]
+name = "nemo-flow"
+version = "0.2.0rc3"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/da/55/14aa13b1727e749dcec795b18ceebdb3654d350d8ebdc9ceeb453631d398/nemo_flow-0.2.0rc3-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:e02cf24ca218a04184e6690ff36dfa51aa54548d5b9f5fffbc5b83d8c0becd7e", size = 5112518, upload-time = "2026-05-15T11:39:10.301Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/1f/83a9fd76861851d3a65f20d17abf2b1ade381fb724573e343c998c9d4fd7/nemo_flow-0.2.0rc3-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3c1a3831f78d75d3f57a55ecaef572a83cd081abfd8d6c3ea43879b35babdff1", size = 4574711, upload-time = "2026-05-15T11:39:12.189Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/1a/def21420e272f58004286a13ac4dedae5dc0dfafef0aae44fb2dd33d4915/nemo_flow-0.2.0rc3-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:eb41889f76a706e218815239a1b4fbf9a5b347112251bf81fca9c49545c6de9c", size = 4810003, upload-time = "2026-05-15T11:39:13.95Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/26/fbae5ca15d995035cd7f852aaac3dc53619391879d1ef7ec9f3b0e25a0f8/nemo_flow-0.2.0rc3-cp311-abi3-win_amd64.whl", hash = "sha256:c71e979279673093651bc25ed6fe5cd5603f5dd0ee2d103bab4164eaa4453f4f", size = 4751522, upload-time = "2026-05-15T11:39:16.093Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/32/b11e336a224c4be7a4f68630254965914ddd3b272cb928033f1fe426fa38/nemo_flow-0.2.0rc3-cp311-abi3-win_arm64.whl", hash = "sha256:697b9a8a6dffa9f5477b3334878613d322e662a4e89d92c1f1fc7ff700823d87", size = 4489160, upload-time = "2026-05-15T11:39:17.841Z" },
 ]
 
 [[package]]

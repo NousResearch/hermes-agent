@@ -42,6 +42,9 @@ dependencies = [
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",
   "pydantic==2.12.5",
+  # NeMo-Flow canonical telemetry runtime. 0.2.0rc3 is the PyPI wheel
+  # corresponding to the Rust 0.2.0-rc.3 crates.io release.
+  "nemo-flow==0.2.0rc3",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
@@ -218,7 +221,7 @@ hermes-acp = "acp_adapter.entry:main"
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "rl_cli", "utils"]
 
 [tool.setuptools.package-data]
-hermes_cli = ["web_dist/**/*"]
+hermes_cli = ["web_dist/**/*", "nemo_flow_plugins.toml"]
 gateway = ["assets/**/*"]
 
 [tool.setuptools.packages.find]

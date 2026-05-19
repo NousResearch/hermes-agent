@@ -745,6 +745,31 @@ DEFAULT_CONFIG = {
         "cache_ttl": "5m",
     },
 
+    # NeMo-Flow canonical telemetry PoC. Disabled by default while the branch
+    # proves that Hermes hook payloads can drive in-process NeMo-Flow spans
+    # without changing plugin hook semantics.
+    "telemetry": {
+        "nemo_flow": {
+            "enabled": False,
+            "max_payload_chars": 50000,
+            "plugins_toml_path": "",
+            "discover_plugins_toml": False,
+            "atof": {
+                "enabled": False,
+                "output_directory": "",
+                "filename": "hermes-atof.jsonl",
+                "mode": "append",
+            },
+            "atif": {
+                "enabled": False,
+                "output_directory": "",
+                "filename_template": "hermes-atif-{session_id}.json",
+                "agent_name": "Hermes Agent",
+                "agent_version": "0.13.0",
+            },
+        },
+    },
+
     # OpenRouter-specific settings.
     # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
     #   When enabled, identical requests return cached responses for free (zero billing).

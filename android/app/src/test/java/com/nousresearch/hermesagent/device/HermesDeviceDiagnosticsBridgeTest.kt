@@ -151,6 +151,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(payload.getBoolean("device_diagnostics_tool_available"))
         assertTrue(payload.has("usage_access_granted"))
         assertTrue(payload.has("wifi_scan_permission_status"))
+        assertTrue(payload.has("hindsight_promoted_memory_count"))
     }
 
     @Test

@@ -1164,16 +1164,26 @@ class NativeToolCallingChatClient(
     }
 
     private fun systemMessage(toolsEnabled: Boolean): JSONObject {
-        val content = if (toolsEnabled) {
+        val promotedMemoryContext = if (toolsEnabled) {
+            HermesHindsightMemoryBridge.promotedContextJson(appContext)
+                .optString("system_prompt_context")
+                .takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
+        val baseContent = if (toolsEnabled) {
             "You are Hermes running inside the native Android app. " +
                 "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata, camera capability checks, Wi-Fi analysis/channel ratings/signal history, Bluetooth nearby scans/service metadata, radio capability checks, resource summaries, or Tasker-style automation. " +
                 "When writing multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
                 "For HTML/browser work: write the file with file_write_tool, then call android_automation_tool action=open_uri with data_uri set to the workspace filename. " +
                 "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings/signal history, Bluetooth nearby devices/service metadata, camera/sensor status plus accelerometer/gyroscope hardware metadata, active overlays, tool catalog, RF capability limits, MediaTek/Snapdragon/SOC context, or phone preflight checks before TikTok/Instagram/Gmail work. " +
-                "Use hindsight_memory_tool to retain, recall, and reflect durable local memories before or after complex work. " +
+                "Use hindsight_memory_tool to retain, recall, reflect, and inspect promoted durable local memories before or after complex work. " +
                 "Report missing Android permissions honestly. Keep replies brief."
         } else {
             "You are Hermes running inside the native Android app. Keep replies brief and direct."
+        }
+        val content = baseContent + promotedMemoryContext.orEmpty().let { context ->
+            if (context.isBlank()) "" else " Promoted local memory context:\n$context"
         }
         return JSONObject()
             .put("role", "system")
@@ -1243,9 +1253,9 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "hindsight_memory_tool",
-                    description = "Retain, recall, reflect, or clear lightweight local memories using Hindsight-style keyword, entity, recency, salience, and reinforcement signals.",
+                    description = "Retain, recall, reflect, inspect promoted context, or clear lightweight local memories using Hindsight-style keyword, entity, recency, salience, reinforcement, and Kai-style promotion signals.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, retain, recall, reflect, or clear."))
+                        .put("action", stringProp("status, retain, recall, reflect, promoted_context, or clear."))
                         .put("content", stringProp("Fact or memory content for retain."))
                         .put("facts", stringProp("Optional list of fact strings for retain."))
                         .put("query", stringProp("Recall query."))
@@ -1253,6 +1263,7 @@ class NativeToolCallingChatClient(
                         .put("category", stringProp("Memory category for retain."))
                         .put("source", stringProp("Memory source such as chat, tool_result, user_preference, or device_state."))
                         .put("limit", intProp("Maximum recall rows. Defaults to 5."))
+                        .put("max_chars", intProp("Maximum promoted context characters."))
                         .put("max_entries", intProp("Maximum rows to keep after reflect.")),
                     required = JSONArray().put("action"),
                 ),
@@ -3309,6 +3320,7 @@ internal object NativeToolContextCompressor {
         "sensor_samples",
         "sensor_capabilities",
         "native_tools",
+        "promoted_memories",
         "diagnostics_actions",
         "available_actions",
         "blocking_items",
@@ -3424,6 +3436,9 @@ internal object NativeToolContextCompressor {
         "category",
         "hit_count",
         "salience",
+        "promoted",
+        "promotion_hit_threshold",
+        "promoted_at_ms",
         "recall_score",
     )
     private const val PRESERVED_ARRAY_ITEM_LIMIT = 8

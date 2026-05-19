@@ -13,7 +13,10 @@ object HermesHindsightMemoryBridge {
     private const val DEFAULT_LIMIT = 5
     private const val MAX_LIMIT = 20
     private const val MAX_ENTRIES = 160
-    private val ACTIONS = listOf("status", "retain", "recall", "reflect", "clear")
+    private const val PROMOTION_HIT_THRESHOLD = 5
+    private const val PROMOTED_CONTEXT_LIMIT = 5
+    private const val PROMOTED_CONTEXT_MAX_CHARS = 1200
+    private val ACTIONS = listOf("status", "retain", "recall", "reflect", "promoted_context", "clear")
 
     fun performActionJson(context: Context, rawAction: String, arguments: JSONObject = JSONObject()): String {
         val action = rawAction.trim().lowercase(Locale.US).ifBlank { "status" }
@@ -22,6 +25,7 @@ object HermesHindsightMemoryBridge {
             "retain", "remember", "store" -> retainJson(context, arguments)
             "recall", "search", "retrieve" -> recallJson(context, arguments)
             "reflect", "consolidate", "compact" -> reflectJson(context, arguments)
+            "promoted_context", "context", "system_prompt_context", "prompt_context" -> promotedContextJson(context, arguments)
             "clear", "reset" -> clearJson(context)
             else -> JSONObject()
                 .put("success", false)
@@ -33,13 +37,16 @@ object HermesHindsightMemoryBridge {
     fun statusJson(context: Context): JSONObject {
         val entries = readEntries(context)
         val reinforced = entries.count { it.optInt("hit_count", 0) > 0 }
+        val promoted = entries.count(::isPromoted)
         return JSONObject()
             .put("success", true)
             .put("action", "status")
             .put("memory_count", entries.size)
             .put("reinforced_memory_count", reinforced)
+            .put("promoted_memory_count", promoted)
+            .put("promotion_hit_threshold", PROMOTION_HIT_THRESHOLD)
             .put("available_actions", JSONArray(ACTIONS))
-            .put("cards", JSONArray().put(card("Hindsight Memory", "${entries.size} retained local memories, $reinforced reinforced.")))
+            .put("cards", JSONArray().put(card("Hindsight Memory", "${entries.size} retained local memories, $reinforced reinforced, $promoted promoted.")))
     }
 
     private fun retainJson(context: Context, arguments: JSONObject): JSONObject {
@@ -74,6 +81,7 @@ object HermesHindsightMemoryBridge {
                 .put("last_accessed_at_ms", now)
                 .put("hit_count", hitCount)
                 .put("salience", salienceFor(content, keywords.size, hitCount))
+            maybePromote(entry, now)
             retained.put(compactEntry(entry))
         }
 
@@ -106,6 +114,7 @@ object HermesHindsightMemoryBridge {
             if (entry.optString("id") in returnedIds) {
                 entry.put("hit_count", entry.optInt("hit_count", 0) + 1)
                     .put("last_accessed_at_ms", now)
+                maybePromote(entry, now)
             }
         }
         trimAndSave(context, entries)
@@ -137,6 +146,11 @@ object HermesHindsightMemoryBridge {
                     .put("last_accessed_at_ms", max(existing.optLong("last_accessed_at_ms", 0L), entry.optLong("last_accessed_at_ms", 0L)))
                     .put("salience", max(existing.optDouble("salience", 0.0), entry.optDouble("salience", 0.0)) + 0.25)
                     .put("tags", JSONArray((jsonStringList(existing.optJSONArray("tags")) + jsonStringList(entry.optJSONArray("tags"))).distinct()))
+                if (isPromoted(entry)) {
+                    existing.put("promoted", true)
+                        .put("promoted_at_ms", max(existing.optLong("promoted_at_ms", 0L), entry.optLong("promoted_at_ms", 0L)))
+                }
+                maybePromote(existing, System.currentTimeMillis())
             }
         }
         val reflected = merged.values
@@ -153,6 +167,26 @@ object HermesHindsightMemoryBridge {
             .put("merged_count", before - reflected.size)
             .put("max_entries", maxEntries)
             .put("cards", JSONArray().put(card("Memory Reflected", "Merged ${before - reflected.size} duplicate or low-priority memory row(s).")))
+    }
+
+    fun promotedContextJson(context: Context, arguments: JSONObject = JSONObject()): JSONObject {
+        val limit = arguments.optInt("limit", PROMOTED_CONTEXT_LIMIT).coerceIn(1, MAX_LIMIT)
+        val maxChars = arguments.optInt("max_chars", PROMOTED_CONTEXT_MAX_CHARS).coerceIn(160, 4000)
+        val promoted = promotedEntries(context).take(limit)
+        val lines = promoted.mapIndexed { index, entry ->
+            "${index + 1}. ${entry.optString("content")}"
+        }
+        val contextText = lines.joinToString("\n").let { text ->
+            if (text.length <= maxChars) text else text.take(maxChars - 3).trimEnd() + "..."
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("action", "promoted_context")
+            .put("promotion_hit_threshold", PROMOTION_HIT_THRESHOLD)
+            .put("promoted_memory_count", promoted.size)
+            .put("system_prompt_context", contextText)
+            .put("promoted_memories", JSONArray(promoted.map(::compactEntry)))
+            .put("cards", JSONArray().put(card("Promoted Memory", "${promoted.size} high-reuse memory row(s) ready for prompt context.")))
     }
 
     private fun clearJson(context: Context): JSONObject {
@@ -217,8 +251,33 @@ object HermesHindsightMemoryBridge {
             .put("semantic_keywords", entry.optJSONArray("semantic_keywords") ?: JSONArray())
             .put("hit_count", entry.optInt("hit_count", 0))
             .put("salience", entry.optDouble("salience", 0.0))
+            .put("promoted", isPromoted(entry))
+            .put("promotion_hit_threshold", PROMOTION_HIT_THRESHOLD)
+            .put("promoted_at_ms", entry.optLong("promoted_at_ms", 0L))
             .put("created_at_ms", entry.optLong("created_at_ms", 0L))
             .put("last_accessed_at_ms", entry.optLong("last_accessed_at_ms", 0L))
+    }
+
+    private fun promotedEntries(context: Context): List<JSONObject> {
+        return readEntries(context)
+            .filter(::isPromoted)
+            .sortedWith(
+                compareByDescending<JSONObject> { it.optDouble("salience", 0.0) }
+                    .thenByDescending { it.optInt("hit_count", 0) }
+                    .thenByDescending { it.optLong("last_accessed_at_ms", 0L) },
+            )
+    }
+
+    private fun maybePromote(entry: JSONObject, now: Long) {
+        if (entry.optInt("hit_count", 0) >= PROMOTION_HIT_THRESHOLD && !entry.optBoolean("promoted", false)) {
+            entry.put("promoted", true)
+                .put("promoted_at_ms", now)
+                .put("tags", JSONArray((jsonStringList(entry.optJSONArray("tags")) + "promoted").distinct()))
+        }
+    }
+
+    private fun isPromoted(entry: JSONObject): Boolean {
+        return entry.optBoolean("promoted", false) || entry.optInt("hit_count", 0) >= PROMOTION_HIT_THRESHOLD
     }
 
     private fun salienceFor(content: String, keywordCount: Int, hitCount: Int): Double {

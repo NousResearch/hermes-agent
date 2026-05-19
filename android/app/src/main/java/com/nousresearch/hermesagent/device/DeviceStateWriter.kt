@@ -76,6 +76,7 @@ object DeviceStateWriter {
             put("hindsight_memory_tool_available", true)
             put("hindsight_memory_count", hindsightStatus.optInt("memory_count", 0))
             put("hindsight_reinforced_memory_count", hindsightStatus.optInt("reinforced_memory_count", 0))
+            put("hindsight_promoted_memory_count", hindsightStatus.optInt("promoted_memory_count", 0))
             put("usage_access_granted", diagnosticsStatus.optBoolean("usage_access_granted", false))
             put("camera_supported", diagnosticsStatus.optBoolean("camera_supported", false))
             put("camera_permission_granted", diagnosticsStatus.optBoolean("camera_permission_granted", false))

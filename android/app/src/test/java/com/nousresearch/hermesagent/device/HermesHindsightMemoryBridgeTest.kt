@@ -54,4 +54,36 @@ class HermesHindsightMemoryBridgeTest {
         assertTrue(reflect.getBoolean("success"))
         assertEquals(1, reflect.getInt("after_count"))
     }
+
+    @Test
+    fun promotesHighReuseMemoriesIntoPromptContext() {
+        HermesHindsightMemoryBridge.performActionJson(
+            context,
+            "retain",
+            JSONObject()
+                .put("content", "MediaTek phones should use SOC-neutral diagnostics without assuming Adreno GPU support.")
+                .put("source", "kai_parity_research")
+                .put("category", "compatibility")
+                .put("tags", JSONArray().put("mediatek").put("soc")),
+        )
+
+        repeat(5) {
+            HermesHindsightMemoryBridge.performActionJson(
+                context,
+                "recall",
+                JSONObject().put("query", "MediaTek SOC diagnostics").put("limit", 1),
+            )
+        }
+
+        val status = JSONObject(HermesHindsightMemoryBridge.performActionJson(context, "status"))
+        assertEquals(1, status.getInt("promoted_memory_count"))
+        assertEquals(5, status.getInt("promotion_hit_threshold"))
+
+        val contextJson = JSONObject(HermesHindsightMemoryBridge.performActionJson(context, "promoted_context"))
+        assertTrue(contextJson.getString("system_prompt_context").contains("MediaTek phones"))
+        val promoted = contextJson.getJSONArray("promoted_memories").getJSONObject(0)
+        assertTrue(promoted.getBoolean("promoted"))
+        assertTrue(promoted.getInt("hit_count") >= 5)
+        assertTrue(promoted.getJSONArray("tags").toString().contains("promoted"))
+    }
 }

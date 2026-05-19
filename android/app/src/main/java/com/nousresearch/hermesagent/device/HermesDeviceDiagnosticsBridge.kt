@@ -660,7 +660,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(toolJson("android_ui_tool", "Inspect and control visible Android UI through accessibility and screenshots.", "action, selectors, coordinates"))
                     .put(toolJson("android_automation_tool", "Run/open/create saved automations, watcher tasks, overlays, notifications, widgets, and Tasker-style triggers.", "action, trigger, data_uri"))
                     .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel ratings/vendor OUI/filter facets, Bluetooth nearby devices/service UUIDs/manufacturer/proximity, camera, sensors, SOC compatibility, overlay, radio/RF capability limits, and the social/Gmail end-to-end phone preflight.", "action, limit, refresh, sensor_types, timeout_ms"))
-                    .put(toolJson("hindsight_memory_tool", "Retain, recall, and reflect local Hindsight-style memories with tags, entities, keywords, recency, and reinforcement.", "action, content, query, tags, category")),
+                    .put(toolJson("hindsight_memory_tool", "Retain, recall, reflect, and promote local Hindsight-style memories with tags, entities, keywords, recency, reinforcement, and reusable prompt context.", "action, content, query, tags, category")),
             )
             .put("diagnostics_actions", JSONArray(ACTIONS))
             .put(
@@ -668,7 +668,8 @@ object HermesDeviceDiagnosticsBridge {
                 JSONObject()
                     .put("retain", "Promote facts from chats/tool results into structured memories with source, category, timestamp, and reinforcement count.")
                     .put("recall", "Retrieve memories by semantic/keyword/time/entity signals before answering.")
-                    .put("reflect", "Periodically consolidate repeated facts into fresher summaries and keep raw evidence links."),
+                    .put("reflect", "Periodically consolidate repeated facts into fresher summaries and keep raw evidence links.")
+                    .put("promoted_context", "Expose high-reuse memories as compact prompt context after repeated recall/retention hits."),
             )
             .put("cards", JSONArray().put(card("Tools", "Hermes can inspect its tool catalog and pick the right native tool before acting.")))
     }

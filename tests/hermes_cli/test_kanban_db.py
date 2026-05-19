@@ -1174,10 +1174,20 @@ def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     assert reason is None
 
 
-def test_dispatch_respawn_guard_auto_blocks_auth_error(
+def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):
-    """dispatch_once auto-blocks a ready task whose last error is a blocker_auth."""
+    """dispatch_once defers (does NOT auto-block) a ready task whose last
+    error is a blocker_auth.
+
+    The old behaviour auto-blocked on first occurrence, which was too
+    aggressive: a transient 429 rate-limit (which typically clears in
+    seconds to minutes) would end up requiring manual unblock. The new
+    behaviour defers the spawn this tick; the task stays in ``ready``
+    and gets another chance next tick. If the auth error genuinely
+    persists, the existing ``consecutive_failures`` circuit breaker
+    will auto-block via the normal failure-limit path.
+    """
     spawned_ids = []
 
     def fake_spawn(task, workspace):
@@ -1191,10 +1201,22 @@ def test_dispatch_respawn_guard_auto_blocks_auth_error(
         )
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
 
-    assert t in res.auto_blocked
+    # Critical: task is NOT auto-blocked on first occurrence.
+    assert t not in res.auto_blocked, (
+        f"blocker_auth should defer, not auto-block on first occurrence; "
+        f"got auto_blocked={res.auto_blocked!r}"
+    )
+    # It IS recorded as respawn_guarded with the reason.
+    assert (t, "blocker_auth") in res.respawn_guarded, (
+        f"expected (task_id, 'blocker_auth') in respawn_guarded; "
+        f"got {res.respawn_guarded!r}"
+    )
+    # And it's NOT spawned this tick.
     assert t not in spawned_ids
+    # Status stays ``ready`` so a future tick (or operator action) can
+    # retry without manual unblock.
     with kb.connect() as conn:
-        assert kb.get_task(conn, t).status == "blocked"
+        assert kb.get_task(conn, t).status == "ready"
 
 
 def test_dispatch_respawn_guard_skips_recent_success(

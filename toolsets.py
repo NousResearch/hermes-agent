@@ -54,6 +54,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Advisor — ask a stronger model for guidance (gated via check_fn)
+    "ask_advisor",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -227,6 +229,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "advisor": {
+        "description": "Ask a stronger model for guidance without yielding control",
+        "tools": ["ask_advisor"],
         "includes": []
     },
 

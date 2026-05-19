@@ -1566,6 +1566,38 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
     elif function_name == "delegate_task":
         return agent._dispatch_delegate_task(function_args)
+    elif function_name == "ask_advisor":
+        from tools.advisor_tool import call_advisor, load_advisor_config, _make_use_counter
+        cfg = load_advisor_config()
+        # Per-task invocation cap
+        if not hasattr(agent, "_advisor_counter"):
+            agent._advisor_counter = _make_use_counter()
+        max_uses = cfg.get("max_uses_per_task", 5)
+        if agent._advisor_counter["count"] >= max_uses:
+            return json.dumps({
+                "error": f"Advisor invocation limit reached ({max_uses} per task). "
+                         f"Proceed with your best judgment.",
+            }, ensure_ascii=False)
+        agent._advisor_counter["count"] += 1
+        raw_result = call_advisor(
+            messages=messages or [],
+            question=function_args.get("question", ""),
+            urgency=function_args.get("urgency", "medium"),
+            config=cfg,
+            credential_pool=getattr(agent, "_credential_pool", None),
+            parent_agent=agent,
+        )
+        parsed = json.loads(raw_result)
+        if "error" in parsed:
+            return json.dumps(parsed, ensure_ascii=False)
+        # Format for the executor: stats header + advice
+        stats = (
+            f"[🧠 advisor: {parsed.get('model', '?')}, "
+            f"{parsed.get('tokens_in', 0)}↓/{parsed.get('tokens_out', 0)}↑, "
+            f"{parsed.get('latency_ms', 0)}ms, "
+            f"call {agent._advisor_counter['count']}/{max_uses}]"
+        )
+        return f"{stats}\n\n{parsed.get('advice', '')}"
     else:
         return _ra().handle_function_call(
             function_name, function_args, effective_task_id,

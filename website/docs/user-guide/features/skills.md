@@ -230,6 +230,91 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
 
+## Skill Bundles
+
+Skill bundles are tiny YAML files that group several skills under a single slash command. When you run `/<bundle-name>`, every skill listed in the bundle loads at once — useful when a particular task always benefits from the same set of skills together.
+
+### Quick example
+
+```bash
+# Create a bundle for backend feature work
+hermes bundles create backend-dev \
+  --skill github-code-review \
+  --skill test-driven-development \
+  --skill github-pr-workflow \
+  -d "Backend feature work — review, test, PR workflow"
+```
+
+Then in the CLI or any gateway platform:
+
+```
+/backend-dev refactor the auth middleware
+```
+
+The agent receives all three skills loaded into one user message, with any text after the slash command attached as a user instruction.
+
+### YAML schema
+
+Bundles live in **`~/.hermes/skill-bundles/<slug>.yaml`** and look like this:
+
+```yaml
+name: backend-dev
+description: Backend feature work — review, test, PR workflow.
+skills:
+  - github-code-review
+  - test-driven-development
+  - github-pr-workflow
+instruction: |
+  Always start by writing failing tests, then implement.
+  Open the PR through the standard workflow with co-author tags.
+```
+
+Fields:
+- `name` (optional — defaults to the filename stem) — the bundle's display name. Normalized to a hyphen slug for the slash command (`Backend Dev` → `/backend-dev`).
+- `description` (optional) — short text shown in `/bundles` and `hermes bundles list`.
+- `skills` (required, non-empty list) — skill names or paths relative to your skills directory. Use the same identifier you'd pass to `/<skill-name>`.
+- `instruction` (optional) — extra guidance prepended to the loaded skill content. Useful for codifying "how we always use these together."
+
+### Managing bundles
+
+```bash
+# List all installed bundles
+hermes bundles list
+
+# Inspect one bundle
+hermes bundles show backend-dev
+
+# Create a bundle interactively (omit --skill flags to enter them one per line)
+hermes bundles create research
+
+# Overwrite an existing bundle
+hermes bundles create backend-dev --skill ... --force
+
+# Delete a bundle
+hermes bundles delete backend-dev
+
+# Re-scan ~/.hermes/skill-bundles/ and report changes
+hermes bundles reload
+```
+
+From inside a chat session, `/bundles` lists every installed bundle and its skills.
+
+### Behavior
+
+- **Bundles take precedence over individual skills** when slugs collide. If you name a bundle `research` and you also have a skill called `research`, `/research` invokes the bundle. This is intentional — you opted into the bundle by naming it.
+- **Missing skills are skipped, not fatal.** If a bundle lists `skill-foo` and you haven't installed it, the bundle still loads the skills that do resolve, and the agent gets a note listing what was skipped.
+- **Bundles work in every surface** — interactive CLI, TUI, dashboard chat, and every gateway platform (Telegram, Discord, Slack, …) — because dispatch is centralized in the same place as individual skill commands.
+- **Bundles do not invalidate the prompt cache.** They generate a fresh user message at invocation time, the same way `/<skill-name>` does — no system prompt mutation.
+
+### When bundles beat installing each skill manually
+
+Use a bundle when:
+- You always pair the same skills for a recurring task (`/backend-dev`, `/release-prep`, `/incident-response`).
+- You want a one-character-shorter mental model than typing several `/skill` invocations in a row.
+- You want to ship a team-wide "task profile" by checking the bundle YAML into a shared dotfiles repo and symlinking it into `~/.hermes/skill-bundles/`.
+
+A bundle is just a YAML alias — it doesn't install skills for you. The skills themselves must already be present (in `~/.hermes/skills/` or an external skill directory). Otherwise the bundle invocation just skips the missing ones.
+
 ## Agent-Managed Skills (skill_manage tool)
 
 The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** — when it figures out a non-trivial workflow, it saves the approach as a skill for future reuse.

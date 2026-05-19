@@ -62,6 +62,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
+| `hermes bundles` | Group several skills under a single `/<name>` slash command. See [Skill Bundles](../user-guide/features/skills.md#skill-bundles). |
 | `hermes curator` | Background skill maintenance — status, run, pause, pin. See [Curator](../user-guide/features/curator.md). |
 | `hermes memory` | Configure external memory provider. Plugin-specific subcommands (e.g. `hermes honcho`) register automatically when their provider is active. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
@@ -824,6 +825,40 @@ Notes:
 - `--source skills-sh` searches the public `skills.sh` directory.
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
 - Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
+
+## `hermes bundles`
+
+```bash
+hermes bundles <subcommand>
+```
+
+Skill bundles group several skills under one `/<bundle-name>` slash command. Invoking the bundle loads every referenced skill into a single combined user message. Storage: `~/.hermes/skill-bundles/<slug>.yaml`. See [Skill Bundles](../user-guide/features/skills.md#skill-bundles) for the YAML schema and behavior.
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List installed bundles (default when no subcommand given) |
+| `show <name>` | Show one bundle's name, description, skills, and file path |
+| `create <name>` | Create a new bundle. Pass `--skill <id>` (repeat) or omit for interactive entry. `--description`, `--instruction`, `--force` available. |
+| `delete <name>` | Remove a bundle file |
+| `reload` | Re-scan `~/.hermes/skill-bundles/` and report added/removed bundles |
+
+Examples:
+
+```bash
+hermes bundles create backend-dev \
+  --skill github-code-review \
+  --skill test-driven-development \
+  --skill github-pr-workflow \
+  -d "Backend feature work"
+
+hermes bundles list
+hermes bundles show backend-dev
+hermes bundles delete backend-dev
+```
+
+In a chat session, `/bundles` lists installed bundles and `/<bundle-name>` loads one.
 
 ## `hermes curator`
 

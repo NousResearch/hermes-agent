@@ -951,8 +951,13 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
 
 
 def _cmd_boards_rm(args: argparse.Namespace) -> int:
+    # When the user runs `hermes kanban boards delete <slug>` (alias), the
+    # boards_action is 'delete' but args.delete is never set to True because
+    # the --delete flag belongs to the 'rm' subparser only.  Detect the alias
+    # and treat it identically to `boards rm --delete` (fixes #23139).
+    force_delete = getattr(args, "delete", False) or getattr(args, "boards_action", "") == "delete"
     try:
-        res = kb.remove_board(args.slug, archive=not getattr(args, "delete", False))
+        res = kb.remove_board(args.slug, archive=not force_delete)
     except ValueError as exc:
         print(f"kanban boards rm: {exc}", file=sys.stderr)
         return 1

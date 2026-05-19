@@ -954,7 +954,10 @@ def _file_lock(
         finally:
             holder.depth = 0
             if fcntl:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
             elif msvcrt:
                 try:
                     lock_file.seek(0)

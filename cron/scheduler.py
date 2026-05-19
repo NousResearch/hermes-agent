@@ -1950,7 +1950,10 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         return sum(_results)
     finally:
         if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
         elif msvcrt:
             try:
                 msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)

@@ -90,7 +90,12 @@ def telegram_adapter_cls(monkeypatch):
 
 
 def _make_adapter(telegram_adapter_cls):
-    return telegram_adapter_cls(PlatformConfig(enabled=True, token="***", extra={}))
+    a = telegram_adapter_cls(PlatformConfig(enabled=True, token="***", extra={}))
+    # Channel posts have from_user=None.  After PR #28494's fail-closed
+    # auth, the empty-allowlist adapter rejects all messages including
+    # channel posts.  These tests focus on routing, not auth gating.
+    a._is_callback_user_authorized = lambda user_id, **_kw: True
+    return a
 
 
 def _make_channel_message(text="channel id test @hermes_bot"):

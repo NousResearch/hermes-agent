@@ -65,7 +65,6 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
@@ -212,10 +211,7 @@ class WeComAdapter(BasePlatformAdapter):
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(
-                timeout=30.0,
-                follow_redirects=True,
-                event_hooks={"response": [_ssrf_redirect_guard]},
-                limits=platform_httpx_limits(),
+                timeout=30.0, follow_redirects=True, limits=platform_httpx_limits(),
             )
             await self._open_connection()
             self._mark_connected()
@@ -1055,11 +1051,7 @@ class WeComAdapter(BasePlatformAdapter):
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
 
-        client = self._http_client or httpx.AsyncClient(
-            timeout=30.0,
-            follow_redirects=True,
-            event_hooks={"response": [_ssrf_redirect_guard]},
-        )
+        client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
         created_client = client is not self._http_client
         try:
             async with client.stream(

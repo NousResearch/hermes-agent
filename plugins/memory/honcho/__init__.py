@@ -48,7 +48,7 @@ PROFILE_SCHEMA = {
         "properties": {
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Allowed values: 'user' (default), 'ai', or this session's concrete user/AI peer ID.",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
             "card": {
                 "type": "array",
@@ -81,7 +81,7 @@ SEARCH_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Allowed values: 'user' (default), 'ai', or this session's concrete user/AI peer ID.",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
         "required": ["query"],
@@ -93,7 +93,7 @@ REASONING_SCHEMA = {
     "description": (
         "Ask Honcho a natural language question and get a synthesized answer. "
         "Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. "
-        "Can query the current session's user or AI peer. "
+        "Can query about any peer via alias or explicit peer ID. "
         "Pass reasoning_level to control depth: minimal (fast/cheap), low (default), "
         "medium, high, max (deep/expensive). Omit for configured default."
     ),
@@ -120,7 +120,7 @@ REASONING_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Allowed values: 'user' (default), 'ai', or this session's concrete user/AI peer ID.",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
         "required": ["query"],
@@ -144,7 +144,7 @@ CONTEXT_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Allowed values: 'user' (default), 'ai', or this session's concrete user/AI peer ID.",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
         "required": [],
@@ -173,7 +173,7 @@ CONCLUDE_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Allowed values: 'user' (default), 'ai', or this session's concrete user/AI peer ID.",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
         "required": [],

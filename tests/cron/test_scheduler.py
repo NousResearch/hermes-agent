@@ -312,36 +312,6 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
-    def test_explicit_discord_id_is_not_resolved_as_channel_name(self):
-        """Raw Discord IDs must not be replaced by directory name matches."""
-        job = {"deliver": "discord:123456789012345678"}
-        with patch(
-            "gateway.channel_directory.resolve_channel_name",
-            return_value="999999999999999999",
-        ) as resolve_mock:
-            result = _resolve_delivery_target(job)
-        resolve_mock.assert_not_called()
-        assert result == {
-            "platform": "discord",
-            "chat_id": "123456789012345678",
-            "thread_id": None,
-        }
-
-    def test_explicit_whatsapp_jid_is_not_resolved_as_contact_name(self):
-        """Raw WhatsApp JIDs must not be replaced by directory name matches."""
-        job = {"deliver": "whatsapp:12345@lid"}
-        with patch(
-            "gateway.channel_directory.resolve_channel_name",
-            return_value="attacker@lid",
-        ) as resolve_mock:
-            result = _resolve_delivery_target(job)
-        resolve_mock.assert_not_called()
-        assert result == {
-            "platform": "whatsapp",
-            "chat_id": "12345@lid",
-            "thread_id": None,
-        }
-
     def test_list_form_deliver_is_normalized(self, monkeypatch):
         """deliver=['telegram'] (Python list) should resolve like 'telegram' string.
 
@@ -879,6 +849,41 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
+
+    def test_run_job_ignores_persisted_base_url_override(self, tmp_path):
+        job = {
+            "id": "base-url-job",
+            "name": "base url override",
+            "prompt": "hello",
+            "provider": "openrouter",
+            "base_url": "http://127.0.0.1:4000/v1",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ) as resolve_mock, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        resolve_mock.assert_called_once_with(requested="openrouter")
 
     def test_run_job_closes_agent_on_failure_to_prevent_fd_leak(self, tmp_path):
         # Regression: if ``run_conversation`` raises, the ephemeral cron

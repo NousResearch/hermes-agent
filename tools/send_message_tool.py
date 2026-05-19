@@ -11,8 +11,10 @@ import logging
 import os
 import re
 import ssl
+import tempfile
 import time
 from email.utils import formatdate
+from pathlib import Path
 from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
@@ -30,7 +32,6 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
-_WHATSAPP_JID_TARGET_RE = re.compile(r"^\s*([0-9A-Za-z._-]+@(?:s\.whatsapp\.net|g\.us|lid))\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -48,6 +49,9 @@ _VOICE_EXTS = {".ogg", ".opus"}
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
 _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
+_MATRIX_MEDIA_MAX_BYTES = 50 * 1024 * 1024
+_SENSITIVE_MEDIA_DIR_NAMES = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"})
+_SENSITIVE_MEDIA_FILE_NAMES = frozenset({".env", ".netrc", ".pgpass", ".npmrc", ".pypirc", "id_rsa", "id_ed25519"})
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
@@ -69,6 +73,71 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    """Return True when path is inside root without requiring Python 3.9's is_relative_to."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _matrix_media_allowed_roots() -> list[Path]:
+    """Return safe local roots for Matrix send_message media uploads."""
+    roots = [Path.cwd(), Path(tempfile.gettempdir())]
+
+    try:
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        roots.extend([hermes_home / "cache", hermes_home / "outputs"])
+    except Exception:
+        pass
+
+    for raw_root in os.getenv("HERMES_SEND_MESSAGE_MEDIA_ROOTS", "").split(os.pathsep):
+        if raw_root.strip():
+            roots.append(Path(raw_root.strip()).expanduser())
+
+    resolved_roots: list[Path] = []
+    for root in roots:
+        try:
+            resolved_roots.append(root.expanduser().resolve(strict=False))
+        except Exception:
+            continue
+    return resolved_roots
+
+
+def _validate_matrix_media_path(media_path: str) -> tuple[Path | None, str | None]:
+    """Validate a Matrix send_message media path before handing it to the adapter."""
+    try:
+        resolved = Path(media_path).expanduser().resolve(strict=True)
+        stat_result = resolved.stat()
+    except FileNotFoundError:
+        return None, "Media file not found"
+    except OSError:
+        return None, "Media file is not accessible"
+
+    if not resolved.is_file():
+        return None, "Media path must be a regular file"
+
+    if stat_result.st_size > _MATRIX_MEDIA_MAX_BYTES:
+        return None, f"Media file exceeds the {_MATRIX_MEDIA_MAX_BYTES // (1024 * 1024)} MiB Matrix upload limit"
+
+    if _SENSITIVE_MEDIA_DIR_NAMES.intersection(resolved.parts) or resolved.name in _SENSITIVE_MEDIA_FILE_NAMES:
+        return None, "Media file is in a sensitive location and cannot be uploaded"
+
+    try:
+        from agent.file_safety import is_write_denied
+        if is_write_denied(str(resolved)):
+            return None, "Media file is in a sensitive location and cannot be uploaded"
+    except Exception:
+        pass
+
+    if not any(_path_is_relative_to(resolved, root) for root in _matrix_media_allowed_roots()):
+        return None, "Media file is outside allowed send_message media roots"
+
+    return resolved, None
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -351,10 +420,6 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
-    if platform_name == "whatsapp":
-        match = _WHATSAPP_JID_TARGET_RE.fullmatch(target_ref)
-        if match:
-            return match.group(1), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
@@ -1523,6 +1588,12 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
 
     media_files = media_files or []
+    validated_media = []
+    for media_path, is_voice in media_files:
+        safe_path, error = _validate_matrix_media_path(media_path)
+        if error:
+            return _error(error)
+        validated_media.append((str(safe_path), is_voice))
 
     try:
         adapter = MatrixAdapter(pconfig)
@@ -1538,10 +1609,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             if not last_result.success:
                 return _error(f"Matrix send failed: {last_result.error}")
 
-        for media_path, is_voice in media_files:
-            if not os.path.exists(media_path):
-                return _error(f"Media file not found: {media_path}")
-
+        for media_path, is_voice in validated_media:
             ext = os.path.splitext(media_path)[1].lower()
             if ext in _IMAGE_EXTS:
                 last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)

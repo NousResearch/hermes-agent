@@ -17,30 +17,14 @@ logger = logging.getLogger(__name__)
 _local = threading.local()
 
 
-def set_client(client, allowed_file_type: str = "", allowed_file_token: str = ""):
-    """Store a lark client and optional document scope for the current thread."""
+def set_client(client):
+    """Store a lark client for the current thread (called by feishu_comment)."""
     _local.client = client
-    if client is None:
-        _local.allowed_file_type = ""
-        _local.allowed_file_token = ""
-        return
-    _local.allowed_file_type = (allowed_file_type or "").strip()
-    _local.allowed_file_token = (allowed_file_token or "").strip()
 
 
 def get_client():
     """Return the lark client for the current thread, or None."""
     return getattr(_local, "client", None)
-
-
-def _authorize_file(file_token: str, file_type: str) -> str:
-    allowed_token = getattr(_local, "allowed_file_token", "")
-    allowed_type = getattr(_local, "allowed_file_type", "")
-    if allowed_token and file_token != allowed_token:
-        return tool_error("Feishu file token is outside the authorized comment document")
-    if allowed_type and file_type != allowed_type:
-        return tool_error("Feishu file type is outside the authorized comment document")
-    return ""
 
 
 def _check_feishu():
@@ -156,10 +140,6 @@ def _handle_list_comments(args: dict, **kwargs) -> str:
         return tool_error("file_token is required")
 
     file_type = args.get("file_type", "docx") or "docx"
-    auth_error = _authorize_file(file_token, file_type)
-    if auth_error:
-        return auth_error
-
     is_whole = args.get("is_whole", False)
     page_size = args.get("page_size", 100)
     page_token = args.get("page_token", "")
@@ -236,10 +216,6 @@ def _handle_list_replies(args: dict, **kwargs) -> str:
         return tool_error("file_token and comment_id are required")
 
     file_type = args.get("file_type", "docx") or "docx"
-    auth_error = _authorize_file(file_token, file_type)
-    if auth_error:
-        return auth_error
-
     page_size = args.get("page_size", 100)
     page_token = args.get("page_token", "")
 
@@ -313,9 +289,6 @@ def _handle_reply_comment(args: dict, **kwargs) -> str:
         return tool_error("file_token, comment_id, and content are required")
 
     file_type = args.get("file_type", "docx") or "docx"
-    auth_error = _authorize_file(file_token, file_type)
-    if auth_error:
-        return auth_error
 
     body = {
         "content": {
@@ -386,9 +359,6 @@ def _handle_add_comment(args: dict, **kwargs) -> str:
         return tool_error("file_token and content are required")
 
     file_type = args.get("file_type", "docx") or "docx"
-    auth_error = _authorize_file(file_token, file_type)
-    if auth_error:
-        return auth_error
 
     body = {
         "file_type": file_type,

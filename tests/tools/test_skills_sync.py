@@ -1,6 +1,5 @@
 """Tests for tools/skills_sync.py — manifest-based skill seeding and updating."""
 
-import runpy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -133,17 +132,6 @@ class TestDiscoverBundledSkills:
     def test_nonexistent_dir_returns_empty(self, tmp_path):
         skills = _discover_bundled_skills(tmp_path / "nonexistent")
         assert skills == []
-
-    def test_skips_security_retracted_godmode_by_default(self, tmp_path):
-        skill_dir = tmp_path / "red-teaming" / "godmode"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("---\nname: godmode\n---\n# Godmode")
-
-        skills = _discover_bundled_skills(tmp_path)
-        all_skills = _discover_bundled_skills(tmp_path, include_retracted=True)
-
-        assert "godmode" not in {name for name, _ in skills}
-        assert "godmode" in {name for name, _ in all_skills}
 
 
 class TestReadSkillName:
@@ -494,60 +482,6 @@ class TestSyncSkills:
         assert "new-skill" in captured
         assert "hermes skills reset new-skill" in captured
 
-    def test_security_retracted_skill_is_not_copied(self, tmp_path):
-        bundled = self._setup_bundled(tmp_path)
-        godmode = bundled / "red-teaming" / "godmode"
-        godmode.mkdir(parents=True)
-        (godmode / "SKILL.md").write_text("---\nname: godmode\n---\n# Godmode")
-        skills_dir = tmp_path / "user_skills"
-        manifest_file = skills_dir / ".bundled_manifest"
-
-        with self._patches(bundled, skills_dir, manifest_file):
-            result = sync_skills(quiet=True)
-            manifest = _read_manifest()
-
-        assert "godmode" not in result["copied"]
-        assert "godmode" not in manifest
-        assert not (skills_dir / "red-teaming" / "godmode").exists()
-
-    def test_security_retracted_unmodified_skill_is_removed(self, tmp_path):
-        bundled = self._setup_bundled(tmp_path)
-        godmode = bundled / "red-teaming" / "godmode"
-        godmode.mkdir(parents=True)
-        (godmode / "SKILL.md").write_text("---\nname: godmode\n---\n# Godmode")
-        skills_dir = tmp_path / "user_skills"
-        synced = skills_dir / "red-teaming" / "godmode"
-        synced.mkdir(parents=True)
-        (synced / "SKILL.md").write_text("---\nname: godmode\n---\n# Godmode")
-        manifest_file = skills_dir / ".bundled_manifest"
-        manifest_file.write_text(f"godmode:{_dir_hash(synced)}\n")
-
-        with self._patches(bundled, skills_dir, manifest_file):
-            sync_skills(quiet=True)
-            manifest = _read_manifest()
-
-        assert not synced.exists()
-        assert "godmode" not in manifest
-
-    def test_security_retracted_v1_manifest_removes_bundled_match(self, tmp_path):
-        bundled = self._setup_bundled(tmp_path)
-        godmode = bundled / "red-teaming" / "godmode"
-        godmode.mkdir(parents=True)
-        (godmode / "SKILL.md").write_text("---\nname: godmode\n---\n# Godmode")
-        skills_dir = tmp_path / "user_skills"
-        synced = skills_dir / "red-teaming" / "godmode"
-        synced.mkdir(parents=True)
-        (synced / "SKILL.md").write_text("---\nname: godmode\n---\n# Godmode")
-        manifest_file = skills_dir / ".bundled_manifest"
-        manifest_file.write_text("godmode\n")
-
-        with self._patches(bundled, skills_dir, manifest_file):
-            sync_skills(quiet=True)
-            manifest = _read_manifest()
-
-        assert not synced.exists()
-        assert "godmode" not in manifest
-
     def test_nonexistent_bundled_dir(self, tmp_path):
         with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
             result = sync_skills(quiet=True)
@@ -798,23 +732,3 @@ class TestResetBundledSkill:
             post_manifest = _read_manifest()
             assert "google-workspace" in post_manifest
         assert (skills_dir / "productivity" / "google-workspace" / "SKILL.md").exists()
-
-
-class TestGodmodeAutoJailbreakSafety:
-    def test_persistent_write_helpers_are_disabled(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        namespace = runpy.run_path("skills/red-teaming/godmode/scripts/auto_jailbreak.py")
-
-        for helper_name, args in (
-            ("_write_config", ("unsafe", "prefill.json")),
-            ("_write_prefill", ([{"role": "assistant", "content": "unsafe"}],)),
-        ):
-            try:
-                namespace[helper_name](*args)
-            except RuntimeError as exc:
-                assert "disabled" in str(exc)
-            else:
-                raise AssertionError(f"{helper_name} should reject persistence")
-
-        assert not (tmp_path / "config.yaml").exists()
-        assert not (tmp_path / "prefill.json").exists()

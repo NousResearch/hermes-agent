@@ -307,6 +307,8 @@ _SUDO_STDIN_BLOCK = [
     "sudo --stdin whoami",
     "env X=1 sudo -S whoami",
     "X=1 sudo -S whoami",
+    "cat <(sudo -S id <<< hunter2)",
+    "cat >(sudo -S id <<< hunter2)",
 ]
 
 _SUDO_STDIN_ALLOW = [
@@ -323,11 +325,15 @@ _SUDO_STDIN_ALLOW = [
     "sudo -s whoami",
     # sudo-looking text after a non-wrapper command is an argument, not a command
     "env echo sudo -S whoami",
+    # Plain redirection targets named like sudo flags are not command invocations.
+    "echo hi > sudo -S whoami",
 ]
 
 _SUDO_STDIN_BLOCK_YOLO = [
     "sudo -S whoami",
     "echo hunter2 | sudo -S apt-get install",
+    "cat <(sudo -S id <<< hunter2)",
+    "cat >(sudo -S id <<< hunter2)",
 ]
 
 

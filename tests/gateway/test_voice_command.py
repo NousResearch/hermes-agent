@@ -2365,20 +2365,6 @@ class TestVoiceReception:
         completed = receiver.check_silence()
         assert len(completed) == 0
 
-    def test_automap_single_allowed_user_with_unallowed_member_no_map(self):
-        """Do not attribute an unmapped SSRC when another speaker could own it."""
-        members = [
-            SimpleNamespace(id=9999, name="Bot"),
-            SimpleNamespace(id=42, name="Alice"),
-            SimpleNamespace(id=666, name="Mallory"),
-        ]
-        receiver = self._make_receiver(allowed_ids={"42"}, members=members)
-        receiver.start()
-        self._fill_buffer(receiver, 100)
-        completed = receiver.check_silence()
-        assert len(completed) == 0
-        assert 100 not in receiver._ssrc_to_user
-
     def test_automap_no_allowlist_single_member(self):
         """No allowed_user_ids → sole non-bot member inferred."""
         members = [

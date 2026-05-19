@@ -1028,13 +1028,15 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    from gateway.session_context import get_terminal_cwd
+
+    cwd = get_terminal_cwd(default_cwd)
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
+        docker_cwd_source = get_terminal_cwd() or os.getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in host_prefixes)
@@ -1071,11 +1073,12 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
-        # Persistent shell: explicit opt-in for SSH. Per-backend env vars
-        # override the config-level setting; local remains separately opt-in.
+        # Persistent shell: SSH defaults to the config-level persistent_shell
+        # setting (true by default for non-local backends); local is always opt-in.
+        # Per-backend env vars override if explicitly set.
         "ssh_persistent": os.getenv(
             "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "false"),
+            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,

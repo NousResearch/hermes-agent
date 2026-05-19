@@ -167,14 +167,8 @@ install_open_webui() {
   python -m pip install open-webui
 }
 
-secure_open_webui_data_dir() {
-  mkdir -p "$OPEN_WEBUI_DATA_DIR"
-  chmod 700 "$OPEN_WEBUI_DATA_DIR"
-}
-
 write_launcher() {
-  mkdir -p "$(dirname "$LAUNCHER_PATH")" "$LOG_DIR"
-  secure_open_webui_data_dir
+  mkdir -p "$(dirname "$LAUNCHER_PATH")" "$OPEN_WEBUI_DATA_DIR" "$LOG_DIR"
 
   local quoted_data_dir quoted_name quoted_base_url quoted_host quoted_port quoted_venv
   quoted_data_dir="$(shell_quote "$OPEN_WEBUI_DATA_DIR")"
@@ -187,7 +181,6 @@ write_launcher() {
   cat > "$LAUNCHER_PATH" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-umask 077
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 API_KEY=\$(python3 - <<'PY'
 from pathlib import Path
@@ -221,7 +214,7 @@ source ${quoted_venv}/bin/activate
 exec open-webui serve
 EOF
 
-  chmod 700 "$LAUNCHER_PATH"
+  chmod +x "$LAUNCHER_PATH"
 }
 
 ensure_env_permissions() {

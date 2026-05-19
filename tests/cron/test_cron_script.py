@@ -174,33 +174,6 @@ class TestRunJobScript:
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
 
-    def test_script_does_not_inherit_secret_environment(self, cron_env, monkeypatch):
-        from cron.scheduler import _run_job_script
-
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
-        script = cron_env / "scripts" / "env_check.py"
-        script.write_text(textwrap.dedent("""\
-            import os
-            print(os.getenv("OPENAI_API_KEY", "missing"))
-        """))
-
-        success, output = _run_job_script(str(script))
-        assert success is True
-        assert output == "missing"
-
-    def test_script_output_truncated_before_prompt_injection(self, cron_env, monkeypatch):
-        from cron import scheduler as sched_mod
-        from cron.scheduler import _run_job_script
-
-        monkeypatch.setattr(sched_mod, "_SCRIPT_OUTPUT_MAX_CHARS", 16)
-        script = cron_env / "scripts" / "large.py"
-        script.write_text('print("x" * 64)\n')
-
-        success, output = _run_job_script(str(script))
-        assert success is True
-        assert len(output) < 64
-        assert "truncated" in output
-
 
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""
@@ -254,7 +227,6 @@ class TestCronjobToolScript:
             schedule="every 1h",
             prompt="Monitor things",
             script="monitor.py",
-            allow_script=True,
         ))
         assert result["success"] is True
         assert result["job"]["script"] == "monitor.py"
@@ -274,7 +246,6 @@ class TestCronjobToolScript:
             action="update",
             job_id=job_id,
             script="new_script.py",
-            allow_script=True,
         ))
         assert update_result["success"] is True
         assert update_result["job"]["script"] == "new_script.py"
@@ -288,7 +259,6 @@ class TestCronjobToolScript:
             schedule="every 1h",
             prompt="Monitor things",
             script="some_script.py",
-            allow_script=True,
         ))
         job_id = create_result["job_id"]
 
@@ -296,7 +266,6 @@ class TestCronjobToolScript:
             action="update",
             job_id=job_id,
             script="",
-            allow_script=True,
         ))
         assert update_result["success"] is True
         assert "script" not in update_result["job"]
@@ -310,33 +279,12 @@ class TestCronjobToolScript:
             schedule="every 1h",
             prompt="Monitor things",
             script="data_collector.py",
-            allow_script=True,
         )
 
         list_result = json.loads(cronjob(action="list"))
         assert list_result["success"] is True
         assert len(list_result["jobs"]) == 1
         assert list_result["jobs"][0]["script"] == "data_collector.py"
-
-    def test_model_callable_script_create_rejected(self, cron_env):
-        from tools.cronjob_tools import cronjob
-
-        result = json.loads(cronjob(
-            action="create",
-            schedule="every 1h",
-            prompt="Monitor things",
-            script="monitor.py",
-        ))
-        assert result["success"] is False
-        assert "admin capability" in result["error"]
-
-    def test_model_callable_schema_does_not_expose_script_controls(self):
-        from tools.cronjob_tools import CRONJOB_SCHEMA
-
-        properties = CRONJOB_SCHEMA["parameters"]["properties"]
-        assert "script" not in properties
-        assert "no_agent" not in properties
-
 
 
 class TestScriptPathContainment:
@@ -459,7 +407,6 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="/home/user/evil.py",
-            allow_script=True,
         ))
         assert result["success"] is False
         assert "relative" in result["error"].lower() or "absolute" in result["error"].lower()
@@ -473,7 +420,6 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="~/monitor.py",
-            allow_script=True,
         ))
         assert result["success"] is False
         assert "relative" in result["error"].lower() or "absolute" in result["error"].lower()
@@ -487,7 +433,6 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="../../etc/passwd",
-            allow_script=True,
         ))
         assert result["success"] is False
         assert "escapes" in result["error"].lower() or "traversal" in result["error"].lower()
@@ -501,7 +446,6 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="monitor.py",
-            allow_script=True,
         ))
         assert result["success"] is True
         assert result["job"]["script"] == "monitor.py"
@@ -521,7 +465,6 @@ class TestCronjobToolScriptValidation:
             action="update",
             job_id=job_id,
             script="/tmp/evil.py",
-            allow_script=True,
         ))
         assert update_result["success"] is False
         assert "relative" in update_result["error"].lower() or "absolute" in update_result["error"].lower()
@@ -536,7 +479,6 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="monitor.py",
-            allow_script=True,
         ))
         job_id = create_result["job_id"]
 
@@ -544,7 +486,6 @@ class TestCronjobToolScriptValidation:
             action="update",
             job_id=job_id,
             script="",
-            allow_script=True,
         ))
         assert update_result["success"] is True
         assert "script" not in update_result["job"]
@@ -558,7 +499,6 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="C:\\Users\\evil\\script.py",
-            allow_script=True,
         ))
         assert result["success"] is False
 

@@ -933,21 +933,15 @@ class HonchoSessionManager:
             # Fall back to peer-level context, respecting the requested peer
             peer_id = self._resolve_peer_id(session, peer)
             if peer_id is None:
-                return {}
+                peer_id = session.user_peer_id
             return self._fetch_peer_context(peer_id, target=peer_id)
 
         try:
             peer_id = self._resolve_peer_id(session, peer)
-            if peer_id is None:
-                return {}
             ctx = honcho_session.context(
                 summary=True,
                 peer_target=peer_id,
-                peer_perspective=(
-                    session.user_peer_id
-                    if peer_id == session.user_peer_id
-                    else session.assistant_peer_id
-                ),
+                peer_perspective=session.user_peer_id if peer == "user" else session.assistant_peer_id,
             )
 
             result: dict[str, Any] = {}
@@ -975,12 +969,11 @@ class HonchoSessionManager:
             logger.debug("Session context fetch failed: %s", e)
             return {}
 
-    def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str | None:
-        """Resolve an allowed peer alias or current-session peer ID.
+    def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str:
+        """Resolve a peer alias or explicit peer ID to a concrete Honcho peer ID.
 
-        Honcho workspaces may contain peers for many gateway users. Tool input is
-        model-controlled, so explicit IDs are limited to the two peers bound to
-        the current session; arbitrary workspace peer IDs must not be accepted.
+        Always returns a non-empty string: either a known peer ID or a
+        sanitized version of the caller-supplied alias/ID.
         """
         candidate = (peer or "user").strip()
         if not candidate:
@@ -991,17 +984,8 @@ class HonchoSessionManager:
             return session.user_peer_id
         if normalized == self._sanitize_id("ai"):
             return session.assistant_peer_id
-        if normalized == session.user_peer_id:
-            return session.user_peer_id
-        if normalized == session.assistant_peer_id:
-            return session.assistant_peer_id
 
-        logger.warning(
-            "Rejected Honcho peer '%s' outside session '%s'",
-            peer,
-            session.key,
-        )
-        return None
+        return normalized
 
     def _resolve_observer_target(
         self,
@@ -1010,8 +994,6 @@ class HonchoSessionManager:
     ) -> tuple[str, str | None]:
         """Resolve observer and target peer IDs for context/search/profile queries."""
         target_peer_id = self._resolve_peer_id(session, peer)
-        if target_peer_id is None:
-            raise ValueError(f"Peer is not allowed for session {session.key!r}: {peer!r}")
 
         if target_peer_id == session.assistant_peer_id:
             return session.assistant_peer_id, session.assistant_peer_id
@@ -1058,7 +1040,7 @@ class HonchoSessionManager:
             session_key: Session to search against.
             query: Search query for semantic matching.
             max_tokens: Token budget for returned content.
-            peer: Peer alias or current-session explicit peer ID to search about.
+            peer: Peer alias or explicit peer ID to search about.
 
         Returns:
             Relevant context excerpts as a string, or empty string if none.
@@ -1096,7 +1078,7 @@ class HonchoSessionManager:
         Args:
             session_key: Session to associate the conclusion with.
             content: The conclusion text.
-            peer: Peer alias or current-session explicit peer ID. "user" is the default alias.
+            peer: Peer alias or explicit peer ID. "user" is the default alias.
 
         Returns:
             True on success, False on failure.
@@ -1141,7 +1123,7 @@ class HonchoSessionManager:
         Args:
             session_key: Session key for peer resolution.
             conclusion_id: The conclusion ID to delete.
-            peer: Peer alias or current-session explicit peer ID.
+            peer: Peer alias or explicit peer ID.
 
         Returns:
             True on success, False on failure.
@@ -1151,9 +1133,6 @@ class HonchoSessionManager:
             return False
         try:
             target_peer_id = self._resolve_peer_id(session, peer)
-            if target_peer_id is None:
-                logger.warning("Could not resolve conclusion peer '%s' for session '%s'", peer, session_key)
-                return False
             if target_peer_id == session.assistant_peer_id:
                 observer = self._get_or_create_peer(session.assistant_peer_id)
                 scope = observer.conclusions_of(session.assistant_peer_id)
@@ -1176,7 +1155,7 @@ class HonchoSessionManager:
         Args:
             session_key: Session key for peer resolution.
             card: New peer card as list of fact strings.
-            peer: Peer alias or current-session explicit peer ID.
+            peer: Peer alias or explicit peer ID.
 
         Returns:
             Updated card on success, None on failure.

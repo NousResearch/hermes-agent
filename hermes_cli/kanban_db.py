@@ -3873,50 +3873,33 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
         pass
 
 
-def _hermes_main_bootstrap() -> str:
-    """Return Python code that runs Hermes without importing from child CWD."""
-    trusted_root = str(Path(__file__).resolve().parent.parent)
-    return "\n".join(
-        [
-            "import os, runpy, sys",
-            f"trusted_root = os.path.realpath({trusted_root!r})",
-            "cwd = os.path.realpath(os.getcwd())",
-            "safe_path = []",
-            "cwd_prefix = cwd + os.path.sep",
-            "for p in sys.path:",
-            "    if not p or not os.path.isabs(p):",
-            "        continue",
-            "    rp = os.path.realpath(p)",
-            "    if rp == trusted_root or rp == cwd or rp.startswith(cwd_prefix):",
-            "        continue",
-            "    safe_path.append(p)",
-            "sys.path = [trusted_root] + safe_path",
-            "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)",
-        ]
-    )
-
-
 def _resolve_hermes_argv() -> list[str]:
-    """Resolve the ``hermes`` invocation as trusted argv parts for ``Popen``.
+    """Resolve the ``hermes`` invocation as argv parts for ``Popen``.
 
-    The dispatcher later starts the worker with ``cwd`` set to the task
-    workspace, so every executable/import location in the startup path must be
-    anchored before that directory switch happens.
+    Tries in order:
+
+    1. ``shutil.which("hermes")`` — the console-script shim, the same form
+       that shows up in ``ps`` output and existing logs. Preferred so live
+       systems' diagnostics stay familiar.
+    2. ``sys.executable -m hermes_cli.main`` — fallback for setups where
+       Hermes is launched from a venv and the ``hermes`` shim is not on
+       the dispatcher's ``$PATH`` (cron, systemd ``User=`` services,
+       launchd jobs, detached processes, etc.). Goes through the running
+       interpreter so the result is independent of ``$PATH``.
+
+    Mirrors ``gateway.run._resolve_hermes_bin`` for the same reason. Kept
+    local (not imported from gateway) because ``hermes_cli`` sits below
+    ``gateway`` in the dependency order.
     """
     import shutil
 
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
-        hermes_path = hermes_bin if os.path.isabs(hermes_bin) else os.path.abspath(hermes_bin)
-        return [hermes_path]
-    # Fall back through the running interpreter, but do not use ``-m`` from
-    # the task workspace: Python prepends cwd to module search paths. ``-P``
-    # avoids that implicit cwd entry and the bootstrap adds only the trusted
-    # install/source root that loaded this module.
-    python_exe = (
-        sys.executable if os.path.isabs(sys.executable) else os.path.abspath(sys.executable)
-    )
-    return [python_exe, "-P", "-c", _hermes_main_bootstrap()]
+        return [hermes_bin]
+    # Fallback to the module form. ``hermes_cli.main`` is the actual
+    # console-script target declared in pyproject.toml, NOT a top-level
+    # ``hermes`` package — there is no ``hermes`` package to import.
+    return [sys.executable, "-m", "hermes_cli.main"]
 
 
 def _default_spawn(

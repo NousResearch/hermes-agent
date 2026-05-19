@@ -974,67 +974,6 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
 
 
 @pytest.mark.asyncio
-async def test_startup_auto_resume_skips_unauthorized_origin():
-    """Startup auto-resume must re-check current authorization before dispatch."""
-    runner, adapter = make_restart_runner()
-    source = make_restart_source(chat_id="revoked-chat")
-    pending_entry = SessionEntry(
-        session_key="agent:main:telegram:dm:revoked-chat",
-        session_id="sid",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        origin=source,
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        resume_pending=True,
-        resume_reason="restart_timeout",
-        last_resume_marked_at=datetime.now(),
-    )
-    runner.session_store._entries = {pending_entry.session_key: pending_entry}
-    runner._is_user_authorized = MagicMock(return_value=False)
-    adapter.handle_message = AsyncMock()
-
-    scheduled = runner._schedule_resume_pending_sessions()
-
-    assert scheduled == 0
-    runner._is_user_authorized.assert_called_once_with(source)
-    adapter.handle_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_startup_auto_resume_honors_pre_gateway_dispatch_skip():
-    """Startup auto-resume must honor plugin access-control hooks."""
-    runner, adapter = make_restart_runner()
-    source = make_restart_source(chat_id="plugin-denied-chat")
-    pending_entry = SessionEntry(
-        session_key="agent:main:telegram:dm:plugin-denied-chat",
-        session_id="sid",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        origin=source,
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        resume_pending=True,
-        resume_reason="restart_timeout",
-        last_resume_marked_at=datetime.now(),
-    )
-    runner.session_store._entries = {pending_entry.session_key: pending_entry}
-    runner._is_user_authorized = MagicMock(return_value=True)
-    adapter.handle_message = AsyncMock()
-
-    with patch(
-        "hermes_cli.plugins.invoke_hook",
-        return_value=[{"action": "skip", "reason": "revoked"}],
-    ) as invoke_hook:
-        scheduled = runner._schedule_resume_pending_sessions()
-
-    assert scheduled == 0
-    invoke_hook.assert_called_once()
-    runner._is_user_authorized.assert_not_called()
-    adapter.handle_message.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_startup_auto_resume_includes_crash_recovery():
     """Crash-recovered sessions (reason=restart_interrupted) are also auto-resumed.
 

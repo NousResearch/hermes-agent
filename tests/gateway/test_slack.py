@@ -2024,71 +2024,6 @@ class TestThreadReplyHandling:
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_unauthorized_mention_does_not_arm_thread(
-        self, adapter_with_session_store, mock_session_store
-    ):
-        """Gateway-denied Slack users must not opt threads into auto-response."""
-        mock_session_store._entries = {}
-        adapter_with_session_store.gateway_runner = MagicMock()
-        adapter_with_session_store.gateway_runner._is_user_authorized.side_effect = (
-            lambda source: source.user_id == "U_GOOD"
-        )
-        adapter_with_session_store._fetch_thread_context = AsyncMock(
-            return_value="unauthorized-user: ATTACKER_PRIMER\n"
-        )
-
-        unauthorized_mention = {
-            "text": "<@U_BOT> ATTACKER_PRIMER",
-            "user": "U_BAD",
-            "channel": "C123",
-            "ts": "123.456",
-            "thread_ts": "123.000",
-            "channel_type": "channel",
-            "team": "T_TEAM",
-        }
-        await adapter_with_session_store._handle_slack_message(unauthorized_mention)
-
-        assert "123.000" not in adapter_with_session_store._mentioned_threads
-
-        adapter_with_session_store.handle_message.reset_mock()
-        adapter_with_session_store._fetch_thread_context.reset_mock()
-        authorized_unmentioned_reply = {
-            "text": "ordinary follow-up",
-            "user": "U_GOOD",
-            "channel": "C123",
-            "ts": "123.789",
-            "thread_ts": "123.000",
-            "channel_type": "channel",
-            "team": "T_TEAM",
-        }
-        await adapter_with_session_store._handle_slack_message(authorized_unmentioned_reply)
-
-        adapter_with_session_store.handle_message.assert_not_called()
-        adapter_with_session_store._fetch_thread_context.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_authorized_mention_arms_thread(
-        self, adapter_with_session_store, mock_session_store
-    ):
-        """Authorized Slack mentions still opt threads into auto-response."""
-        mock_session_store._entries = {}
-        adapter_with_session_store.gateway_runner = MagicMock()
-        adapter_with_session_store.gateway_runner._is_user_authorized.return_value = True
-
-        event = {
-            "text": "<@U_BOT> please stay in this thread",
-            "user": "U_GOOD",
-            "channel": "C123",
-            "ts": "123.456",
-            "thread_ts": "123.000",
-            "channel_type": "channel",
-            "team": "T_TEAM",
-        }
-        await adapter_with_session_store._handle_slack_message(event)
-
-        assert "123.000" in adapter_with_session_store._mentioned_threads
-
 
 # ---------------------------------------------------------------------------
 # TestAssistantThreadLifecycle
@@ -2917,14 +2852,21 @@ class TestSlashEphemeralAck:
 
     @pytest.mark.asyncio
     async def test_pop_slash_context_returns_and_removes(self, adapter):
-        """_pop_slash_context returns the context and removes it."""
+        """_pop_slash_context returns the exact user's context and removes it."""
         import time
+        from gateway.platforms.slack import _slash_user_id
+
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/test",
             "ts": time.monotonic(),
         }
 
-        ctx = adapter._pop_slash_context("C1")
+        token = _slash_user_id.set("U1")
+        try:
+            ctx = adapter._pop_slash_context("C1")
+        finally:
+            _slash_user_id.reset(token)
+
         assert ctx is not None
         assert ctx["response_url"] == "https://hooks.slack.com/test"
         # Must be removed after pop
@@ -2968,8 +2910,14 @@ class TestSlashEphemeralAck:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session):
-            result = await adapter.send("C_SLASH", "Queued for the next turn.")
+        from gateway.platforms.slack import _slash_user_id
+
+        token = _slash_user_id.set("U_SLASH")
+        try:
+            with patch("gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session):
+                result = await adapter.send("C_SLASH", "Queued for the next turn.")
+        finally:
+            _slash_user_id.reset(token)
 
         assert result.success is True
         # Verify response_url was POSTed to
@@ -2996,6 +2944,28 @@ class TestSlashEphemeralAck:
         adapter._app.client.chat_postMessage.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_send_ignores_pending_context_without_slash_user(self, adapter):
+        """Normal channel sends must not consume another user's response_url."""
+        import time
+        from gateway.platforms.slack import _slash_user_id
+
+        adapter._slash_command_contexts[("C_SHARED", "U_ATTACKER")] = {
+            "response_url": "https://hooks.slack.com/commands/attacker",
+            "ts": time.monotonic(),
+        }
+        mock_result = {"ts": "1234.5678", "ok": True}
+        adapter._app.client.chat_postMessage = AsyncMock(return_value=mock_result)
+
+        assert _slash_user_id.get() is None
+        with patch("gateway.platforms.slack.aiohttp.ClientSession") as mock_session_cls:
+            result = await adapter.send("C_SHARED", "Authorized user's response")
+
+        assert result.success is True
+        mock_session_cls.assert_not_called()
+        adapter._app.client.chat_postMessage.assert_called_once()
+        assert ("C_SHARED", "U_ATTACKER") in adapter._slash_command_contexts
+
+    @pytest.mark.asyncio
     async def test_send_slash_ephemeral_fallback_on_post_failure(self, adapter):
         """_send_slash_ephemeral returns success=True even if POST fails."""
         import time
@@ -3015,8 +2985,14 @@ class TestSlashEphemeralAck:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session):
-            result = await adapter.send("C1", "Some response")
+        from gateway.platforms.slack import _slash_user_id
+
+        token = _slash_user_id.set("U1")
+        try:
+            with patch("gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session):
+                result = await adapter.send("C1", "Some response")
+        finally:
+            _slash_user_id.reset(token)
 
         # Still success — the user saw the initial ack already
         assert result.success is True
@@ -3035,8 +3011,14 @@ class TestSlashEphemeralAck:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session):
-            result = await adapter.send("C1", "Some response")
+        from gateway.platforms.slack import _slash_user_id
+
+        token = _slash_user_id.set("U1")
+        try:
+            with patch("gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session):
+                result = await adapter.send("C1", "Some response")
+        finally:
+            _slash_user_id.reset(token)
 
         assert result.success is True
 
@@ -3150,7 +3132,6 @@ class TestSlashEphemeralAck:
         # ContextVar is unset (default=None) — simulates a normal message send.
         assert _slash_user_id.get() is None
         ctx = adapter._pop_slash_context("C1")
-        # Fallback scan still finds it (channel-only) — this is fine for
-        # the normal single-user case; the ContextVar path is the precise one.
-        # The key invariant is: when the ContextVar IS set, it matches exactly.
-        assert ctx is not None  # fallback path finds the entry
+
+        assert ctx is None
+        assert ("C1", "U1") in adapter._slash_command_contexts

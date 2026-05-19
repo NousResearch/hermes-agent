@@ -39,6 +39,8 @@ from html import escape as _html_escape
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+MATRIX_LOCAL_FILE_MAX_BYTES = 50 * 1024 * 1024
+
 try:
     from mautrix.types import (
         ContentURI,
@@ -418,6 +420,49 @@ class MatrixAdapter(BasePlatformAdapter):
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
         }
+
+    async def _is_approval_reaction_user_authorized(self, sender: str, room_id: str) -> bool:
+        """Return whether a Matrix reaction sender may resolve an approval prompt."""
+        sender = str(sender or "").strip()
+        room_id = str(room_id or "").strip()
+        if not sender or not room_id:
+            return False
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                chat_type = "dm" if await self._is_dm_room(room_id) else "group"
+                source = self.build_source(
+                    chat_id=room_id,
+                    chat_type=chat_type,
+                    user_id=sender,
+                )
+                return bool(auth_fn(source))
+            except Exception:
+                logger.debug(
+                    "Matrix: falling back to env-only approval reaction auth for %s",
+                    sender,
+                    exc_info=True,
+                )
+
+        if os.getenv("MATRIX_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+
+        allowed_ids = set(self._allowed_user_ids)
+        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+        if global_allowlist:
+            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+
+        if not allowed_ids:
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        if "*" in allowed_ids:
+            return True
+
+        check_ids = {sender}
+        if "@" in sender:
+            check_ids.add(sender.split("@")[0])
+        return bool(check_ids & allowed_ids)
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -1326,6 +1371,14 @@ class MatrixAdapter(BasePlatformAdapter):
             return await self.send(
                 room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
             )
+        if not p.is_file():
+            return SendResult(success=False, error="Matrix media path must be a regular file")
+        try:
+            size = p.stat().st_size
+        except OSError as exc:
+            return SendResult(success=False, error=f"Matrix media file is not accessible: {exc}")
+        if size > MATRIX_LOCAL_FILE_MAX_BYTES:
+            return SendResult(success=False, error="Matrix media file exceeds the 50 MiB upload limit")
 
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
@@ -2081,7 +2134,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if prompt and not prompt.resolved:
                 if room_id != prompt.chat_id:
                     return
-                if self._allowed_user_ids and sender not in self._allowed_user_ids:
+                if not await self._is_approval_reaction_user_authorized(sender, room_id):
                     logger.info(
                         "Matrix: ignoring approval reaction from unauthorized user %s on %s",
                         sender, reacts_to,

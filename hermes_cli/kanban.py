@@ -230,6 +230,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Optional hex color (e.g. '#8b5cf6') for the dashboard")
     b_create.add_argument("--switch", action="store_true",
                           help="Switch to the new board after creating it")
+    b_create.add_argument("--default-workdir", default=None,
+                          help="Default workspace path for tasks created on this board")
 
     b_rm = boards_sub.add_parser(
         "rm", aliases=["remove", "delete"],
@@ -257,6 +259,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     b_rename.add_argument("slug")
     b_rename.add_argument("name", help="New display name")
+
+    b_set_wd = boards_sub.add_parser(
+        "set-default-workdir",
+        help="Set the default workspace path for tasks on a board",
+    )
+    b_set_wd.add_argument("slug")
+    b_set_wd.add_argument("path", nargs="?", default=None,
+                          help="Absolute path to use as default workdir. Omit to clear.")
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
@@ -846,6 +856,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_show(args)
     if sub == "rename":
         return _cmd_boards_rename(args)
+    if sub == "set-default-workdir":
+        return _cmd_boards_set_default_workdir(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -916,6 +928,7 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         description=args.description,
         icon=args.icon,
         color=args.color,
+        default_workdir=args.default_workdir,
     )
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")
@@ -993,6 +1006,25 @@ def _cmd_boards_rename(args: argparse.Namespace) -> int:
         return 1
     meta = kb.write_board_metadata(normed, name=args.name)
     print(f"Board {normed!r} renamed to {meta['name']!r}.")
+    return 0
+
+
+def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards set-default-workdir: {exc}", file=sys.stderr)
+        return 2
+    if not normed or not kb.board_exists(normed):
+        print(f"kanban boards set-default-workdir: board {args.slug!r} does not exist",
+              file=sys.stderr)
+        return 1
+    meta = kb.write_board_metadata(normed, default_workdir=args.path)
+    new_val = meta.get("default_workdir")
+    if new_val:
+        print(f"Board {normed!r} default workdir set to {new_val!r}.")
+    else:
+        print(f"Board {normed!r} default workdir cleared.")
     return 0
 
 

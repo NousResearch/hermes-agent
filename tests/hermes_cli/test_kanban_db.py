@@ -1744,3 +1744,44 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
         conn.close()
     age = kb.task_age(task)
     assert age["created_age_seconds"] is None
+
+
+# ---------------------------------------------------------------------------
+# Board-level default_workdir
+# ---------------------------------------------------------------------------
+
+
+def test_create_task_without_workspace_inherits_board_default_workdir(kanban_home, monkeypatch):
+    """Board with default_workdir → create_task without workspace_path → inherits default."""
+    default_wd = "/home/user/project"
+    kb.create_board("work-proj", default_workdir=default_wd)
+
+    with kb.connect(board="work-proj") as conn:
+        tid = kb.create_task(conn, title="inherited", board="work-proj")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.workspace_path == default_wd
+
+
+def test_create_task_without_workspace_no_default_stays_none(kanban_home):
+    """Board without default_workdir → create_task without workspace_path → stays None."""
+    kb.create_board("empty-board")
+
+    with kb.connect(board="empty-board") as conn:
+        tid = kb.create_task(conn, title="none", board="empty-board")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.workspace_path is None
+
+
+def test_create_task_with_explicit_workspace_ignores_board_default(kanban_home):
+    """create_task with explicit workspace_path → ignores board default."""
+    kb.create_board("custom-ws-board", default_workdir="/board/default")
+
+    explicit = "/my/explicit/path"
+    with kb.connect(board="custom-ws-board") as conn:
+        tid = kb.create_task(conn, title="explicit", workspace_path=explicit, board="custom-ws-board")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.workspace_path == explicit
+    assert t.workspace_path != "/board/default"

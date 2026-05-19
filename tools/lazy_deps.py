@@ -152,6 +152,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # defusedxml only; aiohttp/httpx are core dependencies of every messaging
     # adapter and ship via `platform.discord` / `platform.slack` / etc.
     "platform.wecom_callback": ("defusedxml==0.7.1",),
+    # Svix adapter — Python SDK for fetching events from Svix
+    # polling endpoints. The svix CLI (used at setup time, not at runtime)
+    # is installed separately via Homebrew / the user's package manager.
+    "platform.svix": ("svix>=1.93.0,<2",),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),

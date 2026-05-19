@@ -33,10 +33,8 @@ import hashlib
 import hmac
 import json
 import logging
-import re
-import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 try:
     from aiohttp import web
@@ -51,17 +49,10 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
-    SendResult,
 )
+from gateway.platforms.helpers import WebhookDeliveryMixin
 
 logger = logging.getLogger(__name__)
-
-_BUILTIN_DELIVER_PLATFORMS = {
-    "telegram", "discord", "slack", "signal", "sms", "whatsapp",
-    "matrix", "mattermost", "homeassistant", "email", "dingtalk",
-    "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
-    "qqbot", "yuanbao",
-}
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
@@ -97,8 +88,12 @@ def check_webhook_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
-class WebhookAdapter(BasePlatformAdapter):
+class WebhookAdapter(WebhookDeliveryMixin, BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
+
+    # Identifiers used by WebhookDeliveryMixin for logs / fallback rendering.
+    _log_tag = "[webhook]"
+    _event_noun = "Webhook"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
@@ -219,67 +214,14 @@ class WebhookAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[webhook] Disconnected")
 
-    async def send(
-        self,
-        chat_id: str,
-        content: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Deliver the agent's response to the configured destination.
+    @property
+    def _delivery_info_ttl(self) -> int:
+        """TTL (seconds) for delivery_info pruning, read by the mixin.
 
-        chat_id is ``webhook:{route}:{delivery_id}``.  The delivery info
-        stored during webhook receipt is read with ``.get()`` (not popped)
-        so that interim status messages emitted before the final response
-        — fallback-model notifications, context-pressure warnings, etc. —
-        do not consume the entry and silently downgrade the final response
-        to the ``log`` deliver type.  TTL cleanup happens on POST.
+        Tied to the idempotency TTL: a delivery_info entry is only useful for
+        as long as we'd still treat a retry of that delivery as a duplicate.
         """
-        delivery = self._delivery_info.get(chat_id, {})
-        deliver_type = delivery.get("deliver", "log")
-
-        if deliver_type == "log":
-            logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
-            return SendResult(success=True)
-
-        if deliver_type == "github_comment":
-            return await self._deliver_github_comment(content, delivery)
-
-        # Cross-platform delivery — any platform with a gateway adapter.
-        # Check both built-in names and plugin-registered platforms.
-        _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
-        if not _is_known_platform:
-            try:
-                from gateway.platform_registry import platform_registry
-                _is_known_platform = platform_registry.is_registered(deliver_type)
-            except Exception:
-                pass
-        if self.gateway_runner and _is_known_platform:
-            return await self._deliver_cross_platform(
-                deliver_type, content, delivery
-            )
-
-        logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
-        return SendResult(
-            success=False, error=f"Unknown deliver type: {deliver_type}"
-        )
-
-    def _prune_delivery_info(self, now: float) -> None:
-        """Drop delivery_info entries older than the idempotency TTL.
-
-        Mirrors the cleanup pattern used for ``_seen_deliveries``.  Called
-        on each POST so the dict size is bounded by ``rate_limit * TTL``
-        even if many webhooks fire and never receive a final response.
-        """
-        cutoff = now - self._idempotency_ttl
-        stale = [
-            k
-            for k, t in self._delivery_info_created.items()
-            if t < cutoff
-        ]
-        for k in stale:
-            self._delivery_info.pop(k, None)
-            self._delivery_info_created.pop(k, None)
+        return self._idempotency_ttl
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
@@ -455,33 +397,7 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
         # Inject skill content if configured.
-        # We call build_skill_invocation_message() directly rather than
-        # using /skill-name slash commands — the gateway's command parser
-        # would intercept those and break the flow.
-        skills = route_config.get("skills", [])
-        if skills:
-            try:
-                from agent.skill_commands import (
-                    build_skill_invocation_message,
-                    get_skill_commands,
-                )
-
-                skill_cmds = get_skill_commands()
-                for skill_name in skills:
-                    cmd_key = f"/{skill_name}"
-                    if cmd_key in skill_cmds:
-                        skill_content = build_skill_invocation_message(
-                            cmd_key, user_instruction=prompt
-                        )
-                        if skill_content:
-                            prompt = skill_content
-                            break  # Load the first matching skill
-                    else:
-                        logger.warning(
-                            "[webhook] Skill '%s' not found", skill_name
-                        )
-            except Exception as e:
-                logger.warning("[webhook] Skill loading failed: %s", e)
+        prompt = self._inject_skill(prompt, route_config.get("skills", []))
 
         # Build a unique delivery ID
         delivery_id = request.headers.get(
@@ -736,190 +652,3 @@ class WebhookAdapter(BasePlatformAdapter):
             if version == "v1" and hmac.compare_digest(signature, expected):
                 return True
         return False
-
-    # ------------------------------------------------------------------
-    # Prompt rendering
-    # ------------------------------------------------------------------
-
-    def _render_prompt(
-        self,
-        template: str,
-        payload: dict,
-        event_type: str,
-        route_name: str,
-    ) -> str:
-        """Render a prompt template with the webhook payload.
-
-        Supports dot-notation access into nested dicts:
-        ``{pull_request.title}`` → ``payload["pull_request"]["title"]``
-
-        Special token ``{__raw__}`` dumps the entire payload as indented
-        JSON (truncated to 4000 chars).  Useful for monitoring alerts or
-        any webhook where the agent needs to see the full payload.
-        """
-        if not template:
-            truncated = json.dumps(payload, indent=2)[:4000]
-            return (
-                f"Webhook event '{event_type}' on route "
-                f"'{route_name}':\n\n```json\n{truncated}\n```"
-            )
-
-        def _resolve(match: re.Match) -> str:
-            key = match.group(1)
-            # Special token: dump the entire payload as JSON
-            if key == "__raw__":
-                return json.dumps(payload, indent=2)[:4000]
-            value: Any = payload
-            for part in key.split("."):
-                if isinstance(value, dict):
-                    value = value.get(part, f"{{{key}}}")
-                else:
-                    return f"{{{key}}}"
-            if isinstance(value, (dict, list)):
-                return json.dumps(value, indent=2)[:2000]
-            return str(value)
-
-        return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
-
-    def _render_delivery_extra(
-        self, extra: dict, payload: dict
-    ) -> dict:
-        """Render delivery_extra template values with payload data."""
-        rendered: Dict[str, Any] = {}
-        for key, value in extra.items():
-            if isinstance(value, str):
-                rendered[key] = self._render_prompt(value, payload, "", "")
-            else:
-                rendered[key] = value
-        return rendered
-
-    # ------------------------------------------------------------------
-    # Response delivery
-    # ------------------------------------------------------------------
-
-    async def _direct_deliver(
-        self, content: str, delivery: dict
-    ) -> SendResult:
-        """Deliver *content* directly without invoking the agent.
-
-        Used by ``deliver_only`` routes: the rendered template becomes the
-        literal message body, and we dispatch to the same delivery helpers
-        that the agent-mode ``send()`` flow uses.  All target types that
-        work in agent mode work here — Telegram, Discord, Slack, GitHub
-        PR comments, etc.
-        """
-        deliver_type = delivery.get("deliver", "log")
-
-        if deliver_type == "log":
-            # Shouldn't reach here — startup validation rejects deliver_only
-            # with deliver=log — but guard defensively.
-            logger.info("[webhook] direct-deliver log-only: %s", content[:200])
-            return SendResult(success=True)
-
-        if deliver_type == "github_comment":
-            return await self._deliver_github_comment(content, delivery)
-
-        # Fall through to the cross-platform dispatcher, which validates the
-        # target name and routes via the gateway runner.
-        return await self._deliver_cross_platform(
-            deliver_type, content, delivery
-        )
-
-    async def _deliver_github_comment(
-        self, content: str, delivery: dict
-    ) -> SendResult:
-        """Post agent response as a GitHub PR/issue comment via ``gh`` CLI."""
-        extra = delivery.get("deliver_extra", {})
-        repo = extra.get("repo", "")
-        pr_number = extra.get("pr_number", "")
-
-        if not repo or not pr_number:
-            logger.error(
-                "[webhook] github_comment delivery missing repo or pr_number"
-            )
-            return SendResult(
-                success=False, error="Missing repo or pr_number"
-            )
-
-        try:
-            result = subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "comment",
-                    str(pr_number),
-                    "--repo",
-                    repo,
-                    "--body",
-                    content,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode == 0:
-                logger.info(
-                    "[webhook] Posted comment on %s#%s", repo, pr_number
-                )
-                return SendResult(success=True)
-            else:
-                logger.error(
-                    "[webhook] gh pr comment failed: %s", result.stderr
-                )
-                return SendResult(success=False, error=result.stderr)
-        except FileNotFoundError:
-            logger.error(
-                "[webhook] 'gh' CLI not found — install GitHub CLI for "
-                "github_comment delivery"
-            )
-            return SendResult(
-                success=False, error="gh CLI not installed"
-            )
-        except Exception as e:
-            logger.error("[webhook] github_comment delivery error: %s", e)
-            return SendResult(success=False, error=str(e))
-
-    async def _deliver_cross_platform(
-        self, platform_name: str, content: str, delivery: dict
-    ) -> SendResult:
-        """Route response to another platform (telegram, discord, etc.)."""
-        if not self.gateway_runner:
-            return SendResult(
-                success=False,
-                error="No gateway runner for cross-platform delivery",
-            )
-
-        try:
-            target_platform = Platform(platform_name)
-        except ValueError:
-            return SendResult(
-                success=False, error=f"Unknown platform: {platform_name}"
-            )
-
-        adapter = self.gateway_runner.adapters.get(target_platform)
-        if not adapter:
-            return SendResult(
-                success=False,
-                error=f"Platform {platform_name} not connected",
-            )
-
-        # Use home channel if no specific chat_id in deliver_extra
-        extra = delivery.get("deliver_extra", {})
-        chat_id = extra.get("chat_id", "")
-        if not chat_id:
-            home = self.gateway_runner.config.get_home_channel(target_platform)
-            if home:
-                chat_id = home.chat_id
-            else:
-                return SendResult(
-                    success=False,
-                    error=f"No chat_id or home channel for {platform_name}",
-                )
-
-        # Pass thread_id from deliver_extra so Telegram forum topics work
-        metadata = None
-        thread_id = extra.get("message_thread_id") or extra.get("thread_id")
-        if thread_id:
-            metadata = {"thread_id": thread_id}
-
-        return await adapter.send(chat_id, content, metadata=metadata)

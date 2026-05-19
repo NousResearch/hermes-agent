@@ -571,6 +571,16 @@ PLATFORM_HINTS = {
         "code fences). Treat this like a conversation, not a document. Keep responses "
         "brief and natural."
     ),
+    "svix": (
+        "You are processing a webhook event delivered via Svix's polling "
+        "endpoint API. There is no user present in this turn — execute the "
+        "task fully and autonomously based on the rendered event payload, "
+        "making reasonable decisions where needed. Your response is "
+        "forwarded to the route's configured deliver target (telegram, "
+        "discord, github_comment, etc.), so put the final user-facing "
+        "content directly in your response. Format for the destination "
+        "platform; when in doubt, prefer concise plain text."
+    ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "
         "Full Markdown rendering is supported — headings, bold, italic, code "

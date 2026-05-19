@@ -120,6 +120,7 @@ class Platform(Enum):
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
     MSGRAPH_WEBHOOK = "msgraph_webhook"
+    SVIX = "svix"
     FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
@@ -427,6 +428,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(
         str(cfg.extra.get("client_state") or "").strip()
     ),
+    Platform.SVIX: lambda cfg: cfg.enabled,
     Platform.FEISHU: lambda cfg: bool(cfg.extra.get("app_id")),
     Platform.WECOM: lambda cfg: bool(cfg.extra.get("bot_id")),
     Platform.WECOM_CALLBACK: lambda cfg: bool(
@@ -1481,6 +1483,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    svix_enabled_env = os.getenv("SVIX_ENABLED", "").lower() in {"true", "1", "yes"}
+    if svix_enabled_env or Platform.SVIX in config.platforms:
+        if Platform.SVIX not in config.platforms:
+            config.platforms[Platform.SVIX] = PlatformConfig()
+        if svix_enabled_env:
+            config.platforms[Platform.SVIX].enabled = True
+        if svix_auth_token:
+            config.platforms[Platform.SVIX].token = svix_auth_token
+        svix_poll_interval = os.getenv("SVIX_POLL_INTERVAL")
+        if svix_poll_interval:
+            try:
+                config.platforms[Platform.SVIX].extra["poll_interval"] = float(
+                    svix_poll_interval
+                )
+            except ValueError:
+                pass
 
     # Microsoft Graph webhook platform
     msgraph_webhook_enabled = os.getenv("MSGRAPH_WEBHOOK_ENABLED", "").lower() in {

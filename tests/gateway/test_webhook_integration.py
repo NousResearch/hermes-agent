@@ -316,7 +316,7 @@ class TestGitHubCommentDelivery:
         mock_result.stderr = ""
 
         with patch(
-            "gateway.platforms.webhook.subprocess.run",
+            "gateway.platforms.helpers.subprocess.run",
             return_value=mock_result,
         ) as mock_run:
             result = await adapter.send(

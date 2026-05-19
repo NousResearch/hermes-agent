@@ -2,21 +2,23 @@
 
 Extracts common patterns that were duplicated across 5-7 adapters:
 message deduplication, text batch aggregation, markdown stripping,
-and thread participation tracking.
+thread participation tracking, and the webhook-style render→deliver
+pipeline shared by the ``webhook`` and ``svix`` adapters.
 """
 
 import asyncio
 import json
 import logging
 import re
+import subprocess
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from utils import atomic_json_write
 
 if TYPE_CHECKING:
-    from gateway.platforms.base import MessageEvent
+    from gateway.platforms.base import MessageEvent, SendResult
 
 logger = logging.getLogger(__name__)
 
@@ -276,3 +278,327 @@ def redact_phone(phone: str) -> str:
     if len(phone) <= 8:
         return phone[:2] + "****" + phone[-2:] if len(phone) > 4 else "****"
     return phone[:4] + "****" + phone[-4:]
+
+
+# ─── Webhook-style render → deliver pipeline ──────────────────────────────────
+
+# Built-in platform names that can be a ``deliver`` target. Plugin-registered
+# platforms are resolved at send time via the platform registry, so this set is
+# just the fast path / offline fallback.
+_BUILTIN_DELIVER_PLATFORMS = frozenset({
+    "telegram", "discord", "slack", "signal", "sms", "whatsapp",
+    "matrix", "mattermost", "homeassistant", "email", "dingtalk",
+    "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
+    "qqbot", "yuanbao",
+})
+
+# Matches the ``{a.b.c}`` / ``{__raw__}`` placeholders used by prompt and
+# deliver_extra templates.
+_PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z0-9_.]+\}")
+
+
+class WebhookDeliveryMixin:
+    """Shared render → deliver pipeline for the webhook & svix adapters.
+
+    Both adapters ingest an event (an HTTP POST for ``webhook``, a polled
+    Svix message for ``svix``), render a prompt/delivery template from the
+    payload, optionally inject a skill, then route the agent's response to a
+    ``deliver`` target — ``log``, ``github_comment``, or any connected
+    platform via the gateway runner. That tail end was duplicated almost
+    verbatim; this mixin owns it.
+
+    Concrete adapters must set the following on ``self`` (in ``__init__``):
+      - ``_log_tag``: log prefix, e.g. ``"[webhook]"`` / ``"[svix]"``
+      - ``_event_noun``: human noun for the no-template fallback, e.g.
+        ``"Webhook"`` / ``"Svix"``
+      - ``_delivery_info``: ``Dict[str, dict]`` keyed by session chat_id
+      - ``_delivery_info_created``: ``Dict[str, float]`` of creation times
+      - ``_delivery_info_ttl``: seconds before a delivery_info entry is pruned
+      - ``gateway_runner``: set by ``GatewayRunner._create_adapter`` (may be
+        ``None`` before the gateway wires it up)
+
+    and inherit ``build_source`` / ``handle_message`` from
+    ``BasePlatformAdapter``. Mix in *before* ``BasePlatformAdapter`` so this
+    ``send()`` satisfies the abstract method.
+    """
+
+    # Attribute type hints for the contract above (set by the concrete adapter).
+    _log_tag: str
+    _event_noun: str
+    _delivery_info: Dict[str, dict]
+    _delivery_info_created: Dict[str, float]
+    _delivery_info_ttl: float
+
+    # ── Template rendering ────────────────────────────────────────────────
+
+    def _render_prompt(
+        self,
+        template: str,
+        payload: dict,
+        event_type: str,
+        route_name: str,
+    ) -> str:
+        """Render a prompt template against the event payload.
+
+        Supports dot-notation access into nested dicts
+        (``{pull_request.title}`` → ``payload["pull_request"]["title"]``),
+        the ``{__raw__}`` token (entire payload as indented JSON, capped at
+        4000 chars), and ``{__event__}`` (the event type). Missing keys are
+        left verbatim so a template typo is visible rather than silently
+        blanked. An empty template falls back to a JSON dump with event/route
+        context.
+        """
+        if not template:
+            truncated = json.dumps(payload, indent=2)[:4000]
+            return (
+                f"{self._event_noun} event '{event_type}' on route "
+                f"'{route_name}':\n\n```json\n{truncated}\n```"
+            )
+
+        def _resolve(match: "re.Match") -> str:
+            key = match.group(1)
+            if key == "__raw__":
+                return json.dumps(payload, indent=2)[:4000]
+            if key == "__event__":
+                return event_type
+            value: Any = payload
+            for part in key.split("."):
+                if isinstance(value, dict):
+                    value = value.get(part, f"{{{key}}}")
+                else:
+                    return f"{{{key}}}"
+            if isinstance(value, (dict, list)):
+                return json.dumps(value, indent=2)[:2000]
+            return str(value)
+
+        return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
+
+    def _render_delivery_extra(self, extra: dict, payload: dict) -> dict:
+        """Render string values in ``deliver_extra`` with payload data.
+
+        Non-string values pass through untouched. Because these values decide
+        *where* the response goes (chat_id, repo, pr_number, …), an
+        unresolved placeholder left behind by a missing payload path is logged
+        loudly — silently mis-routing delivery is worse than a noisy warning.
+        """
+        rendered: Dict[str, Any] = {}
+        for key, value in extra.items():
+            if isinstance(value, str):
+                out = self._render_prompt(value, payload, "", "")
+                unresolved = [
+                    tok for tok in _PLACEHOLDER_RE.findall(value) if tok in out
+                ]
+                if unresolved:
+                    logger.warning(
+                        "%s deliver_extra.%s still contains unresolved "
+                        "placeholder(s) %s after rendering (payload path "
+                        "missing?); delivery may be mis-routed. Rendered "
+                        "value: %r",
+                        self._log_tag, key, unresolved, out,
+                    )
+                rendered[key] = out
+            else:
+                rendered[key] = value
+        return rendered
+
+    def _inject_skill(self, prompt: str, skills) -> str:
+        """Wrap *prompt* in the first configured skill's invocation message.
+
+        Calls ``build_skill_invocation_message`` directly rather than emitting
+        a ``/skill`` slash command, which the gateway command parser would
+        intercept. Returns *prompt* unchanged when no skill is configured or
+        loadable.
+        """
+        if not skills:
+            return prompt
+        try:
+            from agent.skill_commands import (
+                build_skill_invocation_message,
+                get_skill_commands,
+            )
+            skill_cmds = get_skill_commands()
+            for skill_name in skills:
+                cmd_key = f"/{skill_name}"
+                if cmd_key in skill_cmds:
+                    skill_content = build_skill_invocation_message(
+                        cmd_key, user_instruction=prompt
+                    )
+                    if skill_content:
+                        return skill_content
+                else:
+                    logger.warning(
+                        "%s Skill '%s' not found", self._log_tag, skill_name
+                    )
+        except Exception as exc:
+            logger.warning("%s Skill loading failed: %s", self._log_tag, exc)
+        return prompt
+
+    # ── delivery_info bookkeeping ─────────────────────────────────────────
+
+    def _prune_delivery_info(self, now: float) -> None:
+        """Drop delivery_info entries older than ``_delivery_info_ttl``.
+
+        Keeps the dict bounded even if many events fire and never receive a
+        final response. Called on each new event.
+        """
+        cutoff = now - self._delivery_info_ttl
+        stale = [
+            k for k, t in self._delivery_info_created.items() if t < cutoff
+        ]
+        for k in stale:
+            self._delivery_info.pop(k, None)
+            self._delivery_info_created.pop(k, None)
+
+    # ── Response delivery ─────────────────────────────────────────────────
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Deliver the agent's response to the destination for ``chat_id``.
+
+        The delivery info stored when the event was received is read with
+        ``.get()`` (never popped) so interim status messages — fallback-model
+        notices, context-pressure warnings — don't consume the entry and
+        silently downgrade the final response to the ``log`` deliver type.
+        TTL cleanup happens when the next event arrives.
+        """
+        from gateway.platforms.base import SendResult
+
+        delivery = self._delivery_info.get(chat_id, {})
+        deliver_type = delivery.get("deliver", "log")
+
+        if deliver_type == "log":
+            logger.info(
+                "%s Response for %s: %s", self._log_tag, chat_id, content[:200]
+            )
+            return SendResult(success=True)
+
+        if deliver_type == "github_comment":
+            return await self._deliver_github_comment(content, delivery)
+
+        # Any platform with a connected gateway adapter — built-in name or a
+        # plugin-registered platform.
+        _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
+        if not _is_known_platform:
+            try:
+                from gateway.platform_registry import platform_registry
+                _is_known_platform = platform_registry.is_registered(deliver_type)
+            except Exception:
+                pass
+        if self.gateway_runner and _is_known_platform:
+            return await self._deliver_cross_platform(
+                deliver_type, content, delivery
+            )
+
+        logger.warning("%s Unknown deliver type: %s", self._log_tag, deliver_type)
+        return SendResult(
+            success=False, error=f"Unknown deliver type: {deliver_type}"
+        )
+
+    async def _direct_deliver(self, content: str, delivery: dict) -> "SendResult":
+        """Deliver *content* without invoking the agent (``deliver_only``).
+
+        The rendered template becomes the literal message body, dispatched
+        through the same target helpers as the agent-mode ``send()`` flow.
+        """
+        from gateway.platforms.base import SendResult
+
+        deliver_type = delivery.get("deliver", "log")
+        if deliver_type == "log":
+            # Startup validation rejects deliver_only + deliver=log; guard anyway.
+            logger.info(
+                "%s direct-deliver log-only: %s", self._log_tag, content[:200]
+            )
+            return SendResult(success=True)
+        if deliver_type == "github_comment":
+            return await self._deliver_github_comment(content, delivery)
+        return await self._deliver_cross_platform(deliver_type, content, delivery)
+
+    async def _deliver_github_comment(
+        self, content: str, delivery: dict
+    ) -> "SendResult":
+        """Post *content* as a GitHub PR/issue comment via the ``gh`` CLI."""
+        from gateway.platforms.base import SendResult
+
+        extra = delivery.get("deliver_extra", {})
+        repo = extra.get("repo", "")
+        pr_number = extra.get("pr_number", "")
+        if not repo or not pr_number:
+            logger.error(
+                "%s github_comment delivery missing repo or pr_number",
+                self._log_tag,
+            )
+            return SendResult(success=False, error="Missing repo or pr_number")
+        try:
+            result = subprocess.run(
+                [
+                    "gh", "pr", "comment", str(pr_number),
+                    "--repo", repo, "--body", content,
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                logger.info(
+                    "%s Posted comment on %s#%s", self._log_tag, repo, pr_number
+                )
+                return SendResult(success=True)
+            logger.error(
+                "%s gh pr comment failed: %s", self._log_tag, result.stderr
+            )
+            return SendResult(success=False, error=result.stderr)
+        except FileNotFoundError:
+            logger.error(
+                "%s 'gh' CLI not found — install GitHub CLI for "
+                "github_comment delivery", self._log_tag,
+            )
+            return SendResult(success=False, error="gh CLI not installed")
+        except Exception as exc:
+            logger.error(
+                "%s github_comment delivery error: %s", self._log_tag, exc
+            )
+            return SendResult(success=False, error=str(exc))
+
+    async def _deliver_cross_platform(
+        self, platform_name: str, content: str, delivery: dict
+    ) -> "SendResult":
+        """Route *content* to another connected platform via the gateway."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+
+        if not self.gateway_runner:
+            return SendResult(
+                success=False,
+                error="No gateway runner for cross-platform delivery",
+            )
+        try:
+            target_platform = Platform(platform_name)
+        except ValueError:
+            return SendResult(
+                success=False, error=f"Unknown platform: {platform_name}"
+            )
+        adapter = self.gateway_runner.adapters.get(target_platform)
+        if not adapter:
+            return SendResult(
+                success=False, error=f"Platform {platform_name} not connected"
+            )
+        extra = delivery.get("deliver_extra", {})
+        chat_id = extra.get("chat_id", "")
+        if not chat_id:
+            home = self.gateway_runner.config.get_home_channel(target_platform)
+            if home:
+                chat_id = home.chat_id
+            else:
+                return SendResult(
+                    success=False,
+                    error=f"No chat_id or home channel for {platform_name}",
+                )
+        # Pass thread_id from deliver_extra so Telegram forum topics work.
+        metadata = None
+        thread_id = extra.get("message_thread_id") or extra.get("thread_id")
+        if thread_id:
+            metadata = {"thread_id": thread_id}
+        return await adapter.send(chat_id, content, metadata=metadata)

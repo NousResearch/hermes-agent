@@ -16962,6 +16962,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         remove_pid_file,
         terminate_pid,
     )
+
+    # ── Start health check server (for Railway zero-downtime deploys) ──
+    try:
+        from gateway.health import start_health_server
+        asyncio.create_task(start_health_server())
+        logger.info("Health check server task scheduled")
+    except Exception as e:
+        logger.warning("Could not start health check server: %s", e)
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:

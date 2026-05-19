@@ -37,6 +37,7 @@ import signal
 import tempfile
 import threading
 import time
+import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -4830,6 +4831,28 @@ class GatewayRunner:
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
+        disabled_corrupt_boards: dict[str, tuple[str, int | None, int | None]] = {}
+
+        def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
+            path = _kb.kanban_db_path(slug)
+            try:
+                resolved = str(path.expanduser().resolve())
+            except Exception:
+                resolved = str(path)
+            try:
+                stat = path.stat()
+            except OSError:
+                return (resolved, None, None)
+            return (resolved, stat.st_mtime_ns, stat.st_size)
+
+        def _is_corrupt_board_db_error(exc: Exception) -> bool:
+            if not isinstance(exc, sqlite3.DatabaseError):
+                return False
+            msg = str(exc).lower()
+            return (
+                "file is not a database" in msg
+                or "database disk image is malformed" in msg
+            )
 
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
@@ -4841,6 +4864,16 @@ class GatewayRunner:
             connection handle or accidentally claim across each other.
             """
             conn = None
+            fingerprint = _board_db_fingerprint(slug)
+            disabled_fingerprint = disabled_corrupt_boards.get(slug)
+            if disabled_fingerprint == fingerprint:
+                return None
+            if disabled_fingerprint is not None:
+                logger.info(
+                    "kanban dispatcher: board %s database changed; retrying dispatch",
+                    slug,
+                )
+                disabled_corrupt_boards.pop(slug, None)
             try:
                 conn = _kb.connect(board=slug)
                 # `connect()` runs the schema + idempotent migration on
@@ -4856,6 +4889,21 @@ class GatewayRunner:
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                 )
+            except sqlite3.DatabaseError as exc:
+                if _is_corrupt_board_db_error(exc):
+                    disabled_corrupt_boards[slug] = fingerprint
+                    logger.error(
+                        "kanban dispatcher: board %s database %s is not a valid "
+                        "SQLite database; disabling dispatch for this board "
+                        "until the file changes or the gateway restarts. Move "
+                        "or restore the file, then run `hermes kanban init` if "
+                        "you need a fresh board.",
+                        slug,
+                        fingerprint[0],
+                    )
+                    return None
+                logger.exception("kanban dispatcher: tick failed on board %s", slug)
+                return None
             except Exception:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None

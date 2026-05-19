@@ -1,0 +1,24 @@
+{
+  "source_group": "IBIT options history",
+  "provenance": "manual_fixture",
+  "license_label": "manual_fixture",
+  "format": "csv",
+  "raw_sha256": "a803cdd9ba7804417eeb2a97af06064db7757b0ec919fb9acc4bfc0b89acd430",
+  "fields": [
+    "ts",
+    "symbol",
+    "expiry",
+    "option_type",
+    "strike",
+    "underlying_price",
+    "btc_per_share",
+    "bid",
+    "ask",
+    "mid_iv"
+  ],
+  "row_count": 1,
+  "available_end": "",
+  "source_ref": "fixture://ibit-opra-2025-01-02",
+  "raw_path": "artifacts/institutional/historical/raw/fixtures/ibit_opra_fixture_2025-01-02.csv",
+  "evidence_status": "SCREEN-ONLY \u00b7 SOURCE INTAKE ENTRY \u00b7 NOT EXECUTABLE"
+}

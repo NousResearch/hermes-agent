@@ -1,0 +1,227 @@
+[
+  {
+    "audience": "investor",
+    "slug": "00-packet-index",
+    "title": "Packet Index",
+    "source": "artifacts/institutional/investor-packet/packet_index.md",
+    "pdf": "01-investor-and-diligence-pdfs/00-packet-index.pdf",
+    "bytes": 4432,
+    "pages": 2
+  },
+  {
+    "audience": "investor",
+    "slug": "01-one-page-tear-sheet",
+    "title": "One Page Tear Sheet",
+    "source": "artifacts/institutional/investor-packet/one-page-tear-sheet.md",
+    "pdf": "01-investor-and-diligence-pdfs/01-one-page-tear-sheet.pdf",
+    "bytes": 5625,
+    "pages": 2
+  },
+  {
+    "audience": "investor",
+    "slug": "02-investor-memo",
+    "title": "Investor Memo",
+    "source": "artifacts/institutional/investor-packet/btc-vol-desk-investor-memo.md",
+    "pdf": "01-investor-and-diligence-pdfs/02-investor-memo.pdf",
+    "bytes": 8879,
+    "pages": 4
+  },
+  {
+    "audience": "investor",
+    "slug": "03-static-site-export",
+    "title": "Static Site Text Export",
+    "source": "artifacts/institutional/investor-packet/site/index.html",
+    "pdf": "01-investor-and-diligence-pdfs/03-static-site-export.pdf",
+    "bytes": 43085,
+    "pages": 25
+  },
+  {
+    "audience": "investor",
+    "slug": "04-latest-monitor-report",
+    "title": "Latest Monitor Report",
+    "source": "artifacts/institutional/investor-packet/evidence/latest-report.md",
+    "pdf": "01-investor-and-diligence-pdfs/04-latest-monitor-report.pdf",
+    "bytes": 7930,
+    "pages": 3
+  },
+  {
+    "audience": "investor",
+    "slug": "05-backtest-research-evidence",
+    "title": "Backtest Research Evidence",
+    "source": "artifacts/institutional/investor-packet/evidence/backtest-report.md",
+    "pdf": "01-investor-and-diligence-pdfs/05-backtest-research-evidence.pdf",
+    "bytes": 10839,
+    "pages": 5
+  },
+  {
+    "audience": "investor",
+    "slug": "06-legal-wrapper-draft",
+    "title": "Legal Wrapper Draft",
+    "source": "artifacts/institutional/investor-packet/evidence/legal-wrapper-package-v1.md",
+    "pdf": "01-investor-and-diligence-pdfs/06-legal-wrapper-draft.pdf",
+    "bytes": 4524,
+    "pages": 2
+  },
+  {
+    "audience": "internal",
+    "slug": "00-master-plan-v2",
+    "title": "Master Plan v2 Evidence-First Hardening",
+    "source": "artifacts/institutional/idea1-master-plan-v2-evidence-first-hardening.md",
+    "pdf": "02-internal-team-pdfs/00-master-plan-v2.pdf",
+    "bytes": 20435,
+    "pages": 8
+  },
+  {
+    "audience": "internal",
+    "slug": "01-licensed-source-acquisition-package",
+    "title": "Licensed Source Acquisition Package",
+    "source": "artifacts/institutional/historical/licensed_source_package/licensed-source-acquisition-package-v1.md",
+    "pdf": "02-internal-team-pdfs/01-licensed-source-acquisition-package.pdf",
+    "bytes": 5317,
+    "pages": 2
+  },
+  {
+    "audience": "internal",
+    "slug": "02-source-intake-validation",
+    "title": "Source Intake Skeleton Validation",
+    "source": "artifacts/institutional/historical/licensed_source_package/source-intake-skeleton-validation-v1.md",
+    "pdf": "02-internal-team-pdfs/02-source-intake-validation.pdf",
+    "bytes": 3830,
+    "pages": 2
+  },
+  {
+    "audience": "internal",
+    "slug": "03-source-blocker-audit",
+    "title": "Source Blocker Audit",
+    "source": "artifacts/institutional/historical/source_audit/source_blocker_audit_current.md",
+    "pdf": "02-internal-team-pdfs/03-source-blocker-audit.pdf",
+    "bytes": 5433,
+    "pages": 2
+  },
+  {
+    "audience": "internal",
+    "slug": "04-rfq-verification-plan",
+    "title": "RFQ Verification Plan",
+    "source": "artifacts/institutional/idea1-rfq-verification-plan-v0.md",
+    "pdf": "02-internal-team-pdfs/04-rfq-verification-plan.pdf",
+    "bytes": 34595,
+    "pages": 20
+  },
+  {
+    "audience": "internal",
+    "slug": "05-rfq-verification-board",
+    "title": "RFQ Verification Board",
+    "source": "artifacts/institutional/idea1-rfq-verification-board-v0.md",
+    "pdf": "02-internal-team-pdfs/05-rfq-verification-board.pdf",
+    "bytes": 20800,
+    "pages": 10
+  },
+  {
+    "audience": "internal",
+    "slug": "06-launch-model-decision-matrix",
+    "title": "Launch Model Decision Matrix",
+    "source": "artifacts/institutional/idea1-launch-model-decision-matrix-v0.md",
+    "pdf": "02-internal-team-pdfs/06-launch-model-decision-matrix.pdf",
+    "bytes": 23934,
+    "pages": 12
+  },
+  {
+    "audience": "internal",
+    "slug": "07-investor-deep-dive",
+    "title": "Investor Deep Dive",
+    "source": "artifacts/institutional/idea1-investor-deep-dive-v0.md",
+    "pdf": "02-internal-team-pdfs/07-investor-deep-dive.pdf",
+    "bytes": 34387,
+    "pages": 17
+  },
+  {
+    "audience": "internal",
+    "slug": "08-data-evidence-appendix",
+    "title": "Data Evidence Appendix",
+    "source": "artifacts/institutional/idea1-data-evidence-appendix.md",
+    "pdf": "02-internal-team-pdfs/08-data-evidence-appendix.pdf",
+    "bytes": 20893,
+    "pages": 10
+  },
+  {
+    "audience": "internal",
+    "slug": "09-client-map-commercial-wedge",
+    "title": "Client Map / Commercial Wedge",
+    "source": "artifacts/institutional/idea1-client-map-commercial-wedge.md",
+    "pdf": "02-internal-team-pdfs/09-client-map-commercial-wedge.pdf",
+    "bytes": 25360,
+    "pages": 13
+  },
+  {
+    "audience": "internal",
+    "slug": "10-treasury-case-study",
+    "title": "Treasury Case Study",
+    "source": "artifacts/institutional/idea1-treasury-case-study-10000btc-v0.md",
+    "pdf": "02-internal-team-pdfs/10-treasury-case-study.pdf",
+    "bytes": 19043,
+    "pages": 9
+  },
+  {
+    "audience": "internal",
+    "slug": "11-miner-production-hedge-case-study",
+    "title": "Miner Production Hedge Case Study",
+    "source": "artifacts/institutional/idea1-miner-production-hedge-case-study-v0.md",
+    "pdf": "02-internal-team-pdfs/11-miner-production-hedge-case-study.pdf",
+    "bytes": 18752,
+    "pages": 9
+  },
+  {
+    "audience": "internal",
+    "slug": "12-board-policy-template",
+    "title": "BTC Treasury Board Policy Template",
+    "source": "artifacts/institutional/idea1-btc-treasury-board-policy-template-v0.md",
+    "pdf": "02-internal-team-pdfs/12-board-policy-template.pdf",
+    "bytes": 23636,
+    "pages": 12
+  },
+  {
+    "audience": "internal",
+    "slug": "13-miner-hedge-calculator-spec",
+    "title": "Miner Hedge Calculator Spec",
+    "source": "artifacts/institutional/idea1-miner-hedge-calculator-spec-v0.md",
+    "pdf": "02-internal-team-pdfs/13-miner-hedge-calculator-spec.pdf",
+    "bytes": 22348,
+    "pages": 13
+  },
+  {
+    "audience": "internal",
+    "slug": "14-data-pipeline-hardening-spec",
+    "title": "Data Pipeline Hardening Spec",
+    "source": "artifacts/institutional/idea1-btc-vol-monitor-data-pipeline-hardening-spec-v0.md",
+    "pdf": "02-internal-team-pdfs/14-data-pipeline-hardening-spec.pdf",
+    "bytes": 24209,
+    "pages": 14
+  },
+  {
+    "audience": "internal",
+    "slug": "15-legal-perimeter-memo",
+    "title": "Legal Perimeter Memo",
+    "source": "artifacts/institutional/idea1-legal-perimeter-memo-v0.md",
+    "pdf": "02-internal-team-pdfs/15-legal-perimeter-memo.pdf",
+    "bytes": 26105,
+    "pages": 12
+  },
+  {
+    "audience": "internal",
+    "slug": "16-investor-deck-outline",
+    "title": "Investor Deck Outline",
+    "source": "artifacts/institutional/idea1-investor-deck-outline-v0.md",
+    "pdf": "02-internal-team-pdfs/16-investor-deck-outline.pdf",
+    "bytes": 24634,
+    "pages": 13
+  },
+  {
+    "audience": "internal",
+    "slug": "17-30-day-execution-sprint",
+    "title": "30-Day Execution Sprint",
+    "source": "artifacts/institutional/idea1-30day-execution-sprint-v0.md",
+    "pdf": "02-internal-team-pdfs/17-30-day-execution-sprint.pdf",
+    "bytes": 14767,
+    "pages": 8
+  }
+]

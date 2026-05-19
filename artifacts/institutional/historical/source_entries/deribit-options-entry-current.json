@@ -1,0 +1,23 @@
+{
+  "source_group": "Deribit options history",
+  "provenance": "manual_fixture",
+  "license_label": "manual_fixture",
+  "format": "jsonl",
+  "raw_sha256": "8d2552db0baaf54cc177ca6ddc6aece0863ad374f3baddfcf7c860b3677baa76",
+  "fields": [
+    "timestamp",
+    "instrument_name",
+    "expiry",
+    "option_type",
+    "strike",
+    "underlying_price",
+    "bid",
+    "ask",
+    "mark_iv"
+  ],
+  "row_count": 1,
+  "available_end": "",
+  "source_ref": "fixture://deribit-2025-01-02",
+  "raw_path": "artifacts/institutional/historical/raw/fixtures/deribit_fixture_2025-01-02.jsonl",
+  "evidence_status": "SCREEN-ONLY \u00b7 SOURCE INTAKE ENTRY \u00b7 NOT EXECUTABLE"
+}

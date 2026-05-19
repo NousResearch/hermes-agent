@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BTC Vol Desk Monitor — btcvol-20260518-163034</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0b1220; color: #e5eefb; }
+    .shell { max-width: 1420px; margin: 0 auto; padding: 28px; }
+    header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; margin-bottom: 24px; }
+    h1 { margin: 0 0 8px; font-size: 34px; letter-spacing: -0.04em; }
+    h2 { margin: 0 0 14px; font-size: 18px; color: #f8fafc; }
+    .sub { color: #93a4bd; font-size: 14px; }
+    .badge { display: inline-flex; align-items: center; border: 1px solid #f59e0b; color: #fbbf24; border-radius: 999px; padding: 8px 12px; font-weight: 800; letter-spacing: .08em; font-size: 12px; background: rgba(245,158,11,.08); }
+    .grid { display: grid; gap: 16px; }
+    .status-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 16px; }
+    .two { grid-template-columns: 1fr 1fr; }
+    .card { background: linear-gradient(180deg, rgba(20,31,51,.96), rgba(15,23,42,.96)); border: 1px solid rgba(148,163,184,.18); border-radius: 18px; padding: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.24); }
+    .status .label { color: #93a4bd; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .status-line { font-size: 24px; font-weight: 800; margin: 8px 0 4px; }
+    .ok { color: #34d399; } .warn { color: #fbbf24; } .muted { color: #94a3b8; }
+    .small { color: #8ea0bb; font-size: 13px; }
+    .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 20px 0; }
+    .kpi { border: 1px solid rgba(148,163,184,.14); border-radius: 14px; padding: 14px; background: rgba(15,23,42,.72); }
+    .kpi .name { color: #93a4bd; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .kpi .value { margin-top: 8px; font-size: 21px; font-weight: 800; }
+    .method-note { margin: 0 0 16px; color: #cbd5e1; font-size: 13px; line-height: 1.5; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; color: #93a4bd; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid rgba(148,163,184,.18); padding: 10px 8px; }
+    td { border-bottom: 1px solid rgba(148,163,184,.1); padding: 10px 8px; vertical-align: middle; }
+    tr:hover td { background: rgba(59,130,246,.07); }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .pill { display: inline-flex; border-radius: 999px; padding: 4px 8px; font-size: 11px; font-weight: 800; }
+    .screen { color: #fbbf24; background: rgba(245,158,11,.12); }
+    .quote { color: #60a5fa; background: rgba(37,99,235,.18); }
+    .watch { color: #cbd5e1; background: rgba(148,163,184,.14); }
+    .pill.warn { color: #fbbf24; background: rgba(245,158,11,.12); }
+    .pill.green, .quality-score.green { color: #34d399; background: rgba(16,185,129,.12); }
+    .pill.yellow, .quality-score.yellow { color: #fbbf24; background: rgba(245,158,11,.12); }
+    .pill.red, .quality-score.red { color: #fb7185; background: rgba(244,63,94,.12); }
+    .quality-score { display: inline-flex; border-radius: 14px; padding: 10px 12px; font-size: 26px; font-weight: 900; margin-bottom: 10px; }
+    .quality-wrap ul { margin-top: 12px; }
+    .trend-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .trend-card { border: 1px solid rgba(148,163,184,.14); border-radius: 14px; padding: 14px; background: rgba(15,23,42,.72); }
+    .trend-card .label { color: #93a4bd; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .trend-value { margin: 8px 0; font-size: 24px; font-weight: 900; }
+    .spark { width: 100%; max-width: 180px; height: 46px; }
+    .spark polyline { fill: none; stroke: #60a5fa; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    .evidence-summary { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; color: #cbd5e1; font-size: 13px; }
+    .evidence-summary span { border: 1px solid rgba(148,163,184,.16); border-radius: 999px; padding: 5px 9px; background: rgba(15,23,42,.72); }
+    .empty { color: #64748b; text-align: center; padding: 28px; }
+    ul { margin: 0; padding-left: 20px; color: #cbd5e1; }
+    li { margin: 8px 0; }
+    footer { margin-top: 22px; color: #64748b; font-size: 12px; }
+    @media (max-width: 980px) { .status-grid, .two, .kpis, .trend-grid { grid-template-columns: 1fr; } header { flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1>BTC Vol Desk Monitor</h1>
+        <div class="sub">Run <span class="mono">btcvol-20260518-163034</span> · 2026-05-18 16:30:34 CDT</div>
+      </div>
+      <div class="badge">SCREEN-ONLY · NOT EXECUTABLE</div>
+    </header>
+
+    <section class="kpis">
+      <div class="kpi"><div class="name">BTC reference</div><div class="value">$77,457.06</div></div>
+      <div class="kpi"><div class="name">IBIT BTC/share</div><div class="value mono">0.000567911859</div></div>
+      <div class="kpi"><div class="name">Dislocation candidates</div><div class="value">6</div></div>
+    </section>
+
+    <section class="grid status-grid"><section class='card status'><div class='label'>Deribit</div><div class='status-line ok'>Captured</div><div class='small'>11 ATM expiries</div></section>
+<section class='card status'><div class='label'>IBIT / ETF</div><div class='status-line ok'>Captured</div><div class='small'>6 ATM expiries</div></section>
+<section class='card status'><div class='label'>IBIT holdings</div><div class='status-line ok'>Available</div><div class='small'>0.000567911859</div></section>
+<section class='card status'><div class='label'>CME</div><div class='status-line ok'>Available</div><div class='small'>1,708 Databento rows</div></section>
+<section class='card status'><div class='label'>RFQ</div><div class='status-line warn'>Legal pending</div><div class='small'>internal templates; no outreach</div></section></section>
+
+    <section class="card method-note">Internal evidence prototype. Public/API screen marks and model-estimated IV only; no RFQ is sent and no executable quote is implied. IBIT-vs-Deribit spreads are screening signals: tenor matching is approximate and excludes bid/ask, borrow, financing, tax/accounting, settlement, venue-hour, margin/collateral, and counterparty effects.</section>
+
+    <section class="card" style="margin-bottom:16px"><h2>Trend Snapshot</h2>
+      <div class="trend-grid">
+        <div class="trend-card"><div class="label">BTC change</div><div class="trend-value">+$705.32</div><svg class='spark' viewBox='0 0 180 46' role='img' aria-label='trend sparkline'><polyline points='5.0,10.5 29.3,10.5 53.6,10.1 77.9,5.0 102.1,35.2 126.4,40.9 150.7,41.0 175.0,28.6' /></svg></div>
+        <div class="trend-card"><div class="label">Quality change</div><div class="trend-value">+0</div><svg class='spark' viewBox='0 0 180 46' role='img' aria-label='trend sparkline'><polyline points='5.0,41.0 29.3,5.0 53.6,5.0 77.9,5.0 102.1,5.0 126.4,5.0 150.7,5.0 175.0,5.0' /></svg></div>
+        <div class="trend-card"><div class="label">Quote-review flags</div><div class="trend-value">+0</div><div class="small">Latest grade: GREEN</div></div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom:16px"><h2>IV Benchmark Trends</h2>
+      <div class="trend-grid">
+        <div class="trend-card"><div class="label">7D spread change</div><div class="trend-value">+1.65 vol pts</div><svg class='spark' viewBox='0 0 180 46' role='img' aria-label='trend sparkline'><polyline points='5.0,16.4 29.3,16.5 53.6,16.9 77.9,19.6 102.1,29.4 126.4,41.0 150.7,21.9 175.0,5.0' /></svg></div>
+        <div class="trend-card"><div class="label">30D Deribit</div><div class="trend-value">37.67%</div><div class="small">Nearest ATM benchmark · screen-only</div></div>
+        <div class="trend-card"><div class="label">30D IBIT</div><div class="trend-value">38.52%</div><div class="small">Model-estimated from public bid/ask mid</div></div>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <div class="card"><h2>Deribit ATM IV Curve</h2><table><thead><tr><th>DTE</th><th>Expiry</th><th>Symbol</th><th class="num">IV</th></tr></thead><tbody><tr><td>1D</td><td>2026-05-19</td><td class='mono'>BTC-19MAY26-77000-P</td><td class='num'>27.64%</td></tr>
+<tr><td>2D</td><td>2026-05-20</td><td class='mono'>BTC-20MAY26-77000-P</td><td class='num'>32.42%</td></tr>
+<tr><td>3D</td><td>2026-05-21</td><td class='mono'>BTC-21MAY26-77000-P</td><td class='num'>34.06%</td></tr>
+<tr><td>4D</td><td>2026-05-22</td><td class='mono'>BTC-22MAY26-77000-C</td><td class='num'>35.22%</td></tr>
+<tr><td>11D</td><td>2026-05-29</td><td class='mono'>BTC-29MAY26-77000-P</td><td class='num'>37.25%</td></tr>
+<tr><td>18D</td><td>2026-06-05</td><td class='mono'>BTC-5JUN26-77000-C</td><td class='num'>37.46%</td></tr>
+<tr><td>39D</td><td>2026-06-26</td><td class='mono'>BTC-26JUN26-78000-P</td><td class='num'>37.67%</td></tr>
+<tr><td>74D</td><td>2026-07-31</td><td class='mono'>BTC-31JUL26-77000-C</td><td class='num'>38.72%</td></tr>
+<tr><td>130D</td><td>2026-09-25</td><td class='mono'>BTC-25SEP26-78000-C</td><td class='num'>40.42%</td></tr>
+<tr><td>221D</td><td>2026-12-25</td><td class='mono'>BTC-25DEC26-78000-P</td><td class='num'>43.79%</td></tr>
+<tr><td>312D</td><td>2027-03-26</td><td class='mono'>BTC-26MAR27-78000-P</td><td class='num'>44.92%</td></tr></tbody></table></div>
+      <div class="card"><h2>IBIT / ETF ATM IV Curve</h2><table><thead><tr><th>DTE</th><th>Expiry</th><th>Symbol</th><th class="num">IV</th></tr></thead><tbody><tr><td>0D</td><td>2026-05-18</td><td class='mono'>IBIT-2026-05-18-43.5-C</td><td class='num'>11.15%</td></tr>
+<tr><td>2D</td><td>2026-05-20</td><td class='mono'>IBIT-2026-05-20-43.5-C</td><td class='num'>40.81%</td></tr>
+<tr><td>4D</td><td>2026-05-22</td><td class='mono'>IBIT-2026-05-22-43.5-C</td><td class='num'>40.68%</td></tr>
+<tr><td>8D</td><td>2026-05-26</td><td class='mono'>IBIT-2026-05-26-43.5-C</td><td class='num'>35.74%</td></tr>
+<tr><td>9D</td><td>2026-05-27</td><td class='mono'>IBIT-2026-05-27-43.5-C</td><td class='num'>36.36%</td></tr>
+<tr><td>11D</td><td>2026-05-29</td><td class='mono'>IBIT-2026-05-29-43.5-C</td><td class='num'>38.52%</td></tr></tbody></table></div>
+    </section>
+
+    <section class="card" style="margin-top:16px"><h2>IBIT vs Deribit Dislocation Board</h2><div class="small" style="margin-bottom:10px">Screen-only comparison; not executable economics.</div><table><thead><tr><th>Candidate</th><th class="num">Gross IV Diff</th><th>Confidence</th><th>Next Action</th></tr></thead><tbody><tr><td>IBIT 0D ATM vs Deribit 1D ATM</td><td class='num'>-16.49 vol pts</td><td><span class='pill screen'>SCREEN-ONLY</span></td><td><span class='pill quote'>Quote Review</span></td></tr>
+<tr><td>IBIT 2D ATM vs Deribit 2D ATM</td><td class='num'>8.39 vol pts</td><td><span class='pill screen'>SCREEN-ONLY</span></td><td><span class='pill quote'>Quote Review</span></td></tr>
+<tr><td>IBIT 4D ATM vs Deribit 4D ATM</td><td class='num'>5.46 vol pts</td><td><span class='pill screen'>SCREEN-ONLY</span></td><td><span class='pill quote'>Quote Review</span></td></tr>
+<tr><td>IBIT 8D ATM vs Deribit 11D ATM</td><td class='num'>-1.51 vol pts</td><td><span class='pill screen'>SCREEN-ONLY</span></td><td><span class='pill watch'>Watch</span></td></tr>
+<tr><td>IBIT 9D ATM vs Deribit 11D ATM</td><td class='num'>-0.89 vol pts</td><td><span class='pill screen'>SCREEN-ONLY</span></td><td><span class='pill watch'>Watch</span></td></tr>
+<tr><td>IBIT 11D ATM vs Deribit 11D ATM</td><td class='num'>1.27 vol pts</td><td><span class='pill screen'>SCREEN-ONLY</span></td><td><span class='pill watch'>Watch</span></td></tr></tbody></table></section>
+
+    <section class="card" style="margin-top:16px"><h2>Candidate Triage</h2><div class="small" style="margin-bottom:10px">Internal review list; no submission or outreach implied.</div><table><thead><tr><th class='num'>Rank</th><th>Candidate</th><th class='num'>Spread</th><th>Direction</th><th>Priority</th><th>Evidence</th><th>Workflow</th></tr></thead><tbody><tr><td class='num'>1</td><td>IBIT 0D ATM vs Deribit 1D ATM</td><td class='num'>-16.49 vol pts</td><td>IBIT cheap vs Deribit</td><td><span class='pill red'>HIGH</span></td><td><span class='pill screen'>SCREEN-ONLY · NOT EXECUTABLE</span></td><td>draft two-counterparty indicative RFQ review (internal only)</td></tr><tr><td class='num'>2</td><td>IBIT 2D ATM vs Deribit 2D ATM</td><td class='num'>8.39 vol pts</td><td>IBIT rich vs Deribit</td><td><span class='pill red'>HIGH</span></td><td><span class='pill screen'>SCREEN-ONLY · NOT EXECUTABLE</span></td><td>draft two-counterparty indicative RFQ review (internal only)</td></tr><tr><td class='num'>3</td><td>IBIT 4D ATM vs Deribit 4D ATM</td><td class='num'>5.46 vol pts</td><td>IBIT rich vs Deribit</td><td><span class='pill red'>HIGH</span></td><td><span class='pill screen'>SCREEN-ONLY · NOT EXECUTABLE</span></td><td>draft two-counterparty indicative RFQ review (internal only)</td></tr><tr><td class='num'>4</td><td>IBIT 8D ATM vs Deribit 11D ATM</td><td class='num'>-1.51 vol pts</td><td>IBIT cheap vs Deribit</td><td><span class='pill watch'>LOW</span></td><td><span class='pill screen'>SCREEN-ONLY · NOT EXECUTABLE</span></td><td>watch only</td></tr><tr><td class='num'>5</td><td>IBIT 11D ATM vs Deribit 11D ATM</td><td class='num'>1.27 vol pts</td><td>IBIT rich vs Deribit</td><td><span class='pill watch'>LOW</span></td><td><span class='pill screen'>SCREEN-ONLY · NOT EXECUTABLE</span></td><td>watch only</td></tr><tr><td class='num'>6</td><td>IBIT 9D ATM vs Deribit 11D ATM</td><td class='num'>-0.89 vol pts</td><td>IBIT cheap vs Deribit</td><td><span class='pill watch'>LOW</span></td><td><span class='pill screen'>SCREEN-ONLY · NOT EXECUTABLE</span></td><td>watch only</td></tr></tbody></table></section>
+
+    <section class="card" style="margin-top:16px"><h2>RFQ Quote Evidence</h2><div class="small" style="margin-bottom:10px">Manual evidence ledger only; demo/manual rows do not count as real quote-verified evidence.</div>
+      <div class="evidence-summary">
+        <span>Total: 0</span>
+        <span>Quote-verified: 0</span>
+        <span>Trade-verified: 0</span>
+        <span>Invalid: 0</span>
+      </div>
+      <table><thead><tr><th>RFQ</th><th>Structure</th><th>Counterparty</th><th>Confidence</th><th class="num">Spread</th><th>Publishability</th></tr></thead><tbody><tr><td colspan="6" class="empty">No valid quote evidence rows</td></tr></tbody></table>
+    </section>
+
+    <section class="card" style="margin-top:16px"><h2>Market Diagnostics</h2><table><thead><tr><th>Source</th><th>Grade</th><th class='num'>Markets</th><th class='num'>Valid B/A</th><th class='num'>Missing B/A</th><th class='num'>Crossed</th><th class='num'>Wide</th><th>Notes</th></tr></thead><tbody><tr><td>Deribit BTC options</td><td><span class='pill yellow'>YELLOW</span></td><td class='num'>888</td><td class='num'>819</td><td class='num'>69</td><td class='num'>0</td><td class='num'>0</td><td>69 missing bid/ask</td></tr><tr><td>IBIT Nasdaq option-chain</td><td><span class='pill yellow'>YELLOW</span></td><td class='num'>614</td><td class='num'>449</td><td class='num'>165</td><td class='num'>0</td><td class='num'>7</td><td>7 wide markets; 165 missing bid/ask</td></tr></tbody></table></section>
+
+    <section class="card" style="margin-top:16px"><h2>Source Freshness</h2><div class='evidence-summary'><span>Grade: <span class='pill green'>GREEN</span></span><span>SCREEN-ONLY · NOT EXECUTABLE</span></div><table><thead><tr><th>Source</th><th>Status</th><th class='num'>Age</th><th class='num'>Max Age</th><th>Captured At</th></tr></thead><tbody><tr><td>Deribit</td><td><span class='pill green'>FRESH</span></td><td class='num'>0.7 min</td><td class='num'>15 min</td><td class='mono'>2026-05-18T16:30:34.586499-05:00</td></tr><tr><td>Nasdaq IBIT options</td><td><span class='pill green'>FRESH</span></td><td class='num'>0.6 min</td><td class='num'>15 min</td><td class='mono'>2026-05-18T16:30:37.654259-05:00</td></tr><tr><td>iShares IBIT holdings</td><td><span class='pill green'>FRESH</span></td><td class='num'>0.6 min</td><td class='num'>1440 min</td><td class='mono'>2026-05-18T16:30:39.365958-05:00</td></tr><tr><td>Databento CME BTC options</td><td><span class='pill green'>FRESH</span></td><td class='num'>0.0 min</td><td class='num'>15 min</td><td class='mono'>2026-05-18T16:31:13.744703-05:00</td></tr></tbody></table></section>
+
+    <section class="grid two" style="margin-top:16px">
+      <div class="card"><h2>Internal RFQ Template Inventory</h2><div class="small" style="margin-bottom:10px">Templates are internal review aids, not a product offering.</div><table><thead><tr><th>ID</th><th>Structure</th><th>Status</th><th>Blocker</th></tr></thead><tbody><tr><td class='mono'>RFQ-001</td><td>Treasury 45D 15% OTM covered call</td><td><span class='pill watch'>Internal template</span></td><td><span class='pill warn'>Review required</span></td></tr>
+<tr><td class='mono'>RFQ-002</td><td>Treasury 45D 25% OTM covered call</td><td><span class='pill watch'>Internal template</span></td><td><span class='pill warn'>Review required</span></td></tr>
+<tr><td class='mono'>RFQ-003</td><td>Treasury 135D 20% OTM covered call</td><td><span class='pill watch'>Internal template</span></td><td><span class='pill warn'>Review required</span></td></tr>
+<tr><td class='mono'>RFQ-004</td><td>Treasury 135D 90/80/115/130 put-spread collar</td><td><span class='pill watch'>Internal template</span></td><td><span class='pill warn'>Review required</span></td></tr>
+<tr><td class='mono'>RFQ-005</td><td>Treasury 1,000 BTC put-spread collar</td><td><span class='pill watch'>Internal template</span></td><td><span class='pill warn'>Review required</span></td></tr>
+<tr><td class='mono'>RFQ-006</td><td>Miner 90D 85% floor / 120% cap collar</td><td><span class='pill watch'>Internal template</span></td><td><span class='pill warn'>Review required</span></td></tr>
+<tr><td class='mono'>RFQ-007</td><td>Miner 90D 80–85% disaster put</td><td><span class='pill watch'>Internal template</span></td><td><span class='pill warn'>Review required</span></td></tr>
+<tr><td class='mono'>RFQ-008</td><td>Miner 135D 90/75/115/130 put-spread collar</td><td><span class='pill watch'>Internal template</span></td><td><span class='pill warn'>Review required</span></td></tr>
+<tr><td class='mono'>RFQ-009</td><td>IBIT vs Deribit 30D ATM straddle</td><td><span class='pill watch'>Internal template</span></td><td><span class='pill warn'>Review required</span></td></tr>
+<tr><td class='mono'>RFQ-010</td><td>IBIT vs Deribit 30D 25D risk reversal</td><td><span class='pill watch'>Internal template</span></td><td><span class='pill warn'>Review required</span></td></tr></tbody></table></div>
+      <div class="card"><h2>Data Quality</h2><div class='quality-wrap'><div class='quality-score green'>80 / 100</div><div><span class='pill green'>GREEN</span></div><div class='small'>Core sources captured · 4 material warnings</div><ul><li>iShares BTC/share current fetch or parse failed: iShares holdings endpoint returned HTML instead of holdings CSV</li><li>iShares BTC/share fallback used latest cached official CSV: artifacts/institutional/data/raw/btcvol-20260515-183316/ishares_ibit_holdings.csv</li><li>IBIT holdings source is stale-cache; use for continuity only until current iShares CSV recovers</li><li>IBIT BTC/share independent market-implied cross-check diff: 1.04%</li></ul></div><h2 style="margin-top:18px">Quality Warnings</h2><ul><li>Deribit normalized rows: 888</li>
+<li>iShares BTC/share current fetch or parse failed: iShares holdings endpoint returned HTML instead of holdings CSV</li>
+<li>iShares BTC/share fallback used latest cached official CSV: artifacts/institutional/data/raw/btcvol-20260515-183316/ishares_ibit_holdings.csv</li>
+<li>IBIT holdings source is stale-cache; use for continuity only until current iShares CSV recovers</li>
+<li>IBIT BTC/share independent market-implied cross-check diff: 1.04%</li>
+<li>IBIT normalized rows: 402</li>
+<li>CME Databento normalized rows: 1708</li>
+<li>CME Databento BBO rows: 5000</li></ul></div>
+    </section>
+
+    <section class="card" style="margin-top:16px"><h2>Recent Runs</h2><table><thead><tr><th>Run</th><th>Timestamp</th><th class="num">BTC</th><th class="num">Candidates</th><th>Review Flags</th></tr></thead><tbody><tr><td class='mono'>btcvol-20260518-163034</td><td>2026-05-18 16:30:34 CDT</td><td class='num'>$77,457.06</td><td class='num'>6</td><td>3 quote-reviews</td></tr>
+<tr><td class='mono'>btcvol-20260518-134509</td><td>2026-05-18 13:45:09 CDT</td><td class='num'>$76,751.74</td><td class='num'>6</td><td>3 quote-reviews</td></tr>
+<tr><td class='mono'>btcvol-20260518-134226</td><td>2026-05-18 13:42:26 CDT</td><td class='num'>$76,758.76</td><td class='num'>6</td><td>3 quote-reviews</td></tr>
+<tr><td class='mono'>btcvol-20260518-122236</td><td>2026-05-18 12:22:36 CDT</td><td class='num'>$77,080.70</td><td class='num'>6</td><td>3 quote-reviews</td></tr>
+<tr><td class='mono'>btcvol-20260517-162152</td><td>2026-05-17 16:21:52 CDT</td><td class='num'>$78,792.64</td><td class='num'>6</td><td>1 quote-review</td></tr>
+<tr><td class='mono'>btcvol-20260517-125538</td><td>2026-05-17 12:55:38 CDT</td><td class='num'>$78,504.03</td><td class='num'>6</td><td>1 quote-review</td></tr>
+<tr><td class='mono'>btcvol-20260517-125350</td><td>2026-05-17 12:53:50 CDT</td><td class='num'>$78,481.87</td><td class='num'>6</td><td>1 quote-review</td></tr>
+<tr><td class='mono'>btcvol-20260517-125258</td><td>2026-05-17 12:52:58 CDT</td><td class='num'>$78,482.40</td><td class='num'>6</td><td>1 quote-review</td></tr></tbody></table></section>
+
+    <footer>Evidence policy: public/API marks and model-estimated IVs remain screen-only until independently quote-verified or trade-verified. No client-specific RFQ or execution workflow is enabled.</footer>
+  </main>
+</body>
+</html>

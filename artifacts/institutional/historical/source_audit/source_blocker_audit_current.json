@@ -1,0 +1,74 @@
+{
+  "run_id": "btcvol-20260517-162152",
+  "audited_at_utc": "2026-05-18T17:10:12.616027+00:00",
+  "latest_rates_tail": [
+    "2026-05-04,3.63,3.78,3.70",
+    "2026-05-05,3.62,3.77,3.69",
+    "2026-05-06,3.61,3.73,3.69",
+    "2026-05-07,3.60,3.76,3.69",
+    "2026-05-08,3.60,3.75,3.69",
+    "2026-05-11,3.60,3.79,3.70",
+    "2026-05-12,3.60,3.80,3.70",
+    "2026-05-13,3.59,3.79,3.69",
+    "2026-05-14,3.56,3.79,3.69",
+    "2026-05-15,3.55,,"
+  ],
+  "files": [
+    {
+      "label": "IBIT options history",
+      "path": "artifacts/institutional/data/raw/btcvol-20260517-162152/nasdaq_ibit_option_chain.json",
+      "exists": true,
+      "bytes": 186563,
+      "sha256": "fdff135345c245b05548dc0ad44ca56183a3636d3615e647e40ccbfaa241b83c"
+    },
+    {
+      "label": "Deribit options history",
+      "path": "artifacts/institutional/data/raw/btcvol-20260517-162152/deribit_book_summary_btc_options.json",
+      "exists": true,
+      "bytes": 533720,
+      "sha256": "fbb4621fb847f8e84c898d6ccd77e3a044fae9141e2b6ad118ff1b080833f738"
+    },
+    {
+      "label": "CME Bitcoin options history raw BBO",
+      "path": "artifacts/institutional/data/raw/btcvol-20260517-162152/databento_cme_btc_options_bbo_1m.csv",
+      "exists": true,
+      "bytes": 646595,
+      "sha256": "4a57b6cf64294627276c09abcb8cf9785039235de6c8d9bf7900f96ff69d618e"
+    },
+    {
+      "label": "CME Bitcoin options history normalized",
+      "path": "artifacts/institutional/data/normalized/btcvol-20260517-162152/databento_cme_btc_options_bbo.csv",
+      "exists": true,
+      "bytes": 274518,
+      "sha256": "c09e7e8df608abb8bbf76fc6fe6197ae8a0fdc68039cbfca782c0fc2e8515f6c"
+    },
+    {
+      "label": "BTC reference history",
+      "path": "artifacts/institutional/historical/source_audit/btc_reference_from_run_manifest.jsonl",
+      "exists": true,
+      "bytes": 321,
+      "sha256": "b46634d69256a4a6a313d564241603cb42c85e9ec237d95e825e766666e5273e"
+    },
+    {
+      "label": "IBIT holdings history official attempt",
+      "path": "artifacts/institutional/data/raw/btcvol-20260517-162152/ishares_ibit_holdings.csv",
+      "exists": true,
+      "bytes": 8539634,
+      "sha256": "1b838d2c121f21f5a2ed8c43dab0841bc45a486a2bb8f756cdc27c637a2f5169"
+    },
+    {
+      "label": "IBIT holdings history cached valid CSV",
+      "path": "artifacts/institutional/data/raw/btcvol-20260517-162152/ishares_ibit_holdings_fallback_cached.csv",
+      "exists": true,
+      "bytes": 4749,
+      "sha256": "f7ba3f217ef58e76cd72e248c61d25c9646325252663b9f9eaeee392188ffeef"
+    },
+    {
+      "label": "Rates and fee curves",
+      "path": "artifacts/institutional/historical/source_audit/fred_rates_sofr_dgs1_dgs3mo_current.csv",
+      "exists": true,
+      "bytes": 353760,
+      "sha256": "f863aa00472ca8378e06a3f8dc080606e2240c529ad2c968ba3b648e90b410b2"
+    }
+  ]
+}

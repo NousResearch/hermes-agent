@@ -1,0 +1,1 @@
+{"timestamp": "2025-01-02T15:30:00Z", "instrument_name": "BTC-17JAN25-97000-C", "expiry": "2025-01-17", "option_type": "call", "strike": 97000, "underlying_price": 96850, "bid": 0.052, "ask": 0.055, "mark_iv": 47.0}

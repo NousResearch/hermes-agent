@@ -1,0 +1,66 @@
+{
+  "approved_by_counsel": false,
+  "blockers": [
+    "counsel approval missing",
+    "external advisory/client/RFQ/fund use prohibited until wrapper approved",
+    "quote evidence remains internal diligence only"
+  ],
+  "boundary_matrix": [
+    {
+      "activity": "Analytics / research",
+      "allowed_now": true,
+      "current_status": "internal-only",
+      "external_requires": "counsel-approved disclaimer and distribution controls"
+    },
+    {
+      "activity": "Advisory / structuring",
+      "allowed_now": false,
+      "current_status": "blocked-pre-wrapper",
+      "external_requires": "RIA/CTA/CPO/BD perimeter analysis and written engagement terms"
+    },
+    {
+      "activity": "Execution / RFQ support",
+      "allowed_now": false,
+      "current_status": "blocked-pre-wrapper",
+      "external_requires": "broker/FCM/OTC partner model, no agency ambiguity, counterparty onboarding controls"
+    },
+    {
+      "activity": "Principal risk-taking",
+      "allowed_now": false,
+      "current_status": "blocked-pre-wrapper",
+      "external_requires": "entity/risk capital approval, mandate limits, conflicts policy, trade surveillance"
+    },
+    {
+      "activity": "Structured products / fund sleeve",
+      "allowed_now": false,
+      "current_status": "blocked-pre-wrapper",
+      "external_requires": "securities/private fund counsel, offering docs, investor eligibility, marketing review"
+    }
+  ],
+  "control_note": "Legal/business wrapper draft only. This artifact is not legal advice and does not authorize external client, investor, RFQ, execution, advisory, or fund activity.",
+  "counsel_questions": [
+    "Can analytics/research be distributed externally, and under what disclaimers?",
+    "Does treasury/miner hedge structuring create investment adviser, CTA, CPO, broker-dealer, FCM, or swap-adviser issues?",
+    "What engagement letter, suitability, KYC/KYB, and conflicts controls are required before any client mandate?",
+    "Can RFQ support be handled through a partner broker/FCM/OTC desk without agency/execution ambiguity?",
+    "What marketing/investor deck language is prohibited before a fund or structured-product wrapper exists?",
+    "What records, surveillance, and approvals are required before principal risk-taking?"
+  ],
+  "evidence_status": "SCREEN-ONLY \u00b7 LEGAL WRAPPER DRAFT \u00b7 NOT EXECUTABLE",
+  "hard_gates": [
+    "No external investor/client use until counsel-approved wrapper exists",
+    "No RFQ submission by automation",
+    "No executable quote labels without two distinct external indicative quote records",
+    "No trade-verified label without execution record and post-trade evidence",
+    "No offering/fund/product language without securities/private-fund counsel approval"
+  ],
+  "label": "DRAFT \u2014 NOT APPROVED FOR EXTERNAL USE",
+  "required_approval_fields": [
+    "approved_by_counsel",
+    "approved_scope",
+    "approval_date",
+    "allowed_activities",
+    "prohibited_activities"
+  ],
+  "status": "draft-blocked"
+}

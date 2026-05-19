@@ -1,0 +1,2 @@
+ts,symbol,expiry,option_type,strike,underlying_price,btc_per_share,bid,ask,mid_iv
+2025-01-02T15:30:00Z,IBIT250117C00060000,2025-01-17,call,60,55,0.0005679,1.20,1.35,0.50

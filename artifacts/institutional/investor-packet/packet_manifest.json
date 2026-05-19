@@ -1,0 +1,87 @@
+{
+  "artifacts": [
+    {
+      "bytes": 6325,
+      "label": "investor_memo",
+      "path": "btc-vol-desk-investor-memo.md",
+      "sha256": "09463acc6b6bc4f8a538a4632d5799780a79013e3933391fd559a19d5248a8f0"
+    },
+    {
+      "bytes": 3449,
+      "label": "investor_tearsheet",
+      "path": "one-page-tear-sheet.md",
+      "sha256": "084d7cb6f1d759c1c29679958b5759f22dc288961e529bfd5580a06f0abc6b8a"
+    },
+    {
+      "bytes": 51291,
+      "label": "site_index",
+      "path": "site/index.html",
+      "sha256": "3a9fa72fde60c7103d5bd1c99bb037de4613d22a4056108cce29b264c86193a7"
+    },
+    {
+      "bytes": 38178,
+      "label": "site_data",
+      "path": "site/site-data.json",
+      "sha256": "0a3ce0e7baf5f604f55f3fb984205e392371bead401407c43664752729c454f2"
+    },
+    {
+      "bytes": 4344,
+      "label": "latest_report",
+      "path": "evidence/latest-report.md",
+      "sha256": "7cd4fea856c5c859c730d951252ad378085144ebdfd6912a58f8193f5fa2d645"
+    },
+    {
+      "bytes": 9272478,
+      "label": "latest_evidence_bundle",
+      "path": "evidence/latest-evidence-bundle.zip",
+      "sha256": "6504204d3adf8ecd1d5bac94775f2639e08baec722a06f41623346dd7724210b"
+    },
+    {
+      "bytes": 2545,
+      "label": "evidence_manifest",
+      "path": "evidence/evidence_manifest.json",
+      "sha256": "d72d97a8d980159a7aa796d362f8a09325152cd9b606721693c9d4650eabdc6d"
+    },
+    {
+      "bytes": 3141,
+      "label": "candidate_triage",
+      "path": "evidence/candidate_triage.jsonl",
+      "sha256": "9d63bd946b784f0054b574fd83a78c775fa86e2a9a746068720be8916500ac46"
+    },
+    {
+      "bytes": 0,
+      "label": "quote_evidence",
+      "path": "evidence/quote_evidence.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 6119,
+      "label": "backtest_report",
+      "path": "evidence/backtest-report.md",
+      "sha256": "ac18310dddc991c9fd22bfbce98bfbcc10279ac8eed99613e27f36cea6cbdb48"
+    },
+    {
+      "bytes": 3005,
+      "label": "legal_wrapper_json",
+      "path": "evidence/legal-wrapper-package-v1.json",
+      "sha256": "6f58bce9ad0542df36048fd3758c80715038376422add873a9e5745ed8ff2e50"
+    },
+    {
+      "bytes": 2292,
+      "label": "legal_wrapper_md",
+      "path": "evidence/legal-wrapper-package-v1.md",
+      "sha256": "ba150abff9ba812ccf52ea1f74a8ce0695cabb041d72465675beac7bbfb70c89"
+    },
+    {
+      "bytes": 2149,
+      "label": "packet_index",
+      "path": "packet_index.md",
+      "sha256": "cda3d7fa74cc45ad4d6f4cc5f46a6db50d432e63cc965262d7aecf7e4434405e"
+    }
+  ],
+  "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+  "missing_artifacts": [],
+  "packet_sha256": "38b75f37acc547841389c77715b05ecb8064f6111430af24739f33883d7f3ce2",
+  "publishability": "internal-diligence-only",
+  "run_id": "btcvol-20260518-163034"
+}

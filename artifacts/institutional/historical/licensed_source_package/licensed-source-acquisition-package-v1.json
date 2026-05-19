@@ -1,0 +1,192 @@
+{
+  "evidence_status": "SCREEN-ONLY \u00b7 LICENSED SOURCE ACQUISITION PACKAGE \u00b7 NOT EXECUTABLE",
+  "purpose": "Procure and validate licensed/replay-ready historical data required before the BTC Vol Desk can pass institutional readiness gates.",
+  "control_note": "This is a source acquisition/control artifact only. It contains no credentials, no RFQ, no execution capability, and no investment/client approval.",
+  "decision_ts": "2026-05-18T19:30:00+00:00",
+  "required_source_groups": [
+    {
+      "source_group": "IBIT options history",
+      "accepted_formats": [
+        "csv",
+        "jsonl",
+        "parquet"
+      ],
+      "required_fields": [
+        "available_ts",
+        "expiration",
+        "strike",
+        "option_type",
+        "bid",
+        "ask",
+        "volume",
+        "open_interest",
+        "source_ref"
+      ],
+      "minimum_acceptance": [
+        "raw file retained",
+        "sha256 captured before normalization",
+        "provider/license provenance captured",
+        "available_end <= decision_ts",
+        "row_count > 0",
+        "not fixture/manual_fixture/demo_fixture"
+      ],
+      "provider_targets": [
+        "OPRA historical options via broker/vendor export",
+        "ORATS/OptionMetrics/Polygon paid historical options if license permits replay/diligence use"
+      ],
+      "procurement_status": "not-procured-for-licensed-historical-readiness",
+      "next_action": "Request/export licensed historical file, then run build-source-intake-entry and validate-source-intake."
+    },
+    {
+      "source_group": "Deribit options history",
+      "accepted_formats": [
+        "csv",
+        "jsonl",
+        "parquet"
+      ],
+      "required_fields": [
+        "available_ts",
+        "instrument_name",
+        "underlying_price",
+        "bid_iv",
+        "ask_iv",
+        "mark_iv",
+        "open_interest",
+        "source_ref"
+      ],
+      "minimum_acceptance": [
+        "raw file retained",
+        "sha256 captured before normalization",
+        "provider/license provenance captured",
+        "available_end <= decision_ts",
+        "row_count > 0",
+        "not fixture/manual_fixture/demo_fixture"
+      ],
+      "provider_targets": [
+        "Deribit historical/replay export with timestamped option book/IV fields",
+        "Kaiko/Amberdata/Tardis licensed Deribit options history"
+      ],
+      "procurement_status": "not-procured-for-licensed-historical-readiness",
+      "next_action": "Request/export licensed historical file, then run build-source-intake-entry and validate-source-intake."
+    },
+    {
+      "source_group": "CME Bitcoin options history",
+      "accepted_formats": [
+        "csv",
+        "jsonl",
+        "parquet"
+      ],
+      "required_fields": [
+        "available_ts",
+        "symbol",
+        "expiration",
+        "strike",
+        "option_type",
+        "bid",
+        "ask",
+        "settlement",
+        "source_ref"
+      ],
+      "minimum_acceptance": [
+        "raw file retained",
+        "sha256 captured before normalization",
+        "provider/license provenance captured",
+        "available_end <= decision_ts",
+        "row_count > 0",
+        "not fixture/manual_fixture/demo_fixture"
+      ],
+      "provider_targets": [
+        "Databento CME options history export",
+        "CME DataMine/broker historical CME Bitcoin options export"
+      ],
+      "procurement_status": "not-procured-for-licensed-historical-readiness",
+      "next_action": "Request/export licensed historical file, then run build-source-intake-entry and validate-source-intake."
+    },
+    {
+      "source_group": "BTC reference history",
+      "accepted_formats": [
+        "csv",
+        "jsonl",
+        "parquet"
+      ],
+      "required_fields": [
+        "available_ts",
+        "btc_usd",
+        "venue_or_index",
+        "source_ref"
+      ],
+      "minimum_acceptance": [
+        "raw file retained",
+        "sha256 captured before normalization",
+        "provider/license provenance captured",
+        "available_end <= decision_ts",
+        "row_count > 0",
+        "not fixture/manual_fixture/demo_fixture"
+      ],
+      "provider_targets": [
+        "CF Benchmarks/CME CF BRR/BRTI licensed reference history",
+        "Kaiko/Coin Metrics/Bloomberg BTC reference index export"
+      ],
+      "procurement_status": "not-procured-for-licensed-historical-readiness",
+      "next_action": "Request/export licensed historical file, then run build-source-intake-entry and validate-source-intake."
+    },
+    {
+      "source_group": "IBIT holdings history",
+      "accepted_formats": [
+        "csv",
+        "jsonl",
+        "parquet"
+      ],
+      "required_fields": [
+        "available_ts",
+        "btc_per_share",
+        "shares_outstanding",
+        "fund_assets",
+        "source_ref"
+      ],
+      "minimum_acceptance": [
+        "raw file retained",
+        "sha256 captured before normalization",
+        "provider/license provenance captured",
+        "available_end <= decision_ts",
+        "row_count > 0",
+        "not fixture/manual_fixture/demo_fixture"
+      ],
+      "provider_targets": [
+        "iShares daily holdings/NAV archive under approved use",
+        "Bloomberg/refinitiv/FactSet ETF holdings history export"
+      ],
+      "procurement_status": "not-procured-for-licensed-historical-readiness",
+      "next_action": "Request/export licensed historical file, then run build-source-intake-entry and validate-source-intake."
+    },
+    {
+      "source_group": "Rates and fee curves",
+      "accepted_formats": [
+        "csv",
+        "jsonl",
+        "parquet"
+      ],
+      "required_fields": [
+        "available_ts",
+        "tenor",
+        "rate",
+        "borrow_or_fee",
+        "source_ref"
+      ],
+      "minimum_acceptance": [
+        "raw file retained",
+        "sha256 captured before normalization",
+        "provider/license provenance captured",
+        "available_end <= decision_ts",
+        "row_count > 0",
+        "not fixture/manual_fixture/demo_fixture"
+      ],
+      "provider_targets": [
+        "FRED/SOFR/Treasury time series with usage terms archived",
+        "Broker borrow/financing/fee curve export when available"
+      ],
+      "procurement_status": "not-procured-for-licensed-historical-readiness",
+      "next_action": "Request/export licensed historical file, then run build-source-intake-entry and validate-source-intake."
+    }
+  ]
+}

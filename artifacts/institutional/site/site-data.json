@@ -1,0 +1,999 @@
+{
+  "positioning": "BTC Treasury & Miner Hedging Desk",
+  "full_positioning": "BTC Treasury & Miner Hedging Desk powered by a purpose-built cross-venue volatility evidence engine",
+  "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+  "legal_legend": "Internal evidence prototype. Public screen/model data only. No RFQ sent. No executable quote.",
+  "legal_gate": "Counsel-approved wrapper required before any external client, fund, RFQ, or execution workflow.",
+  "legal_wrapper_package": {
+    "path": "artifacts/institutional/legal/legal-wrapper-package-v1.json",
+    "approved_by_counsel": false,
+    "blockers": [
+      "counsel approval missing",
+      "external advisory/client/RFQ/fund use prohibited until wrapper approved",
+      "quote evidence remains internal diligence only"
+    ],
+    "boundary_matrix": [
+      {
+        "activity": "Analytics / research",
+        "allowed_now": true,
+        "current_status": "internal-only",
+        "external_requires": "counsel-approved disclaimer and distribution controls"
+      },
+      {
+        "activity": "Advisory / structuring",
+        "allowed_now": false,
+        "current_status": "blocked-pre-wrapper",
+        "external_requires": "RIA/CTA/CPO/BD perimeter analysis and written engagement terms"
+      },
+      {
+        "activity": "Execution / RFQ support",
+        "allowed_now": false,
+        "current_status": "blocked-pre-wrapper",
+        "external_requires": "broker/FCM/OTC partner model, no agency ambiguity, counterparty onboarding controls"
+      },
+      {
+        "activity": "Principal risk-taking",
+        "allowed_now": false,
+        "current_status": "blocked-pre-wrapper",
+        "external_requires": "entity/risk capital approval, mandate limits, conflicts policy, trade surveillance"
+      },
+      {
+        "activity": "Structured products / fund sleeve",
+        "allowed_now": false,
+        "current_status": "blocked-pre-wrapper",
+        "external_requires": "securities/private fund counsel, offering docs, investor eligibility, marketing review"
+      }
+    ],
+    "control_note": "Legal/business wrapper draft only. This artifact is not legal advice and does not authorize external client, investor, RFQ, execution, advisory, or fund activity.",
+    "counsel_questions": [
+      "Can analytics/research be distributed externally, and under what disclaimers?",
+      "Does treasury/miner hedge structuring create investment adviser, CTA, CPO, broker-dealer, FCM, or swap-adviser issues?",
+      "What engagement letter, suitability, KYC/KYB, and conflicts controls are required before any client mandate?",
+      "Can RFQ support be handled through a partner broker/FCM/OTC desk without agency/execution ambiguity?",
+      "What marketing/investor deck language is prohibited before a fund or structured-product wrapper exists?",
+      "What records, surveillance, and approvals are required before principal risk-taking?"
+    ],
+    "evidence_status": "SCREEN-ONLY \u00b7 LEGAL WRAPPER DRAFT \u00b7 NOT EXECUTABLE",
+    "hard_gates": [
+      "No external investor/client use until counsel-approved wrapper exists",
+      "No RFQ submission by automation",
+      "No executable quote labels without two distinct external indicative quote records",
+      "No trade-verified label without execution record and post-trade evidence",
+      "No offering/fund/product language without securities/private-fund counsel approval"
+    ],
+    "label": "DRAFT \u2014 NOT APPROVED FOR EXTERNAL USE",
+    "required_approval_fields": [
+      "approved_by_counsel",
+      "approved_scope",
+      "approval_date",
+      "allowed_activities",
+      "prohibited_activities"
+    ],
+    "status": "draft-blocked"
+  },
+  "latest_run": {
+    "run_id": "btcvol-20260518-163034",
+    "as_of_cst": "2026-05-18 16:30:34 CDT",
+    "btc_spot": 77457.05643018028,
+    "btc_per_share": 0.0005679118586151414,
+    "quality_score": 80,
+    "quality_grade": "green",
+    "configured_source_quality_label": "Configured-source quality",
+    "coverage_completeness_label": "Current screen-source availability",
+    "coverage_completeness": "Current screen/vendor captures available: Deribit + IBIT + CME Databento",
+    "overall_evidence_readiness": "YELLOW until real quote evidence exists",
+    "cme_rows": 1708,
+    "freshness_grade": "green",
+    "dislocations": 6,
+    "quote_review_candidates": 3,
+    "evidence_bundle_sha256": "6504204d3adf8ecd1d5bac94775f2639e08baec722a06f41623346dd7724210b",
+    "report_path": "artifacts/institutional/data/reports/btc-vol-desk-monitor-2026-05-18-163034.md",
+    "dashboard_path": "artifacts/institutional/dashboard/index.html",
+    "evidence_bundle_path": "artifacts/institutional/data/normalized/btcvol-20260518-163034/btcvol-20260518-163034-evidence-bundle.zip",
+    "evidence_manifest_path": "artifacts/institutional/data/normalized/btcvol-20260518-163034/evidence_manifest.json",
+    "candidate_ledger_path": "artifacts/institutional/data/normalized/btcvol-20260518-163034/candidate_triage.jsonl",
+    "quote_evidence_ledger_path": "artifacts/institutional/data/quote_evidence.jsonl"
+  },
+  "top_candidates": [
+    {
+      "rank": 1,
+      "candidate": "IBIT 0D ATM vs Deribit 1D ATM",
+      "priority": "high",
+      "direction": "IBIT cheap vs Deribit",
+      "gross_iv_diff_vol_pts": -16.49,
+      "recommended_workflow": "draft two-counterparty indicative RFQ review (internal only)",
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+    },
+    {
+      "rank": 2,
+      "candidate": "IBIT 2D ATM vs Deribit 2D ATM",
+      "priority": "high",
+      "direction": "IBIT rich vs Deribit",
+      "gross_iv_diff_vol_pts": 8.39,
+      "recommended_workflow": "draft two-counterparty indicative RFQ review (internal only)",
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+    },
+    {
+      "rank": 3,
+      "candidate": "IBIT 4D ATM vs Deribit 4D ATM",
+      "priority": "high",
+      "direction": "IBIT rich vs Deribit",
+      "gross_iv_diff_vol_pts": 5.46,
+      "recommended_workflow": "draft two-counterparty indicative RFQ review (internal only)",
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+    },
+    {
+      "rank": 4,
+      "candidate": "IBIT 8D ATM vs Deribit 11D ATM",
+      "priority": "low",
+      "direction": "IBIT cheap vs Deribit",
+      "gross_iv_diff_vol_pts": -1.51,
+      "recommended_workflow": "watch only",
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+    },
+    {
+      "rank": 5,
+      "candidate": "IBIT 11D ATM vs Deribit 11D ATM",
+      "priority": "low",
+      "direction": "IBIT rich vs Deribit",
+      "gross_iv_diff_vol_pts": 1.27,
+      "recommended_workflow": "watch only",
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+    }
+  ],
+  "quote_verification_board": {
+    "title": "Quote Verification Demo Board",
+    "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+    "control": "Manual demo workflow only; no RFQ is sent and no executable quote is implied.",
+    "summary": {
+      "screen_only": 5,
+      "reviewed": 0,
+      "rfq_package_drafted": 0,
+      "indicative_quote_1": 0,
+      "indicative_quote_2": 0,
+      "quote_verified": 0,
+      "trade_verified": 0
+    },
+    "rows": [
+      {
+        "rank": 1,
+        "candidate": "IBIT 0D ATM vs Deribit 1D ATM",
+        "priority": "high",
+        "direction": "IBIT cheap vs Deribit",
+        "gross_iv_diff_vol_pts": -16.49,
+        "stage": "screen_only",
+        "quote_count": 0,
+        "counterparty_quotes_required": 2,
+        "next_action": "Internal candidate review; draft RFQ package only after approval.",
+        "publishability": "internal-only",
+        "trade_verified_requires": "execution record + post-trade evidence",
+        "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+      },
+      {
+        "rank": 2,
+        "candidate": "IBIT 2D ATM vs Deribit 2D ATM",
+        "priority": "high",
+        "direction": "IBIT rich vs Deribit",
+        "gross_iv_diff_vol_pts": 8.39,
+        "stage": "screen_only",
+        "quote_count": 0,
+        "counterparty_quotes_required": 2,
+        "next_action": "Internal candidate review; draft RFQ package only after approval.",
+        "publishability": "internal-only",
+        "trade_verified_requires": "execution record + post-trade evidence",
+        "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+      },
+      {
+        "rank": 3,
+        "candidate": "IBIT 4D ATM vs Deribit 4D ATM",
+        "priority": "high",
+        "direction": "IBIT rich vs Deribit",
+        "gross_iv_diff_vol_pts": 5.46,
+        "stage": "screen_only",
+        "quote_count": 0,
+        "counterparty_quotes_required": 2,
+        "next_action": "Internal candidate review; draft RFQ package only after approval.",
+        "publishability": "internal-only",
+        "trade_verified_requires": "execution record + post-trade evidence",
+        "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+      },
+      {
+        "rank": 4,
+        "candidate": "IBIT 8D ATM vs Deribit 11D ATM",
+        "priority": "low",
+        "direction": "IBIT cheap vs Deribit",
+        "gross_iv_diff_vol_pts": -1.51,
+        "stage": "screen_only",
+        "quote_count": 0,
+        "counterparty_quotes_required": 2,
+        "next_action": "Internal candidate review; draft RFQ package only after approval.",
+        "publishability": "internal-only",
+        "trade_verified_requires": "execution record + post-trade evidence",
+        "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+      },
+      {
+        "rank": 5,
+        "candidate": "IBIT 11D ATM vs Deribit 11D ATM",
+        "priority": "low",
+        "direction": "IBIT rich vs Deribit",
+        "gross_iv_diff_vol_pts": 1.27,
+        "stage": "screen_only",
+        "quote_count": 0,
+        "counterparty_quotes_required": 2,
+        "next_action": "Internal candidate review; draft RFQ package only after approval.",
+        "publishability": "internal-only",
+        "trade_verified_requires": "execution record + post-trade evidence",
+        "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+      }
+    ],
+    "lifecycle": [
+      {
+        "stage": "screen_only",
+        "label": "Screen-only candidate",
+        "description": "Detected by monitor from public/model-estimated data."
+      },
+      {
+        "stage": "reviewed",
+        "label": "Reviewed",
+        "description": "Human review confirms candidate is worth preparing."
+      },
+      {
+        "stage": "rfq_package_drafted",
+        "label": "RFQ package drafted",
+        "description": "Package exists but is not auto-sent."
+      },
+      {
+        "stage": "indicative_quote_1",
+        "label": "Indicative quote 1",
+        "description": "One independent counterparty quote captured with evidence reference."
+      },
+      {
+        "stage": "indicative_quote_2",
+        "label": "Indicative quote 2",
+        "description": "Second independent quote captured with evidence reference."
+      },
+      {
+        "stage": "quote_verified",
+        "label": "Quote-verified",
+        "description": "Two complete indicative quotes; not trade-verified."
+      },
+      {
+        "stage": "trade_verified",
+        "label": "Trade-verified",
+        "description": "Execution record and post-trade evidence archived."
+      }
+    ]
+  },
+  "quote_evidence_ledger": {
+    "path": "artifacts/institutional/data/quote_evidence.jsonl",
+    "records": [],
+    "invalid_rows": [],
+    "valid_count": 0,
+    "invalid_count": 0,
+    "summary": {
+      "total_records": 0,
+      "quote_verified_records": 0,
+      "manual_indicative_records": 0,
+      "trade_verified_records": 0,
+      "invalid_records": 0,
+      "candidate_count": 0,
+      "quote_verified_candidates": 0,
+      "trade_verified_candidates": 0,
+      "controls": [
+        "Two distinct counterparties required for quote-verified candidate status",
+        "same-dealer duplicate quotes cannot promote a candidate",
+        "Quote evidence remains not investor-publishable until legal wrapper approval"
+      ],
+      "candidates": []
+    },
+    "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE"
+  },
+  "backtest_research": {
+    "available": true,
+    "path": "artifacts/institutional/backtests/vol-spread-backtest-multitenor-v1.md",
+    "summary_json_path": "artifacts/institutional/backtests/vol-spread-backtest-multitenor-v1.json",
+    "bytes": 6119,
+    "sha256": "ac18310dddc991c9fd22bfbce98bfbcc10279ac8eed99613e27f36cea6cbdb48",
+    "summary_json_sha256": "233e874dbd528f954a69dfd51e730b98821ec64b10d2c0f7b3d345bf30f4d176",
+    "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE",
+    "tenor": "1d",
+    "snapshot_count": 19,
+    "trade_count": 17,
+    "gross_pnl": 743350.0,
+    "max_drawdown": 27650.0,
+    "win_rate": 0.647,
+    "sample_gate": "insufficient-history",
+    "control_note": "Point-in-time research only using synthetic fills; not executable economics and not an investment conclusion.",
+    "controls": [
+      "strict chronology enforced",
+      "strategy sees prior history only",
+      "synthetic fills; not executable economics"
+    ],
+    "scenarios": [
+      {
+        "tenor": "1d",
+        "snapshot_count": 19,
+        "trade_count": 17,
+        "gross_pnl": 743350.0,
+        "max_drawdown": 27650.0,
+        "win_rate": 0.6470588235294118,
+        "sample_gate": "insufficient-history",
+        "cost_per_trade": 250.0,
+        "slippage_vol_pts": 0.0,
+        "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE"
+      },
+      {
+        "tenor": "7d",
+        "snapshot_count": 19,
+        "trade_count": 2,
+        "gross_pnl": 54000.0,
+        "max_drawdown": 0.0,
+        "win_rate": 1.0,
+        "sample_gate": "insufficient-history",
+        "cost_per_trade": 250.0,
+        "slippage_vol_pts": 0.0,
+        "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE"
+      },
+      {
+        "tenor": "30d",
+        "snapshot_count": 19,
+        "trade_count": 2,
+        "gross_pnl": 48300.0,
+        "max_drawdown": 150.00000000000213,
+        "win_rate": 0.5,
+        "sample_gate": "insufficient-history",
+        "cost_per_trade": 250.0,
+        "slippage_vol_pts": 0.0,
+        "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE"
+      }
+    ],
+    "robustness_metrics": {
+      "best_gross_pnl_tenor": "1d",
+      "cost_sensitivity": {
+        "control_note": "Synthetic fills only; cost sensitivity is illustrative and not executable economics.",
+        "cost_per_trade": 250.0,
+        "effective_cost_per_trade": 250.0,
+        "slippage_vol_pts": 0.0
+      },
+      "max_snapshot_count": 19,
+      "max_trade_count": 17,
+      "min_snapshot_gate": 30,
+      "min_trade_gate": 20,
+      "sample_gate_pass_count": 0,
+      "sample_gate_ready": false,
+      "scenario_count": 3,
+      "tenors_with_trades": [
+        "1d",
+        "7d",
+        "30d"
+      ],
+      "worst_gross_pnl_tenor": "30d"
+    }
+  },
+  "historical_source_diagnostics": {
+    "available": true,
+    "manifest_path": "artifacts/institutional/historical/manifests/historical-source-manifest-fixtures-v1.json",
+    "manifest_sha256": "238ace299e2a2d6af4f8ecc223149346a876d0184df7fca40fb0ae052bf3d939",
+    "source_count": 2,
+    "required_source_labels": [
+      "IBIT",
+      "Deribit",
+      "CME",
+      "BTC reference",
+      "IBIT holdings",
+      "Rates/fees"
+    ],
+    "coverage_summary": "0/6 licensed source groups covered \u00b7 2 fixture-only \u00b7 4 missing",
+    "coverage_ready": false,
+    "missing_required_source_labels": [
+      "IBIT",
+      "Deribit",
+      "CME",
+      "BTC reference",
+      "IBIT holdings",
+      "Rates/fees"
+    ],
+    "coverage_matrix": [
+      {
+        "label": "IBIT",
+        "status": "fixture-only",
+        "source_count": 1
+      },
+      {
+        "label": "Deribit",
+        "status": "fixture-only",
+        "source_count": 1
+      },
+      {
+        "label": "CME",
+        "status": "missing",
+        "source_count": 0
+      },
+      {
+        "label": "BTC reference",
+        "status": "missing",
+        "source_count": 0
+      },
+      {
+        "label": "IBIT holdings",
+        "status": "missing",
+        "source_count": 0
+      },
+      {
+        "label": "Rates/fees",
+        "status": "missing",
+        "source_count": 0
+      }
+    ],
+    "source_coverage_tracker": [
+      {
+        "label": "IBIT",
+        "status": "fixture-only",
+        "source_count": 1,
+        "provider": "manual_fixture",
+        "coverage_start": "2025-01-02T15:30:00Z",
+        "coverage_end": "2025-01-02T15:30:00Z",
+        "row_count": null,
+        "sha256": "a803cdd9ba7804417eeb2a97af06064db7757b0ec919fb9acc4bfc0b89acd430",
+        "license_label": "manual_fixture",
+        "redistribution": "internal_only",
+        "execution_confidence": "screen_only_not_executable",
+        "blocker": "Fixture source; replace with licensed historical export before investment use.",
+        "next_action": "Expand IBIT historical coverage window and retain manifest hashes for replay."
+      },
+      {
+        "label": "Deribit",
+        "status": "fixture-only",
+        "source_count": 1,
+        "provider": "manual_fixture",
+        "coverage_start": "2025-01-02T15:30:00Z",
+        "coverage_end": "2025-01-02T15:30:00Z",
+        "row_count": null,
+        "sha256": "8d2552db0baaf54cc177ca6ddc6aece0863ad374f3baddfcf7c860b3677baa76",
+        "license_label": "manual_fixture",
+        "redistribution": "internal_only",
+        "execution_confidence": "screen_only_not_executable",
+        "blocker": "Fixture source; replace with licensed historical export before investment use.",
+        "next_action": "Load Deribit historical options replay source with raw-file hash and coverage dates."
+      },
+      {
+        "label": "CME",
+        "status": "missing",
+        "source_count": 0,
+        "provider": "missing",
+        "coverage_start": null,
+        "coverage_end": null,
+        "row_count": null,
+        "sha256": null,
+        "license_label": "missing",
+        "redistribution": "internal_only",
+        "execution_confidence": "screen_only_not_executable",
+        "blocker": "No CME source captured in latest historical manifest.",
+        "next_action": "Configure licensed CME/Databento historical source; keep screen-only until quote/trade evidence exists."
+      },
+      {
+        "label": "BTC reference",
+        "status": "missing",
+        "source_count": 0,
+        "provider": "missing",
+        "coverage_start": null,
+        "coverage_end": null,
+        "row_count": null,
+        "sha256": null,
+        "license_label": "missing",
+        "redistribution": "internal_only",
+        "execution_confidence": "screen_only_not_executable",
+        "blocker": "No BTC reference source captured in latest historical manifest.",
+        "next_action": "Add point-in-time BTC reference marks used for every decision frame."
+      },
+      {
+        "label": "IBIT holdings",
+        "status": "missing",
+        "source_count": 0,
+        "provider": "missing",
+        "coverage_start": null,
+        "coverage_end": null,
+        "row_count": null,
+        "sha256": null,
+        "license_label": "missing",
+        "redistribution": "internal_only",
+        "execution_confidence": "screen_only_not_executable",
+        "blocker": "No IBIT holdings source captured in latest historical manifest.",
+        "next_action": "Add point-in-time IBIT holdings/BTC-per-share files for every decision date."
+      },
+      {
+        "label": "Rates/fees",
+        "status": "missing",
+        "source_count": 0,
+        "provider": "missing",
+        "coverage_start": null,
+        "coverage_end": null,
+        "row_count": null,
+        "sha256": null,
+        "license_label": "missing",
+        "redistribution": "internal_only",
+        "execution_confidence": "screen_only_not_executable",
+        "blocker": "No Rates/fees source captured in latest historical manifest.",
+        "next_action": "Add rates, borrow, fees, and transaction-cost assumptions with source hashes."
+      }
+    ],
+    "source_tracker_summary": "0 covered \u00b7 4 missing \u00b7 2 fixture-only",
+    "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE",
+    "control_note": "Historical backtests use hashed point-in-time sources; synthetic fills only; not executable economics.",
+    "sources": [
+      {
+        "source_id": "deribit_fixture_2025_01_02",
+        "source_name": "Deribit BTC historical options fixture",
+        "provider": "manual_fixture",
+        "venue": "Deribit",
+        "instrument_scope": "BTC options",
+        "license_label": "manual_fixture",
+        "redistribution": "internal_only",
+        "execution_confidence": "screen_only_not_executable",
+        "coverage_start": "2025-01-02T15:30:00Z",
+        "coverage_end": "2025-01-02T15:30:00Z",
+        "raw_path": "artifacts/institutional/historical/raw/fixtures/deribit_fixture_2025-01-02.jsonl",
+        "bytes": 216,
+        "sha256": "8d2552db0baaf54cc177ca6ddc6aece0863ad374f3baddfcf7c860b3677baa76",
+        "status": "available",
+        "row_count": null,
+        "coverage_labels": [
+          "Deribit"
+        ],
+        "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE"
+      },
+      {
+        "source_id": "ibit_opra_fixture_2025_01_02",
+        "source_name": "IBIT OPRA historical options fixture",
+        "provider": "manual_fixture",
+        "venue": "OPRA",
+        "instrument_scope": "IBIT options",
+        "license_label": "manual_fixture",
+        "redistribution": "internal_only",
+        "execution_confidence": "screen_only_not_executable",
+        "coverage_start": "2025-01-02T15:30:00Z",
+        "coverage_end": "2025-01-02T15:30:00Z",
+        "raw_path": "artifacts/institutional/historical/raw/fixtures/ibit_opra_fixture_2025-01-02.csv",
+        "bytes": 170,
+        "sha256": "a803cdd9ba7804417eeb2a97af06064db7757b0ec919fb9acc4bfc0b89acd430",
+        "status": "available",
+        "row_count": null,
+        "coverage_labels": [
+          "IBIT"
+        ],
+        "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE"
+      }
+    ]
+  },
+  "current_source_availability": {
+    "summary": "6/6 current source groups available",
+    "available_count": 6,
+    "required_count": 6,
+    "ready_for_internal_diligence": true,
+    "ready_for_investment_or_client_use": false,
+    "evidence_status": "SCREEN-ONLY \u00b7 CURRENT SOURCE AVAILABILITY \u00b7 NOT EXECUTABLE",
+    "control_note": "Current captured sources can support internal diligence, but they do not clear licensed historical readiness, quote verification, legal approval, or executable-economics gates.",
+    "groups": [
+      {
+        "label": "IBIT options",
+        "status": "available",
+        "provider": "Nasdaq public option-chain JSON",
+        "license_label": "public_screen_source",
+        "path": "artifacts/institutional/data/raw/btcvol-20260518-163034/nasdaq_ibit_option_chain.json",
+        "sha256": "aa95e3aba2f5ab93a4564bd33293d31d1dca2f6361383349ab2df6bce0dc4e03",
+        "row_count": 6,
+        "execution_confidence": "screen_only_not_executable",
+        "evidence_status": "SCREEN-ONLY \u00b7 CURRENT SOURCE AVAILABILITY \u00b7 NOT EXECUTABLE",
+        "blocker": "Available for internal diligence only; does not clear licensed historical readiness."
+      },
+      {
+        "label": "Deribit options",
+        "status": "available",
+        "provider": "Deribit public API",
+        "license_label": "public_api_screen_data",
+        "path": "artifacts/institutional/data/raw/btcvol-20260518-163034/deribit_book_summary_btc_options.json",
+        "sha256": "2d9e10f7fa683946da696f09ad6bdd10e358727042dea357ad3cb20ee25284dd",
+        "row_count": 11,
+        "execution_confidence": "screen_only_not_executable",
+        "evidence_status": "SCREEN-ONLY \u00b7 CURRENT SOURCE AVAILABILITY \u00b7 NOT EXECUTABLE",
+        "blocker": "Available for internal diligence only; does not clear licensed historical readiness."
+      },
+      {
+        "label": "CME Bitcoin options",
+        "status": "available",
+        "provider": "Databento CME",
+        "license_label": "licensed_vendor_api_databento",
+        "path": "artifacts/institutional/data/raw/btcvol-20260518-163034/databento_cme_btc_options_bbo_1m.csv",
+        "sha256": "654789e32f58dee8bab1428e0ad41780776e7b1750374f76ff54bde2af69d702",
+        "row_count": 1708,
+        "execution_confidence": "screen_only_not_executable",
+        "evidence_status": "SCREEN-ONLY \u00b7 CURRENT SOURCE AVAILABILITY \u00b7 NOT EXECUTABLE",
+        "blocker": "Available for internal diligence only; does not clear licensed historical readiness."
+      },
+      {
+        "label": "BTC reference",
+        "status": "available",
+        "provider": "Monitor run manifest",
+        "license_label": "run_derived_reference",
+        "path": null,
+        "sha256": null,
+        "row_count": 1,
+        "execution_confidence": "screen_only_not_executable",
+        "evidence_status": "SCREEN-ONLY \u00b7 CURRENT SOURCE AVAILABILITY \u00b7 NOT EXECUTABLE",
+        "blocker": "Available for internal diligence only; does not clear licensed historical readiness."
+      },
+      {
+        "label": "IBIT holdings",
+        "status": "available",
+        "provider": "iShares holdings capture/cache",
+        "license_label": "public_fund_holdings_or_valid_cache",
+        "path": "artifacts/institutional/data/raw/btcvol-20260518-163034/ishares_ibit_holdings.csv",
+        "sha256": "1e1291ea3cfe0ad1b0aae1ff609059a5fe2eeb19c585c7b33ab77f00d560272b",
+        "row_count": 1570,
+        "execution_confidence": "screen_only_not_executable",
+        "evidence_status": "SCREEN-ONLY \u00b7 CURRENT SOURCE AVAILABILITY \u00b7 NOT EXECUTABLE",
+        "blocker": "Available for internal diligence only; does not clear licensed historical readiness."
+      },
+      {
+        "label": "Rates/fee curves",
+        "status": "available",
+        "provider": "FRED rates CSV",
+        "license_label": "public_reference_rates",
+        "path": "artifacts/institutional/historical/source_audit/fred_rates_sofr_dgs1_dgs3mo_current.csv",
+        "sha256": "f863aa00472ca8378e06a3f8dc080606e2240c529ad2c968ba3b648e90b410b2",
+        "row_count": 16794,
+        "execution_confidence": "screen_only_not_executable",
+        "evidence_status": "SCREEN-ONLY \u00b7 CURRENT SOURCE AVAILABILITY \u00b7 NOT EXECUTABLE",
+        "blocker": "Available for internal diligence only; does not clear licensed historical readiness."
+      }
+    ]
+  },
+  "institutional_readiness_gate": {
+    "status": "not-ready",
+    "summary": "0/4 readiness gates passed",
+    "label": "NOT READY FOR INVESTMENT/CLIENT USE",
+    "gates": [
+      {
+        "label": "Licensed historical source coverage",
+        "passed": false,
+        "blocker": "licensed historical source coverage incomplete",
+        "required": "All required source groups covered by non-fixture, replay-ready sources"
+      },
+      {
+        "label": "Backtest sample gate",
+        "passed": false,
+        "blocker": "backtest sample gate insufficient",
+        "required": "At least one scenario passes minimum snapshot and synthetic-trade thresholds"
+      },
+      {
+        "label": "Two-counterparty quote evidence",
+        "passed": false,
+        "blocker": "two-counterparty quote evidence missing",
+        "required": "At least one candidate has quote-verified evidence from two distinct counterparties"
+      },
+      {
+        "label": "Counsel-approved legal wrapper",
+        "passed": false,
+        "blocker": "counsel-approved wrapper missing",
+        "required": "Approved legal/business wrapper before external investor/client use"
+      }
+    ],
+    "blockers": [
+      "licensed historical source coverage incomplete",
+      "backtest sample gate insufficient",
+      "two-counterparty quote evidence missing",
+      "counsel-approved wrapper missing"
+    ],
+    "next_actions": [
+      "Replace IBIT/Deribit fixtures and missing groups with licensed/replay-ready source manifests.",
+      "Accumulate enough point-in-time replay observations for sample-gate pass thresholds.",
+      "Capture two distinct external indicative quote records for at least one candidate.",
+      "Obtain counsel-approved business/legal wrapper before external investor/client use."
+    ],
+    "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+    "control_note": "Readiness gates are diligence controls, not approval to trade, advise, market, or raise capital."
+  },
+  "source_intake_validation": {
+    "ready": false,
+    "ok": false,
+    "evidence_status": "SCREEN-ONLY \u00b7 SOURCE INTAKE VALIDATION \u00b7 NOT EXECUTABLE",
+    "covered_source_groups": 0,
+    "required_source_groups": 6,
+    "blockers": [
+      "IBIT options history: fixture/manual_fixture sources cannot satisfy readiness",
+      "Deribit options history: fixture/manual_fixture sources cannot satisfy readiness",
+      "CME Bitcoin options history: source group missing",
+      "BTC reference history: source group missing",
+      "IBIT holdings history: source group missing",
+      "Rates and fee curves: source group missing"
+    ],
+    "source_results": [
+      {
+        "source_group": "IBIT options history",
+        "ready": false,
+        "blockers": [
+          "fixture/manual_fixture sources cannot satisfy readiness"
+        ],
+        "row_count": 12,
+        "format": "csv",
+        "provenance": "manual_fixture",
+        "license_label": "fixture"
+      },
+      {
+        "source_group": "Deribit options history",
+        "ready": false,
+        "blockers": [
+          "fixture/manual_fixture sources cannot satisfy readiness"
+        ],
+        "row_count": 12,
+        "format": "jsonl",
+        "provenance": "manual_fixture",
+        "license_label": "fixture"
+      }
+    ],
+    "manifest_path": "artifacts/institutional/historical/source_intake_manifest.json"
+  },
+  "licensed_source_intake_contract": {
+    "status": "not-ready",
+    "evidence_status": "SCREEN-ONLY \u00b7 INTAKE CONTRACT \u00b7 NOT EXECUTABLE",
+    "control_note": "Defines the licensed/replay-ready source package required before historical coverage can pass readiness gates. It does not create live data access or executable economics.",
+    "validation_result": {
+      "ready": false,
+      "ok": false,
+      "evidence_status": "SCREEN-ONLY \u00b7 SOURCE INTAKE VALIDATION \u00b7 NOT EXECUTABLE",
+      "covered_source_groups": 0,
+      "required_source_groups": 6,
+      "blockers": [
+        "IBIT options history: fixture/manual_fixture sources cannot satisfy readiness",
+        "Deribit options history: fixture/manual_fixture sources cannot satisfy readiness",
+        "CME Bitcoin options history: source group missing",
+        "BTC reference history: source group missing",
+        "IBIT holdings history: source group missing",
+        "Rates and fee curves: source group missing"
+      ],
+      "source_results": [
+        {
+          "source_group": "IBIT options history",
+          "ready": false,
+          "blockers": [
+            "fixture/manual_fixture sources cannot satisfy readiness"
+          ],
+          "row_count": 12,
+          "format": "csv",
+          "provenance": "manual_fixture",
+          "license_label": "fixture"
+        },
+        {
+          "source_group": "Deribit options history",
+          "ready": false,
+          "blockers": [
+            "fixture/manual_fixture sources cannot satisfy readiness"
+          ],
+          "row_count": 12,
+          "format": "jsonl",
+          "provenance": "manual_fixture",
+          "license_label": "fixture"
+        }
+      ],
+      "manifest_path": "artifacts/institutional/historical/source_intake_manifest.json"
+    },
+    "required_sources": [
+      {
+        "source_group": "IBIT options history",
+        "accepted_formats": [
+          "csv",
+          "jsonl",
+          "parquet"
+        ],
+        "required_fields": [
+          "available_ts",
+          "expiration",
+          "strike",
+          "option_type",
+          "bid",
+          "ask",
+          "volume",
+          "open_interest",
+          "source_ref"
+        ],
+        "provider_examples": [
+          "OPRA/vendor export",
+          "broker historical option chain"
+        ]
+      },
+      {
+        "source_group": "Deribit options history",
+        "accepted_formats": [
+          "csv",
+          "jsonl",
+          "parquet"
+        ],
+        "required_fields": [
+          "available_ts",
+          "instrument_name",
+          "underlying_price",
+          "bid_iv",
+          "ask_iv",
+          "mark_iv",
+          "open_interest",
+          "source_ref"
+        ],
+        "provider_examples": [
+          "Deribit historical export",
+          "licensed vendor replay"
+        ]
+      },
+      {
+        "source_group": "CME Bitcoin options history",
+        "accepted_formats": [
+          "csv",
+          "jsonl",
+          "parquet"
+        ],
+        "required_fields": [
+          "available_ts",
+          "symbol",
+          "expiration",
+          "strike",
+          "option_type",
+          "bid",
+          "ask",
+          "settlement",
+          "source_ref"
+        ],
+        "provider_examples": [
+          "Databento licensed history",
+          "CME/broker historical export"
+        ]
+      },
+      {
+        "source_group": "BTC reference history",
+        "accepted_formats": [
+          "csv",
+          "jsonl",
+          "parquet"
+        ],
+        "required_fields": [
+          "available_ts",
+          "btc_usd",
+          "venue_or_index",
+          "source_ref"
+        ],
+        "provider_examples": [
+          "CF Benchmarks",
+          "vendor BTC index",
+          "broker reference"
+        ]
+      },
+      {
+        "source_group": "IBIT holdings history",
+        "accepted_formats": [
+          "csv",
+          "jsonl",
+          "parquet"
+        ],
+        "required_fields": [
+          "available_ts",
+          "btc_per_share",
+          "shares_outstanding",
+          "fund_assets",
+          "source_ref"
+        ],
+        "provider_examples": [
+          "iShares daily holdings archive",
+          "fund administrator export"
+        ]
+      },
+      {
+        "source_group": "Rates and fee curves",
+        "accepted_formats": [
+          "csv",
+          "jsonl",
+          "parquet"
+        ],
+        "required_fields": [
+          "available_ts",
+          "tenor",
+          "rate",
+          "borrow_or_fee",
+          "source_ref"
+        ],
+        "provider_examples": [
+          "SOFR/rate vendor",
+          "broker borrow/fee export"
+        ]
+      }
+    ],
+    "validation_gates": [
+      "No future available_ts relative to decision_ts",
+      "Raw file SHA-256 captured before normalization",
+      "Provider/license label present for every source group",
+      "Fixture/manual_fixture sources cannot satisfy readiness",
+      "Rows with crossed/wide/missing markets remain diagnostic, not executable"
+    ]
+  },
+  "run_count": 29,
+  "business_model_sequence": [
+    "Research/evidence engine",
+    "Treasury and miner hedge structuring",
+    "Partner-led RFQ and execution support",
+    "Principal risk sleeve only after chosen legal wrapper"
+  ],
+  "case_studies": {
+    "available": true,
+    "treasury": {
+      "title": "Corporate BTC treasury hedge case study",
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+      "structure": "put-spread collar / covered-call policy preview",
+      "btc_held": 1000,
+      "hedged_btc": 350,
+      "unhedged_btc": 650,
+      "hedge_ratio": 0.35,
+      "tenor_days": 90,
+      "spot": 77457.06,
+      "spot_value_usd": 77457056.43,
+      "floor_price": 58092.79,
+      "cap_price": 96821.32,
+      "protected_value_at_floor_usd": 20332477.31,
+      "scenario_rows": [
+        {
+          "btc_price": 46474.23,
+          "hedged_sleeve_value_usd": 20332477.31,
+          "unhedged_sleeve_value_usd": 30208252.01,
+          "total_program_value_usd": 50540729.32
+        },
+        {
+          "btc_price": 58092.79,
+          "hedged_sleeve_value_usd": 20332477.31,
+          "unhedged_sleeve_value_usd": 37760315.01,
+          "total_program_value_usd": 58092792.32
+        },
+        {
+          "btc_price": 77457.06,
+          "hedged_sleeve_value_usd": 27109969.75,
+          "unhedged_sleeve_value_usd": 50347086.68,
+          "total_program_value_usd": 77457056.43
+        },
+        {
+          "btc_price": 96821.32,
+          "hedged_sleeve_value_usd": 33887462.19,
+          "unhedged_sleeve_value_usd": 62933858.35,
+          "total_program_value_usd": 96821320.54
+        },
+        {
+          "btc_price": 116185.58,
+          "hedged_sleeve_value_usd": 33887462.19,
+          "unhedged_sleeve_value_usd": 75520630.02,
+          "total_program_value_usd": 109408092.21
+        }
+      ],
+      "quote_control": "Premium and executable levels require two-counterparty quote verification.",
+      "notes": [
+        "Use as board-policy illustration, not as executable pricing.",
+        "Premium, strikes, and liquidity must be verified with counterparties."
+      ]
+    },
+    "miner": {
+      "title": "Miner runway protection case study",
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+      "structure": "production floor / collar policy preview",
+      "monthly_btc_production": 120,
+      "hedged_monthly_btc": 60,
+      "six_month_production_btc": 720,
+      "six_month_hedged_btc": 360,
+      "hedge_ratio": 0.5,
+      "tenor_months": 6,
+      "spot": 77457.06,
+      "cash_cost_per_btc": 42000.0,
+      "floor_price": 54219.94,
+      "monthly_revenue_at_spot_usd": 9294846.77,
+      "monthly_cash_cost_usd": 5040000.0,
+      "monthly_floor_revenue_on_hedged_btc_usd": 3253196.37,
+      "cash_runway_months_before_hedge": 3.75,
+      "warnings": [
+        "Hedge only conservative production; avoid overhedging and collateral stress."
+      ],
+      "quote_control": "Indicative economics require quote verification before investor/client use."
+    }
+  }
+}

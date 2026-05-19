@@ -1,0 +1,125 @@
+{
+  "decision_ts": "2026-05-18T19:30:00+00:00",
+  "evidence_status": "SCREEN-ONLY \u00b7 LICENSED SOURCE MANIFEST SKELETON \u00b7 NOT EXECUTABLE",
+  "control_note": "Skeleton only; replace placeholders with procured licensed/replay-ready historical files. Do not treat this file as ready.",
+  "sources": [
+    {
+      "source_group": "IBIT options history",
+      "provenance": "replace-with-licensed-provider-or-broker-export",
+      "license_label": "replace-with-license-or-contract-label",
+      "format": "csv",
+      "raw_sha256": "replace-with-64-character-raw-file-sha256",
+      "fields": [
+        "available_ts",
+        "expiration",
+        "strike",
+        "option_type",
+        "bid",
+        "ask",
+        "volume",
+        "open_interest",
+        "source_ref"
+      ],
+      "row_count": 0,
+      "available_start": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "available_end": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "source_ref": "replace-with-vendor-export-id-or-internal-file-ref"
+    },
+    {
+      "source_group": "Deribit options history",
+      "provenance": "replace-with-licensed-provider-or-broker-export",
+      "license_label": "replace-with-license-or-contract-label",
+      "format": "csv",
+      "raw_sha256": "replace-with-64-character-raw-file-sha256",
+      "fields": [
+        "available_ts",
+        "instrument_name",
+        "underlying_price",
+        "bid_iv",
+        "ask_iv",
+        "mark_iv",
+        "open_interest",
+        "source_ref"
+      ],
+      "row_count": 0,
+      "available_start": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "available_end": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "source_ref": "replace-with-vendor-export-id-or-internal-file-ref"
+    },
+    {
+      "source_group": "CME Bitcoin options history",
+      "provenance": "replace-with-licensed-provider-or-broker-export",
+      "license_label": "replace-with-license-or-contract-label",
+      "format": "csv",
+      "raw_sha256": "replace-with-64-character-raw-file-sha256",
+      "fields": [
+        "available_ts",
+        "symbol",
+        "expiration",
+        "strike",
+        "option_type",
+        "bid",
+        "ask",
+        "settlement",
+        "source_ref"
+      ],
+      "row_count": 0,
+      "available_start": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "available_end": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "source_ref": "replace-with-vendor-export-id-or-internal-file-ref"
+    },
+    {
+      "source_group": "BTC reference history",
+      "provenance": "replace-with-licensed-provider-or-broker-export",
+      "license_label": "replace-with-license-or-contract-label",
+      "format": "csv",
+      "raw_sha256": "replace-with-64-character-raw-file-sha256",
+      "fields": [
+        "available_ts",
+        "btc_usd",
+        "venue_or_index",
+        "source_ref"
+      ],
+      "row_count": 0,
+      "available_start": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "available_end": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "source_ref": "replace-with-vendor-export-id-or-internal-file-ref"
+    },
+    {
+      "source_group": "IBIT holdings history",
+      "provenance": "replace-with-licensed-provider-or-broker-export",
+      "license_label": "replace-with-license-or-contract-label",
+      "format": "csv",
+      "raw_sha256": "replace-with-64-character-raw-file-sha256",
+      "fields": [
+        "available_ts",
+        "btc_per_share",
+        "shares_outstanding",
+        "fund_assets",
+        "source_ref"
+      ],
+      "row_count": 0,
+      "available_start": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "available_end": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "source_ref": "replace-with-vendor-export-id-or-internal-file-ref"
+    },
+    {
+      "source_group": "Rates and fee curves",
+      "provenance": "replace-with-licensed-provider-or-broker-export",
+      "license_label": "replace-with-license-or-contract-label",
+      "format": "csv",
+      "raw_sha256": "replace-with-64-character-raw-file-sha256",
+      "fields": [
+        "available_ts",
+        "tenor",
+        "rate",
+        "borrow_or_fee",
+        "source_ref"
+      ],
+      "row_count": 0,
+      "available_start": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "available_end": "YYYY-MM-DDTHH:MM:SS+00:00",
+      "source_ref": "replace-with-vendor-export-id-or-internal-file-ref"
+    }
+  ]
+}

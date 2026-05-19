@@ -1,0 +1,75 @@
+{
+  "controls": [
+    "strict chronology enforced",
+    "strategy sees prior history only",
+    "synthetic fills; not executable economics"
+  ],
+  "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE",
+  "ok": true,
+  "robustness_metrics": {
+    "best_gross_pnl_tenor": "1d",
+    "cost_sensitivity": {
+      "control_note": "Synthetic fills only; cost sensitivity is illustrative and not executable economics.",
+      "cost_per_trade": 250.0,
+      "effective_cost_per_trade": 250.0,
+      "slippage_vol_pts": 0.0
+    },
+    "max_snapshot_count": 19,
+    "max_trade_count": 17,
+    "min_snapshot_gate": 30,
+    "min_trade_gate": 20,
+    "sample_gate_pass_count": 0,
+    "sample_gate_ready": false,
+    "scenario_count": 3,
+    "tenors_with_trades": [
+      "1d",
+      "7d",
+      "30d"
+    ],
+    "worst_gross_pnl_tenor": "30d"
+  },
+  "scenarios": [
+    {
+      "cost_per_trade": 250.0,
+      "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE",
+      "gross_pnl": 743350.0,
+      "max_drawdown": 27650.0,
+      "notional_vega": 10000.0,
+      "sample_gate": "insufficient-history",
+      "slippage_vol_pts": 0.0,
+      "snapshot_count": 19,
+      "tenor": "1d",
+      "threshold_vol_pts": 5.0,
+      "trade_count": 17,
+      "win_rate": 0.6470588235294118
+    },
+    {
+      "cost_per_trade": 250.0,
+      "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE",
+      "gross_pnl": 54000.0,
+      "max_drawdown": 0.0,
+      "notional_vega": 10000.0,
+      "sample_gate": "insufficient-history",
+      "slippage_vol_pts": 0.0,
+      "snapshot_count": 19,
+      "tenor": "7d",
+      "threshold_vol_pts": 5.0,
+      "trade_count": 2,
+      "win_rate": 1.0
+    },
+    {
+      "cost_per_trade": 250.0,
+      "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE",
+      "gross_pnl": 48300.0,
+      "max_drawdown": 150.00000000000213,
+      "notional_vega": 10000.0,
+      "sample_gate": "insufficient-history",
+      "slippage_vol_pts": 0.0,
+      "snapshot_count": 19,
+      "tenor": "30d",
+      "threshold_vol_pts": 5.0,
+      "trade_count": 2,
+      "win_rate": 0.5
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "evidence_status": "SCREEN-ONLY \u00b7 BACKTEST ONLY \u00b7 NOT EXECUTABLE",
+  "manifest_type": "btc_vol_historical_source_manifest",
+  "ok": true,
+  "source_count": 2,
+  "sources": [
+    {
+      "available_time_field": "timestamp",
+      "backtest_status": "backtest_only_not_executable",
+      "bytes": 216,
+      "coverage_end": "2025-01-02T15:30:00Z",
+      "coverage_start": "2025-01-02T15:30:00Z",
+      "event_time_field": "timestamp",
+      "execution_confidence": "screen_only_not_executable",
+      "instrument_scope": "BTC options",
+      "license_label": "manual_fixture",
+      "notes": "sanitized deterministic fixture; not vendor data",
+      "provider": "manual_fixture",
+      "raw_path": "/Users/assistant/.hermes/hermes-agent/artifacts/institutional/historical/raw/fixtures/deribit_fixture_2025-01-02.jsonl",
+      "redistribution": "internal_only",
+      "sha256": "8d2552db0baaf54cc177ca6ddc6aece0863ad374f3baddfcf7c860b3677baa76",
+      "source_id": "deribit_fixture_2025_01_02",
+      "source_name": "Deribit BTC historical options fixture",
+      "status": "available",
+      "venue": "Deribit"
+    },
+    {
+      "available_time_field": "ts",
+      "backtest_status": "backtest_only_not_executable",
+      "bytes": 170,
+      "coverage_end": "2025-01-02T15:30:00Z",
+      "coverage_start": "2025-01-02T15:30:00Z",
+      "event_time_field": "ts",
+      "execution_confidence": "screen_only_not_executable",
+      "instrument_scope": "IBIT options",
+      "license_label": "manual_fixture",
+      "notes": "sanitized deterministic fixture; not vendor data",
+      "provider": "manual_fixture",
+      "raw_path": "/Users/assistant/.hermes/hermes-agent/artifacts/institutional/historical/raw/fixtures/ibit_opra_fixture_2025-01-02.csv",
+      "redistribution": "internal_only",
+      "sha256": "a803cdd9ba7804417eeb2a97af06064db7757b0ec919fb9acc4bfc0b89acd430",
+      "source_id": "ibit_opra_fixture_2025_01_02",
+      "source_name": "IBIT OPRA historical options fixture",
+      "status": "available",
+      "venue": "OPRA"
+    }
+  ]
+}

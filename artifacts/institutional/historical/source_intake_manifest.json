@@ -1,0 +1,31 @@
+{
+  "decision_ts": "2025-01-03T00:00:00+00:00",
+  "evidence_status": "SCREEN-ONLY · SOURCE INTAKE VALIDATION · NOT EXECUTABLE",
+  "control_note": "Current manifest intentionally records fixture-only historical sources. These rows support parser/backtest testing but cannot satisfy licensed-source readiness.",
+  "sources": [
+    {
+      "source_group": "IBIT options history",
+      "provenance": "manual_fixture",
+      "license_label": "fixture",
+      "format": "csv",
+      "raw_sha256": "a803cdd9ba7804417eeb2a97af06064db7757b0ec919fb9acc4bfc0b89acd430",
+      "fields": ["available_ts", "expiration", "strike", "option_type", "bid", "ask", "volume", "open_interest", "source_ref"],
+      "row_count": 12,
+      "available_start": "2025-01-02T14:30:00+00:00",
+      "available_end": "2025-01-02T21:00:00+00:00",
+      "source_ref": "artifacts/institutional/historical/raw/fixtures/ibit_opra_fixture_2025-01-02.csv"
+    },
+    {
+      "source_group": "Deribit options history",
+      "provenance": "manual_fixture",
+      "license_label": "fixture",
+      "format": "jsonl",
+      "raw_sha256": "8d2552db0baaf54cc177ca6ddc6aece0863ad374f3baddfcf7c860b3677baa76",
+      "fields": ["available_ts", "instrument_name", "underlying_price", "bid_iv", "ask_iv", "mark_iv", "open_interest", "source_ref"],
+      "row_count": 12,
+      "available_start": "2025-01-02T14:30:00+00:00",
+      "available_end": "2025-01-02T21:00:00+00:00",
+      "source_ref": "artifacts/institutional/historical/raw/fixtures/deribit_fixture_2025-01-02.jsonl"
+    }
+  ]
+}

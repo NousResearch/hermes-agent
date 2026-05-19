@@ -1,0 +1,66 @@
+{
+  "artifact_count": 7,
+  "artifacts": [
+    {
+      "bytes": 3141,
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+      "label": "candidate_triage_ledger",
+      "path": "artifacts/candidate_triage_ledger.jsonl",
+      "path_context": "inside latest-evidence-bundle.zip",
+      "sha256": "9d63bd946b784f0054b574fd83a78c775fa86e2a9a746068720be8916500ac46"
+    },
+    {
+      "bytes": 22346,
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+      "label": "dashboard",
+      "path": "artifacts/dashboard.html",
+      "path_context": "inside latest-evidence-bundle.zip",
+      "sha256": "e62ecfc8473134faf2755377bad6ef2561a38bfb233db4b65909780753b4c473"
+    },
+    {
+      "bytes": 1580,
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+      "label": "deribit_atm_csv",
+      "path": "artifacts/deribit_atm_csv.csv",
+      "path_context": "inside latest-evidence-bundle.zip",
+      "sha256": "64b330b5bbf044b8b236bce9d7d5a47ca558e9aa86380a222091513bc3b45188"
+    },
+    {
+      "bytes": 509288,
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+      "label": "raw_deribit_options",
+      "path": "artifacts/raw_deribit_options.json",
+      "path_context": "inside latest-evidence-bundle.zip",
+      "sha256": "2d9e10f7fa683946da696f09ad6bdd10e358727042dea357ad3cb20ee25284dd"
+    },
+    {
+      "bytes": 8539575,
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+      "label": "raw_ibit_holdings",
+      "path": "artifacts/raw_ibit_holdings.csv",
+      "path_context": "inside latest-evidence-bundle.zip",
+      "sha256": "1e1291ea3cfe0ad1b0aae1ff609059a5fe2eeb19c585c7b33ab77f00d560272b"
+    },
+    {
+      "bytes": 186768,
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+      "label": "raw_ibit_option_chain",
+      "path": "artifacts/raw_ibit_option_chain.json",
+      "path_context": "inside latest-evidence-bundle.zip",
+      "sha256": "aa95e3aba2f5ab93a4564bd33293d31d1dca2f6361383349ab2df6bce0dc4e03"
+    },
+    {
+      "bytes": 4344,
+      "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+      "label": "report",
+      "path": "artifacts/report.md",
+      "path_context": "inside latest-evidence-bundle.zip",
+      "sha256": "7cd4fea856c5c859c730d951252ad378085144ebdfd6912a58f8193f5fa2d645"
+    }
+  ],
+  "as_of_cst": "2026-05-18 16:30:34 CDT",
+  "evidence_status": "SCREEN-ONLY \u00b7 NOT EXECUTABLE",
+  "missing_artifacts": [],
+  "publishability": "internal-only until quote-verified and counsel-approved",
+  "run_id": "btcvol-20260518-163034"
+}

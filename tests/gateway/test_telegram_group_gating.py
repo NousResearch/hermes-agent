@@ -44,6 +44,11 @@ def _make_adapter(
     adapter._pending_text_batch_tasks = {}
     adapter._text_batch_delay_seconds = 0.01
     adapter._mention_patterns = adapter._compile_mention_patterns()
+    # Trigger-gating tests don't exercise the allowlist gate (added by
+    # #23795 + #24468).  Force-authorize all senders so the trigger logic
+    # under test runs.  Without this, every fake message hits the new
+    # fail-closed auth path and gets dropped before trigger evaluation.
+    adapter._is_callback_user_authorized = lambda user_id, **_kw: True
     return adapter
 
 

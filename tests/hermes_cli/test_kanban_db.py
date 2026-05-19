@@ -53,6 +53,8 @@ def test_init_creates_expected_tables(kanban_home):
         "task_authority_links",
         "task_aliases",
         "kanban_namespaces",
+        "kanban_autopilot_state",
+        "kanban_autopilot_tick_ledger",
     } <= names
 
     with kb.connect() as conn:
@@ -92,6 +94,128 @@ def test_connect_allows_missing_and_zero_byte_db(tmp_path):
     zero.write_bytes(b"")
     with kb.connect(zero) as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_autopilot_schema_is_fail_closed_by_default(kanban_home):
+    with kb.connect() as conn:
+        state_rows = conn.execute("SELECT COUNT(*) AS n FROM kanban_autopilot_state").fetchone()
+        ledger_rows = conn.execute("SELECT COUNT(*) AS n FROM kanban_autopilot_tick_ledger").fetchone()
+
+        conn.execute("INSERT INTO kanban_autopilot_state (board) VALUES ('BO')")
+        state = conn.execute(
+            """
+            SELECT board, enabled, mode, max_concurrent, paused_reason,
+                   owner_session, last_tick_at, last_decision, created_at, updated_at
+            FROM kanban_autopilot_state WHERE board = 'BO'
+            """
+        ).fetchone()
+
+        conn.execute(
+            "INSERT INTO kanban_autopilot_tick_ledger (tick_id, board) VALUES ('tick-1', 'BO')"
+        )
+        ledger = conn.execute(
+            """
+            SELECT tick_id, board, tick_at, candidate_count, selected_task_id,
+                   decision, reason, spawned, worker_pid, error
+            FROM kanban_autopilot_tick_ledger WHERE tick_id = 'tick-1'
+            """
+        ).fetchone()
+
+    assert state_rows["n"] == 0
+    assert ledger_rows["n"] == 0
+    assert dict(state) == {
+        "board": "BO",
+        "enabled": 0,
+        "mode": "off",
+        "max_concurrent": 0,
+        "paused_reason": None,
+        "owner_session": None,
+        "last_tick_at": None,
+        "last_decision": None,
+        "created_at": state["created_at"],
+        "updated_at": state["updated_at"],
+    }
+    assert isinstance(state["created_at"], int)
+    assert isinstance(state["updated_at"], int)
+    assert dict(ledger) == {
+        "tick_id": "tick-1",
+        "board": "BO",
+        "tick_at": ledger["tick_at"],
+        "candidate_count": 0,
+        "selected_task_id": None,
+        "decision": "skip",
+        "reason": None,
+        "spawned": 0,
+        "worker_pid": None,
+        "error": None,
+    }
+    assert isinstance(ledger["tick_at"], int)
+
+
+def test_autopilot_tick_ledger_indexes_exist(kanban_home):
+    with kb.connect() as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' ORDER BY name"
+        ).fetchall()
+    names = {row["name"] for row in rows}
+    assert "idx_kanban_autopilot_tick_ledger_board_tick_at" in names
+    assert "idx_kanban_autopilot_tick_ledger_board_selected" in names
+
+
+def test_init_migrates_autopilot_tables_into_existing_db(tmp_path):
+    db = tmp_path / "existing-kanban.db"
+    raw = sqlite3.connect(db)
+    raw.executescript(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            tenant TEXT,
+            public_id TEXT,
+            idempotency_key TEXT,
+            review_phase TEXT,
+            continuation_of TEXT
+        );
+        INSERT INTO tasks (id, title, status, priority, created_by, created_at)
+        VALUES ('t_existing', 'legacy task', 'ready', 0, 'test', 1);
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    kb.init_db(db)
+
+    with kb.connect(db) as conn:
+        task = conn.execute("SELECT id, title, status FROM tasks WHERE id = 't_existing'").fetchone()
+        state_count = conn.execute("SELECT COUNT(*) AS n FROM kanban_autopilot_state").fetchone()
+        conn.execute("INSERT INTO kanban_autopilot_state (board) VALUES ('DC')")
+        state = conn.execute(
+            "SELECT enabled, mode, max_concurrent FROM kanban_autopilot_state WHERE board = 'DC'"
+        ).fetchone()
+        indexes = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+
+    assert dict(task) == {"id": "t_existing", "title": "legacy task", "status": "ready"}
+    assert state_count["n"] == 0
+    assert dict(state) == {"enabled": 0, "mode": "off", "max_concurrent": 0}
+    assert "idx_kanban_autopilot_tick_ledger_board_tick_at" in indexes
+    assert "idx_kanban_autopilot_tick_ledger_board_selected" in indexes
 
 
 def test_init_migrates_legacy_task_links_to_dependency(tmp_path):
@@ -3644,4 +3768,3 @@ def test_maybe_emit_scratch_tip_skips_non_scratch_workspaces(kanban_home, caplog
                 "SELECT kind FROM task_events WHERE task_id = ?", (tid,),
             ).fetchall()
             assert "tip_scratch_workspace" not in [e["kind"] for e in events]
-

@@ -1033,6 +1033,36 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Board-scoped autopilot controller state. Fail-closed by default: fresh DBs
+-- get no state rows, and any explicit row defaults to disabled/off/zero-capacity.
+CREATE TABLE IF NOT EXISTS kanban_autopilot_state (
+    board          TEXT NOT NULL PRIMARY KEY,
+    enabled        INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    mode           TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'dry_run', 'supervised', 'auto')),
+    max_concurrent INTEGER NOT NULL DEFAULT 0 CHECK (max_concurrent >= 0),
+    paused_reason  TEXT,
+    owner_session  TEXT,
+    last_tick_at   INTEGER,
+    last_decision  TEXT,
+    created_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at     INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Append-only-ish audit ledger for autopilot ticks and spawn decisions.
+-- Every row is explicitly board-scoped; missing rows must never imply a spawn.
+CREATE TABLE IF NOT EXISTS kanban_autopilot_tick_ledger (
+    tick_id         TEXT NOT NULL PRIMARY KEY,
+    board           TEXT NOT NULL,
+    tick_at         INTEGER NOT NULL DEFAULT (unixepoch()),
+    candidate_count INTEGER NOT NULL DEFAULT 0 CHECK (candidate_count >= 0),
+    selected_task_id TEXT,
+    decision        TEXT NOT NULL DEFAULT 'skip' CHECK (decision IN ('skip', 'select', 'spawn', 'error')),
+    reason          TEXT,
+    spawned         INTEGER NOT NULL DEFAULT 0 CHECK (spawned IN (0, 1)),
+    worker_pid      INTEGER,
+    error           TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1044,6 +1074,10 @@ CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, cre
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_kanban_autopilot_tick_ledger_board_tick_at
+    ON kanban_autopilot_tick_ledger(board, tick_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kanban_autopilot_tick_ledger_board_selected
+    ON kanban_autopilot_tick_ledger(board, selected_task_id);
 """
 
 

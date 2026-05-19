@@ -9904,7 +9904,7 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "checkpoints", "claw", "completion",
+        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -11337,6 +11337,22 @@ Examples:
             skills_command(args)
 
     skills_parser.set_defaults(func=cmd_skills)
+
+    # =========================================================================
+    # bundles command — skill bundles (alias /<name> for multiple skills)
+    # =========================================================================
+    bundles_parser = subparsers.add_parser(
+        "bundles",
+        help="Create, list, and manage skill bundles (aliases for multiple skills)",
+        description=(
+            "Skill bundles let you load several skills under one slash "
+            "command. `/<bundle>` from the CLI or gateway loads every "
+            "referenced skill at once."
+        ),
+    )
+    from hermes_cli.bundles import register_cli as _bundles_register, bundles_command
+    _bundles_register(bundles_parser)
+    bundles_parser.set_defaults(func=bundles_command)
 
     # =========================================================================
     # plugins command

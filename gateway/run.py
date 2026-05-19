@@ -6923,6 +6923,9 @@ class GatewayRunner:
         if canonical == "reload-skills":
             return await self._handle_reload_skills_command(event)
 
+        if canonical == "bundles":
+            return await self._handle_bundles_command(event)
+
         if canonical == "approve":
             return await self._handle_approve_command(event)
 
@@ -7051,6 +7054,34 @@ class GatewayRunner:
         # round-trip so /claude_code from Telegram autocomplete still resolves
         # to the claude-code skill.
         if command:
+            # Skill bundles take precedence over individual skill commands —
+            # /<bundle> loads multiple skills at once. Mirrors CLI dispatch.
+            _bundle_handled = False
+            try:
+                from agent.skill_bundles import (
+                    build_bundle_invocation_message,
+                    resolve_bundle_command_key,
+                )
+                bundle_key = resolve_bundle_command_key(command)
+                if bundle_key is not None:
+                    user_instruction = event.get_command_args().strip()
+                    bundle_result = build_bundle_invocation_message(
+                        bundle_key, user_instruction, task_id=_quick_key
+                    )
+                    if bundle_result:
+                        msg, _loaded, missing = bundle_result
+                        event.text = msg
+                        _bundle_handled = True
+                        if missing:
+                            logger.info(
+                                "Bundle %s skipped missing skills: %s",
+                                bundle_key, ", ".join(missing),
+                            )
+                        # Fall through to normal message processing with bundle content
+            except Exception as exc:
+                logger.debug("Bundle dispatch failed (non-fatal): %s", exc)
+
+        if command and not locals().get("_bundle_handled", False):
             try:
                 from agent.skill_commands import (
                     get_skill_commands,
@@ -12686,6 +12717,41 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Skills reload failed: %s", e)
             return t("gateway.reload_skills.failed", error=e)
+
+    async def _handle_bundles_command(self, event: MessageEvent) -> str:
+        """Handle /bundles — list installed skill bundles.
+
+        Mirrors the CLI ``/bundles`` handler. Returns a single text
+        message suitable for any gateway adapter; bundles are loaded by
+        invoking the bundle's own ``/<slug>`` command, not by this one.
+        """
+        try:
+            from agent.skill_bundles import list_bundles, _bundles_dir
+        except Exception as exc:
+            logger.warning("Bundles command unavailable: %s", exc)
+            return f"Bundles subsystem unavailable: {exc}"
+
+        bundles = list_bundles()
+        if not bundles:
+            return (
+                "No skill bundles installed.\n"
+                "Create one on the host with:\n"
+                "  `hermes bundles create <name> --skill <s1> --skill <s2>`\n"
+                f"Directory: `{_bundles_dir()}`"
+            )
+
+        lines = [f"**Skill Bundles** ({len(bundles)} installed):", ""]
+        for info in bundles:
+            skill_count = len(info.get("skills", []))
+            desc = info.get("description") or f"Load {skill_count} skills"
+            lines.append(
+                f"• `/{info['slug']}` — {desc} _({skill_count} skills)_"
+            )
+            for s in info.get("skills", []):
+                lines.append(f"    · {s}")
+        lines.append("")
+        lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Slash-command confirmation primitive (generic)

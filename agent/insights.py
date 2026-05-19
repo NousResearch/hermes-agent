@@ -181,7 +181,8 @@ class InsightsEngine:
                      "message_count, tool_call_count, input_tokens, output_tokens, "
                      "cache_read_tokens, cache_write_tokens, billing_provider, "
                      "billing_base_url, billing_mode, estimated_cost_usd, "
-                     "actual_cost_usd, cost_status, cost_source")
+                     "actual_cost_usd, cost_status, cost_source, "
+                     "usage_by_model")
 
     # Pre-computed query strings — f-string evaluated once at class definition,
     # not at runtime, so no user-controlled value can alter the query structure.
@@ -491,25 +492,52 @@ class InsightsEngine:
         })
 
         for s in sessions:
-            model = s.get("model") or "unknown"
-            # Normalize: strip provider prefix for display
-            display_model = model.split("/")[-1] if "/" in model else model
-            d = model_data[display_model]
-            d["sessions"] += 1
-            inp = s.get("input_tokens") or 0
-            out = s.get("output_tokens") or 0
-            cache_read = s.get("cache_read_tokens") or 0
-            cache_write = s.get("cache_write_tokens") or 0
-            d["input_tokens"] += inp
-            d["output_tokens"] += out
-            d["cache_read_tokens"] += cache_read
-            d["cache_write_tokens"] += cache_write
-            d["total_tokens"] += inp + out + cache_read + cache_write
-            d["tool_calls"] += s.get("tool_call_count") or 0
-            estimate, status = _estimate_cost(s)
-            d["cost"] += estimate
-            d["has_pricing"] = _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
-            d["cost_status"] = status
+            usage_by_model_raw = s.get("usage_by_model")
+            if usage_by_model_raw and isinstance(usage_by_model_raw, str):
+                try:
+                    usage_by_model = json.loads(usage_by_model_raw)
+                except (json.JSONDecodeError, TypeError):
+                    usage_by_model = None
+            else:
+                usage_by_model = None
+
+            if usage_by_model:
+                for model_key, mdata in usage_by_model.items():
+                    display_model = model_key.split("/")[-1] if "/" in model_key else model_key
+                    d = model_data[display_model]
+                    d["sessions"] += 1
+                    inp = mdata.get("input_tokens", 0)
+                    out = mdata.get("output_tokens", 0)
+                    cache_read = mdata.get("cache_read_tokens", 0)
+                    cache_write = mdata.get("cache_write_tokens", 0)
+                    d["input_tokens"] += inp
+                    d["output_tokens"] += out
+                    d["cache_read_tokens"] += cache_read
+                    d["cache_write_tokens"] += cache_write
+                    d["total_tokens"] += inp + out + cache_read + cache_write
+                    d["tool_calls"] += mdata.get("api_calls", 0)
+                    d["cost"] += mdata.get("cost", 0.0)
+                    d["has_pricing"] = _has_known_pricing(model_key, s.get("billing_provider"), s.get("billing_base_url"))
+            else:
+                model = s.get("model") or "unknown"
+                # Normalize: strip provider prefix for display
+                display_model = model.split("/")[-1] if "/" in model else model
+                d = model_data[display_model]
+                d["sessions"] += 1
+                inp = s.get("input_tokens") or 0
+                out = s.get("output_tokens") or 0
+                cache_read = s.get("cache_read_tokens") or 0
+                cache_write = s.get("cache_write_tokens") or 0
+                d["input_tokens"] += inp
+                d["output_tokens"] += out
+                d["cache_read_tokens"] += cache_read
+                d["cache_write_tokens"] += cache_write
+                d["total_tokens"] += inp + out + cache_read + cache_write
+                d["tool_calls"] += s.get("tool_call_count") or 0
+                estimate, status = _estimate_cost(s)
+                d["cost"] += estimate
+                d["has_pricing"] = _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
+                d["cost_status"] = status
 
         result = [
             {"model": model, **data}

@@ -1,5 +1,6 @@
 """Tests for agent/insights.py — InsightsEngine analytics and reporting."""
 
+import json
 import time
 import pytest
 from pathlib import Path
@@ -319,6 +320,65 @@ class TestInsightsPopulated:
         # Claude-sonnet has 2 sessions (s1 + s4)
         claude = next(m for m in models if "claude-sonnet" in m["model"])
         assert claude["sessions"] == 2
+
+    def test_model_breakdown_with_usage_by_model_json(self, db):
+        """_compute_model_breakdown uses usage_by_model JSON when present."""
+        now = time.time()
+        # Create a session with usage_by_model JSON set directly
+        db.create_session(session_id="s_multi", source="cli", model="gpt-4o")
+        db._conn.execute(
+            "UPDATE sessions SET usage_by_model = ? WHERE id = 's_multi'",
+            (json.dumps({
+                "gpt-4o": {"input_tokens": 300, "output_tokens": 150, "cache_read_tokens": 10,
+                           "cache_write_tokens": 5, "reasoning_tokens": 0, "api_calls": 3, "cost": 0.03},
+                "claude-sonnet": {"input_tokens": 500, "output_tokens": 200, "cache_read_tokens": 20,
+                                  "cache_write_tokens": 10, "reasoning_tokens": 50, "api_calls": 2, "cost": 0.05},
+            }),),
+        )
+        db.update_token_counts("s_multi", input_tokens=800, output_tokens=350,
+                               api_call_count=5)
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        models = report["models"]
+
+        model_names = [m["model"] for m in models]
+        assert "gpt-4o" in model_names
+        assert "claude-sonnet" in model_names
+
+        gpt4o = next(m for m in models if m["model"] == "gpt-4o")
+        assert gpt4o["input_tokens"] == 300
+        assert gpt4o["output_tokens"] == 150
+        assert gpt4o["cache_read_tokens"] == 10
+        assert gpt4o["cache_write_tokens"] == 5
+        assert gpt4o["tool_calls"] == 3
+        assert gpt4o["cost"] == 0.03
+
+        claude = next(m for m in models if m["model"] == "claude-sonnet")
+        assert claude["input_tokens"] == 500
+        assert claude["output_tokens"] == 200
+        assert claude["cache_read_tokens"] == 20
+        assert claude["cache_write_tokens"] == 10
+        assert claude["tool_calls"] == 2
+        assert claude["cost"] == 0.05
+
+    def test_model_breakdown_falls_back_to_single_model_without_usage_by_model(self, db):
+        """When usage_by_model is not set, breakdown uses the model column."""
+        db.create_session(session_id="s_single", source="cli", model="deepseek-chat")
+        db.update_token_counts("s_single", input_tokens=1000, output_tokens=500,
+                               api_call_count=5)
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        models = report["models"]
+
+        model_names = [m["model"] for m in models]
+        assert "deepseek-chat" in model_names
+        ds = next(m for m in models if m["model"] == "deepseek-chat")
+        assert ds["input_tokens"] == 1000
+        assert ds["output_tokens"] == 500
 
     def test_platform_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)

@@ -1565,6 +1565,24 @@ def run_conversation(
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
 
+                    # ── Per-model breakdown ──
+                    m = agent.session_usage_by_model.setdefault(agent.model, {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": 0,
+                        "api_calls": 0,
+                        "cost": 0.0,
+                    })
+                    m["input_tokens"] += canonical_usage.input_tokens
+                    m["output_tokens"] += canonical_usage.output_tokens
+                    m["cache_read_tokens"] += canonical_usage.cache_read_tokens
+                    m["cache_write_tokens"] += canonical_usage.cache_write_tokens
+                    m["reasoning_tokens"] += canonical_usage.reasoning_tokens
+                    m["api_calls"] += 1
+                    m["cost"] += float(cost_result.amount_usd or 0)
+
                     # Log API call details for debugging/observability
                     _cache_pct = ""
                     if canonical_usage.cache_read_tokens and prompt_tokens:
@@ -1605,6 +1623,7 @@ def run_conversation(
                             # affects 0 rows without error).
                             if not agent._session_db_created:
                                 agent._ensure_db_session()
+                            usage_by_model_json = json.dumps(agent.session_usage_by_model)
                             agent._session_db.update_token_counts(
                                 agent.session_id,
                                 input_tokens=canonical_usage.input_tokens,
@@ -1622,6 +1641,7 @@ def run_conversation(
                                 if cost_result.status == "included" else None,
                                 model=agent.model,
                                 api_call_count=1,
+                                usage_by_model=usage_by_model_json,
                             )
                         except Exception as e:
                             # Log token persistence failures so they're

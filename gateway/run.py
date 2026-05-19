@@ -12249,25 +12249,50 @@ class GatewayRunner:
             lines.append(t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}"))
             lines.append(t("gateway.usage.label_api_calls", count=agent.session_api_calls))
 
-            # Cost estimation
+            # Cost estimation — per-model breakdown when multiple models used
             try:
                 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
-                cost_result = estimate_usage_cost(
-                    agent.model,
-                    CanonicalUsage(
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        cache_read_tokens=cache_read,
-                        cache_write_tokens=cache_write,
-                    ),
-                    provider=getattr(agent, "provider", None),
-                    base_url=getattr(agent, "base_url", None),
-                )
-                if cost_result.amount_usd is not None:
-                    prefix = "~" if cost_result.status == "estimated" else ""
-                    lines.append(t("gateway.usage.label_cost", prefix=prefix, amount=f"{float(cost_result.amount_usd):.4f}"))
-                elif cost_result.status == "included":
-                    lines.append(t("gateway.usage.label_cost_included"))
+                usage_by_model = getattr(agent, "session_usage_by_model", {}) or {}
+                if usage_by_model and len(usage_by_model) > 1:
+                    total_cost = 0.0
+                    any_estimated = False
+                    for model_key, mdata in usage_by_model.items():
+                        cost_r = estimate_usage_cost(
+                            model_key,
+                            CanonicalUsage(
+                                input_tokens=mdata["input_tokens"],
+                                output_tokens=mdata["output_tokens"],
+                                cache_read_tokens=mdata["cache_read_tokens"],
+                                cache_write_tokens=mdata["cache_write_tokens"],
+                            ),
+                            provider=getattr(agent, "provider", None),
+                            base_url=getattr(agent, "base_url", None),
+                        )
+                        cost_amt = float(cost_r.amount_usd or 0)
+                        total_cost += cost_amt
+                        if cost_r.status == "estimated":
+                            any_estimated = True
+                        lines.append(f"`{model_key}` — In: {mdata['input_tokens']:,}  Out: {mdata['output_tokens']:,}  "
+                                     f"Cost: ${cost_amt:.4f}  Calls: {mdata.get('api_calls', 0)}")
+                    cost_prefix = "~" if any_estimated else ""
+                    lines.append(t("gateway.usage.label_cost", prefix=cost_prefix, amount=f"{total_cost:.4f}"))
+                else:
+                    cost_result = estimate_usage_cost(
+                        agent.model,
+                        CanonicalUsage(
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            cache_read_tokens=cache_read,
+                            cache_write_tokens=cache_write,
+                        ),
+                        provider=getattr(agent, "provider", None),
+                        base_url=getattr(agent, "base_url", None),
+                    )
+                    if cost_result.amount_usd is not None:
+                        prefix = "~" if cost_result.status == "estimated" else ""
+                        lines.append(t("gateway.usage.label_cost", prefix=prefix, amount=f"{float(cost_result.amount_usd):.4f}"))
+                    elif cost_result.status == "included":
+                        lines.append(t("gateway.usage.label_cost_included"))
             except Exception:
                 pass
 

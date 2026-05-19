@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    usage_by_model TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -768,6 +769,7 @@ class SessionDB:
         billing_base_url: Optional[str] = None,
         billing_mode: Optional[str] = None,
         api_call_count: int = 0,
+        usage_by_model: Optional[str] = None,
         absolute: bool = False,
     ) -> None:
         """Update token counters and backfill model if not already set.
@@ -791,20 +793,21 @@ class SessionDB:
                    cache_read_tokens = ?,
                    cache_write_tokens = ?,
                    reasoning_tokens = ?,
-                   estimated_cost_usd = COALESCE(?, 0),
-                   actual_cost_usd = CASE
-                       WHEN ? IS NULL THEN actual_cost_usd
-                       ELSE ?
-                   END,
-                   cost_status = COALESCE(?, cost_status),
-                   cost_source = COALESCE(?, cost_source),
-                   pricing_version = COALESCE(?, pricing_version),
-                   billing_provider = COALESCE(billing_provider, ?),
-                   billing_base_url = COALESCE(billing_base_url, ?),
-                   billing_mode = COALESCE(billing_mode, ?),
-                   model = COALESCE(model, ?),
-                   api_call_count = ?
-                   WHERE id = ?"""
+                estimated_cost_usd = COALESCE(?, 0),
+                actual_cost_usd = CASE
+                    WHEN ? IS NULL THEN actual_cost_usd
+                    ELSE ?
+                END,
+                cost_status = COALESCE(?, cost_status),
+                cost_source = COALESCE(?, cost_source),
+                pricing_version = COALESCE(?, pricing_version),
+                billing_provider = COALESCE(billing_provider, ?),
+                billing_base_url = COALESCE(billing_base_url, ?),
+                billing_mode = COALESCE(billing_mode, ?),
+                model = COALESCE(model, ?),
+                usage_by_model = COALESCE(?, usage_by_model),
+                api_call_count = ?
+                WHERE id = ?"""
         else:
             sql = """UPDATE sessions SET
                    input_tokens = input_tokens + ?,
@@ -824,6 +827,7 @@ class SessionDB:
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
                    model = COALESCE(model, ?),
+                   usage_by_model = COALESCE(?, usage_by_model),
                    api_call_count = COALESCE(api_call_count, 0) + ?
                    WHERE id = ?"""
         params = (
@@ -842,6 +846,7 @@ class SessionDB:
             billing_base_url,
             billing_mode,
             model,
+            usage_by_model,
             api_call_count,
             session_id,
         )

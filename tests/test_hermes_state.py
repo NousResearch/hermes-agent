@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import time
 import pytest
 from pathlib import Path
@@ -129,12 +130,225 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["model"] == "anthropic/claude-opus-4.6"
 
+    def test_update_token_counts_usage_by_model_incremental(self, db):
+        """usage_by_model is set on first call and overwritten on subsequent calls."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50,
+                               usage_by_model='{"model-a": {"input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0, "api_calls": 1, "cost": 0.01}}')
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50,
+                               usage_by_model='{"model-a": {"input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0, "api_calls": 1, "cost": 0.01}, "model-b": {"input_tokens": 200, "output_tokens": 100, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0, "api_calls": 1, "cost": 0.02}}')
+
+        session = db.get_session("s1")
+        assert session["usage_by_model"] is not None
+        ubm = json.loads(session["usage_by_model"])
+        assert "model-a" in ubm
+        assert "model-b" in ubm
+        assert ubm["model-b"]["input_tokens"] == 200
+
+    def test_update_token_counts_usage_by_model_absolute(self, db):
+        """absolute mode sets usage_by_model directly."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, absolute=True,
+                               usage_by_model='{"model-x": {"input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0, "api_calls": 1, "cost": 0.03}}')
+
+        session = db.get_session("s1")
+        assert session["usage_by_model"] is not None
+        ubm = json.loads(session["usage_by_model"])
+        assert "model-x" in ubm
+        assert ubm["model-x"]["api_calls"] == 1
+
+    def test_update_token_counts_usage_by_model_defaults_to_none(self, db):
+        """When usage_by_model is not passed, existing value is preserved."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50,
+                               usage_by_model='{"m1": {"input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0, "api_calls": 1, "cost": 0.01}}')
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50)
+
+        session = db.get_session("s1")
+        # Value preserved from first call
+        ubm = json.loads(session["usage_by_model"])
+        assert "m1" in ubm
+
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")
 
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
+
+
+# =========================================================================
+# Per-model token tracking (mid-session switch)
+# =========================================================================
+
+class TestPerModelTrackingMidSession:
+    """Simulate what conversation_loop does when the user switches models mid-session.
+
+    This tests the core aggregation logic: cumulative counters match the sum
+    of per-model counters, and serialization round-trips correctly.
+    """
+
+    @staticmethod
+    def _simulate_call(usage_by_model, model, inp, out, cache_read=0, cache_write=0,
+                       reasoning=0, cost=0.0):
+        """Simulate one 'API call' — exactly what conversation_loop does."""
+        m = usage_by_model.setdefault(model, {
+            "input_tokens": 0, "output_tokens": 0,
+            "cache_read_tokens": 0, "cache_write_tokens": 0,
+            "reasoning_tokens": 0, "api_calls": 0, "cost": 0.0,
+        })
+        m["input_tokens"] += inp
+        m["output_tokens"] += out
+        m["cache_read_tokens"] += cache_read
+        m["cache_write_tokens"] += cache_write
+        m["reasoning_tokens"] += reasoning
+        m["api_calls"] += 1
+        m["cost"] += cost
+
+    def test_per_model_counts_after_mid_session_switch(self):
+        """Two models used in one session — each model's tokens tracked separately."""
+        usage_by_model = {}
+        cumulative = {"input": 0, "output": 0, "cache_read": 0,
+                      "cache_write": 0, "reasoning": 0, "calls": 0}
+
+        # Model A — 2 calls
+        self._simulate_call(usage_by_model, "gpt-4o", inp=500, out=200, cost=0.025)
+        cumulative["input"] += 500
+        cumulative["output"] += 200
+        cumulative["calls"] += 1
+
+        self._simulate_call(usage_by_model, "gpt-4o", inp=300, out=100,
+                            cache_read=50, cost=0.015)
+        cumulative["input"] += 300
+        cumulative["output"] += 100
+        cumulative["cache_read"] += 50
+        cumulative["calls"] += 1
+
+        # ── Switch model mid-session ──
+
+        # Model B — 1 call
+        self._simulate_call(usage_by_model, "claude-sonnet", inp=1000, out=500,
+                            cache_write=200, reasoning=100, cost=0.075)
+        cumulative["input"] += 1000
+        cumulative["output"] += 500
+        cumulative["cache_write"] += 200
+        cumulative["reasoning"] += 100
+        cumulative["calls"] += 1
+
+        # ── Assert per-model correctness ──
+        assert len(usage_by_model) == 2, "should have exactly 2 model entries"
+
+        gpt4o = usage_by_model["gpt-4o"]
+        assert gpt4o["input_tokens"] == 800       # 500 + 300
+        assert gpt4o["output_tokens"] == 300       # 200 + 100
+        assert gpt4o["cache_read_tokens"] == 50
+        assert gpt4o["cache_write_tokens"] == 0
+        assert gpt4o["reasoning_tokens"] == 0
+        assert gpt4o["api_calls"] == 2
+        assert gpt4o["cost"] == pytest.approx(0.04)  # 0.025 + 0.015
+
+        claude = usage_by_model["claude-sonnet"]
+        assert claude["input_tokens"] == 1000
+        assert claude["output_tokens"] == 500
+        assert claude["cache_read_tokens"] == 0
+        assert claude["cache_write_tokens"] == 200
+        assert claude["reasoning_tokens"] == 100
+        assert claude["api_calls"] == 1
+        assert claude["cost"] == pytest.approx(0.075)
+
+        # ── Cumulative totals = sum of per-model ──
+        total_input = sum(m["input_tokens"] for m in usage_by_model.values())
+        total_output = sum(m["output_tokens"] for m in usage_by_model.values())
+        assert total_input == cumulative["input"]   # 800 + 1000 = 1800
+        assert total_output == cumulative["output"]  # 300 + 500 = 800
+        assert total_input == 1800
+        assert total_output == 800
+
+    def test_serialization_round_trip(self, db):
+        """usage_by_model survives JSON serialize → DB write → read → parse."""
+        usage_by_model = {}
+
+        # Two models, two calls each (simulating conversation_loop logic)
+        self._simulate_call(usage_by_model, "gpt-4o", inp=500, out=200, cost=0.025)
+        self._simulate_call(usage_by_model, "gpt-4o", inp=300, out=100, cost=0.015)
+        self._simulate_call(usage_by_model, "claude-sonnet", inp=1000, out=500, cost=0.075)
+        self._simulate_call(usage_by_model, "claude-sonnet", inp=200, out=50, cost=0.01)
+
+        # Serialize (as conversation_loop does)
+        usage_by_model_json = json.dumps(usage_by_model)
+
+        # Write to DB (as conversation_loop does)
+        db.create_session(session_id="s_mid", source="cli", model="claude-sonnet")
+        db.update_token_counts(
+            "s_mid", input_tokens=2000, output_tokens=850,
+            api_call_count=4, usage_by_model=usage_by_model_json,
+        )
+
+        # Read back
+        session = db.get_session("s_mid")
+        assert session["usage_by_model"] is not None
+        restored = json.loads(session["usage_by_model"])
+
+        assert len(restored) == 2
+        assert restored["gpt-4o"]["input_tokens"] == 800
+        assert restored["gpt-4o"]["api_calls"] == 2
+        assert restored["gpt-4o"]["cost"] == pytest.approx(0.04)
+        assert restored["claude-sonnet"]["input_tokens"] == 1200  # 1000 + 200
+        assert restored["claude-sonnet"]["api_calls"] == 2
+        assert restored["claude-sonnet"]["cost"] == pytest.approx(0.085)
+
+    def test_cumulative_counters_equal_sum_of_per_model(self, db):
+        """Cumulative session counters should match the aggregation of per-model data."""
+        usage_by_model = {}
+
+        # Simulate a session with 3 model switches
+        self._simulate_call(usage_by_model, "model-a", inp=100, out=50)
+        self._simulate_call(usage_by_model, "model-a", inp=200, out=100)
+        self._simulate_call(usage_by_model, "model-b", inp=400, out=200,
+                            cache_read=30, cache_write=10, reasoning=50)
+        self._simulate_call(usage_by_model, "model-c", inp=800, out=400,
+                            cache_read=60)
+
+        total_inp = sum(m["input_tokens"] for m in usage_by_model.values())
+        total_out = sum(m["output_tokens"] for m in usage_by_model.values())
+        total_cache_r = sum(m["cache_read_tokens"] for m in usage_by_model.values())
+        total_cache_w = sum(m["cache_write_tokens"] for m in usage_by_model.values())
+        total_reas = sum(m["reasoning_tokens"] for m in usage_by_model.values())
+        total_calls = sum(m["api_calls"] for m in usage_by_model.values())
+
+        assert total_inp == 100 + 200 + 400 + 800  # = 1500
+        assert total_out == 50 + 100 + 200 + 400     # = 750
+        assert total_cache_r == 30 + 60               # = 90
+        assert total_cache_w == 10
+        assert total_reas == 50
+        assert total_calls == 4
+
+        # Serialize and store to DB
+        usage_by_model_json = json.dumps(usage_by_model)
+        db.create_session(session_id="s_multi_model", source="cli", model="model-c")
+        db.update_token_counts(
+            "s_multi_model",
+            input_tokens=total_inp, output_tokens=total_out,
+            cache_read_tokens=total_cache_r, cache_write_tokens=total_cache_w,
+            reasoning_tokens=total_reas,
+            api_call_count=total_calls, usage_by_model=usage_by_model_json,
+        )
+
+        # Read back and verify DB round-trip preserves totals
+        session = db.get_session("s_multi_model")
+        assert session["input_tokens"] == 1500
+        assert session["output_tokens"] == 750
+        assert session["cache_read_tokens"] == 90
+        assert session["cache_write_tokens"] == 10
+        assert session["reasoning_tokens"] == 50
+        assert session["api_call_count"] == 4
+        assert session["model"] == "model-c"  # last-writer-wins as before
+
+        restored = json.loads(session["usage_by_model"])
+        assert len(restored) == 3
+        assert restored["model-a"]["api_calls"] == 2
+        assert restored["model-b"]["api_calls"] == 1
+        assert restored["model-c"]["api_calls"] == 1
 
 
 # =========================================================================
@@ -1447,13 +1661,19 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 11
+        assert version == 12
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "title" in columns
+
+    def test_usage_by_model_column_exists(self, db):
+        """Verify the usage_by_model column was created in the sessions table."""
+        cursor = db._conn.execute("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "usage_by_model" in columns
 
     def test_topic_mode_schema_is_not_auto_migrated_on_open(self, tmp_path):
         """Opening an old DB should not add topic-mode columns until /topic opts in.
@@ -1744,7 +1964,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 12
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -2939,7 +3159,7 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 11
+            assert version == 12
         finally:
             session_db.close()
 

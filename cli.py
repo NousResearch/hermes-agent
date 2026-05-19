@@ -9253,48 +9253,93 @@ class HermesCLI:
         compressions = compressor.compression_count
 
         msg_count = len(self.conversation_history)
-        cost_result = estimate_usage_cost(
-            agent.model,
-            CanonicalUsage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read_tokens,
-                cache_write_tokens=cache_write_tokens,
-            ),
-            provider=getattr(agent, "provider", None),
-            base_url=getattr(agent, "base_url", None),
-        )
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
         print("  📊 Session Token Usage")
         print(f"  {'─' * 40}")
-        print(f"  Model:                     {agent.model}")
-        print(f"  Input tokens:              {input_tokens:>10,}")
-        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
-        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
-        print(f"  Output tokens:             {output_tokens:>10,}")
-        if reasoning_tokens:
-            print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")
-        print(f"  Prompt tokens (total):     {prompt:>10,}")
-        print(f"  Completion tokens:         {completion:>10,}")
-        print(f"  Total tokens:              {total:>10,}")
-        print(f"  API calls:                 {calls:>10,}")
-        print(f"  Session duration:          {elapsed:>10}")
-        print(f"  Cost status:              {cost_result.status:>10}")
-        print(f"  Cost source:              {cost_result.source:>10}")
-        if cost_result.amount_usd is not None:
-            prefix = "~" if cost_result.status == "estimated" else ""
-            print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
-        elif cost_result.status == "included":
-            print(f"  Total cost:              {'included':>10}")
+
+        usage_by_model = getattr(agent, "session_usage_by_model", {}) or {}
+        if usage_by_model and len(usage_by_model) > 1:
+            total_cost = 0.0
+            overall_status = "unknown"
+            overall_source = "none"
+            for model_key, mdata in usage_by_model.items():
+                cost_r = estimate_usage_cost(
+                    model_key,
+                    CanonicalUsage(
+                        input_tokens=mdata["input_tokens"],
+                        output_tokens=mdata["output_tokens"],
+                        cache_read_tokens=mdata["cache_read_tokens"],
+                        cache_write_tokens=mdata["cache_write_tokens"],
+                    ),
+                    provider=getattr(agent, "provider", None),
+                    base_url=getattr(agent, "base_url", None),
+                )
+                cost_amt = float(cost_r.amount_usd or 0)
+                total_cost += cost_amt
+                if cost_r.status != "unknown":
+                    overall_status = cost_r.status
+                    overall_source = cost_r.source
+                print(f"  Model:  {model_key}")
+                print(f"    Input:           {mdata['input_tokens']:>10,}")
+                print(f"    Output:          {mdata['output_tokens']:>10,}")
+                if mdata.get("cache_read_tokens"):
+                    print(f"    Cache read:      {mdata['cache_read_tokens']:>10,}")
+                if mdata.get("cache_write_tokens"):
+                    print(f"    Cache write:     {mdata['cache_write_tokens']:>10,}")
+                if mdata.get("reasoning_tokens"):
+                    print(f"    Reasoning:       {mdata['reasoning_tokens']:>10,}")
+                print(f"    API calls:       {mdata.get('api_calls', 0):>10,}")
+                print(f"    Cost:            ${cost_amt:.4f}")
+            print(f"  {'─' * 40}")
+            print(f"  Input tokens (total):      {input_tokens:>10,}")
+            print(f"  Output tokens (total):     {output_tokens:>10,}")
+            print(f"  Total tokens:              {total:>10,}")
+            print(f"  API calls (total):         {calls:>10,}")
+            print(f"  Session duration:          {elapsed:>10}")
+            print(f"  Cost status:              {overall_status:>10}")
+            print(f"  Total cost:              ${total_cost:>10.4f}")
+            print(f"  {'─' * 40}")
         else:
-            print(f"  Total cost:              {'n/a':>10}")
-        print(f"  {'─' * 40}")
+            cost_result = estimate_usage_cost(
+                agent.model,
+                CanonicalUsage(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                ),
+                provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+            )
+            print(f"  Model:                     {agent.model}")
+            print(f"  Input tokens:              {input_tokens:>10,}")
+            print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
+            print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
+            print(f"  Output tokens:             {output_tokens:>10,}")
+            if reasoning_tokens:
+                print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")
+            print(f"  Prompt tokens (total):     {prompt:>10,}")
+            print(f"  Completion tokens:         {completion:>10,}")
+            print(f"  Total tokens:              {total:>10,}")
+            print(f"  API calls:                 {calls:>10,}")
+            print(f"  Session duration:          {elapsed:>10}")
+            print(f"  Cost status:              {cost_result.status:>10}")
+            print(f"  Cost source:              {cost_result.source:>10}")
+            if cost_result.amount_usd is not None:
+                prefix = "~" if cost_result.status == "estimated" else ""
+                print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
+            elif cost_result.status == "included":
+                print(f"  Total cost:              {'included':>10}")
+            else:
+                print(f"  Total cost:              {'n/a':>10}")
+            print(f"  {'─' * 40}")
+            if cost_result.status == "unknown":
+                print(f"  Note:             Pricing unknown for {agent.model}")
+
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
-        if cost_result.status == "unknown":
-            print(f"  Note:             Pricing unknown for {agent.model}")
 
         # Account limits -- fetched off-thread with a hard timeout so slow
         # provider APIs don't hang the prompt.

@@ -38,7 +38,7 @@ jobs:
           while IFS= read -r email; do
             # Skip teknium and bot emails
             case "$email" in
-              *teknium*|*noreply@github.com*|*dependabot*|*github-actions*|*anthropic.com*|*cursor.com*)
+              *teknium*|*noreply@github.com*|*boardjames-bot@users.noreply.github.com*|*dependabot*|*github-actions*|*anthropic.com*|*cursor.com*)
                 continue ;;
             esac
 

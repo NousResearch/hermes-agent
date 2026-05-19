@@ -63,6 +63,7 @@ _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_P
 _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 _CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
+_TERMINAL_CWD: ContextVar = ContextVar("TERMINAL_CWD", default=_UNSET)
 
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
@@ -77,6 +78,7 @@ _VAR_MAP = {
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
     "HERMES_CRON_SESSION": _CRON_SESSION,
+    "TERMINAL_CWD": _TERMINAL_CWD,
 }
 
 
@@ -172,3 +174,28 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def set_terminal_cwd(cwd: str):
+    """Set the session-scoped terminal cwd and return a reset token."""
+    return _TERMINAL_CWD.set(cwd)
+
+
+def reset_terminal_cwd(token) -> None:
+    """Restore the previous session-scoped terminal cwd value."""
+    _TERMINAL_CWD.reset(token)
+
+
+def get_terminal_cwd(default: str | None = None) -> str | None:
+    """Return the session-scoped terminal cwd, falling back to ``os.environ``.
+
+    ``TERMINAL_CWD`` is historically configured through the process
+    environment. Runtime per-session overrides must use this ContextVar-backed
+    helper so concurrent gateway/cron sessions cannot clobber each other.
+    """
+    import os
+
+    value = _TERMINAL_CWD.get()
+    if value is not _UNSET:
+        return value
+    return os.getenv("TERMINAL_CWD", default)

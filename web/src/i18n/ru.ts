@@ -75,7 +75,7 @@ export const ru: Translations = {
       keys: "Ключи",
       logs: "Журналы",
       models: "Модели",
-      profiles: "профили: мульти-агенты",
+      profiles: "Профили",
       plugins: "Плагины",
       sessions: "Сессии",
       skills: "Навыки",
@@ -229,7 +229,7 @@ export const ru: Translations = {
   profiles: {
     newProfile: "Новый профиль",
     name: "Имя",
-    namePlaceholder: "напр. coder, writer и т.п.",
+    namePlaceholder: "напр. редактор, автор и т. п.",
     nameRequired: "Имя обязательно",
     nameRule:
       "Только строчные буквы, цифры, _ и -; должно начинаться с буквы или цифры; до 64 символов.",
@@ -271,14 +271,14 @@ export const ru: Translations = {
     inactive: "неактивно",
     installBtn: "Установить из Git",
     installHeading: "Установка из GitHub / Git URL",
-    installHint: "Используйте сокращение owner/repo или полный https:// или git@ URL для клонирования.",
+    installHint: "Используйте сокращение owner/repo или полный `https://`- либо `git@`-URL для клонирования.",
     memoryProviderLabel: "Провайдер памяти",
     missingEnvWarn: "Задайте эти переменные в разделе «Ключи», прежде чем плагин сможет работать:",
     noDashboardTab: "Нет вкладки в панели",
     openTab: "Открыть",
-    orphanHeading: "Расширения только для панели (без соответствующего plugin.yaml агента)",
+    orphanHeading: "Расширения только для панели (без соответствующего агента `plugin.yaml`)",
     pluginListHeading: "Установленные плагины",
-    providerDefaults: "встроенный / по умолчанию",
+    providerDefaults: "Встроенный (по умолчанию)",
     providersHeading: "Плагины-провайдеры рантайма",
     providersHint:
       "Записывает memory.provider (пусто = встроенный) и context.engine в config.yaml. Применяется со следующей сессии.",
@@ -287,7 +287,7 @@ export const ru: Translations = {
     removeHint: "Удалять можно только плагины, установленные пользователем в ~/.hermes/plugins.",
     rescanHeading: "Реестр SPA-плагинов",
     rescanHint: "Пересканируйте после добавления файлов на диск, чтобы боковая панель подхватила новые манифесты.",
-    runtimeHeading: "Рантайм шлюза (YAML-плагины)",
+    runtimeHeading: "YAML-плагины рантайма шлюза",
     saveProviders: "Сохранить настройки провайдеров",
     savedProviders: "Настройки провайдеров сохранены.",
     sourceBadge: "Источник",
@@ -419,7 +419,7 @@ export const ru: Translations = {
   },
 
   language: {
-    switchTo: "Переключиться на английский",
+    switchTo: "Переключить на английский",
   },
 
   theme: {
@@ -449,7 +449,7 @@ export const ru: Translations = {
       highest_tier: "Высший уровень",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Последнее",
-      latest_hint_empty: "запускайте Hermes чаще",
+      latest_hint_empty: "пользуйтесь Hermes чаще",
       none_yet: "Пока нет",
     },
     state: {

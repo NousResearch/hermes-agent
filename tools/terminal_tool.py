@@ -1863,12 +1863,13 @@ def terminal_tool(
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
-                if approval.get("status") == "approval_required":
+                if approval.get("status") == "pending_approval":
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
-                        "error": approval.get("message", "Waiting for user approval"),
-                        "status": "approval_required",
+                        "error": "",
+                        "status": "pending_approval",
+                        "approval_pending": True,
                         "command": approval.get("command", command),
                         "description": approval.get("description", "command flagged"),
                         "pattern_key": approval.get("pattern_key", ""),

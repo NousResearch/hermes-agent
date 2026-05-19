@@ -122,7 +122,8 @@ def build_top_level_parser():
         default=None,
         help=(
             "Model override for this invocation (e.g. anthropic/claude-sonnet-4.6). "
-            "Applies to -z/--oneshot and --tui. Also settable via HERMES_INFERENCE_MODEL env var."
+            "May appear before or after the ``chat`` subcommand; also applies "
+            "to -z/--oneshot and --tui. Also settable via HERMES_INFERENCE_MODEL env var."
         ),
     )
     _inherited_flag(
@@ -131,7 +132,8 @@ def build_top_level_parser():
         default=None,
         help=(
             "Provider override for this invocation (e.g. openrouter, anthropic). "
-            "Applies to -z/--oneshot and --tui. The persistent provider lives in config.yaml "
+            "May appear before or after the ``chat`` subcommand; also applies "
+            "to -z/--oneshot and --tui. The persistent provider lives in config.yaml "
             "under model.provider — use `hermes setup` or edit the file to change it."
         ),
     )
@@ -139,7 +141,11 @@ def build_top_level_parser():
         "-t",
         "--toolsets",
         default=None,
-        help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.",
+        help=(
+            "Comma-separated toolsets to enable for this invocation. May "
+            "appear before or after the ``chat`` subcommand; also applies "
+            "to -z/--oneshot and --tui."
+        ),
     )
     parser.add_argument(
         "--resume",
@@ -259,12 +265,25 @@ def build_top_level_parser():
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
     )
+    # These five flags are mirrored from the top-level parser so they can
+    # appear *after* the ``chat`` subcommand name (e.g. ``hermes chat -t
+    # web``).  When the user puts them BEFORE ``chat`` they're consumed by
+    # the top-level parser and stored in ``args.<name>`` first; we MUST
+    # use ``argparse.SUPPRESS`` here so an absent post-subcommand
+    # occurrence doesn't silently overwrite that top-level value with the
+    # subparser's own default (``None`` / ``False``).  Without SUPPRESS
+    # ``hermes -t web chat`` would parse correctly at the top level and
+    # then immediately get clobbered to ``None`` — see #28780.
     _inherited_flag(
         chat_parser,
-        "-m", "--model", help="Model to use (e.g., anthropic/claude-sonnet-4)",
+        "-m", "--model",
+        default=argparse.SUPPRESS,
+        help="Model to use (e.g., anthropic/claude-sonnet-4)",
     )
     chat_parser.add_argument(
-        "-t", "--toolsets", help="Comma-separated toolsets to enable"
+        "-t", "--toolsets",
+        default=argparse.SUPPRESS,
+        help="Comma-separated toolsets to enable",
     )
     _inherited_flag(
         chat_parser,
@@ -281,7 +300,10 @@ def build_top_level_parser():
         # are also valid values, and runtime resolution (resolve_runtime_provider)
         # handles validation/error reporting consistently with the top-level
         # `--provider` flag.
-        default=None,
+        #
+        # ``default=argparse.SUPPRESS`` so a pre-subcommand ``hermes
+        # --provider X chat`` isn't clobbered to None (#28780).
+        default=argparse.SUPPRESS,
         help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
     )
     chat_parser.add_argument(
@@ -389,7 +411,10 @@ def build_top_level_parser():
         chat_parser,
         "--tui",
         action="store_true",
-        default=False,
+        # ``default=argparse.SUPPRESS`` so a pre-subcommand ``hermes
+        # --tui chat`` isn't reset back to False by the chat
+        # subparser (#28780).
+        default=argparse.SUPPRESS,
         help="Launch the modern TUI instead of the classic REPL",
     )
     _inherited_flag(
@@ -404,7 +429,7 @@ def build_top_level_parser():
         "--dev",
         dest="tui_dev",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="With --tui: run TypeScript sources via tsx (skip dist build)",
     )
 

@@ -73,12 +73,9 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
-<<<<<<< HEAD
         "session_id": t.session_id,
-=======
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
->>>>>>> 503702ea9 (kanban: filter tasks by workflow fields and runs by status/outcome)
     }
 
 
@@ -366,12 +363,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Include archived tasks")
     p_list.add_argument("--json", action="store_true")
     p_list.add_argument(
-<<<<<<< HEAD
         "--sort",
         default=None,
         choices=sorted(kb.VALID_SORT_ORDERS.keys()),
         help="Sort order for listed tasks (default: priority)",
-=======
+    )
+    p_list.add_argument(
         "--workflow-template-id",
         default=None,
         metavar="ID",
@@ -383,7 +380,6 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         dest="current_step_key",
         metavar="KEY",
         help="Restrict to tasks with this current_step_key",
->>>>>>> 503702ea9 (kanban: filter tasks by workflow fields and runs by status/outcome)
     )
 
     # --- show ---
@@ -1338,12 +1334,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
             tenant=args.tenant,
             session_id=args.session,
             include_archived=args.archived,
-<<<<<<< HEAD
             order_by=getattr(args, "sort", None),
-=======
             workflow_template_id=args.workflow_template_id,
             current_step_key=args.current_step_key,
->>>>>>> 503702ea9 (kanban: filter tasks by workflow fields and runs by status/outcome)
         )
     if getattr(args, "json", False):
         print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))

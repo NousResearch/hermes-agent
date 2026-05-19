@@ -1,0 +1,12 @@
+{
+  "name": "workflow-engine",
+  "label": "Workflows",
+  "description": "Define, trigger, and monitor DAG workflows from the dashboard",
+  "icon": "GitBranch",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/workflows",
+    "position": "after:kanban"
+  },
+  "api": "plugin_api.py"
+}

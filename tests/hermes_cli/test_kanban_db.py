@@ -1471,6 +1471,97 @@ def test_worktree_workspace_returns_intended_path(kanban_home, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Scratch cleanup containment (#28818)
+# ---------------------------------------------------------------------------
+
+def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
+    """A scratch workspace under the kanban workspaces root is removed."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="scratchy")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        assert ws.is_dir()
+        kb.complete_task(conn, t, result="ok")
+    assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
+
+
+def test_cleanup_workspace_refuses_path_outside_scratch_root(kanban_home, tmp_path):
+    """A scratch task with a user path outside the workspaces root must NOT be deleted (#28818).
+
+    Reproduces the data-loss vector where a board's ``default_workdir`` is set
+    to a real source directory; tasks created without an explicit
+    ``workspace_kind`` inherit ``scratch`` semantics, and the old cleanup path
+    would ``shutil.rmtree`` the user's source tree on task completion.
+    """
+    real_source = tmp_path / "real-source"
+    real_source.mkdir()
+    (real_source / ".git").mkdir()
+    (real_source / "README.md").write_text("important", encoding="utf-8")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ship")
+        # Simulate the bad state directly: workspace_kind='scratch' (default)
+        # but workspace_path pointing at the user's real source tree, which is
+        # exactly what board.default_workdir produces when the task is created
+        # without an explicit workspace_kind.
+        conn.execute(
+            "UPDATE tasks SET workspace_kind=?, workspace_path=? WHERE id=?",
+            ("scratch", str(real_source), t),
+        )
+        conn.commit()
+        kb.complete_task(conn, t, result="ok")
+
+    assert real_source.exists(), "User source tree must not be deleted by scratch cleanup"
+    assert (real_source / ".git").exists()
+    assert (real_source / "README.md").read_text(encoding="utf-8") == "important"
+
+
+def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeypatch):
+    """``HERMES_KANBAN_WORKSPACES_ROOT`` extends the managed-scratch set.
+
+    Worker subprocesses run with this env var injected by the dispatcher. The
+    cleanup containment check must treat paths under it as managed even when
+    they sit outside the active kanban home.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    workspaces_override = tmp_path / "ext-workspaces"
+    workspaces_override.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(workspaces_override))
+    kb.init_db()
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ext")
+        scratch_dir = workspaces_override / t
+        scratch_dir.mkdir()
+        conn.execute(
+            "UPDATE tasks SET workspace_kind=?, workspace_path=? WHERE id=?",
+            ("scratch", str(scratch_dir), t),
+        )
+        conn.commit()
+        kb.complete_task(conn, t, result="ok")
+
+    assert not scratch_dir.exists(), "Override-root scratch dir should be cleaned up"
+
+
+def test_is_managed_scratch_path_accepts_per_board_workspaces(kanban_home, tmp_path):
+    """Per-board scratch dirs under ``<kanban_home>/kanban/boards/<slug>/workspaces`` are managed."""
+    board_scratch = kanban_home / "kanban" / "boards" / "my-board" / "workspaces" / "task-1"
+    board_scratch.mkdir(parents=True)
+    assert kb._is_managed_scratch_path(board_scratch)
+
+
+def test_is_managed_scratch_path_rejects_real_source_tree(kanban_home, tmp_path):
+    """A path outside any managed root (e.g. a user's repo) is NOT managed."""
+    real = tmp_path / "code" / "my-project"
+    real.mkdir(parents=True)
+    assert not kb._is_managed_scratch_path(real)
+
+
+# ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------
 

@@ -3037,6 +3037,46 @@ def complete_task(
 # Workspace / tmux cleanup
 # ---------------------------------------------------------------------------
 
+def _is_managed_scratch_path(p: Path) -> bool:
+    """Return True iff *p* lives inside a kanban-managed scratch root.
+
+    A managed root is one of:
+
+    * ``HERMES_KANBAN_WORKSPACES_ROOT`` when set (worker-side override
+      injected by the dispatcher).
+    * The current kanban home's ``kanban/`` subtree, which covers both the
+      legacy default-board scratch root (``<kanban_home>/kanban/workspaces``)
+      and per-board roots (``<kanban_home>/kanban/boards/<slug>/workspaces``).
+
+    Used by :func:`_cleanup_workspace` to refuse to ``shutil.rmtree`` paths
+    outside Hermes-managed storage. A board ``default_workdir`` pointing at a
+    real source tree can otherwise pair with ``workspace_kind='scratch'`` and
+    cause task completion to delete user data (#28818).
+    """
+    try:
+        p_abs = p.resolve(strict=False)
+    except OSError:
+        return False
+    roots: list[Path] = []
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        try:
+            roots.append(Path(override).expanduser().resolve(strict=False))
+        except OSError:
+            pass
+    try:
+        roots.append((kanban_home() / "kanban").resolve(strict=False))
+    except OSError:
+        pass
+    for root in roots:
+        try:
+            if p_abs.is_relative_to(root):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     """Remove a task's scratch workspace dir and kill its stale tmux session.
 
@@ -3059,8 +3099,21 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         import shutil
         wp = Path(path)
         if wp.is_dir():
-            shutil.rmtree(wp, ignore_errors=True)
-            _log.debug("Removed scratch workspace: %s", wp)
+            # Containment guard (#28818): a board's ``default_workdir`` can
+            # pair ``workspace_kind='scratch'`` with a user-supplied path
+            # pointing at a real source tree. Without this check, task
+            # completion would unconditionally ``shutil.rmtree`` that path
+            # and silently delete the user's source data.
+            if _is_managed_scratch_path(wp):
+                shutil.rmtree(wp, ignore_errors=True)
+                _log.debug("Removed scratch workspace: %s", wp)
+            else:
+                _log.warning(
+                    "Refusing to remove out-of-scratch workspace for task %s: %s "
+                    "(workspace_kind='scratch' but path is outside any "
+                    "kanban-managed workspaces root)",
+                    task_id, wp,
+                )
         # Also kill the tmux session for the worker that owned this task,
         # if the tmux session is now dead (worker process exited).
         _cleanup_worker_tmux(conn, task_id)

@@ -1,5 +1,6 @@
 """Tests for gateway session management."""
 
+import builtins
 import json
 import pytest
 from pathlib import Path
@@ -687,6 +688,32 @@ class TestLoadTranscriptPreferLongerSource:
         assert len(result) == 2
         # Should be the SQLite version (equal count → prefers SQLite)
         assert result[0]["content"] == "db-q"
+
+    def test_unreadable_jsonl_returns_sqlite(self, store_with_db, monkeypatch):
+        """Unreadable legacy JSONL must not hide valid SQLite history."""
+        sid = "unreadable_jsonl"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        store_with_db._db.append_message(session_id=sid, role="user", content="db-q")
+        store_with_db._db.append_message(session_id=sid, role="assistant", content="db-a")
+
+        transcript_path = store_with_db.get_transcript_path(sid)
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        transcript_path.write_text('{"role": "user", "content": "jsonl-q"}\n', encoding="utf-8")
+
+        real_open = builtins.open
+
+        def raise_for_transcript(path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if Path(path) == transcript_path and "r" in mode:
+                raise OSError("simulated unreadable transcript")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", raise_for_transcript)
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 2
+        assert result[0]["content"] == "db-q"
+        assert result[1]["content"] == "db-a"
 
 
 class TestSessionStoreSwitchSession:

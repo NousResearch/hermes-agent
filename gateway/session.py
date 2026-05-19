@@ -1326,17 +1326,23 @@ class SessionStore:
         transcript_path = self.get_transcript_path(session_id)
         jsonl_messages = []
         if transcript_path.exists():
-            with open(transcript_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            jsonl_messages.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                "Skipping corrupt line in transcript %s: %s",
-                                session_id, line[:120],
-                            )
+            try:
+                with open(transcript_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                jsonl_messages.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                logger.warning(
+                                    "Skipping corrupt line in transcript %s: %s",
+                                    session_id, line[:120],
+                                )
+            except OSError as e:
+                # JSONL is the legacy compatibility store. If it becomes
+                # unreadable, keep gateway recovery working by falling back to
+                # SQLite rows loaded above (or [] when no DB exists).
+                logger.debug("Failed to read JSONL transcript for %s: %s", session_id, e)
 
         # Prefer whichever source has more messages.
         #

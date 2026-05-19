@@ -107,6 +107,35 @@ platforms: [macos, linux]     # macOS and Linux
 
 When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted, the skill loads on all platforms.
 
+## Skill output and media delivery
+
+When a skill response (or any agent response) includes a bare absolute path to a media file — for example `/home/user/screenshots/diagram.png` — the gateway auto-detects it, strips it from the visible text, and delivers the file natively to the user's chat (Telegram photo, Discord attachment, etc.) instead of leaving the raw path in the message.
+
+For audio specifically, the `[[audio_as_voice]]` directive promotes audio files to native voice-message bubbles on platforms that support them (Telegram, WhatsApp).
+
+### Forcing document-style delivery: `[[as_document]]`
+
+Sometimes you want the **opposite** of inline preview: you want the file delivered as a downloadable attachment, not a re-compressed image bubble. The classic example is a high-resolution screenshot or chart — Telegram's `sendPhoto` recompresses it to ~200 KB at 1280 px, destroying readability. A 1-2 MB PNG sent via `sendDocument` keeps the original bytes intact.
+
+If a response (or any text inside it — typically the last line) contains the literal directive `[[as_document]]`, every media path extracted from that response is delivered as a document/file attachment rather than an image bubble:
+
+```
+Here is your rendered chart:
+
+/home/user/.hermes/cache/chart-q4-2025.png
+
+[[as_document]]
+```
+
+The directive is stripped before delivery, so users never see it. Granularity is intentionally all-or-nothing per response: emit `[[as_document]]` once and every image path in the same response is delivered as a document. This mirrors the scope of `[[audio_as_voice]]`.
+
+Use it from a skill when:
+
+- You produce screenshots or charts the user needs as files (for editing in another tool, archiving, sharing intact).
+- The default lossy preview would obscure detail (small text, pixel-accurate diagrams, color-sensitive renders).
+
+Platforms without a separate document path (e.g. SMS) fall back to whatever attachment mechanism they have.
+
 ### Conditional Activation (Fallback Skills)
 
 Skills can automatically show or hide themselves based on which tools are available in the current session. This is most useful for **fallback skills** — free or local alternatives that should only appear when a premium tool is unavailable.

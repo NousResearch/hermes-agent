@@ -3014,6 +3014,32 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Permanently remove an already-archived task and its related rows.
+
+    Safety guard: only archived tasks can be deleted. Active / blocked / done
+    tasks must be explicitly archived first so accidental data loss requires a
+    second deliberate action.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row or row["status"] != "archived":
+            return False
+        conn.execute(
+            "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
+            (task_id, task_id),
+        )
+        conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        return cur.rowcount == 1
+
+
 # ---------------------------------------------------------------------------
 # Workspace resolution
 # ---------------------------------------------------------------------------

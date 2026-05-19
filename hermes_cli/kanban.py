@@ -435,7 +435,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_unblock.add_argument("task_ids", nargs="+")
 
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
-    p_archive.add_argument("task_ids", nargs="+")
+    p_archive.add_argument("task_ids", nargs="*",
+                           help="Task ids to archive (default mode)")
+    p_archive.add_argument(
+        "--rm",
+        dest="purge_ids",
+        nargs="+",
+        default=None,
+        help="Permanently delete already-archived task ids from the board",
+    )
 
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
@@ -1692,11 +1700,23 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
 
 def _cmd_archive(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
-    if not ids:
+    purge_ids = list(getattr(args, "purge_ids", None) or [])
+    if ids and purge_ids:
+        print("choose either task_ids to archive or --rm archived task_ids", file=sys.stderr)
+        return 1
+    if not ids and not purge_ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
     failed: list[str] = []
     with kb.connect() as conn:
+        if purge_ids:
+            for tid in purge_ids:
+                if not kb.delete_archived_task(conn, tid):
+                    failed.append(tid)
+                    print(f"cannot delete {tid} (must already be archived)", file=sys.stderr)
+                else:
+                    print(f"Deleted {tid}")
+            return 0 if not failed else 1
         for tid in ids:
             if not kb.archive_task(conn, tid):
                 failed.append(tid)

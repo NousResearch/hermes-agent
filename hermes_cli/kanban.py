@@ -1319,6 +1319,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
+    if task.model_override:
+        print(f"  model:     {task.model_override}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see

@@ -166,9 +166,42 @@ def _gateway_provider_error_reply(text: str) -> str:
     )
 
 
+_GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
+    r"^\s*(\W*\s*)?("
+    r"api\s+(?:call\s+)?failed"
+    r"|provider\s+authentication\s+failed"
+    r"|non-retryable\s+error"
+    r"|rate\s+limited\s+after\s+\d+\s+retries"
+    r"|error\s+code\s*:"
+    r"|http\s*\d{3}\b"
+    r"|incorrect\s+api\s+key"
+    r"|invalid\s+api\s+key"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def _looks_like_gateway_provider_error(text: str) -> bool:
-    """True when text is infrastructure/provider failure, not normal content."""
-    return bool(_GATEWAY_PROVIDER_ERROR_RE.search(text))
+    """True when text is infrastructure/provider failure, not normal content.
+
+    Two heuristics combined so the rewrite only fires on actual provider
+    error envelopes, not on assistant prose that happens to mention an
+    HTTP status code:
+
+    1. The text is short — real provider errors are 1–3 lines of envelope
+       text; assistant answers are usually longer.
+    2. AND the error marker appears at the start of the message (optionally
+       behind a punctuation/symbol prefix), not buried mid-paragraph in an
+       explanation like "HTTP 404 means 'not found' — ...".
+    """
+    if not text:
+        return False
+    body = str(text).strip()
+    # Provider failure envelopes are short. Assistant answers that happen
+    # to mention HTTP status codes ("HTTP 404 means...") tend to be longer.
+    if len(body) > 400 or body.count("\n") > 4:
+        return False
+    return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
@@ -6076,17 +6109,17 @@ class GatewayRunner:
 
         user_id = source.user_id
 
-        # Telegram (and similar) authorize entire group/forum chats by
-        # chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
+        # Telegram (and similar) authorize entire group/forum/channel chats
+        # by chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
         # That allowlist is chat-scoped, so it must work even when
-        # source.user_id is None — Telegram emits anonymous-admin posts
-        # and sender_chat traffic in groups with no `from_user`, and an
-        # operator who explicitly listed the chat expects those to be
-        # honored. Run this check before the no-user-id guard below so
+        # source.user_id is None — Telegram emits anonymous-admin posts,
+        # sender_chat traffic, and channel broadcasts with no `from_user`,
+        # and an operator who explicitly listed the chat expects those to
+        # be honored. Run this check before the no-user-id guard below so
         # documented behavior matches reality
         # (website/docs/reference/environment-variables.md,
         # website/docs/user-guide/messaging/telegram.md).
-        if source.chat_type in {"group", "forum"} and source.chat_id:
+        if source.chat_type in {"group", "forum", "channel"} and source.chat_id:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",

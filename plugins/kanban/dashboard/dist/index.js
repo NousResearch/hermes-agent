@@ -1942,23 +1942,23 @@
     const { t } = useI18n();
     const tenants = (props.board && props.board.tenants) || [];
     const assignees = (props.board && props.board.assignees) || [];
-    return h("div", { className: "flex flex-wrap items-end gap-3" },
-      h("div", { className: "flex flex-col gap-1",
+    return h("div", { className: "hermes-kanban-toolbar flex flex-wrap items-end gap-3" },
+      h("div", { className: "hermes-kanban-toolbar-field flex flex-col gap-1",
                  title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "search", "Search")),
         h(Input, {
           placeholder: tx(t, "filterCards", "Filter cards…"),
           value: props.search,
           onChange: function (e) { props.setSearch(e.target.value); },
-          className: "w-56 h-8",
+          className: "hermes-kanban-toolbar-input w-56 h-8",
         }),
       ),
-      h("div", { className: "flex flex-col gap-1",
+      h("div", { className: "hermes-kanban-toolbar-field flex flex-col gap-1",
                  title: "Tenants are free-form tags on a task (e.g. customer, project, team). Set them via the task drawer or kanban_create." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "tenant", "Tenant")),
         h(Select, Object.assign({
           value: props.tenantFilter,
-          className: "h-8",
+          className: "hermes-kanban-toolbar-input h-8",
         }, selectChangeHandler(props.setTenantFilter)),
           h(SelectOption, { value: "" }, tx(t, "allTenants", "All tenants")),
           tenants.map(function (tn) {
@@ -1966,12 +1966,12 @@
           }),
         ),
       ),
-      h("div", { className: "flex flex-col gap-1",
+      h("div", { className: "hermes-kanban-toolbar-field flex flex-col gap-1",
                  title: "Filter by assigned Hermes profile. Profiles are the named agent identities that claim and work on tasks." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "assignee", "Assignee")),
         h(Select, Object.assign({
           value: props.assigneeFilter,
-          className: "h-8",
+          className: "hermes-kanban-toolbar-input h-8",
         }, selectChangeHandler(props.setAssigneeFilter)),
           h(SelectOption, { value: "" }, tx(t, "allProfiles", "All profiles")),
           assignees.map(function (a) {
@@ -1997,7 +1997,7 @@
         }),
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
-      h("div", { className: "flex-1" }),
+      h("div", { className: "hermes-kanban-toolbar-spacer flex-1" }),
       h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",

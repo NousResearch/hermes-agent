@@ -7,6 +7,15 @@
 
 .hermes-kanban {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.hermes-kanban-toolbar,
+.hermes-kanban-columns,
+.hermes-kanban-bulk {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* ---- Code/pre reset (theme-immune default) --------------------------- *
@@ -63,18 +72,17 @@
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   gap: 0.75rem;
   align-items: start;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.hermes-kanban-columns::-webkit-scrollbar {
-  display: none;
+  overflow-x: visible;
 }
 
 .hermes-kanban-column {
-  flex: 0 0 280px;
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
@@ -84,6 +92,49 @@
   min-height: 200px;
   max-height: calc(100vh - 220px);
   transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+@media (max-width: 900px) {
+  .hermes-kanban-toolbar {
+    align-items: stretch;
+  }
+
+  .hermes-kanban-toolbar-field {
+    flex: 1 1 12rem;
+    min-width: min(100%, 12rem);
+  }
+
+  .hermes-kanban-toolbar-input {
+    width: 100% !important;
+  }
+
+  .hermes-kanban-toolbar-spacer {
+    display: none;
+  }
+
+  .hermes-kanban-toolbar > button {
+    flex: 1 1 9rem;
+    min-width: min(100%, 9rem);
+  }
+
+  .hermes-kanban-column {
+    width: 100%;
+    max-height: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .hermes-kanban-toolbar-field,
+  .hermes-kanban-toolbar > label,
+  .hermes-kanban-toolbar > button {
+    flex-basis: 100%;
+  }
+
+  .hermes-kanban-bulk > button,
+  .hermes-kanban-bulk-reassign,
+  .hermes-kanban-bulk-priority {
+    flex: 1 1 100%;
+  }
 }
 
 .hermes-kanban-column--drop {

@@ -295,6 +295,7 @@ class TestGatewayRuntimeStatus:
 
         payload = status.read_runtime_status()
         assert payload["gateway_status_schema_version"] == 2
+        assert payload["stop_source"] is None
         assert payload["process_heartbeat_mono"] == 123.456
         assert isinstance(payload["process_heartbeat_at"], str)
         assert payload["forward_progress_counter"] == 0
@@ -451,9 +452,32 @@ class TestGatewayRuntimeStatus:
         payload = status.read_runtime_status()
         assert payload["gateway_state"] == "running"
         assert payload["exit_reason"] is None
+        assert payload["stop_source"] is None
         assert payload["platforms"]["discord"]["state"] == "connected"
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
+
+    def test_running_state_clears_stale_stop_source_without_explicit_exit_reason(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "kind": "hermes-gateway",
+            "gateway_status_schema_version": 2,
+            "gateway_state": "starting",
+            "exit_reason": "stale shutdown",
+            "stop_source": "signal:SIGTERM",
+            "platforms": {},
+        }))
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "running"
+        assert payload["exit_reason"] is None
+        assert payload["stop_source"] is None
 
 
 class TestTerminatePid:

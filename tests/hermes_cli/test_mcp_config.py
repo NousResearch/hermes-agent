@@ -540,6 +540,33 @@ class TestDispatcher:
         out = capsys.readouterr().out
         assert "Commands:" in out or "No MCP servers" in out
 
+    def test_runtime_probe_dispatches_redacted_json(self, monkeypatch, capsys):
+        from hermes_cli.mcp_config import mcp_command
+
+        async def fake_probe_default_sources(**kwargs):
+            return {"servers": ["codex:context7"], "kwargs": kwargs}
+
+        monkeypatch.setattr(
+            "tools.mcp_runtime_probe.probe_default_sources",
+            fake_probe_default_sources,
+        )
+
+        mcp_command(
+            _make_args(
+                mcp_action="runtime-probe",
+                runtime="codex",
+                server="context7",
+                timeout=1,
+                skip_auth_needed=True,
+                include_google_drive_auth_needed=False,
+            )
+        )
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["servers"] == ["codex:context7"]
+        assert payload["kwargs"]["runtime"] == "codex"
+        assert payload["kwargs"]["server_name"] == "context7"
+
 
 # ---------------------------------------------------------------------------
 # Tests: Task 7 consolidation — cmd_mcp_remove evicts manager cache,
@@ -599,4 +626,3 @@ class TestMcpLogin:
         cmd_mcp_login(_make_args(name="srv"))
         out = capsys.readouterr().out
         assert "no URL" in out or "not an OAuth" in out
-

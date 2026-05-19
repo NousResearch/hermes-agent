@@ -9,6 +9,7 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -738,6 +739,37 @@ def cmd_mcp_configure(args):
     _info("Start a new session for changes to take effect.")
 
 
+def cmd_mcp_runtime_probe(args):
+    """Run the redacted MCP runtime-depth probe."""
+    from tools.mcp_runtime_probe import probe_default_sources
+
+    async def _run_probe() -> dict[str, Any]:
+        return await asyncio.wait_for(
+            probe_default_sources(
+                runtime=getattr(args, "runtime", "all"),
+                server_name=getattr(args, "server", None),
+                skip_google_drive_auth_needed=(
+                    getattr(args, "skip_auth_needed", False)
+                    or not getattr(args, "include_google_drive_auth_needed", False)
+                ),
+            ),
+            timeout=getattr(args, "timeout", 120) if getattr(args, "timeout", 120) > 0 else None,
+        )
+
+    try:
+        report = asyncio.run(_run_probe())
+    except asyncio.TimeoutError:
+        report = {
+            "status": "timeout",
+            "status_counts": {"timeout": 1},
+            "check_status_counts": {"timeout": 1},
+            "servers": [],
+            "status_classes": ["timeout"],
+            "status_samples": {},
+        }
+    print(json.dumps(report, indent=2, sort_keys=True))
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def mcp_command(args):
@@ -759,6 +791,7 @@ def mcp_command(args):
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
         "login": cmd_mcp_login,
+        "runtime-probe": cmd_mcp_runtime_probe,
     }
 
     handler = handlers.get(action)
@@ -775,6 +808,7 @@ def mcp_command(args):
         _info("hermes mcp remove <name>                      Remove a server")
         _info("hermes mcp list                               List servers")
         _info("hermes mcp test <name>                        Test connection")
+        _info("hermes mcp runtime-probe                      Probe runtime MCP depth")
         _info("hermes mcp configure <name>                   Toggle tools")
         _info("hermes mcp login <name>                       Re-authenticate OAuth")
         print()

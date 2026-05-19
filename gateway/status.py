@@ -240,6 +240,7 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "gateway_state": "starting",
         "runtime_import_authority": _build_runtime_import_authority(),
         "exit_reason": None,
+        "stop_source": None,
         "restart_requested": False,
         "active_agents": 0,
         "platforms": {},
@@ -554,6 +555,7 @@ def write_runtime_status(
     *,
     gateway_state: Any = _UNSET,
     exit_reason: Any = _UNSET,
+    stop_source: Any = _UNSET,
     restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET,
     platform: Any = _UNSET,
@@ -595,8 +597,14 @@ def write_runtime_status(
 
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
+        if gateway_state in {"starting", "running"}:
+            payload["stop_source"] = None
+            if exit_reason is _UNSET:
+                payload["exit_reason"] = None
     if exit_reason is not _UNSET:
         payload["exit_reason"] = exit_reason
+    if stop_source is not _UNSET:
+        payload["stop_source"] = stop_source
     if restart_requested is not _UNSET:
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:

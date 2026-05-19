@@ -397,6 +397,14 @@ def _build_apikey_providers_list() -> list:
 
 def run_doctor(args):
     """Run diagnostic checks."""
+    if getattr(args, "path_authority", False):
+        from hermes_cli.path_authority_doctor import run_path_authority_doctor
+
+        code = run_path_authority_doctor(args)
+        if code:
+            raise SystemExit(code)
+        return
+
     should_fix = getattr(args, 'fix', False)
     ack_target = getattr(args, 'ack', None)
 

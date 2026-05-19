@@ -4,17 +4,24 @@ from pathlib import Path
 from agent.harness_control_plane import (
     classify_memory_admission,
     ensure_profile_eval_suite,
+    evaluate_promotion_gate,
     learning_health_unavailable_summary,
     learning_health_summary,
+    learning_snapshot_summary,
+    promotion_gate_summary,
+    promote_skill,
     record_approval_decision,
     record_eval_suite,
     record_goal_decision,
     record_harness_event,
     record_memory_admission,
     record_mutation_contract,
+    record_replay_case,
     record_skill_load,
     record_skill_mutation,
     record_turn_result,
+    replay_corpus_summary,
+    run_core_harness,
 )
 from hermes_constants import get_hermes_home
 
@@ -319,3 +326,189 @@ def test_learning_health_unavailable_summary_is_complete(_isolate_hermes_home):
     assert health["memory"]["total"] == 0
     assert health["skills"]["registered"] == 0
     assert health["mutations"]["total"] == 0
+    assert health["replay_corpus"]["total"] == 0
+    assert health["promotion_gates"]["total"] == 0
+
+
+def test_turn_trace_has_standard_shape_and_failure_taxonomy(_isolate_hermes_home):
+    private_error = "private failure: customer token sk-" + "x" * 32
+    private_reason = f"error_near_max_iterations({private_error})"
+
+    record = record_turn_result(
+        _Agent(),
+        {
+            "messages": [],
+            "completed": False,
+            "api_calls": 1,
+            "turn_exit_reason": private_reason,
+            "error": private_error,
+        },
+    )
+
+    assert record["trace_schema"] == {
+        "name": "hermes.turn_trace",
+        "version": 1,
+        "content_policy": "metadata_only",
+    }
+    assert record["turn_exit_reason"] == "error_near_max_iterations"
+    assert record["turn_exit_reason_raw_present"] is True
+    assert record["turn_exit_reason_raw_sha256"]
+    assert record["failure_kind"] == "iteration_budget"
+
+    harness_dir = get_hermes_home() / "harness"
+    raw = "\n".join(
+        path.read_text()
+        for path in [harness_dir / "turn-traces.jsonl", harness_dir / "harness-events.jsonl"]
+    )
+    assert private_error not in raw
+    assert private_reason not in raw
+    assert "customer token" not in raw
+
+    snapshot = learning_snapshot_summary()
+    assert snapshot["content_policy"] == "metadata_only"
+    assert snapshot["failure_taxonomy"]["iteration_budget"] == 1
+    assert snapshot["trace_schema"]["name"] == "hermes.turn_trace"
+    assert "hermes_home" not in snapshot
+
+
+def test_replay_corpus_records_failure_cases_without_raw_content(_isolate_hermes_home):
+    private_note = "replay this failure; bearer token was rejected"
+    private_check = "private merger plan replay"
+
+    replay = record_replay_case(
+        source_trace_id="turn_abc123",
+        failure_kind="runtime_error",
+        checks=[private_check],
+        status="candidate",
+        note=private_note,
+    )
+
+    assert replay["replay_id"].startswith("replay_")
+    assert replay["source_trace_id"] == "turn_abc123"
+    assert replay["failure_kind"] == "runtime_error"
+    assert replay["checks_count"] == 1
+    assert replay["checks_sha256"]
+    assert "checks" not in replay
+    assert replay["note_present"] is True
+    assert replay["note_sha256"]
+    assert "note" not in replay
+
+    raw = (get_hermes_home() / "harness" / "replay-corpus.jsonl").read_text()
+    assert private_note not in raw
+    assert private_check not in raw
+    assert "bearer token" not in raw
+    assert "private merger" not in raw
+
+    summary = replay_corpus_summary()
+    assert summary["total"] == 1
+    assert summary["by_status"] == {"candidate": 1}
+    assert summary["by_failure_kind"] == {"runtime_error": 1}
+
+
+def test_mutation_contracts_and_core_outputs_are_fingerprinted_not_raw(_isolate_hermes_home):
+    private_evidence = "goal failed because database password rotated"
+    private_prediction = "future turns avoid leaking customer token"
+    private_target = "/home/alice/private-project/secret-skill"
+    private_command = "scripts/run_tests.sh tests/agent/test_harness_control_plane.py --token sk-" + "z" * 32
+    private_output = "pytest failed with OPENAI_API_KEY=sk-" + "y" * 32
+
+    mutation = record_mutation_contract(
+        component="skill",
+        action="patch",
+        target=private_target,
+        evidence=[private_evidence],
+        prediction=private_prediction,
+        rollback="restore private branch path",
+        verification=["scripts/run_tests.sh tests/agent/test_harness_control_plane.py -q"],
+        status="draft",
+    )
+
+    assert mutation["target_present"] is True
+    assert mutation["target_sha256"]
+    assert "target" not in mutation
+    assert mutation["evidence_count"] == 1
+    assert mutation["prediction_present"] is True
+    assert mutation["prediction_sha256"]
+    assert "evidence" not in mutation
+    assert "prediction" not in mutation
+
+    result = run_core_harness(
+        case_ids=["harness-event-safety"],
+        runner=lambda case: {
+            "status": "failed",
+            "command": private_command,
+            "output_tail": private_output,
+        },
+    )
+
+    raw = "\n".join(
+        path.read_text()
+        for path in (get_hermes_home() / "harness").glob("*.json*")
+    )
+    assert private_evidence not in raw
+    assert private_prediction not in raw
+    assert private_target not in raw
+    assert private_command not in raw
+    assert private_output not in raw
+    assert "database password" not in raw
+    assert "private-project" not in raw
+    assert "OPENAI_API_KEY" not in raw
+    assert result["cases"][0]["command_present"] is True
+    assert result["cases"][0]["command_sha256"]
+    assert "command" not in result["cases"][0]
+    assert result["cases"][0]["output_tail_present"] is True
+    assert result["cases"][0]["output_tail_sha256"]
+    assert "output_tail" not in result["cases"][0]
+
+
+def test_promotion_gate_blocks_until_required_offline_eval_passes(_isolate_hermes_home):
+    blocked = evaluate_promotion_gate(
+        component="skill",
+        target="/home/alice/private-project/secret-skill",
+        required_suites=["harness-core"],
+    )
+
+    assert blocked["status"] == "blocked"
+    assert blocked["target_present"] is True
+    assert blocked["target_sha256"]
+    assert "target" not in blocked
+    assert blocked["missing_suites"] == ["harness-core"]
+
+    denied = promote_skill("harness-skill", evidence="SECRET_EVAL_OUTPUT customer token abc")
+    assert denied["promotion_status"] == "blocked"
+    assert denied["status"] == "draft"
+    assert denied["promotion_gate_status"] == "blocked"
+
+    record_eval_suite(
+        profile=None,
+        name="harness-core",
+        status="passed",
+        checks=["trace", "replay"],
+        result="SECRET_EVAL_OUTPUT customer token abc",
+    )
+    passed = evaluate_promotion_gate(
+        component="skill",
+        target="harness-skill",
+        required_suites=["harness-core"],
+    )
+
+    assert passed["status"] == "passed"
+    assert passed["missing_suites"] == []
+
+    promoted = promote_skill("harness-skill", evidence="SECRET_EVAL_OUTPUT customer token abc")
+    assert promoted["status"] == "promoted"
+    assert promoted["promotion_status"] == "verified"
+    assert promoted["promotion_evidence_present"] is True
+    assert "promotion_evidence" not in promoted
+
+    summary = promotion_gate_summary()
+    assert summary["total"] == 4
+    assert summary["blocked"] == 2
+    assert summary["passed"] == 2
+    assert summary["by_component"] == {"skill": 4}
+
+    snapshot = learning_snapshot_summary()
+    raw_snapshot = json.dumps(snapshot, sort_keys=True)
+    assert "SECRET_EVAL_OUTPUT" not in raw_snapshot
+    assert "/home/alice/private-project" not in raw_snapshot
+    assert "customer token" not in raw_snapshot

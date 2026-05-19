@@ -29,6 +29,11 @@ from hermes_constants import get_hermes_home
 SCHEMA_VERSION = 1
 _RECENT_LIMIT = 50
 CORE_HARNESS_NAME = "harness-core"
+TRACE_SCHEMA = {
+    "name": "hermes.turn_trace",
+    "version": SCHEMA_VERSION,
+    "content_policy": "metadata_only",
+}
 _ACTIVE_TRACE_ID: ContextVar[Optional[str]] = ContextVar(
     "hermes_harness_trace_id",
     default=None,
@@ -147,6 +152,75 @@ def _text_fingerprint_fields(prefix: str, text: Optional[str]) -> Dict[str, Any]
         f"{prefix}_chars": len(value),
         f"{prefix}_sha256": _text_digest(value) if value else None,
     }
+
+
+def _list_fingerprint_fields(prefix: str, values: Optional[Iterable[Any]]) -> Dict[str, Any]:
+    """Return count/hash metadata for a list without persisting raw entries."""
+    items = [str(item) for item in (values or [])]
+    encoded = json.dumps(items, ensure_ascii=False, sort_keys=True)
+    return {
+        f"{prefix}_count": len(items),
+        f"{prefix}_sha256": _text_digest(encoded) if items else None,
+    }
+
+
+def _safe_turn_exit_reason(value: Any) -> Optional[str]:
+    """Return a bounded reason code without persisting raw error text."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    head = text.split("(", 1)[0].strip()
+    if re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", head or ""):
+        candidate = head.lower()
+        if not _SECRET_KEY_RE.search(candidate) and not _SECRET_VALUE_RE.search(candidate):
+            return candidate
+
+    lower = text.lower()
+    if "route" in lower or "contract" in lower:
+        return "route_contract"
+    if "tool" in lower:
+        return "tool_error"
+    if "context" in lower or "token" in lower:
+        return "context_limit"
+    if "budget" in lower or "iteration" in lower or "max" in lower:
+        return "iteration_budget"
+    if "guardrail" in lower:
+        return "guardrail_halt"
+    if "interrupt" in lower:
+        return "interrupted"
+    if "error" in lower or "exception" in lower or "traceback" in lower:
+        return "runtime_error"
+    return "other"
+
+
+def classify_turn_failure(record: Dict[str, Any]) -> str:
+    """Classify a normalized turn trace into a stable failure taxonomy."""
+    route_proof = record.get("route_proof") if isinstance(record, dict) else None
+    if isinstance(route_proof, dict):
+        contract = route_proof.get("contract") if isinstance(route_proof.get("contract"), dict) else {}
+        if contract.get("status") == "blocked":
+            return "route_contract"
+
+    if record.get("interrupted"):
+        return "interrupted"
+    if record.get("completed") is True and not record.get("error_present"):
+        return "none"
+
+    reason = str(record.get("turn_exit_reason") or "").lower()
+    if "route" in reason or "contract" in reason:
+        return "route_contract"
+    if "tool" in reason:
+        return "tool_error"
+    if "context" in reason or "token" in reason:
+        return "context_limit"
+    if "budget" in reason or "iteration" in reason or "max" in reason:
+        return "iteration_budget"
+    if record.get("error_present"):
+        return "runtime_error"
+    if record.get("completed") is False:
+        return "incomplete"
+    return "none"
 
 
 def _compact_text(value: Any, *, limit: int = _LONG_VALUE_LIMIT) -> str:
@@ -443,8 +517,10 @@ def record_turn_result(agent: Any, result: Dict[str, Any]) -> Dict[str, Any]:
     )
     started_at = getattr(agent, "_harness_trace_started_at", None)
     duration_s = (time.time() - started_at) if isinstance(started_at, (int, float)) else None
+    raw_turn_exit_reason = result.get("turn_exit_reason")
     record = {
         "schema_version": SCHEMA_VERSION,
+        "trace_schema": dict(TRACE_SCHEMA),
         "trace_id": trace_id,
         "recorded_at": _now_iso(),
         "profile": current_profile_name(),
@@ -459,7 +535,8 @@ def record_turn_result(agent: Any, result: Dict[str, Any]) -> Dict[str, Any]:
         "completed": bool(result.get("completed")),
         "partial": bool(result.get("partial")),
         "interrupted": bool(result.get("interrupted")),
-        "turn_exit_reason": result.get("turn_exit_reason"),
+        "turn_exit_reason": _safe_turn_exit_reason(raw_turn_exit_reason),
+        **_text_fingerprint_fields("turn_exit_reason_raw", raw_turn_exit_reason),
         **_text_fingerprint_fields("error", result.get("error")),
         "api_calls": int(result.get("api_calls") or 0),
         "tool_call_count": len(tool_names),
@@ -469,6 +546,7 @@ def record_turn_result(agent: Any, result: Dict[str, Any]) -> Dict[str, Any]:
         "reasoning_tokens": int(result.get("reasoning_tokens") or 0),
         "estimated_cost_usd": result.get("estimated_cost_usd"),
     }
+    record["failure_kind"] = classify_turn_failure(record)
     if duration_s is not None:
         record["duration_s"] = duration_s
     if result.get("codex_thread_id"):
@@ -486,6 +564,7 @@ def record_turn_result(agent: Any, result: Dict[str, Any]) -> Dict[str, Any]:
             "error_present": record.get("error_present"),
             "error_chars": record.get("error_chars"),
             "error_sha256": record.get("error_sha256"),
+            "failure_kind": record.get("failure_kind"),
             "tool_call_count": record["tool_call_count"],
             "tool_names": record["tool_names"],
             "duration_s": duration_s,
@@ -721,11 +800,11 @@ def record_mutation_contract(
         "profile": current_profile_name(),
         "component": component,
         "action": action,
-        "target": target,
-        "evidence": evidence or [],
-        "prediction": prediction or "",
-        "rollback": rollback,
-        "verification": verification or [],
+        **_text_fingerprint_fields("target", target),
+        **_list_fingerprint_fields("evidence", evidence),
+        **_text_fingerprint_fields("prediction", prediction),
+        **_text_fingerprint_fields("rollback", rollback),
+        **_list_fingerprint_fields("verification", verification),
         "status": status,
         "origin": origin,
     }
@@ -737,14 +816,153 @@ def promote_skill(name: str, *, evidence: Optional[str] = None) -> Dict[str, Any
     registry = _read_json(_skill_registry_path(), {"schema_version": SCHEMA_VERSION, "skills": {}})
     skills = registry.setdefault("skills", {})
     skill = skills.setdefault(name, {"name": name, "created_at": _now_iso(), "events": 0})
+    gate = evaluate_promotion_gate(component="skill", target=name, required_suites=[CORE_HARNESS_NAME])
+    if gate.get("status") != "passed":
+        skill.update({
+            "updated_at": _now_iso(),
+            "status": "draft",
+            "promotion_status": "blocked",
+            "promotion_gate_status": gate.get("status"),
+            **_text_fingerprint_fields("promotion_evidence", evidence),
+        })
+        _write_json(_skill_registry_path(), registry)
+        return skill
+
     skill.update({
         "updated_at": _now_iso(),
         "status": "promoted",
         "promotion_status": "verified",
-        "promotion_evidence": evidence,
+        "promotion_gate_status": gate.get("status"),
+        **_text_fingerprint_fields("promotion_evidence", evidence),
     })
     _write_json(_skill_registry_path(), registry)
     return skill
+
+
+def _replay_corpus_path() -> Path:
+    return _jsonl_path("replay-corpus.jsonl")
+
+
+def record_replay_case(
+    *,
+    source_trace_id: str,
+    failure_kind: str,
+    checks: Optional[List[str]] = None,
+    status: str = "candidate",
+    note: Optional[str] = None,
+    source: str = "historical_failure",
+) -> Dict[str, Any]:
+    """Record a content-free replay-corpus candidate for a historical failure."""
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "replay_id": _new_id("replay"),
+        "recorded_at": _now_iso(),
+        "profile": current_profile_name(),
+        "source": source,
+        "source_trace_id": source_trace_id,
+        "failure_kind": failure_kind or "unknown",
+        **_list_fingerprint_fields("checks", checks),
+        "status": status,
+        **_text_fingerprint_fields("note", note),
+    }
+    _append_jsonl(_replay_corpus_path(), record)
+    return record
+
+
+def replay_corpus_summary() -> Dict[str, Any]:
+    corpus = _read_jsonl(_replay_corpus_path())
+    recent = corpus[-_RECENT_LIMIT:]
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "total": len(corpus),
+        "recent": len(recent),
+        "by_status": _count_by(corpus, "status"),
+        "by_failure_kind": _count_by(corpus, "failure_kind"),
+        "last_recorded_at": corpus[-1].get("recorded_at") if corpus else None,
+        "candidates": [
+            {
+                "replay_id": item.get("replay_id"),
+                "source_trace_id": item.get("source_trace_id"),
+                "failure_kind": item.get("failure_kind"),
+                "status": item.get("status"),
+                "checks_count": int(item.get("checks_count") or 0),
+                "recorded_at": item.get("recorded_at"),
+            }
+            for item in recent
+        ],
+    }
+
+
+def _promotion_gates_path() -> Path:
+    return _jsonl_path("promotion-gates.jsonl")
+
+
+def evaluate_promotion_gate(
+    *,
+    component: str,
+    target: str,
+    required_suites: Optional[List[str]] = None,
+    origin: str = "offline_eval",
+) -> Dict[str, Any]:
+    """Persist and return whether a mutation target can be promoted."""
+    profile = current_profile_name()
+    required = [str(item) for item in (required_suites or [CORE_HARNESS_NAME]) if str(item).strip()]
+    eval_state = ensure_profile_eval_suite(profile)
+    suites = (
+        eval_state.get("profiles", {})
+        .get(profile, {})
+        .get("suites", {})
+    )
+    passed_suites: List[str] = []
+    missing_suites: List[str] = []
+    for name in required:
+        suite = suites.get(name) if isinstance(suites, dict) else None
+        if isinstance(suite, dict) and suite.get("status") == "passed":
+            passed_suites.append(name)
+        else:
+            missing_suites.append(name)
+    status = "passed" if not missing_suites else "blocked"
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "gate_id": _new_id("gate"),
+        "recorded_at": _now_iso(),
+        "profile": profile,
+        "component": component,
+        **_text_fingerprint_fields("target", target),
+        "origin": origin,
+        "status": status,
+        "required_suites": required,
+        "passed_suites": passed_suites,
+        "missing_suites": missing_suites,
+    }
+    _append_jsonl(_promotion_gates_path(), record)
+    return record
+
+
+def promotion_gate_summary() -> Dict[str, Any]:
+    gates = _read_jsonl(_promotion_gates_path())
+    recent = gates[-_RECENT_LIMIT:]
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "total": len(gates),
+        "recent": len(recent),
+        "passed": sum(1 for item in gates if item.get("status") == "passed"),
+        "blocked": sum(1 for item in gates if item.get("status") == "blocked"),
+        "by_component": _count_by(gates, "component"),
+        "last_recorded_at": gates[-1].get("recorded_at") if gates else None,
+        "recent_gates": [
+            {
+                "gate_id": item.get("gate_id"),
+                "component": item.get("component"),
+                "target_present": item.get("target_present"),
+                "target_sha256": item.get("target_sha256"),
+                "status": item.get("status"),
+                "missing_suites": list(item.get("missing_suites") or []),
+                "recorded_at": item.get("recorded_at"),
+            }
+            for item in recent
+        ],
+    }
 
 
 def _eval_suites_path() -> Path:
@@ -895,6 +1113,16 @@ def _run_core_harness_case(
     }
 
 
+def _normalize_core_case_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip raw subprocess/test output from persisted core-harness results."""
+    normalized = dict(result)
+    raw_command = normalized.pop("command", None)
+    raw_output = normalized.pop("output_tail", None)
+    normalized.update(_text_fingerprint_fields("command", raw_command))
+    normalized.update(_text_fingerprint_fields("output_tail", raw_output))
+    return normalized
+
+
 def run_core_harness(
     *,
     profile: Optional[str] = None,
@@ -958,7 +1186,7 @@ def run_core_harness(
                 "output_tail": str(exc),
             }
         result["status"] = "passed" if result.get("status") == "passed" else "failed"
-        case_results.append(result)
+        case_results.append(_normalize_core_case_result(result))
 
     passed = sum(1 for item in case_results if item.get("status") == "passed")
     failed = len(case_results) - passed
@@ -1035,7 +1263,8 @@ def record_eval_suite(
         "status": status,
         "checks": checks if checks is not None else suite.get("checks", []),
         "last_run_at": _now_iso(),
-        "last_result": result,
+        "last_result": "recorded" if result else None,
+        **_text_fingerprint_fields("last_result", result),
     })
     _write_json(_eval_suites_path(), state)
     return suite
@@ -1103,6 +1332,26 @@ def learning_health_unavailable_summary(error: Optional[str] = None) -> Dict[str
             "by_component": {},
             "last_recorded_at": None,
         },
+        "replay_corpus": {
+            "schema_version": SCHEMA_VERSION,
+            "total": 0,
+            "recent": 0,
+            "by_status": {},
+            "by_failure_kind": {},
+            "last_recorded_at": None,
+            "candidates": [],
+        },
+        "promotion_gates": {
+            "schema_version": SCHEMA_VERSION,
+            "total": 0,
+            "recent": 0,
+            "passed": 0,
+            "blocked": 0,
+            "by_component": {},
+            "last_recorded_at": None,
+            "recent_gates": [],
+        },
+        "failure_taxonomy": {},
         "evals": {
             "profiles": 0,
             "current_profile": profile,
@@ -1155,6 +1404,7 @@ def learning_health_summary() -> Dict[str, Any]:
         1 for rec in skill_records.values()
         if isinstance(rec, dict) and rec.get("promotion_status") == "verified"
     )
+    failure_taxonomy = _count_by(recent_traces, "failure_kind")
 
     agent_created_count = 0
     try:
@@ -1174,6 +1424,7 @@ def learning_health_summary() -> Dict[str, Any]:
             "failure_count": sum(1 for item in recent_traces if item.get("error_present") or item.get("completed") is False),
             "interrupted_count": sum(1 for item in recent_traces if item.get("interrupted")),
             "codex_turns": sum(1 for item in recent_traces if item.get("runtime") == "codex_app_server"),
+            "by_failure_kind": failure_taxonomy,
             "last_turn_at": recent_traces[-1].get("recorded_at") if recent_traces else None,
         },
         "events": {
@@ -1221,6 +1472,10 @@ def learning_health_summary() -> Dict[str, Any]:
             "by_component": _count_by(mutations, "component"),
             "last_recorded_at": mutations[-1].get("recorded_at") if mutations else None,
         },
+        "replay_corpus": replay_corpus_summary(),
+        "promotion_gates": promotion_gate_summary(),
+        "failure_taxonomy": failure_taxonomy,
+        "trace_schema": dict(TRACE_SCHEMA),
         "evals": {
             "profiles": len(eval_state.get("profiles", {}) or {}),
             "current_profile": profile,
@@ -1248,3 +1503,28 @@ def learning_health_summary() -> Dict[str, Any]:
         summary["degraded"] = True
         summary["error"] = degraded_error
     return summary
+
+
+def learning_snapshot_summary() -> Dict[str, Any]:
+    """Return a content-free learning-loop snapshot for trace/replay gates."""
+    health = dict(learning_health_summary())
+    # The snapshot is intended for model/control-plane inspection. Keep it
+    # metadata-only: no user/home paths, no raw mutation prose, no raw errors.
+    health.pop("hermes_home", None)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": _now_iso(),
+        "profile": health.get("profile", current_profile_name()),
+        "content_policy": "metadata_only",
+        "trace_schema": dict(TRACE_SCHEMA),
+        "traces": health.get("traces", {}),
+        "events": health.get("events", {}),
+        "memory": health.get("memory", {}),
+        "skills": health.get("skills", {}),
+        "mutations": health.get("mutations", {}),
+        "evals": health.get("evals", {}),
+        "core_harness": health.get("core_harness", {}),
+        "replay_corpus": health.get("replay_corpus", replay_corpus_summary()),
+        "promotion_gates": health.get("promotion_gates", promotion_gate_summary()),
+        "failure_taxonomy": health.get("failure_taxonomy", {}),
+    }

@@ -583,6 +583,65 @@ async def get_harness_learning_health():
         return control_plane.learning_health_unavailable(str(exc))
 
 
+def _control_plane_or_unavailable():
+    from agent.harness import HermesHarness
+
+    return HermesHarness().control_plane
+
+
+@app.get("/api/harness/learning-snapshot")
+async def get_harness_learning_snapshot():
+    """Return the content-free trace/replay learning snapshot."""
+    try:
+        return _control_plane_or_unavailable().learning_snapshot()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "trace_schema": {"name": "hermes.turn_trace", "version": 1},
+            "failure_taxonomy": {},
+            "replay_corpus": {"total": 0},
+            "promotion_gates": {"total": 0},
+        }
+
+
+@app.get("/api/harness/replay-corpus")
+async def get_harness_replay_corpus():
+    """Return content-safe replay corpus status for historical failures."""
+    try:
+        return _control_plane_or_unavailable().replay_corpus()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "total": 0,
+            "by_status": {},
+            "by_failure_kind": {},
+            "candidates": [],
+        }
+
+
+@app.get("/api/harness/promotion-gates")
+async def get_harness_promotion_gates():
+    """Return promotion/offline-eval gate status for harness mutations."""
+    try:
+        return _control_plane_or_unavailable().promotion_gates()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "total": 0,
+            "passed": 0,
+            "blocked": 0,
+            "by_component": {},
+            "recent_gates": [],
+        }
+
+
 @app.get("/api/harness/core")
 async def get_core_harness_status():
     """Return the first-class seven-case Hermes core harness status."""

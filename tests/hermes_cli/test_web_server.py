@@ -201,6 +201,58 @@ class TestWebServerEndpoints:
             "last_result": None,
         }
 
+    def test_harness_trace_replay_endpoints_are_content_safe(self, monkeypatch):
+        import agent.harness as harness_module
+
+        class _ControlPlane:
+            def learning_snapshot(self):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "trace_schema": {"name": "hermes.turn_trace"},
+                    "failure_taxonomy": {"runtime_error": 1},
+                }
+
+            def replay_corpus(self):
+                return {
+                    "schema_version": 1,
+                    "total": 1,
+                    "by_failure_kind": {"runtime_error": 1},
+                    "candidates": [{"source_trace_id": "turn_abc", "checks_count": 1}],
+                }
+
+            def promotion_gates(self):
+                return {
+                    "schema_version": 1,
+                    "total": 1,
+                    "blocked": 1,
+                    "recent_gates": [{"target": "harness-skill", "status": "blocked"}],
+                }
+
+        class _Harness:
+            @property
+            def control_plane(self):
+                return _ControlPlane()
+
+        monkeypatch.setattr(harness_module, "HermesHarness", _Harness)
+
+        snapshot = self.client.get("/api/harness/learning-snapshot")
+        replay = self.client.get("/api/harness/replay-corpus")
+        gates = self.client.get("/api/harness/promotion-gates")
+
+        assert snapshot.status_code == 200
+        assert replay.status_code == 200
+        assert gates.status_code == 200
+        assert snapshot.json()["content_policy"] == "metadata_only"
+        assert replay.json()["by_failure_kind"] == {"runtime_error": 1}
+        assert gates.json()["blocked"] == 1
+        raw = json.dumps(
+            {"snapshot": snapshot.json(), "replay": replay.json(), "gates": gates.json()},
+            sort_keys=True,
+        )
+        assert "token" not in raw.lower()
+        assert "sk-" not in raw
+
     def test_core_harness_status_endpoint(self, monkeypatch):
         import agent.harness as harness_module
 

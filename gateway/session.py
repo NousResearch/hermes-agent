@@ -16,8 +16,10 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
+
+from hermes_identity import HermesIdentity  # noqa: F401 — re-exported for gateway callers
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +93,12 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
-    
+
+    # Typed identity carrier populated by the gateway adapter.  None for non-Slack
+    # platforms until their adapters are updated.  Consumed by the agent runner to
+    # scope skill/memory queries without accessing raw session fields.
+    hermes_identity: Optional[HermesIdentity] = field(default=None)
+
     @property
     def description(self) -> str:
         """Human-readable description of the source."""

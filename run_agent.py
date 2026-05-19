@@ -1184,6 +1184,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        identity=None,  # HermesIdentity | None — populated by gateway; None in CLI/test usage
     ):
         """
         Initialize the AI Agent.
@@ -1262,6 +1263,10 @@ class AIAgent:
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
+        # HermesIdentity | None.  Populated by the gateway session runner; None in
+        # CLI and test contexts.  Carries platform/team/user/channel/thread for
+        # skill and memory scope resolution.  Never constructed inside agent code.
+        self.identity = identity
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""

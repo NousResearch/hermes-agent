@@ -36,6 +36,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from hermes_identity import HermesIdentity
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -2160,7 +2161,20 @@ class SlackAdapter(BasePlatformAdapter):
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
-        # Build source
+        # Build the immutable identity carrier for this turn.
+        # team_id falls back to channel_id for Slack Connect / workspace-less
+        # contexts where event["team"] is absent (Q-0.1 resolution: per phase spec,
+        # use channel as team_id fallback for non-workspace platforms).
+        hermes_identity = HermesIdentity(
+            platform="slack",
+            team_id=str(team_id) if team_id else channel_id,
+            user_id=str(user_id),
+            channel_id=str(channel_id),
+            thread_id=thread_ts or None,
+        )
+
+        # Build source and attach the identity carrier so the agent runner
+        # can read it without re-deriving the same fields from raw strings.
         source = self.build_source(
             chat_id=channel_id,
             chat_name=channel_id,  # Will be resolved later if needed
@@ -2169,6 +2183,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_name=user_name,
             thread_id=thread_ts,
         )
+        source.hermes_identity = hermes_identity
 
         # Per-channel ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills

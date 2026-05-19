@@ -70,6 +70,68 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
 })
 
 
+# ── Provider concurrency defaults ────────────────────────────────────
+# Max simultaneous requests per (provider, api_key).  Verified from
+# provider documentation — see the concurrency-semaphore PR for sources.
+#
+# Structure: provider -> { model_prefix -> limit, "_default" -> fallback }
+# Model matching: longest matching prefix wins.
+
+PROVIDER_CONCURRENCY_DEFAULTS: dict[str, dict[str, int]] = {
+    "zai": {
+        "glm-5.1": 1,
+        "glm-5": 2,
+        "glm-4.5": 10,
+        "glm-4-air": 10,
+        "glm-4-flash": 10,
+        "glm-4-long": 10,
+        "embedding-3": 10,
+        "cogview": 2,
+        "cogvideox": 5,
+        "_default": 10,
+    },
+    "kimi-coding": {
+        "_default": 1,
+    },
+    "kimi": {
+        "_default": 1,
+    },
+    "moonshot": {
+        "_default": 1,
+    },
+}
+
+# Providers not listed above use RPM/TPM limits (not concurrency),
+# so they get a high default that effectively disables gating.
+_CONCURRENCY_DEFAULT_UNLIMITED = 64
+
+
+def get_default_concurrency(provider: str | None, model: str | None = None) -> int:
+    """Look up the default max-concurrent-requests for a provider + model.
+
+    Returns a high value (effectively unlimited) for providers without
+    known concurrency limits.
+    """
+    provider_lower = (provider or "").strip().lower()
+    model_lower = (model or "").strip().lower()
+
+    provider_table = PROVIDER_CONCURRENCY_DEFAULTS.get(provider_lower)
+    if provider_table is None:
+        return _CONCURRENCY_DEFAULT_UNLIMITED
+
+    # Longest-prefix match on model name.
+    best_match = ""
+    best_limit = provider_table.get("_default", _CONCURRENCY_DEFAULT_UNLIMITED)
+    for prefix, limit in provider_table.items():
+        if prefix == "_default":
+            continue
+        if model_lower.startswith(prefix) and len(prefix) > len(best_match):
+            best_match = prefix
+            best_limit = limit
+
+    return best_limit
+
+
 _OLLAMA_TAG_PATTERN = re.compile(
     r"^(\d+\.?\d*b|latest|stable|q\d|fp?\d|instruct|chat|coder|vision|text)",
     re.IGNORECASE,

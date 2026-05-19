@@ -459,6 +459,14 @@ class SessionEntry:
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
 
+    # Set by get_or_create_session() when the prior session_id was just
+    # closed by auto-reset so the next emit pass (in run.py
+    # _handle_message_with_agent) can fire session:end for that OLD
+    # session_id before session:start for the new one.  Transient — consumed
+    # once by the emit code and cleared.  Not persisted to sessions.json.
+    # See #28746.
+    auto_reset_prior_session_id: Optional[str] = None
+
     # Set by reset_session() when the user explicitly sends /new or /reset.
     # Consumed once by _handle_message_with_agent to trigger topic/channel
     # skill re-injection on the first message of the new session.  We can't
@@ -913,6 +921,13 @@ class SessionStore:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
+            # Capture the prior session_id (if any) for the emit pipeline to
+            # consume.  Without this the auto-reset path closes a session
+            # locally without a corresponding gateway-level session:end.  See
+            # #28746.
+            _prior_session_id_for_emit = (
+                db_end_session_id if was_auto_reset else None
+            )
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -929,6 +944,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                auto_reset_prior_session_id=_prior_session_id_for_emit,
             )
 
             self._entries[session_key] = entry

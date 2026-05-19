@@ -9,7 +9,12 @@ Hooks are discovered from ~/.hermes/hooks/ directories, each containing:
 Events:
   - gateway:startup     -- Gateway process starts
   - session:start       -- New session created (first message of a new session)
-  - session:end         -- Session ends (user ran /new or /reset)
+  - session:end         -- Session ends; fires on any close path:
+                            * explicit /new or /reset (reason omitted)
+                            * background idle-expiry watcher (reason="idle_expiry")
+                            * auto-reset on next message (reason="auto_reset")
+                          Payload always includes session_id; the auto-reset
+                          and idle-expiry paths also include a ``reason`` key.
   - session:reset       -- Session reset completed (new session entry created)
   - agent:start         -- Agent begins processing a message
   - agent:step          -- Each turn in the tool-calling loop

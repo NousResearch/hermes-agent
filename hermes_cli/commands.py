@@ -740,42 +740,6 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     return all_commands[:max_commands], hidden_count
 
 
-def telegram_quick_menu_commands(
-    quick_commands: Mapping[str, Any] | None,
-    max_commands: int = 100,
-) -> tuple[list[tuple[str, str]], int]:
-    """Return Telegram BotCommands for profile-defined quick commands only.
-
-    Specialist Telegram bots often use ``quick_commands`` as their whole
-    user-facing interface.  This helper lets a profile opt into a focused
-    Telegram slash menu without exposing every generic Hermes command.
-
-    ``show_in_telegram_menu: false`` hides a quick command from the native
-    menu while leaving gateway dispatch unchanged.
-    """
-    if not isinstance(quick_commands, Mapping):
-        return [], 0
-
-    menu: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for raw_name, raw_config in quick_commands.items():
-        if not isinstance(raw_name, str) or not isinstance(raw_config, Mapping):
-            continue
-        if raw_config.get("show_in_telegram_menu") is False:
-            continue
-        name = _sanitize_telegram_name(raw_name)
-        if not name or name in seen:
-            continue
-        desc = str(raw_config.get("description") or f"Run /{raw_name}")
-        if len(desc) > 40:
-            desc = desc[:37] + "..."
-        menu.append((name, desc))
-        seen.add(name)
-
-    hidden_count = max(0, len(menu) - max_commands)
-    return menu[:max_commands], hidden_count
-
-
 def discord_skill_commands(
     max_slots: int,
     reserved_names: set[str],

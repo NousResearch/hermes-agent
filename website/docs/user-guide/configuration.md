@@ -1433,28 +1433,6 @@ Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or a
 - **Type** — supported types are `exec` and `alias`; other types show an error
 - **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
 
-Telegram profiles can opt into a focused BotCommand menu that shows only
-profile-defined quick commands:
-
-```yaml
-telegram:
-  command_menu: quick_commands_only
-
-quick_commands:
-  health:
-    type: exec
-    command: scripts/health.sh
-    description: Show service health
-  internal-debug:
-    type: exec
-    command: scripts/debug.sh
-    description: Internal debug helper
-    show_in_telegram_menu: false
-```
-
-`show_in_telegram_menu: false` hides a quick command from Telegram's native
-slash menu while leaving the command callable.
-
 String-only prompt shortcuts are not valid quick commands. For reusable prompt workflows, create a skill or alias to an existing slash command.
 
 ## Human Delay

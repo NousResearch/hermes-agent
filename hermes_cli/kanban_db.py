@@ -1057,6 +1057,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
             "ON tasks(idempotency_key)"
         )
+
+    # Refresh after early additive migrations above. Some existing DBs were
+    # partially migrated in older releases and can already contain the later
+    # columns (for example ``consecutive_failures``) even when this function's
+    # initial snapshot did not. Re-snapshot here so the legacy-column migration
+    # below is truly idempotent and never re-adds columns that already exist.
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+
     # Legacy column migration: ``spawn_failures`` → ``consecutive_failures``
     # and ``last_spawn_error`` → ``last_failure_error``.
     #
@@ -1069,11 +1077,6 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     #
     # ADD-first-then-copy is tolerant of both shapes and preserves
     # historical counter values when the legacy columns do exist.
-    #
-    # NOTE: ``cols`` reflects the schema at entry to this function and is
-    # not refreshed between ALTER TABLE calls.  Every guard below checks
-    # the *original* snapshot; this is intentional and safe as long as
-    # no step depends on a column added by a previous step in the same call.
     if "consecutive_failures" not in cols:
         added = _add_column_if_missing(
             conn,

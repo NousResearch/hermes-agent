@@ -655,6 +655,38 @@ def init_agent(
                         client_kwargs["default_headers"] = dict(_ph.default_headers)
                 except Exception:
                     pass
+            # Resolve custom_headers from custom_providers config for
+            # gateway auth (e.g. subscription keys for API-management proxies).
+            # The anthropic_messages branch above does the same lookup; without
+            # this mirror block on the OpenAI-wire path, APIM-style gateways
+            # that require a subscription key (e.g. AMD LLM Gateway's
+            # Ocp-Apim-Subscription-Key) are silently rejected with HTTP 401
+            # because the only outbound auth header is the Bearer token the
+            # gateway doesn't recognise. Also forward `verify: false` for
+            # gateways behind self-signed certs.
+            if "default_headers" not in client_kwargs:
+                try:
+                    from hermes_cli.config import load_config as _load_cp_cfg
+                    _cp_cfg = _load_cp_cfg()
+                    _cp_list = _cp_cfg.get("custom_providers", [])
+                    if isinstance(_cp_list, list):
+                        _my_base = (base_url or "").rstrip("/")
+                        for _cp in _cp_list:
+                            if not isinstance(_cp, dict):
+                                continue
+                            _cp_base = (_cp.get("base_url") or "").rstrip("/")
+                            if (_cp_base and _my_base
+                                    and _cp_base.lower() == _my_base.lower()
+                                    and _cp.get("custom_headers")):
+                                client_kwargs["default_headers"] = dict(
+                                    _cp["custom_headers"])
+                                if _cp.get("verify") is False:
+                                    import httpx as _httpx_local
+                                    client_kwargs["http_client"] = (
+                                        _httpx_local.Client(verify=False))
+                                break
+                except Exception:
+                    pass
         else:
             # No explicit creds — use the centralized provider router
             from agent.auxiliary_client import resolve_provider_client

@@ -106,6 +106,19 @@ class TestMissingTypeFilled:
         out = sanitize_moonshot_tool_parameters(params)
         assert out["properties"]["tags"]["items"]["type"] == "string"
 
+    def test_union_type_list_is_left_intact(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "time_from": {
+                    "type": ["number", "string"],
+                    "description": "Optional timestamp",
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["time_from"]["type"] == ["number", "string"]
+
     def test_ref_node_is_not_given_synthetic_type(self):
         """$ref nodes should NOT get a synthetic type — the referenced
         definition supplies it, and Moonshot would reject the conflict."""

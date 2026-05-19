@@ -18,6 +18,102 @@ import pytest
 from hermes_cli.main import cmd_dashboard, _report_dashboard_status
 
 
+class TestSlashedAgentPluginRoutes:
+    def test_web_ddgs_enable_disable_round_trip(self):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import _SESSION_TOKEN, app
+
+        calls = []
+
+        def fake_set_enabled(name, *, enabled):
+            calls.append((name, enabled))
+            return {"ok": True, "name": name, "enabled": enabled}
+
+        client = TestClient(app)
+        headers = {"X-Hermes-Session-Token": _SESSION_TOKEN}
+        with patch(
+            "hermes_cli.plugins_cmd.dashboard_set_agent_plugin_enabled",
+            side_effect=fake_set_enabled,
+        ):
+            enable_resp = client.post(
+                "/api/dashboard/agent-plugins/web/ddgs/enable",
+                headers=headers,
+            )
+            disable_resp = client.post(
+                "/api/dashboard/agent-plugins/web/ddgs/disable",
+                headers=headers,
+            )
+
+        assert enable_resp.status_code == 200, enable_resp.text
+        assert disable_resp.status_code == 200, disable_resp.text
+        assert enable_resp.json() == {"ok": True, "name": "web/ddgs", "enabled": True}
+        assert disable_resp.json() == {"ok": True, "name": "web/ddgs", "enabled": False}
+        assert calls == [("web/ddgs", True), ("web/ddgs", False)]
+
+    def test_web_ddgs_update_delete_visibility_routes(self):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import _SESSION_TOKEN, app
+
+        client = TestClient(app)
+        headers = {"X-Hermes-Session-Token": _SESSION_TOKEN}
+        with patch(
+            "hermes_cli.plugins_cmd.dashboard_update_user_plugin",
+            return_value={"ok": True, "name": "web/ddgs", "updated": True},
+        ) as mock_update, patch(
+            "hermes_cli.plugins_cmd.dashboard_remove_user_plugin",
+            return_value={"ok": True, "name": "web/ddgs", "removed": True},
+        ) as mock_remove, patch(
+            "hermes_cli.web_server._get_dashboard_plugins",
+            return_value=[],
+        ), patch(
+            "hermes_cli.web_server.load_config",
+            return_value={"dashboard": {"hidden_plugins": []}},
+        ), patch("hermes_cli.web_server.save_config") as mock_save:
+            update_resp = client.post(
+                "/api/dashboard/agent-plugins/web/ddgs/update",
+                headers=headers,
+            )
+            delete_resp = client.delete(
+                "/api/dashboard/agent-plugins/web/ddgs",
+                headers=headers,
+            )
+            visibility_resp = client.post(
+                "/api/dashboard/plugins/web/ddgs/visibility",
+                headers=headers,
+                json={"hidden": True},
+            )
+
+        assert update_resp.status_code == 200, update_resp.text
+        assert delete_resp.status_code == 200, delete_resp.text
+        assert visibility_resp.status_code == 200, visibility_resp.text
+        mock_update.assert_called_once_with("web/ddgs")
+        mock_remove.assert_called_once_with("web/ddgs")
+        mock_save.assert_called_once_with({"dashboard": {"hidden_plugins": ["web/ddgs"]}})
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "web/ddgs/extra",
+            "web/",
+            "/ddgs",
+            "web/../ddgs",
+            r"web\\ddgs",
+            "Web/ddgs",
+        ],
+    )
+    def test_slashed_agent_plugin_route_rejects_invalid_names(self, name):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import _SESSION_TOKEN, app
+
+        client = TestClient(app)
+        resp = client.post(
+            f"/api/dashboard/agent-plugins/{name}/enable",
+            headers={"X-Hermes-Session-Token": _SESSION_TOKEN},
+        )
+
+        assert resp.status_code == 400, resp.text
+
+
 def _ns(**kw):
     """Build an argparse.Namespace with dashboard defaults plus overrides."""
     defaults = dict(

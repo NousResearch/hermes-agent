@@ -7,6 +7,7 @@ Purpose: BO-062 replaces the Hermes-local fake `/ouro-intake` Seed brain with a 
 
 Included intentionally:
 - `core/seed.py` copied from upstream: immutable `Seed`, `SeedMetadata`, `BrownfieldContext`, `OntologySchema`, `OntologyField`, `EvaluationPrinciple`, `ExitCondition`.
+- `bigbang/seed_generator.py` copied/adapted from upstream SeedGenerator parsing/build semantics; Hermes gateway uses structured confirmed values instead of issuing provider calls in this no-restart/no-secret slice.
 - `auto/ledger.py`, `auto/gap_detector.py`, `auto/grading.py`, `auto/seed_reviewer.py`, `auto/seed_repairer.py` copied from upstream with import paths rewritten to the vendored namespace.
 - `bigbang/interview.py` minimal vendored subset preserving upstream `InterviewStatus`, `InterviewRound`, and `InterviewState` shapes needed by gateway-mode intake persistence.
 - Interview/Seed Closer prompt assets for behavioral reference.

@@ -696,3 +696,40 @@ def test_bo062_uses_vendored_upstream_seed_reviewer_and_repairer(hermes_home):
     repaired_seed, repaired_review, history = SeedRepairer(max_iterations=2).converge(seed)
     assert repaired_review.grade_result.grade.value in {"A", "B", "C"}
     assert Seed.from_dict(repaired_seed.to_dict()).goal == seed.goal
+
+
+
+def test_bo062_seed_construction_uses_vendored_seed_generator_parser():
+    from hermes_integrations.ouroboros_upstream import adapter
+    from hermes_integrations.ouroboros_upstream.bigbang.seed_generator import SeedGenerator
+    from hermes_integrations.ouroboros_upstream.core.seed import Seed
+
+    calls = {"count": 0}
+    original = SeedGenerator.build_from_structured_response
+
+    def spy(self, response, **kwargs):
+        calls["count"] += 1
+        assert "GOAL:" in response
+        assert "ONTOLOGY_FIELDS:" in response
+        assert "ACCEPTANCE_CRITERIA:" in response
+        return original(self, response, **kwargs)
+
+    SeedGenerator.build_from_structured_response = spy
+    try:
+        seed_payload = adapter.build_seed_dict(
+            {
+                "goal": "Ship vendored SeedGenerator path",
+                "project": "bo",
+                "context": "Hermes gateway existing runtime",
+                "acceptance_criteria": "pytest exits 0",
+            },
+            {"ambiguity_score": 0.15},
+            session_id="oi_test",
+        )
+        seed = Seed.from_dict(seed_payload)
+        assert seed.goal == "Ship vendored SeedGenerator path"
+        assert seed.ontology_schema.fields
+    finally:
+        SeedGenerator.build_from_structured_response = original
+
+    assert calls["count"] == 1

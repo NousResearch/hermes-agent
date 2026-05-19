@@ -9,6 +9,7 @@ from hermes_integrations.ouroboros_upstream.bigbang.interview import (
     InterviewState,
     InterviewStatus,
 )
+from hermes_integrations.ouroboros_upstream.bigbang.seed_generator import SeedGenerator
 from hermes_integrations.ouroboros_upstream.auto.seed_repairer import SeedRepairer
 from hermes_integrations.ouroboros_upstream.auto.seed_reviewer import SeedReviewer
 from hermes_integrations.ouroboros_upstream.core.seed import (
@@ -110,34 +111,52 @@ def _exit_conditions(values: dict[str, Any]) -> tuple[ExitCondition, ...]:
     return tuple(conditions)
 
 
-def build_seed(values: dict[str, Any], review: dict[str, Any], *, session_id: str | None) -> Seed:
+def _structured_seed_extraction(values: dict[str, Any]) -> str:
+    """Build the upstream SeedGenerator structured extraction format."""
+
     goal = str(values.get("goal") or "").strip()
     context = str(values.get("context") or "").strip()
     is_brownfield = bool(__import__('re').search(r"brownfield|gateway|repo|runtime|existing", " ".join([goal, context]), __import__('re').IGNORECASE))
-    refs = ()
+    project = str(values.get("project") or "bo").strip().lower()
+    constraints = " | ".join(as_list(values.get("constraints"), default=["Follow existing project patterns unless acceptance criteria require otherwise"]))
+    acceptance = " | ".join(as_list(values.get("acceptance_criteria"), default=["A command/API check returns stable observable output or artifacts proving the goal"]))
+    existing_patterns = " | ".join(as_list(values.get("existing_patterns"), default=[context] if context else []))
+    existing_dependencies = " | ".join(as_list(values.get("existing_dependencies")))
+    context_refs = ""
     if context and is_brownfield:
-        refs = (ContextReference(path="hermes://context", role="reference", summary=context),)
-    return Seed(
-        goal=goal,
-        task_type=str(values.get("task_type") or "code").strip() or "code",
-        brownfield_context=BrownfieldContext(
-            project_type="brownfield" if is_brownfield else "greenfield",
-            context_references=refs,
-            existing_patterns=tuple(as_list(values.get("existing_patterns"), default=[context] if context else [])),
-            existing_dependencies=tuple(as_list(values.get("existing_dependencies"))),
-        ),
-        constraints=tuple(as_list(values.get("constraints"), default=["Follow existing project patterns unless acceptance criteria require otherwise"])),
-        acceptance_criteria=tuple(as_list(values.get("acceptance_criteria"), default=["A command/API check returns stable observable output or artifacts proving the goal"])),
-        ontology_schema=_ontology(values),
-        evaluation_principles=_evaluation_principles(values),
-        exit_conditions=_exit_conditions(values),
-        metadata=SeedMetadata(
-            version="1.0.0",
-            ambiguity_score=float(review.get("ambiguity_score", 0.15)),
-            interview_id=session_id,
-        ),
+        context_refs = f"hermes://context:reference:{context}"
+    evaluation = " | ".join(
+        f"{item.name}:{item.description}:{item.weight}"
+        for item in _evaluation_principles(values)
     )
+    exits = " | ".join(
+        f"{item.name}:{item.description}:{item.evaluation_criteria}"
+        for item in _exit_conditions(values)
+    )
+    return "\n".join([
+        f"GOAL: {goal}",
+        f"CONSTRAINTS: {constraints}",
+        f"ACCEPTANCE_CRITERIA: {acceptance}",
+        f"ONTOLOGY_NAME: {project.upper()}Admission",
+        "ONTOLOGY_DESCRIPTION: Ouroboros Seed ontology projected through Hermes Kanban admission wrapper.",
+        "ONTOLOGY_FIELDS: goal:string:Primary user-visible objective | scope:string:Included boundaries and non-goals | verification:array:Observable proof required before closeout",
+        f"EVALUATION_PRINCIPLES: {evaluation}",
+        f"EXIT_CONDITIONS: {exits}",
+        f"PROJECT_TYPE: {'brownfield' if is_brownfield else 'greenfield'}",
+        f"CONTEXT_REFERENCES: {context_refs}",
+        f"EXISTING_PATTERNS: {existing_patterns}",
+        f"EXISTING_DEPENDENCIES: {existing_dependencies}",
+    ])
 
+
+def build_seed(values: dict[str, Any], review: dict[str, Any], *, session_id: str | None) -> Seed:
+    state = InterviewState(interview_id=session_id or "unknown", initial_context=str(values.get("goal") or ""))
+    generator = SeedGenerator()
+    return generator.build_from_structured_response(
+        _structured_seed_extraction(values),
+        state=state,
+        ambiguity_score=float(review.get("ambiguity_score", 0.15)),
+    )
 
 def build_seed_dict(values: dict[str, Any], review: dict[str, Any], *, session_id: str | None) -> dict[str, Any]:
     seed = build_seed(values, review, session_id=session_id)

@@ -1,6 +1,4 @@
 import {
-  HISTORY_RENDER_MAX_CHARS,
-  HISTORY_RENDER_MAX_LINES,
   LIVE_RENDER_MAX_CHARS,
   LIVE_RENDER_MAX_LINES,
   THINKING_COT_MAX
@@ -128,11 +126,6 @@ export const boundedLiveRenderText = (
   text: string,
   { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
 ) => boundedRenderText(text, 'showing live tail', { maxChars, maxLines })
-
-export const boundedHistoryRenderText = (
-  text: string,
-  { maxChars = HISTORY_RENDER_MAX_CHARS, maxLines = HISTORY_RENDER_MAX_LINES } = {}
-) => boundedRenderText(text, 'showing tail', { maxChars, maxLines })
 
 const boundedRenderText = (
   text: string,

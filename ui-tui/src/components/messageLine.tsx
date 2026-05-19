@@ -7,7 +7,6 @@ import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
-  boundedHistoryRenderText,
   boundedLiveRenderText,
   compactPreview,
   hasAnsi,
@@ -32,7 +31,6 @@ export const MessageLine = memo(function MessageLine({
   detailsMode = 'collapsed',
   detailsModeCommandOverride = false,
   isStreaming = false,
-  limitHistoryRender = false,
   msg,
   sections,
   t,
@@ -149,7 +147,7 @@ export const MessageLine = memo(function MessageLine({
         // streamingMarkdown.tsx for the cost model.
         <StreamingMd cols={bodyWidth} compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
       ) : (
-        <Md cols={bodyWidth} compact={compact} t={t} text={limitHistoryRender ? boundedHistoryRenderText(msg.text) : msg.text} />
+        <Md cols={bodyWidth} compact={compact} t={t} text={msg.text} />
       )
     }
 
@@ -215,7 +213,6 @@ interface MessageLineProps {
   detailsMode?: DetailsMode
   detailsModeCommandOverride?: boolean
   isStreaming?: boolean
-  limitHistoryRender?: boolean
   msg: Msg
   sections?: SectionVisibility
   t: Theme

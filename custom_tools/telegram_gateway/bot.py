@@ -1,23 +1,27 @@
 """
-telegram_gateway/bot.py - Telegram AI Approval Bot (Evelyn)
-=============================================================
+telegram_gateway/bot.py - Evelyn AI Web3 Companion Bot
+========================================================
 Commands:
-  /start        - Welcome message
-  /pending      - List pending approval entries
-  /approve <id> - Approve a pending entry
-  /reject <id>  - Reject a pending entry
-  /status <id>  - Check entry status
-  /clear        - Clear AI conversation history
+  /start          - Welcome message (Evelyn intro)
+  /pending        - List pending approval entries
+  /approve <id>   - Approve a pending entry
+  /reject <id>    - Reject a pending entry
+  /status <id>    - Check entry status
+  /contract <addr> - Analyze NFT contract
+  /wallet <addr>  - Wallet summary
+  /floor <slug>   - OpenSea floor price
+  /risk <addr>    - AI risk analysis
+  /clear          - Clear AI conversation history
 
 AI Chat:
-  Any normal text message gets an AI response from Evelyn
-  (casual Indonesian crypto degen assistant via OpenRouter)
+  Any normal text -> Evelyn responds with deep_waifu personality
+  Auto-detects 0x addresses and OpenSea links
 
 Inline buttons:
   Approve / Reject / Dry Run preview
 
 SAFETY:
-- Only TELEGRAM_ALLOWED_USERS can approve/reject
+- Only TELEGRAM_ALLOWED_USERS can interact
 - Private keys are NEVER shown or logged
 - Bot does NOT auto-execute transactions
 - AI chat CANNOT trigger blockchain transactions
@@ -49,10 +53,20 @@ from custom_tools.approval_queue import (
     approve,
     reject,
     get_entry,
+    count_pending,
 )
 from custom_tools.telegram_gateway.ai_chat import (
     get_ai_response_with_queue_context,
     clear_conversation,
+)
+from custom_tools.telegram_gateway.web3_skills import (
+    analyze_contract,
+    analyze_wallet,
+    get_floor_price,
+    analyze_risk,
+    detect_address,
+    detect_opensea_slug,
+    detect_chain_from_text,
 )
 
 # Configure logging
@@ -78,7 +92,7 @@ def is_authorized(user_id: int) -> bool:
 
 
 def unauthorized_message() -> str:
-    return "🚫 Unauthorized. Your user ID is not in TELEGRAM_ALLOWED_USERS."
+    return "🚫 Maaf sayang, kamu belum terdaftar di TELEGRAM_ALLOWED_USERS."
 
 
 def format_entry_preview(entry: dict) -> str:
@@ -121,7 +135,7 @@ def get_approval_keyboard(entry_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("❌ Reject", callback_data=f"reject_{entry_id}"),
         ],
         [
-            InlineKeyboardButton("👁 Dry Run Preview", callback_data=f"preview_{entry_id}"),
+            InlineKeyboardButton("👁 Preview", callback_data=f"preview_{entry_id}"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -130,33 +144,37 @@ def get_approval_keyboard(entry_id: int) -> InlineKeyboardMarkup:
 # === Command Handlers ===
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command."""
+    """Handle /start command - Evelyn intro."""
     user_id = update.effective_user.id
 
     if not is_authorized(user_id):
         await update.message.reply_text(unauthorized_message())
         return
 
+    pending = count_pending()
+    pending_text = f"\n\n⏳ Ada {pending} pending approval nih." if pending > 0 else ""
+
     msg = (
-        "👋 <b>Halo! Gw Evelyn.</b>\n\n"
-        "AI assistant lo buat Web3/NFT approval workflow.\n\n"
-        "<b>Commands:</b>\n"
-        "  /pending - List pending approvals\n"
-        "  /approve &lt;id&gt; - Approve entry\n"
-        "  /reject &lt;id&gt; - Reject entry\n"
-        "  /status &lt;id&gt; - Check entry status\n"
-        "  /clear - Clear chat history\n\n"
-        "<b>AI Chat:</b>\n"
-        "Ketik apa aja — gw bisa bantu soal NFT, contracts, "
-        "mint plans, gas, atau sekedar ngobrol.\n\n"
-        f"DRY_RUN: <b>{'ON' if DRY_RUN else 'OFF'}</b>\n"
-        f"Your ID: <code>{user_id}</code>"
+        f"hai sayang 💕\n\n"
+        f"aku <b>Evelyn</b>, AI companion kamu buat Web3/NFT.\n"
+        f"mau ngobrol, cek contract, atau approve mint — tinggal bilang aja ya.\n\n"
+        f"<b>Commands:</b>\n"
+        f"  /pending - Cek antrian approval\n"
+        f"  /approve &lt;id&gt; - Approve entry\n"
+        f"  /reject &lt;id&gt; - Reject entry\n"
+        f"  /contract &lt;addr&gt; - Analyze contract\n"
+        f"  /wallet &lt;addr&gt; - Cek wallet\n"
+        f"  /floor &lt;slug&gt; - Floor price\n"
+        f"  /risk &lt;addr&gt; - Risk analysis\n"
+        f"  /clear - Reset chat history\n\n"
+        f"atau ketik apa aja, aku bales kok 😊"
+        f"{pending_text}"
     )
     await update.message.reply_text(msg, parse_mode="HTML")
 
 
 async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /pending command - list pending entries."""
+    """Handle /pending command."""
     user_id = update.effective_user.id
 
     if not is_authorized(user_id):
@@ -166,11 +184,11 @@ async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     entries = list_queue(status="pending", limit=10)
 
     if not entries:
-        await update.message.reply_text("✅ Queue kosong, ga ada pending approvals.")
+        await update.message.reply_text("✅ Queue kosong sayang, santai dulu~")
         return
 
     await update.message.reply_text(
-        f"⏳ <b>{len(entries)} Pending Approval(s):</b>",
+        f"⏳ ada {len(entries)} pending nih beb 😈",
         parse_mode="HTML",
     )
 
@@ -189,20 +207,20 @@ async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /approve <id>")
+        await update.message.reply_text("kasih ID-nya dong sayang~ \nUsage: /approve <id>")
         return
 
     try:
         entry_id = int(context.args[0])
         approve(entry_id, approved_by=f"telegram:{user_id}")
         await update.message.reply_text(
-            f"✅ Entry #{entry_id} <b>APPROVED</b> by user {user_id}",
+            f"siapp cintaaa 😈\nentry #{entry_id} udah aku approve ya ✅",
             parse_mode="HTML",
         )
     except ValueError as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"❌ gagal beb: {e}")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"❌ error: {e}")
 
 
 async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,13 +240,12 @@ async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reason = " ".join(context.args[1:]) if len(context.args) > 1 else f"Rejected by telegram:{user_id}"
         reject(entry_id, reason=reason)
         await update.message.reply_text(
-            f"❌ Entry #{entry_id} <b>REJECTED</b>\nReason: {reason}",
-            parse_mode="HTML",
+            f"oke sayang, entry #{entry_id} aku reject ❌\nreason: {reason}",
         )
     except ValueError as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"❌ gagal: {e}")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"❌ error: {e}")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -249,11 +266,100 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = format_entry_preview(entry)
         await update.message.reply_text(text, parse_mode="HTML")
     except ValueError as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"❌ {e}")
+
+
+async def cmd_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /contract <address> [chain] command."""
+    user_id = update.effective_user.id
+
+    if not is_authorized(user_id):
+        await update.message.reply_text(unauthorized_message())
+        return
+
+    if not context.args:
+        await update.message.reply_text("kasih address-nya dong~\nUsage: /contract <0x...> [chain]")
+        return
+
+    address = context.args[0]
+    chain = context.args[1] if len(context.args) > 1 else "ethereum"
+
+    await update.message.chat.send_action("typing")
+    result = await analyze_contract(address, chain)
+    await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /wallet <address> [chain] command."""
+    user_id = update.effective_user.id
+
+    if not is_authorized(user_id):
+        await update.message.reply_text(unauthorized_message())
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /wallet <0x...> [chain]")
+        return
+
+    address = context.args[0]
+    chain = context.args[1] if len(context.args) > 1 else "ethereum"
+
+    await update.message.chat.send_action("typing")
+    result = await analyze_wallet(address, chain)
+    await update.message.reply_text(result, parse_mode="HTML")
+
+
+async def cmd_floor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /floor <collection_slug> command."""
+    user_id = update.effective_user.id
+
+    if not is_authorized(user_id):
+        await update.message.reply_text(unauthorized_message())
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /floor <collection-slug>\nContoh: /floor boredapeyachtclub")
+        return
+
+    slug = context.args[0].lower().strip()
+    # Extract slug from opensea URL if provided
+    detected = detect_opensea_slug(slug)
+    if detected:
+        slug = detected
+
+    await update.message.chat.send_action("typing")
+    result = await get_floor_price(slug)
+    await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /risk <contract_address> [chain] command."""
+    user_id = update.effective_user.id
+
+    if not is_authorized(user_id):
+        await update.message.reply_text(unauthorized_message())
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /risk <0x...> [chain]")
+        return
+
+    address = context.args[0]
+    chain = context.args[1] if len(context.args) > 1 else "ethereum"
+
+    await update.message.chat.send_action("typing")
+    result = await analyze_risk(address, user_id, chain)
+
+    # Split if too long
+    if len(result) <= 4096:
+        await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
+    else:
+        for i in range(0, len(result), 4096):
+            await update.message.reply_text(result[i:i + 4096], parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /clear command - clear AI conversation history."""
+    """Handle /clear command - reset AI memory."""
     user_id = update.effective_user.id
 
     if not is_authorized(user_id):
@@ -261,13 +367,13 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     clear_conversation(user_id)
-    await update.message.reply_text("🧹 Chat history cleared. Fresh start!")
+    await update.message.reply_text("🧹 memory cleared sayang~ fresh start buat kita 💕")
 
 
-# === AI Chat Handler ===
+# === AI Chat Handler (catches all non-command text) ===
 
 async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle normal text messages with AI response."""
+    """Handle normal text messages with AI + auto-detection."""
     user_id = update.effective_user.id
 
     if not is_authorized(user_id):
@@ -278,17 +384,44 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message_text:
         return
 
-    # Show typing indicator
-    await update.message.chat.send_action("typing")
+    # === Auto-detection ===
 
-    # Get AI response
+    # Detect 0x address -> offer contract/wallet analysis
+    detected_addr = detect_address(message_text)
+    if detected_addr and message_text.strip() == detected_addr:
+        # Pure address sent, offer options
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔍 Contract", callback_data=f"contract_{detected_addr}"),
+                InlineKeyboardButton("👛 Wallet", callback_data=f"wallet_{detected_addr}"),
+            ],
+            [
+                InlineKeyboardButton("⚠️ Risk", callback_data=f"risk_{detected_addr}"),
+            ],
+        ])
+        await update.message.reply_text(
+            f"aku detect address nih sayang~\n<code>{detected_addr}</code>\n\nmau aku cek apa?",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        return
+
+    # Detect OpenSea link -> auto floor check
+    opensea_slug = detect_opensea_slug(message_text)
+    if opensea_slug and "opensea.io" in message_text:
+        await update.message.chat.send_action("typing")
+        result = await get_floor_price(opensea_slug)
+        await update.message.reply_text(result, parse_mode="HTML", disable_web_page_preview=True)
+        return
+
+    # === Normal AI chat ===
+    await update.message.chat.send_action("typing")
     response = await get_ai_response_with_queue_context(user_id, message_text)
 
-    # Send response (split if too long for Telegram's 4096 char limit)
+    # Send response (split if too long)
     if len(response) <= 4096:
         await update.message.reply_text(response)
     else:
-        # Split into chunks
         for i in range(0, len(response), 4096):
             await update.message.reply_text(response[i:i + 4096])
 
@@ -311,38 +444,55 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Invalid action")
         return
 
-    action, entry_id_str = parts[0], parts[1]
+    action, param = parts[0], parts[1]
 
     try:
-        entry_id = int(entry_id_str)
-    except ValueError:
-        await query.answer("Invalid entry ID")
-        return
-
-    try:
+        # Approval actions
         if action == "approve":
+            entry_id = int(param)
             approve(entry_id, approved_by=f"telegram:{user_id}")
-            await query.answer(f"✅ Entry #{entry_id} APPROVED")
+            await query.answer(f"✅ #{entry_id} approved!")
             await query.edit_message_text(
-                f"✅ <b>APPROVED</b> - Entry #{entry_id}\nBy: user {user_id}",
+                f"✅ <b>APPROVED</b> - Entry #{entry_id}\napproved by sayang 😈",
                 parse_mode="HTML",
             )
 
         elif action == "reject":
-            reject(entry_id, reason=f"Rejected via Telegram button by user {user_id}")
-            await query.answer(f"❌ Entry #{entry_id} REJECTED")
+            entry_id = int(param)
+            reject(entry_id, reason=f"Rejected via button by user {user_id}")
+            await query.answer(f"❌ #{entry_id} rejected")
             await query.edit_message_text(
-                f"❌ <b>REJECTED</b> - Entry #{entry_id}\nBy: user {user_id}",
+                f"❌ <b>REJECTED</b> - Entry #{entry_id}",
                 parse_mode="HTML",
             )
 
         elif action == "preview":
+            entry_id = int(param)
             entry = get_entry(entry_id)
             text = format_entry_preview(entry)
-            text += "\n\n🔍 <b>Preview only. No transaction sent.</b>"
+            text += "\n\n🔍 <b>Preview only. No tx sent.</b>"
             await query.answer("Preview loaded")
             keyboard = get_approval_keyboard(entry_id)
             await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+        # Web3 skill actions (from auto-detection)
+        elif action == "contract":
+            await query.answer("Analyzing contract...")
+            result = await analyze_contract(param, "ethereum")
+            await query.edit_message_text(result, parse_mode="HTML", disable_web_page_preview=True)
+
+        elif action == "wallet":
+            await query.answer("Checking wallet...")
+            result = await analyze_wallet(param, "ethereum")
+            await query.edit_message_text(result, parse_mode="HTML")
+
+        elif action == "risk":
+            await query.answer("Analyzing risk...")
+            result = await analyze_risk(param, user_id, "ethereum")
+            if len(result) <= 4096:
+                await query.edit_message_text(result, parse_mode="HTML", disable_web_page_preview=True)
+            else:
+                await query.edit_message_text(result[:4096], parse_mode="HTML", disable_web_page_preview=True)
 
         else:
             await query.answer("Unknown action")
@@ -350,50 +500,58 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError as e:
         await query.answer(f"Error: {e}", show_alert=True)
     except Exception as e:
-        await query.answer(f"Error: {e}", show_alert=True)
+        await query.answer(f"Error: {str(e)[:100]}", show_alert=True)
 
 
 # === Main ===
 
 def main():
-    """Start the Telegram bot with AI chat support."""
+    """Start Evelyn - AI Web3 Companion Bot."""
     if not BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN not set in environment")
-        print("Set it in .env: TELEGRAM_BOT_TOKEN=your-bot-token")
+        print("ERROR: TELEGRAM_BOT_TOKEN not set")
+        print("Set in .env: TELEGRAM_BOT_TOKEN=your-bot-token")
         sys.exit(1)
 
     if not ALLOWED_USERS:
-        print("ERROR: TELEGRAM_ALLOWED_USERS not set in environment")
-        print("Set it in .env: TELEGRAM_ALLOWED_USERS=123456789,987654321")
+        print("ERROR: TELEGRAM_ALLOWED_USERS not set")
+        print("Set in .env: TELEGRAM_ALLOWED_USERS=123456789")
         sys.exit(1)
 
     openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+    personality = os.getenv("AI_PERSONALITY_MODE", "deep_waifu")
 
-    print(f"Starting Evelyn - Hermes Web3 AI Bot...")
-    print(f"Allowed users: {ALLOWED_USERS}")
-    print(f"DRY_RUN: {DRY_RUN}")
-    print(f"AI Chat: {'ENABLED' if openrouter_key else 'DISABLED (no OPENROUTER_API_KEY)'}")
-    print(f"Model: {os.getenv('OPENROUTER_MODEL', 'openai/gpt-4o-mini')}")
+    print(f"╔══════════════════════════════════════╗")
+    print(f"║   Evelyn - AI Web3 Companion Bot     ║")
+    print(f"╠══════════════════════════════════════╣")
+    print(f"║  Personality: {personality:<22} ║")
+    print(f"║  AI Chat: {'ENABLED' if openrouter_key else 'DISABLED':<25} ║")
+    print(f"║  Model: {os.getenv('OPENROUTER_MODEL', 'gpt-4o-mini'):<27} ║")
+    print(f"║  DRY_RUN: {str(DRY_RUN):<25} ║")
+    print(f"║  Users: {str(ALLOWED_USERS):<27} ║")
+    print(f"╚══════════════════════════════════════╝")
     print()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Register command handlers (higher priority)
+    # Command handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("pending", cmd_pending))
     app.add_handler(CommandHandler("approve", cmd_approve))
     app.add_handler(CommandHandler("reject", cmd_reject))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("contract", cmd_contract))
+    app.add_handler(CommandHandler("wallet", cmd_wallet))
+    app.add_handler(CommandHandler("floor", cmd_floor))
+    app.add_handler(CommandHandler("risk", cmd_risk))
     app.add_handler(CommandHandler("clear", cmd_clear))
 
     # Inline button handler
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    # AI chat handler (catches all non-command text messages)
+    # AI chat handler (catches all non-command text)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_message))
 
-    # Start polling
-    print("Bot is running. Press Ctrl+C to stop.")
+    print("Evelyn is online 💕 Press Ctrl+C to stop.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

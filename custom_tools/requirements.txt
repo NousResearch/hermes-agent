@@ -9,7 +9,7 @@ eth-account>=0.9.0
 # Cryptography (wallet encryption)
 cryptography>=41.0.0
 
-# HTTP requests (Etherscan API, OpenRouter)
+# HTTP requests (Etherscan, OpenSea, OpenRouter)
 requests>=2.28.0
 httpx>=0.25.0
 

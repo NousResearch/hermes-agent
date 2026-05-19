@@ -76,6 +76,7 @@ from gateway.platforms.base import (
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_IMAGE_DOCUMENT_TYPES,
     utf16_len,
 )
 from gateway.platforms.telegram_network import (
@@ -100,6 +101,9 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+
+
+MAX_COMMANDS_PER_SCOPE = 30
 
 
 def check_telegram_requirements() -> bool:
@@ -425,8 +429,24 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_error_callback_ref = None
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
+        # Track forum chats where we've already registered bot commands
+        self._forum_command_registered: set[int] = set()
+        # Lock per la registrazione sicura dei comandi nei forum supergroup
+        self._forum_lock = asyncio.Lock()
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
+        self._dm_topic_chat_ids: Set[str] = {
+            str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
+        }
+        # Document size cap. Telegram's public Bot API caps getFile at 20MB; a
+        # locally-hosted telegram-bot-api server (configured via extra.base_url)
+        # raises that to 2GB, so the presence of base_url is the opt-in.
+        self._max_doc_bytes: int = (
+            2 * 1024 * 1024 * 1024
+            if self.config.extra.get("base_url")
+            else 20 * 1024 * 1024
+        )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
@@ -506,7 +526,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
         allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
         if not allowed_csv:
-            return True
+            # Fail-closed: no allowlist means deny by default.
+            # The runner auth path in _is_user_authorized() handles
+            # GATEWAY_ALLOW_ALL_USERS; this fallback must not silently
+            # allow everyone (fixes #24457).
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
 
@@ -536,10 +560,13 @@ class TelegramAdapter(BasePlatformAdapter):
         cls,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]] = None,
+        reply_to_mode: Optional[str] = None,
     ) -> Optional[int]:
         if reply_to:
             return int(reply_to)
         if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+            if reply_to_mode == "off":
+                return None
             return cls._metadata_reply_to_message_id(metadata)
         return None
 
@@ -550,20 +577,34 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id: Optional[str],
         metadata: Optional[Dict[str, Any]] = None,
         reply_to_message_id: Optional[int] = None,
+        reply_to_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return Telegram send kwargs for forum and direct-message topic routing.
 
         Supergroup/forum topics use ``message_thread_id``. True Bot API Direct
         Messages topics can opt in with explicit ``direct_messages_topic_id``
         metadata. Hermes-created private-chat topic lanes are marked with
-        ``telegram_dm_topic_reply_fallback`` and must send the private topic
-        thread id together with a reply anchor. Live testing showed that either
-        parameter alone can render outside the visible lane.
+        ``telegram_dm_topic_reply_fallback``. Live replies send the private
+        topic thread id together with a reply anchor; synthetic/resumed sends
+        without an anchor use ``direct_messages_topic_id`` when metadata has it.
+        ``message_thread_id`` alone can render outside the visible lane.
+
+        When ``reply_to_mode`` is ``"off"``, the reply anchor is suppressed for
+        DM topic fallback sends while preserving the ``message_thread_id`` so
+        the message still lands in the correct topic.
         """
         if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
+            if reply_to_mode == "off":
+                return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
             if reply_to_message_id is None:
                 reply_to_message_id = cls._metadata_reply_to_message_id(metadata)
             if reply_to_message_id is None:
+                direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
+                if direct_topic_id is not None:
+                    return {
+                        "message_thread_id": None,
+                        "direct_messages_topic_id": int(direct_topic_id),
+                    }
                 return {}
             return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
         direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
@@ -685,6 +726,34 @@ class TelegramAdapter(BasePlatformAdapter):
         except ImportError:
             pass
         return isinstance(error, OSError)
+
+    @staticmethod
+    def _looks_like_connect_timeout(error: Exception) -> bool:
+        """Return True when a Telegram TimedOut wraps a connect-timeout.
+
+        A plain Telegram TimedOut may mean the request reached Telegram and
+        should not be re-sent. A ConnectTimeout means the TCP connection was
+        never established, so retrying is safe and prevents silent drops.
+        """
+        seen: set[int] = set()
+        stack: list[BaseException] = [error]
+        while stack:
+            cur = stack.pop()
+            ident = id(cur)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            name = cur.__class__.__name__.lower()
+            text = str(cur).lower()
+            if "connecttimeout" in name or "connect timeout" in text or "connect timed out" in text:
+                return True
+            cause = getattr(cur, "__cause__", None)
+            context = getattr(cur, "__context__", None)
+            if cause is not None:
+                stack.append(cause)
+            if context is not None:
+                stack.append(context)
+        return False
 
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
@@ -876,60 +945,107 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
-        # Track consecutive conflicts — transient 409s can occur when a
-        # previous gateway instance hasn't fully released its long-poll
-        # session on Telegram's server (e.g. during --replace handoffs or
-        # systemd Restart=on-failure respawns).  Retry a few times before
-        # giving up, so the old session has time to expire.
+        # Transient 409 Conflict errors arise when the previous gateway process
+        # has been killed (e.g. during `hermes update` or `--replace` handoffs)
+        # but its long-poll connection hasn't yet expired on Telegram's servers.
+        # Telegram holds open getUpdates sessions for up to ~30s after the
+        # client disconnects, so a new gateway starting immediately will receive
+        # a 409 until that server-side session expires.
+        #
+        # Strategy: stop the local updater, wait long enough for Telegram's
+        # server-side session to expire (RETRY_DELAY grows with each attempt),
+        # drain the connection pool, then restart polling.  We attempt this
+        # MAX_CONFLICT_RETRIES times before declaring a fatal error.
+        #
+        # Crucially, a failed retry must NOT leave polling in an ambiguous
+        # state.  If start_polling() raises, the updater is neither running
+        # nor fatal — messages are silently dropped.  We schedule another
+        # retry attempt instead of returning silently, and only escalate to
+        # fatal after all retries are exhausted.
         self._polling_conflict_count += 1
 
-        MAX_CONFLICT_RETRIES = 3
-        RETRY_DELAY = 10  # seconds
+        MAX_CONFLICT_RETRIES = 5
+        # Delay grows with each attempt: 15s, 25s, 35s, 45s, 55s.
+        # Telegram server-side getUpdates sessions typically expire within
+        # 30s; the increasing back-off ensures we clear that window without
+        # hammering the API on fast-restart loops.
+        RETRY_DELAY = 10 + (self._polling_conflict_count * 10)  # seconds
 
         if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
             logger.warning(
-                "[%s] Telegram polling conflict (%d/%d), will retry in %ds. Error: %s",
+                "[%s] Telegram polling conflict (%d/%d) — previous session still "
+                "held open on Telegram's servers. Waiting %ds for it to expire. "
+                "Error: %s",
                 self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                 RETRY_DELAY, error,
             )
+            # Stop the local updater cleanly before sleeping.  If it's already
+            # stopped (e.g. PTB raised before updater.running was set) this is
+            # a no-op.
             try:
                 if self._app and self._app.updater and self._app.updater.running:
                     await self._app.updater.stop()
             except Exception:
                 pass
+
             await asyncio.sleep(RETRY_DELAY)
             await self._drain_polling_connections()
+
             try:
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,
                 )
-                logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
-                self._polling_conflict_count = 0  # reset on success
+                logger.info(
+                    "[%s] Telegram polling resumed after conflict retry %d/%d",
+                    self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
+                )
+                self._polling_conflict_count = 0  # reset counter on success
                 return
             except Exception as retry_err:
-                logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
-                # Don't fall through to fatal yet — wait for the next conflict
-                # to trigger another retry attempt (up to MAX_CONFLICT_RETRIES).
-                return
+                logger.warning(
+                    "[%s] Telegram polling retry %d/%d failed: %s. "
+                    "Scheduling next attempt.",
+                    self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
+                    retry_err,
+                )
+                # Schedule the next retry rather than returning silently.
+                # Returning here without either restarting polling or setting
+                # a fatal error leaves the adapter in a limbo state: the
+                # gateway process is alive and reports "connected" but
+                # no messages are received or sent.
+                if self._polling_conflict_count < MAX_CONFLICT_RETRIES:
+                    loop = asyncio.get_event_loop()
+                    self._polling_error_task = loop.create_task(
+                        self._handle_polling_conflict(retry_err)
+                    )
+                    return
+                # Fall through to fatal on the last retry.
 
-        # Exhausted retries — fatal
+        # Exhausted all retries — declare a fatal error so the gateway
+        # runner can surface this clearly and the user knows to act.
         message = (
-            "Another process is already polling this Telegram bot token "
-            "(possibly OpenClaw or another Hermes instance). "
-            "Hermes stopped Telegram polling after %d retries. "
-            "Only one poller can run per token — stop the other process "
-            "and restart with 'hermes start'."
-            % MAX_CONFLICT_RETRIES
+            "Telegram polling could not recover after %d retries (%ds total wait). "
+            "The previous gateway session is still held open on Telegram's servers, "
+            "or another process is using the same bot token. "
+            "To recover: ensure no other Hermes or OpenClaw instance is running "
+            "with this token, then restart the gateway with 'hermes gateway restart'."
+            % (MAX_CONFLICT_RETRIES, sum(10 + i * 10 for i in range(1, MAX_CONFLICT_RETRIES + 1)))
         )
-        logger.error("[%s] %s Original error: %s", self.name, message, error)
+        logger.error(
+            "[%s] %s Original error: %s",
+            self.name, message, error,
+        )
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
         try:
             if self._app and self._app.updater:
                 await self._app.updater.stop()
         except Exception as stop_error:
-            logger.warning("[%s] Failed stopping Telegram polling after conflict: %s", self.name, stop_error, exc_info=True)
+            logger.warning(
+                "[%s] Failed stopping Telegram updater after exhausting conflict retries: %s",
+                self.name, stop_error, exc_info=True,
+            )
         await self._notify_fatal_error()
 
     async def _create_dm_topic(
@@ -1207,6 +1323,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Using custom Telegram base_url: %s",
                     self.name, custom_base_url,
                 )
+            # In local-mode telegram-bot-api, file_path is an absolute path on the
+            # server's filesystem rather than a relative HTTP path. PTB needs
+            # local_mode=True so download_*() reads from disk instead of issuing
+            # an HTTP GET that would 404. Requires that the same path is
+            # readable by the Hermes process (shared mount, same machine, etc.).
+            if self.config.extra.get("local_mode"):
+                builder = builder.local_mode(True)
+                logger.info("[%s] Using Telegram local_mode (read files from disk)", self.name)
 
             # PTB defaults (pool_timeout=1s) are too aggressive on flaky networks and
             # can trigger "Pool timeout: All connections in the connection pool are occupied"
@@ -1396,19 +1520,37 @@ class TelegramAdapter(BasePlatformAdapter):
             # List is derived from the central COMMAND_REGISTRY — adding a new
             # gateway command there automatically adds it to the Telegram menu.
             try:
-                from telegram import BotCommand
+                from telegram import (
+                    BotCommand,
+                    BotCommandScopeAllPrivateChats,
+                    BotCommandScopeAllGroupChats,
+                    BotCommandScopeDefault,
+                    BotCommandScopeChat,
+                )
                 from hermes_cli.commands import telegram_menu_commands
                 # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit.  Skill descriptions are truncated to 40
-                # chars in telegram_menu_commands() to fit 100 commands safely.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
-                await self._bot.set_my_commands([
-                    BotCommand(name, desc) for name, desc in menu_commands
-                ])
+                # payload size limit (~4KB total).  Limit to 30 core commands
+                # to stay well under the threshold while covering all categories.
+                menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                # Register for all scopes independently — Telegram picks the
+                # narrowest matching scope per chat type (forum topics fall
+                # through to AllGroupChats or Default).
+                for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
+                    scope_name = scope_cls.__name__
+                    try:
+                        await self._bot.set_my_commands(bot_commands, scope=scope_cls())
+                        logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
+                    except Exception as scope_err:
+                        logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
+                # Forum topics don't inherit AllGroupChats — Telegram resolves
+                # commands via BotCommandScopeChat(chat_id) for forum groups.
+                # Lazy registration happens in _ensure_forum_commands on first
+                # message from a forum topic (see _handle_text_message).
                 if hidden_count:
                     logger.info(
-                        "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count,
+                        "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
+                        self.name, len(menu_commands), hidden_count, 30,
                     )
             except Exception as e:
                 logger.warning(
@@ -1527,6 +1669,8 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
+            requested_thread_id = self._message_thread_id_for_send(thread_id)
+            used_thread_fallback = False
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1544,13 +1688,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
             for i, chunk in enumerate(chunks):
+                retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
                 reply_to_source = reply_to or (
                     str(metadata_reply_to)
                     if metadata and metadata.get("telegram_dm_topic_reply_fallback") and metadata_reply_to is not None else None
                 )
                 if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
-                    should_thread = reply_to_source is not None
+                    should_thread = (
+                        reply_to_source is not None
+                        and self._reply_to_mode != "off"
+                    )
                 else:
                     should_thread = self._should_thread_reply(reply_to_source, i)
                 reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
@@ -1559,7 +1707,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
                 )
+                if used_thread_fallback and thread_kwargs.get("message_thread_id") is not None:
+                    thread_kwargs = dict(thread_kwargs)
+                    thread_kwargs["message_thread_id"] = None
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
                 msg = None
@@ -1600,6 +1752,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
+                                if not retried_thread_not_found:
+                                    retried_thread_not_found = True
+                                    logger.warning(
+                                        "[%s] Thread %s not found, retrying once with message_thread_id",
+                                        self.name, effective_thread_id,
+                                    )
+                                    await asyncio.sleep(1)
+                                    continue
                                 # Thread doesn't exist — retry without
                                 # message_thread_id so the message still
                                 # reaches the chat.
@@ -1607,6 +1767,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
                                 )
+                                used_thread_fallback = True
                                 effective_thread_id = None
                                 thread_kwargs = {"message_thread_id": None}
                                 continue
@@ -1630,15 +1791,21 @@ class TelegramAdapter(BasePlatformAdapter):
                                         thread_id,
                                         metadata,
                                         reply_to_message_id=reply_to_id,
+                                        reply_to_mode=self._reply_to_mode,
                                     )
                                     effective_thread_id = thread_kwargs.get("message_thread_id")
                                 continue
                             # Other BadRequest errors are permanent — don't retry
                             raise
-                        # TimedOut is also a subclass of NetworkError but
-                        # indicates the request may have reached the server —
-                        # retrying risks duplicate message delivery.
-                        if _TimedOut and isinstance(send_err, _TimedOut):
+                        # TimedOut is also a subclass of NetworkError. A
+                        # generic timeout may have reached Telegram, so don't
+                        # retry; a wrapped ConnectTimeout means no connection
+                        # was established, so retrying is safe.
+                        if (
+                            _TimedOut
+                            and isinstance(send_err, _TimedOut)
+                            and not self._looks_like_connect_timeout(send_err)
+                        ):
                             raise
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
@@ -1677,7 +1844,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
-                raw_response={"message_ids": message_ids}
+                raw_response={
+                    "message_ids": message_ids,
+                    "requested_thread_id": requested_thread_id,
+                    "thread_fallback": used_thread_fallback,
+                },
             )
             
         except Exception as e:
@@ -1691,11 +1862,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name,
                 )
                 return SendResult(success=False, error="message_too_long")
-            # TimedOut means the request may have reached Telegram —
+            # TimedOut usually means the request may have reached Telegram —
             # mark as non-retryable so _send_with_retry() doesn't re-send.
+            # Exception: wrapped ConnectTimeout, where no connection was
+            # established; retrying is safe and prevents silent drops.
             _to = locals().get("_TimedOut")
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
-            return SendResult(success=False, error=str(e), retryable=not is_timeout)
+            is_connect_timeout = self._looks_like_connect_timeout(e)
+            return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or not is_timeout))
 
     async def edit_message(
         self,
@@ -1704,6 +1878,7 @@ class TelegramAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Telegram message.
 
@@ -1722,7 +1897,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # without round-tripping a doomed edit.
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
             return await self._edit_overflow_split(
-                chat_id, message_id, content, finalize=finalize,
+                chat_id, message_id, content, finalize=finalize, metadata=metadata,
             )
 
         try:
@@ -1767,7 +1942,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, utf16_len(content), self.MAX_MESSAGE_LENGTH,
                 )
                 return await self._edit_overflow_split(
-                    chat_id, message_id, content, finalize=finalize,
+                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
                 )
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
@@ -1795,6 +1970,33 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name, retry_err,
                     )
                     return SendResult(success=False, error=str(retry_err))
+            # Transient network errors (ConnectError, timeouts, server
+            # disconnects) should not permanently disable progress-message
+            # editing.  Mark the result retryable so the caller knows it
+            # can keep trying on the next update cycle.
+            _transient_markers = (
+                "connecterror",
+                "connect error",
+                "connection error",
+                "networkerror",
+                "network error",
+                "timed out",
+                "readtimeout",
+                "writetimeout",
+                "server disconnected",
+                "temporarily unavailable",
+                "temporary failure",
+                "httpx",
+            )
+            _is_transient = any(m in err_str for m in _transient_markers)
+            if _is_transient:
+                logger.warning(
+                    "[%s] Transient network error editing message %s (will retry): %s",
+                    self.name,
+                    message_id,
+                    e,
+                )
+                return SendResult(success=False, error=str(e), retryable=True)
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",
                 self.name,
@@ -1811,6 +2013,7 @@ class TelegramAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Split an oversized edit across the existing message + continuations.
 
@@ -1882,8 +2085,16 @@ class TelegramAdapter(BasePlatformAdapter):
         # fallback, mirroring send().
         continuation_ids: list[str] = []
         prev_id = message_id
+        thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:
             sent_msg = None
+            reply_to_id = int(prev_id) if prev_id else None
+            thread_kwargs = self._thread_kwargs_for_send(
+                chat_id,
+                thread_id,
+                metadata,
+                reply_to_message_id=reply_to_id,
+            )
             for use_markdown in (True, False) if finalize else (False,):
                 try:
                     text = self.format_message(chunk) if use_markdown else chunk
@@ -1891,16 +2102,31 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_id=int(chat_id),
                         text=text,
                         parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
-                        reply_to_message_id=int(prev_id) if prev_id else None,
+                        reply_to_message_id=reply_to_id,
+                        **thread_kwargs,
+                        **self._link_preview_kwargs(),
+                        **self._notification_kwargs(metadata),
                     )
                     break
                 except Exception as send_err:
                     if "reply message not found" in str(send_err).lower():
-                        # Drop the reply anchor and try again.
+                        # Drop the reply anchor and try again.  Private DM
+                        # topic fallback needs the anchor and topic id together;
+                        # forum topics can still safely keep message_thread_id.
+                        retry_thread_kwargs = (
+                            {}
+                            if metadata and metadata.get("telegram_dm_topic_reply_fallback")
+                            else self._thread_kwargs_for_send(
+                                chat_id, thread_id, metadata, reply_to_message_id=None
+                            )
+                        )
                         try:
                             sent_msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
                                 text=chunk,
+                                **retry_thread_kwargs,
+                                **self._link_preview_kwargs(),
+                                **self._notification_kwargs(metadata),
                             )
                             break
                         except Exception as _retry_err:
@@ -2095,7 +2321,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 ]
             ])
             thread_id = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
@@ -2107,6 +2333,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 ),
                 **self._link_preview_kwargs(),
             )
@@ -2165,7 +2392,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "reply_markup": keyboard,
                 **self._link_preview_kwargs(),
             }
-            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             kwargs["reply_to_message_id"] = reply_to_id
             kwargs.update(
                 self._thread_kwargs_for_send(
@@ -2173,6 +2400,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 )
             )
 
@@ -2195,9 +2423,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            # Message body: render as plain text (message already contains
-            # markdown formatting from the gateway primitive).
-            preview = message if len(message) <= 3800 else message[:3800] + "..."
+            preview = self.format_message(message if len(message) <= 3800 else message[:3800] + "...")
 
             keyboard = InlineKeyboardMarkup([
                 [
@@ -2213,11 +2439,11 @@ class TelegramAdapter(BasePlatformAdapter):
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),
                 "text": preview,
-                "parse_mode": ParseMode.MARKDOWN,
+                "parse_mode": ParseMode.MARKDOWN_V2,
                 "reply_markup": keyboard,
                 **self._link_preview_kwargs(),
             }
-            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             kwargs["reply_to_message_id"] = reply_to_id
             kwargs.update(
                 self._thread_kwargs_for_send(
@@ -2225,6 +2451,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 )
             )
 
@@ -2262,6 +2489,17 @@ class TelegramAdapter(BasePlatformAdapter):
             text = f"❓ {_html.escape(question)}"
             thread_id = self._metadata_thread_id(metadata)
 
+            if choices:
+                # Render full option text in the message body so mobile
+                # users can read long choices that would be truncated in
+                # inline button labels.  Buttons keep short numeric labels
+                # (1, 2, …, Other) to avoid Telegram truncation.
+                option_lines = "\n".join(
+                    f"{i + 1}. {_html.escape(str(c))}"
+                    for i, c in enumerate(choices)
+                )
+                text += f"\n\n{option_lines}"
+
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),
                 "text": text,
@@ -2271,15 +2509,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             if choices:
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
-                # short.  Button label is also capped (~64 chars in practice).
+                # short.
                 rows = []
-                for idx, choice in enumerate(choices):
-                    label = str(choice)
-                    if len(label) > 60:
-                        label = label[:57] + "..."
+                for idx in range(len(choices)):
                     rows.append([
                         InlineKeyboardButton(
-                            f"{idx + 1}. {label}",
+                            str(idx + 1),
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])
@@ -2361,7 +2596,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
-            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
             msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
@@ -2373,6 +2608,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 ),
                 **self._link_preview_kwargs(),
             )
@@ -2642,6 +2878,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._handle_model_picker_callback(query, data, chat_id)
             return
 
+        # --- Gmail-triage callbacks (gt:verb:arg) ---
+        if data.startswith("gt:"):
+            await self._handle_gmail_triage_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
         # --- Exec approval callbacks (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)
@@ -2702,6 +2950,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+                    count = 0
+
+                # Resume the typing indicator — paused when the approval was
+                # sent (gateway/run.py).  The text /approve and /deny paths
+                # call resume_typing_for_chat here too; without it, typing
+                # stays paused for the rest of the turn after an inline
+                # button click.
+                if count and query_chat_id is not None:
+                    self.resume_typing_for_chat(str(query_chat_id))
             return
 
         # --- Slash-confirm callbacks (sc:choice:confirm_id) ---
@@ -2787,6 +3044,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                         "telegram_dm_topic_reply_fallback": True,
                                     },
                                     reply_to_message_id=reply_to_id,
+                                    reply_to_mode=self._reply_to_mode
                                 )
                             )
                         elif thread_id is not None:
@@ -2795,6 +3053,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     str(query.message.chat_id),
                                     str(thread_id),
                                     {"thread_id": str(thread_id)},
+                                    reply_to_mode=self._reply_to_mode
                                 )
                             )
                         await self._send_message_with_thread_fallback(**send_kwargs)
@@ -2945,6 +3204,120 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
 
+    # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
+    # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback
+    # data is always passed as the first positional arg.
+    # is_state=True means the verb is a sticky sender-rule change (mute, trust,
+    # vip) that should leave the keyboard tappable for follow-on actions.
+    # is_state=False is a per-email one-shot (send, archive, draft, spam) that
+    # strips the keyboard on success.
+    _GT_VERB_DISPATCH = {
+        "send":         ("send-draft.sh",      [],         "✓ sent draft",         False),
+        "archive":      ("archive.sh",         [],         "✓ archived",           False),
+        "draft":        ("draft-blank.sh",     [],         "✓ drafted reply",      False),
+        "spam":         ("spam.sh",            [],         "✓ marked spam",        False),
+        "mute":         ("mute-add.sh",        ["email"],  "✓ muted",              True),
+        "mute-domain":  ("mute-add.sh",        ["domain"], "✓ muted domain",       True),
+        "trust":        ("trusted-ops-add.sh", ["email"],  "✓ trusted",            True),
+        "trust-domain": ("trusted-ops-add.sh", ["domain"], "✓ trusted domain",     True),
+        "vip":          ("vip-add.sh",         ["email"],  "✓ marked VIP",         True),
+        "vip-domain":   ("vip-add.sh",         ["domain"], "✓ marked VIP domain",  True),
+    }
+
+    async def _handle_gmail_triage_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Dispatch a gmail-triage inline-button callback (gt:verb:arg)."""
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer(text="Invalid gmail-triage data.")
+            return
+        verb, arg = parts[1], parts[2]
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to act on this email.")
+            return
+
+        entry = self._GT_VERB_DISPATCH.get(verb)
+        if not entry:
+            await query.answer(text=f"Unknown verb: {verb}")
+            return
+        script_name, extra_args, success_label, is_state_verb = entry
+
+        script_path = _Path.home() / ".hermes" / "scripts" / "gmail-triage" / script_name
+        if not script_path.exists():
+            await query.answer(text=f"❌ {script_name} missing")
+            logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
+            return
+
+        cmd = [str(script_path), arg, *extra_args]
+        success = False
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=60,
+            )
+            if proc.returncode == 0:
+                label = success_label
+                success = True
+                logger.info(
+                    "[%s] gmail-triage callback ok: verb=%s arg=%s",
+                    self.name, verb, arg,
+                )
+            else:
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+                last_line = stderr_text.splitlines()[-1] if stderr_text else f"exit {proc.returncode}"
+                label = f"❌ {verb} failed: {last_line[:80]}"
+                logger.error(
+                    "[%s] gmail-triage callback failed: verb=%s arg=%s rc=%s stderr=%s",
+                    self.name, verb, arg, proc.returncode, stderr_text,
+                )
+        except asyncio.TimeoutError:
+            label = f"❌ {verb} timed out"
+            logger.error("[%s] gmail-triage callback timed out: verb=%s arg=%s", self.name, verb, arg)
+        except Exception as exc:
+            label = f"❌ {verb} error: {exc}"
+            logger.error(
+                "[%s] gmail-triage callback exception: verb=%s arg=%s err=%s",
+                self.name, verb, arg, exc, exc_info=True,
+            )
+
+        await query.answer(text=label)
+        if not success:
+            return
+
+        user_display = getattr(query.from_user, "first_name", "User")
+        original_text = (query.message.text or "") if query.message else ""
+        appended = f"{original_text}\n— {label} by {user_display}"
+        try:
+            if is_state_verb:
+                # Sticky state change: append confirmation, KEEP keyboard so
+                # the user can stack further actions on this email.
+                await query.edit_message_text(text=appended)
+            else:
+                # Per-email one-shot: strip keyboard so the action can't fire twice.
+                await query.edit_message_text(text=appended, reply_markup=None)
+        except Exception:
+            pass
+
     def _missing_media_path_error(self, label: str, path: str) -> str:
         """Build an actionable file-not-found error for gateway MEDIA delivery.
 
@@ -2982,12 +3355,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # .ogg / .opus files -> send as voice (round playable bubble)
                 if ext in {".ogg", ".opus"}:
                     _voice_thread = self._metadata_thread_id(metadata)
-                    reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+                    reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
                     voice_thread_kwargs = self._thread_kwargs_for_send(
                         chat_id,
                         _voice_thread,
                         metadata,
                         reply_to_message_id=reply_to_id,
+                        reply_to_mode=self._reply_to_mode
                     )
                     msg = await self._send_with_dm_topic_reply_anchor_retry(
                         self._bot.send_voice,
@@ -3007,12 +3381,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 elif ext in {".mp3", ".m4a"}:
                     # Telegram's Bot API sendAudio only accepts MP3 / M4A.
                     _audio_thread = self._metadata_thread_id(metadata)
-                    reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+                    reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
                     audio_thread_kwargs = self._thread_kwargs_for_send(
                         chat_id,
                         _audio_thread,
                         metadata,
                         reply_to_message_id=reply_to_id,
+                        reply_to_mode=self._reply_to_mode
                     )
                     msg = await self._send_with_dm_topic_reply_anchor_retry(
                         self._bot.send_audio,
@@ -3137,12 +3512,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Sending media group of %d photo(s) (chunk %d/%d)",
                     self.name, len(media), chunk_idx + 1, len(chunks),
                 )
-                reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+                reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
                 thread_kwargs = self._thread_kwargs_for_send(
                     chat_id,
                     _thread,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 )
 
                 def _reset_opened_files() -> None:
@@ -3201,12 +3577,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
 
             _thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode
             )
             with open(image_path, "rb") as image_file:
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
@@ -3295,12 +3672,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
             display_name = file_name or os.path.basename(file_path)
             _thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode
             )
 
             with open(file_path, "rb") as f:
@@ -3343,12 +3721,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=self._missing_media_path_error("Video", video_path))
 
             _thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode
             )
             with open(video_path, "rb") as f:
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
@@ -3395,12 +3774,13 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Telegram can send photos directly from URLs (up to ~5MB)
             _photo_thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             photo_thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _photo_thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode
             )
             msg = await self._send_with_dm_topic_reply_anchor_retry(
                 self._bot.send_photo,
@@ -3437,6 +3817,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     _photo_thread,
                     metadata,
                     reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
                 )
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_photo,
@@ -3477,12 +3858,13 @@ class TelegramAdapter(BasePlatformAdapter):
         
         try:
             _anim_thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
             animation_thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _anim_thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode
             )
             msg = await self._send_with_dm_topic_reply_anchor_retry(
                 self._bot.send_animation,
@@ -3512,20 +3894,30 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
         if self._bot:
+            _is_dm_topic: bool = False
+            message_thread_id: Optional[int] = None
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
+                _is_dm_topic = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
                 message_thread_id = self._message_thread_id_for_typing(_typing_thread)
-                # No retry-without-thread fallback here: _message_thread_id_for_typing
-                # already maps the forum General topic to None, so any non-None value
-                # reaching this call is a user-created topic. If Telegram rejects it
-                # (e.g. topic deleted mid-session), we swallow the failure rather than
-                # showing a typing indicator in the wrong chat/All Messages.
                 await self._bot.send_chat_action(
                     chat_id=int(chat_id),
                     action="typing",
                     message_thread_id=message_thread_id,
                 )
             except Exception as e:
+                # For DM topic lanes, Telegram may reject message_thread_id.
+                # Fall back to sending typing without thread_id so the typing
+                # indicator at least appears in the main DM view.
+                if _is_dm_topic and message_thread_id is not None:
+                    try:
+                        await self._bot.send_chat_action(
+                            chat_id=int(chat_id),
+                            action="typing",
+                        )
+                        return
+                    except Exception:
+                        pass
                 # Typing failures are non-fatal; log at debug level only.
                 logger.debug(
                     "[%s] Failed to send Telegram typing indicator: %s",
@@ -3760,6 +4152,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_GUEST_MODE", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _telegram_exclusive_bot_mentions(self) -> bool:
+        """Return whether explicit @...bot mentions exclusively route group messages."""
+        configured = self.config.extra.get("exclusive_bot_mentions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS", "true").lower() in {"true", "1", "yes", "on"}
+
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
@@ -3779,6 +4180,21 @@ class TelegramAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("allowed_chats")
         if raw is None:
             raw = os.getenv("TELEGRAM_ALLOWED_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _telegram_allowed_topics(self) -> set[str]:
+        """Return the whitelist of Telegram forum topic IDs this bot handles.
+
+        When non-empty, group/supergroup messages from other topics are
+        silently ignored. DMs are never filtered by topic. Telegram may omit
+        ``message_thread_id`` for the forum General topic, so ``None`` is
+        treated as topic ``1`` for matching purposes.
+        """
+        raw = self.config.extra.get("allowed_topics")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_ALLOWED_TOPICS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -3855,6 +4271,60 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
+    @staticmethod
+    def _extract_bot_mention_usernames(message: Message) -> set[str]:
+        """Extract explicit Telegram bot usernames mentioned in text/captions.
+
+        Telegram bot usernames are 5-32 characters and must end in "bot".
+        Entity mentions are authoritative. The raw-text fallback is intentionally narrow so
+        entity-less mobile/client variants still work without treating email
+        addresses or arbitrary substrings as bot mentions.
+        """
+        mentioned_bot_usernames: set[str] = set()
+
+        def _iter_sources():
+            yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
+            yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+
+        for source_text, entities in _iter_sources():
+            for entity in entities:
+                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+                if entity_type not in {"mention", "bot_command"}:
+                    continue
+                offset = int(getattr(entity, "offset", -1))
+                length = int(getattr(entity, "length", 0))
+                if offset < 0 or length <= 0:
+                    continue
+
+                entity_text = source_text[offset:offset + length].strip()
+                if entity_type == "mention":
+                    handle = entity_text.lstrip("@").lower()
+                    if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
+                        mentioned_bot_usernames.add(handle)
+                    continue
+
+                # Telegram emits /cmd@botname as one bot_command entity, not as
+                # a separate mention entity. Treat that suffix as an explicit
+                # bot address for exclusive multi-bot routing even when the
+                # group has require_mention/free-response disabled.
+                at_index = entity_text.find("@")
+                if at_index < 0:
+                    continue
+                command_target = entity_text[at_index + 1:].strip().lower()
+                if re.fullmatch(r"[a-z0-9_]{2,29}bot", command_target, re.IGNORECASE):
+                    mentioned_bot_usernames.add(command_target)
+
+        # Entity-less fallback for older/client-specific updates. If Telegram
+        # supplied entities for a source, trust them and do not regex-rescue
+        # malformed/URL/code spans that the server did not mark as mentions.
+        for raw_text, entities in _iter_sources():
+            if not raw_text or entities:
+                continue
+            for match in re.finditer(r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{2,29}bot)\b", raw_text):
+                mentioned_bot_usernames.add(match.group(1).lower())
+
+        return mentioned_bot_usernames
+
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
             return False
@@ -3869,7 +4339,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Telegram parses mentions server-side and emits MessageEntity objects
         # (type=mention for @username, type=text_mention for @FirstName targeting
-        # a user without a public username). Only those entities are authoritative —
+        # a user without a public username). Those entities are authoritative:
         # raw substring matches like "foo@hermes_bot.example" are not mentions
         # (bug #12545). Entities also correctly handle @handles inside URLs, code
         # blocks, and quoted text, where a regex scan would over-match.
@@ -3907,7 +4377,33 @@ class TelegramAdapter(BasePlatformAdapter):
                         continue
                     if command_text[at_index:].strip().lower() == expected:
                         return True
+        if bot_username and re.fullmatch(r"[a-z0-9_]{2,29}bot", bot_username, re.IGNORECASE):
+            return bot_username in self._extract_bot_mention_usernames(message)
         return False
+
+    def _explicit_bot_mentions_exclude_self(self, message: Message) -> bool:
+        """Return True when explicit bot handles target other bots, not this one.
+
+        Telegram groups can contain several Hermes bot profiles. A message like
+        ``@bot3 hi @bot4`` must not wake ``@bot1`` through reply/wake-word
+        fallbacks. Treat explicit bot-handle mentions as an exclusive routing
+        hint: if at least one @...bot username is present and none matches this
+        adapter's own bot username, this adapter should ignore the message.
+
+        MessageEntity values are preferred, but some Telegram clients expose
+        selected bot handles as plain text in group messages. The raw-text
+        fallback is intentionally limited to usernames ending in "bot", which
+        Telegram requires for bot accounts.
+        """
+        if not self._bot:
+            return False
+
+        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        if not bot_username:
+            return False
+
+        mentioned_bot_usernames = self._extract_bot_mention_usernames(message)
+        return bool(mentioned_bot_usernames) and bot_username not in mentioned_bot_usernames
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
@@ -3961,6 +4457,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
 
         thread_id = getattr(message, "message_thread_id", None)
+        allowed_topics = self._telegram_allowed_topics()
+        if allowed_topics:
+            topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+            if topic_id not in allowed_topics:
+                return False
+
+        # Check ignored_threads first — applies to both groups and DM topics
         if thread_id is not None:
             try:
                 if int(thread_id) in self._telegram_ignored_threads():
@@ -3968,7 +4471,18 @@ class TelegramAdapter(BasePlatformAdapter):
             except (TypeError, ValueError):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
 
+        if not self._is_group_chat(message):
+            # Root DM (non-topic): ignore if ignore_root_dm is configured
+            if thread_id is None and self.config.extra.get("ignore_root_dm", False):
+                chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+                if not is_command and chat_id in self._dm_topic_chat_ids:
+                    return False
+            return True
+
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+
+        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+            return False
 
         # Resolve guest-mode mention bypass once so _message_mentions_bot
         # is not called redundantly in the normal flow below.
@@ -3995,6 +4509,41 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    async def _ensure_forum_commands(self, message) -> None:
+        """Lazy-register bot commands for forum supergroups.
+
+        Forum topics don't inherit AllGroupChats scope — Telegram resolves
+        via BotCommandScopeChat(chat_id).  Register on first message so the
+        command menu works in topic views.
+        """
+        async with self._forum_lock:
+            try:
+                chat = getattr(message, "chat", None)
+                if not chat or not getattr(chat, "is_forum", False):
+                    return
+                chat_id = int(chat.id)
+                if chat_id in self._forum_command_registered:
+                    return
+                from telegram import BotCommand, BotCommandScopeChat
+                from hermes_cli.commands import telegram_menu_commands
+                menu_commands, _ = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
+                self._forum_command_registered.add(chat_id)
+                logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
+            except Exception as e:
+                logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
+
+    def _effective_update_message(self, update: Update) -> Optional[Message]:
+        """Return the message-like payload for normal messages and channel posts.
+
+        Telegram exposes channel broadcasts as ``update.channel_post`` rather
+        than ``update.message``.  MessageHandler filters can still dispatch
+        those updates, so handlers must use ``effective_message`` to avoid
+        consuming channel posts without ever building a gateway event.
+        """
+        return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -4002,33 +4551,37 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
-        if not update.message or not update.message.text:
+        msg = self._effective_update_message(update)
+        if not msg or not msg.text:
             return
-        if not self._should_process_message(update.message):
+        if not self._should_process_message(msg):
             return
+        await self._ensure_forum_commands(update.message)
 
-        event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
-        if not update.message or not update.message.text:
+        msg = self._effective_update_message(update)
+        if not msg or not msg.text:
             return
-        if not self._should_process_message(update.message, is_command=True):
+        if not self._should_process_message(msg, is_command=True):
             return
-        
-        event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
+        await self._ensure_forum_commands(msg)
+
+        event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
-        if not update.message:
+        msg = self._effective_update_message(update)
+        if not msg:
             return
-        if not self._should_process_message(update.message):
+        if not self._should_process_message(msg):
             return
 
-        msg = update.message
         venue = getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
 
@@ -4327,11 +4880,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Check file size early so image documents cannot bypass the
                 # document size limit by taking the image path.
-                MAX_DOC_BYTES = 20 * 1024 * 1024
-                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
+                if not doc.file_size or doc.file_size > self._max_doc_bytes:
+                    limit_mb = self._max_doc_bytes // (1024 * 1024)
                     event.text = (
                         "The document is too large or its size could not be verified. "
-                        "Maximum: 20 MB."
+                        f"Maximum: {limit_mb} MB."
                     )
                     logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
                     await self.handle_message(event)
@@ -4372,6 +4925,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
                     ext = video_mime_to_ext.get(doc.mime_type, "")
 
+                if not ext and doc.mime_type:
+                    # SUPPORTED_IMAGE_DOCUMENT_TYPES has duplicate values (.jpg + .jpeg
+                    # both map to image/jpeg); keep the first ext we encounter.
+                    image_mime_to_ext: dict[str, str] = {}
+                    for _ext, _mime in SUPPORTED_IMAGE_DOCUMENT_TYPES.items():
+                        image_mime_to_ext.setdefault(_mime, _ext)
+                    ext = image_mime_to_ext.get(doc.mime_type, "")
+
                 if ext in SUPPORTED_VIDEO_TYPES:
                     file_obj = await doc.get_file()
                     video_bytes = await file_obj.download_as_bytearray()
@@ -4381,6 +4942,21 @@ class TelegramAdapter(BasePlatformAdapter):
                     event.message_type = MessageType.VIDEO
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
                     await self.handle_message(event)
+                    return
+
+                if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES:
+                    file_obj = await doc.get_file()
+                    image_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [SUPPORTED_IMAGE_DOCUMENT_TYPES[ext]]
+                    event.message_type = MessageType.PHOTO
+                    logger.info("[Telegram] Cached user image document at %s", cached_path)
+                    media_group_id = getattr(msg, "media_group_id", None)
+                    if media_group_id:
+                        await self._queue_media_group_event(str(media_group_id), event)
+                    else:
+                        await self.handle_message(event)
                     return
 
                 # Check if supported
@@ -4556,10 +5132,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 .get("dm_topics", [])
             )
             if not dm_topics:
+                # Clear both config and precomputed set when all topics are removed
+                self._dm_topics_config = []
+                self._dm_topic_chat_ids = set()
                 return
 
             # Update in-memory config and cache any new thread_ids
             self._dm_topics_config = dm_topics
+            # Rebuild the chat_id set for O(1) root-DM ignore lookup
+            self._dm_topic_chat_ids = {
+                str(chat_entry["chat_id"]) for chat_entry in dm_topics if "chat_id" in chat_entry
+            }
             for chat_entry in dm_topics:
                 cid = chat_entry.get("chat_id")
                 if not cid:
@@ -4643,32 +5226,38 @@ class TelegramAdapter(BasePlatformAdapter):
         chat = message.chat
         user = message.from_user
         
-        # Determine chat type
+        # Determine chat type.  Normalize through ``str`` so tests/mocks and
+        # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
+        # string-like, but mocks often provide plain strings).
+        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
         chat_type = "dm"
-        if chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"
-        elif chat.type == ChatType.CHANNEL:
+        elif telegram_chat_type == "channel":
             chat_type = "channel"
 
-        # Resolve DM topic name and skill binding.
-        # In private chats, only preserve thread ids for real topic messages
-        # (is_topic_message=True).  Telegram puts message_thread_id on every
-        # DM that is a reply, even when the user is just replying to a
-        # previous message in the same DM — that bogus id then routes to a
-        # nonexistent thread and Telegram returns 'Message thread not found'
-        # on send (#3206).
+        # Resolve Telegram topic name and skill binding.
+        # Only preserve message_thread_id when Telegram marks the message as
+        # a real topic/forum message. Telegram can also populate
+        # message_thread_id for ordinary reply UI anchors; treating those as
+        # durable session threads fragments workflows such as CAPTCHA/login
+        # handoffs where the user later replies "done" in the same group.
+        # Private chats have the same pitfall: only real DM topic messages
+        # (is_topic_message=True) should keep the thread id, otherwise sends
+        # can hit Telegram's 'Message thread not found' error (#3206).
         thread_id_raw = message.message_thread_id
         is_topic_message = bool(getattr(message, "is_topic_message", False))
+        is_forum_group = getattr(chat, "is_forum", False) is True
         thread_id_str = None
         if thread_id_raw is not None:
-            if chat_type == "group":
+            if chat_type == "group" and (is_topic_message or is_forum_group):
                 thread_id_str = str(thread_id_raw)
             elif chat_type == "dm" and is_topic_message:
                 thread_id_str = str(thread_id_raw)
         # For forum groups without an explicit topic, default to the
         # General-topic id so the gateway routes back to the General topic
         # rather than dropping into the bot's main channel (#22423).
-        if chat_type == "group" and thread_id_str is None and getattr(chat, "is_forum", False):
+        if chat_type == "group" and thread_id_str is None and is_forum_group:
             thread_id_str = self._GENERAL_TOPIC_THREAD_ID
         chat_topic = None
         topic_skill = None
@@ -4705,10 +5294,23 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
-            user_id=str(user.id) if user else (str(chat.id) if chat_type == "dm" else None),
-            user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
+            user_id=(
+                str(user.id)
+                if user
+                else (str(chat.id) if chat_type in {"dm", "channel"} else None)
+            ),
+            user_name=(
+                user.full_name
+                if user
+                else (
+                    chat.full_name
+                    if hasattr(chat, "full_name") and chat_type == "dm"
+                    else (chat.title if chat_type == "channel" else None)
+                )
+            ),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
+            message_id=str(message.message_id),
         )
         
         # Extract reply context if this message is a reply.

@@ -1278,6 +1278,14 @@ def _launch_tui(
     if "--expose-gc" not in _tokens:
         _tokens.append("--expose-gc")
     env["NODE_OPTIONS"] = " ".join(_tokens)
+    # HERMES_TUI_RESUME is an internal hand-off from the Python wrapper to the
+    # Ink app.  Because we start from os.environ.copy(), an exported/stale value
+    # in the user's shell would otherwise make a plain `hermes --tui` try to
+    # resume a non-existent session and leave the UI at "error: session not
+    # found" with no live session.  Only forward a resume id that argparse
+    # resolved for this invocation; direct `node ui-tui/dist/entry.js` users can
+    # still set HERMES_TUI_RESUME themselves.
+    env.pop("HERMES_TUI_RESUME", None)
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
@@ -1301,6 +1309,18 @@ def _launch_tui(
                 _cleanup_worktree(wt_info)
             except Exception:
                 pass
+
+    # Exit code 42 = TUI requested an update. Relaunch as `hermes update` so
+    # the user sees update output directly and gets the new version.
+    # preserve_inherited=False ensures --tui and other flags are NOT carried
+    # into the update subcommand.
+    if code == 42:
+        from hermes_cli.relaunch import relaunch
+
+        print()
+        print("⚕ Launching update...")
+        print()
+        relaunch(["update"], preserve_inherited=False)
 
     sys.exit(code)
 
@@ -1735,7 +1755,10 @@ def cmd_setup(args):
 
 def cmd_postinstall(args):
     """One-shot bootstrap for pip users: install non-Python deps + run setup."""
+    from hermes_cli.config import stamp_install_method
     from hermes_cli.dep_ensure import ensure_dependency
+
+    stamp_install_method("pip")
 
     print("⚕ Hermes post-install bootstrap")
     print()
@@ -2007,7 +2030,7 @@ def select_provider_and_model(args=None):
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "xai-oauth":
-        _model_flow_xai_oauth(config, current_model)
+        _model_flow_xai_oauth(config, current_model, args=args)
     elif selected_provider == "qwen-oauth":
         _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "minimax-oauth":
@@ -2127,7 +2150,6 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("vision", "Vision", "image/screenshot analysis"),
     ("compression", "Compression", "context summarization"),
     ("web_extract", "Web extract", "web page summarization"),
-    ("session_search", "Session search", "past-conversation recall"),
     ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
@@ -2889,7 +2911,7 @@ def _model_flow_openai_codex(config, current_model=""):
         print("No change.")
 
 
-def _model_flow_xai_oauth(_config, current_model=""):
+def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     """xAI Grok OAuth (SuperGrok Subscription) provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_xai_oauth_auth_status,
@@ -2920,7 +2942,15 @@ def _model_flow_xai_oauth(_config, current_model=""):
             print("Starting a fresh xAI OAuth login...")
             print()
             try:
-                mock_args = argparse.Namespace()
+                # Forward CLI flags from ``hermes model --manual-paste``
+                # / ``--no-browser`` / ``--timeout`` into the loopback
+                # login. Without this, browser-only remotes (#26923)
+                # can't reach the manual-paste path via ``hermes model``.
+                mock_args = argparse.Namespace(
+                    manual_paste=bool(getattr(args, "manual_paste", False)),
+                    no_browser=bool(getattr(args, "no_browser", False)),
+                    timeout=getattr(args, "timeout", None),
+                )
                 _login_xai_oauth(
                     mock_args,
                     PROVIDER_REGISTRY["xai-oauth"],
@@ -2938,7 +2968,11 @@ def _model_flow_xai_oauth(_config, current_model=""):
         print("Not logged into xAI Grok OAuth (SuperGrok Subscription). Starting login...")
         print()
         try:
-            mock_args = argparse.Namespace()
+            mock_args = argparse.Namespace(
+                manual_paste=bool(getattr(args, "manual_paste", False)),
+                no_browser=bool(getattr(args, "no_browser", False)),
+                timeout=getattr(args, "timeout", None),
+            )
             _login_xai_oauth(mock_args, PROVIDER_REGISTRY["xai-oauth"])
         except SystemExit:
             print("Login cancelled or failed.")
@@ -3532,11 +3566,27 @@ def _save_custom_provider(
 
 
 def _model_flow_azure_foundry(config, current_model=""):
-    """Azure Foundry provider: configure endpoint, API mode, API key, and model.
+    """Azure Foundry provider: configure endpoint, auth mode, API mode, and model.
 
     Azure Foundry supports both OpenAI-style (``/v1/chat/completions``) and
-    Anthropic-style (``/v1/messages``) endpoints.  The wizard auto-detects
-    the transport and available models when possible:
+    Anthropic-style (``/v1/messages``) endpoints, and two authentication
+    modes:
+
+    * **API key** (default) — uses ``AZURE_FOUNDRY_API_KEY`` from .env.
+    * **Microsoft Entra ID** — keyless, RBAC-based auth via the
+      ``azure-identity`` SDK (Managed Identity / Workload Identity / az
+      login / VS Code / azd / service principal env vars). Works on both
+      OpenAI-style and Anthropic-style endpoints — Microsoft RBAC is
+      per-resource and the same ``Azure AI User`` role grants
+      both. For OpenAI-style the OpenAI SDK's native callable
+      ``api_key=`` contract is used; for Anthropic-style an
+      ``httpx.Client`` with a request event hook (built by
+      :func:`agent.azure_identity_adapter.build_bearer_http_client`)
+      mints a fresh JWT per request because the Anthropic SDK does not
+      accept a callable ``auth_token`` natively.
+
+    The wizard auto-detects the transport and available models when
+    possible:
 
     * URLs ending in ``/anthropic`` → Anthropic Messages API.
     * Successful ``GET <base>/models`` probe → OpenAI-style + populates
@@ -3563,9 +3613,14 @@ def _model_flow_azure_foundry(config, current_model=""):
     if isinstance(model_cfg, dict) and model_cfg.get("provider") == "azure-foundry":
         current_base_url = str(model_cfg.get("base_url", "") or "")
         current_api_mode = str(model_cfg.get("api_mode", "") or "")
+        current_auth_mode = str(model_cfg.get("auth_mode") or "api_key").strip().lower() or "api_key"
+        _cur_entra = model_cfg.get("entra") or {}
+        current_entra = _cur_entra if isinstance(_cur_entra, dict) else {}
     else:
         current_base_url = ""
         current_api_mode = ""
+        current_auth_mode = "api_key"
+        current_entra = {}
 
     current_api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or ""
 
@@ -3580,22 +3635,29 @@ def _model_flow_azure_foundry(config, current_model=""):
     print()
 
     if current_base_url:
-        print(f"  Current endpoint: {current_base_url}")
+        print(f"  Current endpoint:  {current_base_url}")
     if current_api_mode:
         _lbl = (
             "OpenAI-style"
             if current_api_mode == "chat_completions"
             else "Anthropic-style"
         )
-        print(f"  Current API mode: {_lbl}")
-    if current_api_key:
-        print(f"  Current API key:  {current_api_key[:8]}...")
+        print(f"  Current API mode:  {_lbl}")
+    if current_auth_mode == "entra_id":
+        print(f"  Current auth mode: Microsoft Entra ID (keyless)")
+    elif current_api_key:
+        print(f"  Current auth mode: API key ({current_api_key[:8]}...)")
     print()
 
     # ── Step 1: endpoint URL ─────────────────────────────────────────
     try:
+        _placeholder = (
+            current_base_url
+            or "e.g. https://<resource>.openai.azure.com/openai/v1 "
+              "or https://<resource>.services.ai.azure.com/anthropic"
+        )
         base_url = input(
-            f"API endpoint URL [{current_base_url or 'e.g. https://your-resource.openai.azure.com/openai/v1'}]: "
+            f"API endpoint URL [{_placeholder}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
@@ -3609,25 +3671,125 @@ def _model_flow_azure_foundry(config, current_model=""):
         print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
         return
 
-    # ── Step 2: API key ──────────────────────────────────────────────
+    # ── Step 2: authentication mode ──────────────────────────────────
     print()
+    print("Authentication:")
+    print("  1. API key                  (AZURE_FOUNDRY_API_KEY in .env)")
+    print("  2. Microsoft Entra ID       (managed identity / workload identity / az login)")
+    print("     Recommended by Microsoft. Works for both OpenAI-style and Anthropic-style endpoints.")
+    print("     Requires the 'Azure AI User' role on the Foundry resource.")
     try:
-        api_key = getpass.getpass(
-            f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: "
-        ).strip()
+        _auth_default = "2" if current_auth_mode == "entra_id" else "1"
+        auth_choice = (
+            input(f"Authentication mode [1/2] ({_auth_default}): ").strip()
+            or _auth_default
+        )
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
+    use_entra = auth_choice == "2"
+    auth_mode_label = "entra_id" if use_entra else "api_key"
 
-    effective_key = api_key or current_api_key
-    if not effective_key:
-        print("No API key provided. Cancelled.")
-        return
+    # ── Step 3: credentials (key OR Entra preflight) ─────────────────
+    effective_key: str = ""
+    entra_overrides: dict = {}
+    token_provider = None  # callable when entra
+    entra_scope = ""
 
-    # ── Step 3: auto-detect transport + models ───────────────────────
+    if use_entra:
+        try:
+            from agent.azure_identity_adapter import (
+                EntraIdentityConfig,
+                SCOPE_AI_AZURE_DEFAULT,
+                build_token_provider,
+                describe_active_credential,
+                has_azure_identity_installed,
+            )
+        except ImportError as exc:
+            print()
+            print(f"⚠ Could not import azure-identity adapter: {exc}")
+            print("  Falling back to API key auth.")
+            use_entra = False
+            auth_mode_label = "api_key"
+
+    if use_entra:
+        print()
+        if not has_azure_identity_installed():
+            print("◐ The 'azure-identity' package is not installed yet.")
+            print(
+                "  Hermes will install it now (the preflight below "
+                "triggers the lazy-install). To skip lazy installs, "
+                "run:  pip install azure-identity"
+            )
+
+        # Preserve only the optional scope override. Identity selection
+        # (tenant, user-assigned MI, workload identity, service principal)
+        # stays in Azure SDK env vars such as AZURE_CLIENT_ID.
+        _persisted_scope_override = str(current_entra.get("scope") or "").strip()
+        entra_scope = _persisted_scope_override or SCOPE_AI_AZURE_DEFAULT
+
+        entra_overrides = {}
+        if _persisted_scope_override:
+            entra_overrides["scope"] = _persisted_scope_override
+
+        print()
+        print("◐ Probing Microsoft Entra ID credential chain (up to 10s)...")
+        _config = EntraIdentityConfig(
+            scope=entra_scope,
+        )
+        info = describe_active_credential(config=_config, timeout_seconds=10.0)
+        if info.get("ok"):
+            env_sources = info.get("env_sources") or []
+            tag = ", ".join(env_sources) if env_sources else "default chain"
+            print(f"✓ Entra ID token acquired ({tag}, scope={entra_scope})")
+        else:
+            err = info.get("error") or "credential chain exhausted"
+            hint = info.get("hint") or (
+                "Run `az login`, attach a managed identity to this VM, or "
+                "set AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET."
+            )
+            print(f"⚠ {err}")
+            print(f"  Hint: {hint}")
+            try:
+                ans = input("Save Entra config anyway and validate later? [Y/n]: ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                print("\nCancelled.")
+                return
+            if ans and ans not in ("y", "yes"):
+                print("Cancelled.")
+                return
+
+        # Build the token provider for the detection probe (best-effort —
+        # if the credential chain failed above, this will silently return
+        # None inside azure_detect and the probe falls back to manual).
+        try:
+            token_provider = build_token_provider(config=_config)
+        except Exception as exc:
+            print(f"⚠ Could not build token provider for probing: {exc}")
+            token_provider = None
+    else:
+        print()
+        try:
+            api_key = getpass.getpass(
+                f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: "
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+
+        effective_key = api_key or current_api_key
+        if not effective_key:
+            print("No API key provided. Cancelled.")
+            return
+
+    # ── Step 4: auto-detect transport + models ───────────────────────
     print()
     print("◐ Probing endpoint to auto-detect transport and models...")
-    detection = azure_detect.detect(effective_url, effective_key)
+    detection = azure_detect.detect(
+        effective_url,
+        api_key=effective_key,
+        token_provider=token_provider,
+    )
 
     discovered_models: list[str] = list(detection.models)
     api_mode: str = detection.api_mode or ""
@@ -3662,7 +3824,7 @@ def _model_flow_azure_foundry(config, current_model=""):
             return
         api_mode = "anthropic_messages" if mode_choice == "2" else "chat_completions"
 
-    # ── Step 4: model name ───────────────────────────────────────────
+    # ── Step 5: model name ───────────────────────────────────────────
     print()
     effective_model = ""
     if discovered_models:
@@ -3701,15 +3863,17 @@ def _model_flow_azure_foundry(config, current_model=""):
         print("No model name provided. Cancelled.")
         return
 
-    # ── Step 5: context-length lookup ────────────────────────────────
+    # ── Step 6: context-length lookup ────────────────────────────────
     ctx_len = azure_detect.lookup_context_length(
         effective_model,
         effective_url,
-        effective_key,
+        api_key=effective_key,
+        token_provider=token_provider,
     )
 
-    # ── Step 6: persist ──────────────────────────────────────────────
-    save_env_value("AZURE_FOUNDRY_API_KEY", effective_key)
+    # ── Step 7: persist ──────────────────────────────────────────────
+    if not use_entra:
+        save_env_value("AZURE_FOUNDRY_API_KEY", effective_key)
 
     cfg = load_config()
     model = cfg.get("model")
@@ -3721,6 +3885,22 @@ def _model_flow_azure_foundry(config, current_model=""):
     model["base_url"] = effective_url
     model["api_mode"] = api_mode
     model["default"] = effective_model
+    model["auth_mode"] = auth_mode_label
+    if use_entra:
+        # Persist only the non-default Entra scope so config.yaml stays tidy.
+        # Azure identity selection stays in standard AZURE_* env vars.
+        clean_entra: dict = {}
+        for key in ("scope",):
+            val = entra_overrides.get(key)
+            if val:
+                clean_entra[key] = val
+        if clean_entra:
+            model["entra"] = clean_entra
+        elif "entra" in model:
+            del model["entra"]
+    else:
+        if "entra" in model:
+            del model["entra"]
     if ctx_len:
         model["context_length"] = ctx_len
 
@@ -3736,10 +3916,14 @@ def _model_flow_azure_foundry(config, current_model=""):
         save_env_value("OPENAI_API_KEY", "")
 
     mode_label = "OpenAI-style" if api_mode == "chat_completions" else "Anthropic-style"
+    auth_label = (
+        "Microsoft Entra ID (keyless)" if use_entra else "API key"
+    )
     print()
     print("✓ Azure Foundry configured:")
     print(f"    Endpoint:       {effective_url}")
     print(f"    API mode:       {mode_label}")
+    print(f"    Auth:           {auth_label}")
     print(f"    Model:          {effective_model}")
     if ctx_len:
         print(f"    Context length: {ctx_len:,} tokens")
@@ -8312,6 +8496,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 launch_detached_profile_gateway_restart,
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
+                _wait_for_gateway_exit,
             )
             import signal as _signal
 
@@ -8730,6 +8915,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         os.kill(pid, _signal.SIGTERM)
                     except (ProcessLookupError, PermissionError):
                         pass
+                # Wait for the old process to fully exit before the watcher
+                # spawns the new gateway.  Telegram holds the previous
+                # getUpdates long-poll session open on its servers for up to
+                # ~30s after the client disconnects.  If the new gateway
+                # connects before that window expires it receives a 409
+                # Conflict, which _handle_polling_conflict() recovers from
+                # via back-off retries — but a brief wait here reduces the
+                # chance of hitting that path at all, especially on fast
+                # machines where the watcher loop restarts in < 1s.
+                # We wait up to 5s for the process to exit (the OS-level
+                # close, not the Telegram server-side expiry), then let the
+                # watcher take over.  The Telegram adapter's retry logic
+                # handles any remaining 409s if the server session is still
+                # live when the new gateway polls.
+                _wait_for_gateway_exit(timeout=5.0, force_after=None)
                 killed_pids.add(pid)
                 relaunched_profiles.append(proc.profile)
 
@@ -9728,7 +9928,7 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "checkpoints", "claw", "completion",
+        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -9876,6 +10076,16 @@ def main():
         "--no-browser",
         action="store_true",
         help="Do not attempt to open the browser automatically during Nous login",
+    )
+    model_parser.add_argument(
+        "--manual-paste",
+        action="store_true",
+        help=(
+            "For loopback OAuth providers (xai-oauth, ...): skip the local "
+            "callback listener and paste the failed callback URL from your "
+            "browser instead. Use on browser-only remotes (Cloud Shell, "
+            "Codespaces, EC2 Instance Connect, ...). See #26923."
+        ),
     )
     model_parser.add_argument(
         "--timeout",
@@ -10100,7 +10310,7 @@ def main():
     proxy_start.add_argument(
         "--provider",
         default="nous",
-        help="Upstream provider (default: nous). See `hermes proxy providers`.",
+        help="Upstream provider: nous or xai (default: nous). See `hermes proxy providers`.",
     )
     proxy_start.add_argument(
         "--host",
@@ -10340,6 +10550,17 @@ def main():
         help="Do not auto-open a browser for OAuth login",
     )
     auth_add.add_argument(
+        "--manual-paste",
+        action="store_true",
+        help=(
+            "Skip the loopback callback listener and paste the failed "
+            "callback URL from your browser instead. Use this on "
+            "browser-only remotes (GCP Cloud Shell, GitHub Codespaces, "
+            "EC2 Instance Connect, ...) where 127.0.0.1 on the remote "
+            "isn't reachable from your laptop. See #26923."
+        ),
+    )
+    auth_add.add_argument(
         "--timeout", type=float, help="OAuth/network timeout in seconds"
     )
     auth_add.add_argument(
@@ -10471,6 +10692,10 @@ def main():
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument(
+        "--profile",
+        help="Hermes profile name to run the job under. Use 'default' for the root profile. Named profiles must already exist. Omit to preserve the scheduler's existing profile.",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -10534,6 +10759,10 @@ def main():
     cron_edit.add_argument(
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--profile",
+        help="Hermes profile name to run the job under. Use 'default' for the root profile. Pass empty string to clear.",
     )
 
     # lifecycle actions
@@ -11132,6 +11361,22 @@ Examples:
             skills_command(args)
 
     skills_parser.set_defaults(func=cmd_skills)
+
+    # =========================================================================
+    # bundles command — skill bundles (alias /<name> for multiple skills)
+    # =========================================================================
+    bundles_parser = subparsers.add_parser(
+        "bundles",
+        help="Create, list, and manage skill bundles (aliases for multiple skills)",
+        description=(
+            "Skill bundles let you load several skills under one slash "
+            "command. `/<bundle>` from the CLI or gateway loads every "
+            "referenced skill at once."
+        ),
+    )
+    from hermes_cli.bundles import register_cli as _bundles_register, bundles_command
+    _bundles_register(bundles_parser)
+    bundles_parser.set_defaults(func=bundles_command)
 
     # =========================================================================
     # plugins command
@@ -12499,7 +12744,7 @@ Examples:
 
             discover_plugins()
         except Exception:
-            logger.debug(
+            logger.warning(
                 "plugin discovery failed at CLI startup",
                 exc_info=True,
             )

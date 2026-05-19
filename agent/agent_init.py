@@ -560,7 +560,16 @@ def init_agent(
             agent._client_kwargs = {}
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
-                if effective_key and len(effective_key) > 12:
+                # ``effective_key`` may be a callable Entra ID bearer
+                # provider for Azure Foundry anthropic_messages mode.
+                # The Anthropic adapter installs an httpx event hook
+                # that mints a fresh JWT per request — we never
+                # invoke or inspect the callable in the banner.
+                from agent.azure_identity_adapter import is_token_provider
+
+                if is_token_provider(effective_key):
+                    print("🔑 Using credentials: Microsoft Entra ID")
+                elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
@@ -764,12 +773,19 @@ def init_agent(
                 print(f"🤖 AI Agent initialized with model: {agent.model}")
                 if base_url:
                     print(f"🔗 Using custom base URL: {base_url}")
-                # Always show API key info (masked) for debugging auth issues
+                # ``api_key`` may be a callable Entra ID bearer
+                # provider (Azure Foundry). The OpenAI SDK mints a
+                # fresh JWT per request internally — the banner
+                # never invokes or inspects the callable.
+                from agent.azure_identity_adapter import is_token_provider
+
                 key_used = client_kwargs.get("api_key", "none")
-                if key_used and key_used != "dummy-key" and len(key_used) > 12:
+                if is_token_provider(key_used):
+                    print("🔑 Using credentials: Microsoft Entra ID")
+                elif isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
                     print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
                 else:
-                    print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
+                    print("⚠️  Warning: API key appears invalid or missing")
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
     
@@ -812,7 +828,6 @@ def init_agent(
         tool_names = sorted(agent.valid_tool_names)
         if not agent.quiet_mode:
             print(f"🛠️  Loaded {len(agent.tools)} tools: {', '.join(tool_names)}")
-            
             # Show filtering info if applied
             if enabled_toolsets:
                 print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
@@ -820,7 +835,18 @@ def init_agent(
                 print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
     elif not agent.quiet_mode:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
-    
+
+    # Kanban worker/orchestrator lifecycle guidance is session-static:
+    # the dispatcher decides at spawn time whether this process is a kanban
+    # worker (kanban_show tool is present iff HERMES_KANBAN_TASK is set).
+    # Resolving the ~835-token block once here avoids re-running the
+    # membership test + reference on every system-prompt rebuild
+    # (init + each context compression).
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    agent._kanban_worker_guidance = (
+        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+    )
+
     # Check tool requirements
     if agent.tools and not agent.quiet_mode:
         requirements = _ra().check_toolset_requirements()
@@ -1089,6 +1115,9 @@ def init_agent(
     compression_protect_first = max(
         0, int(_compression_cfg.get("protect_first_n", 3))
     )
+    compression_abort_on_summary_failure = str(
+        _compression_cfg.get("abort_on_summary_failure", False)
+    ).lower() in {"true", "1", "yes"}
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1303,6 +1332,7 @@ def init_agent(
             config_context_length=_config_context_length,
             provider=agent.provider,
             api_mode=agent.api_mode,
+            abort_on_summary_failure=compression_abort_on_summary_failure,
         )
     agent.compression_enabled = compression_enabled
 
@@ -1395,7 +1425,12 @@ def init_agent(
             _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
     if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
         try:
-            _detected = query_ollama_num_ctx(agent.model, agent.base_url, api_key=agent.api_key or "")
+            # ``agent.api_key`` may be a callable (Entra token provider).
+            # Ollama detection makes a manual HTTP request and expects a
+            # string — Azure Foundry isn't a local endpoint so this branch
+            # never fires for Entra, but guard defensively.
+            _key_for_ollama = agent.api_key if isinstance(agent.api_key, str) else ""
+            _detected = query_ollama_num_ctx(agent.model, agent.base_url, api_key=_key_for_ollama or "")
             if _detected and _detected > 0:
                 agent._ollama_num_ctx = _detected
         except Exception as exc:

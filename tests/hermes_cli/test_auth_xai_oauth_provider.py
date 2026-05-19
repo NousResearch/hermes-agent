@@ -2,7 +2,9 @@
 
 import base64
 import json
+import socket
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -20,7 +22,9 @@ from hermes_cli.auth import (
     _xai_access_token_is_expiring,
     _xai_callback_cors_origin,
     _xai_oauth_build_authorize_url,
+    _xai_start_callback_server,
     _xai_validate_loopback_redirect_uri,
+    format_auth_error,
     get_xai_oauth_auth_status,
     refresh_xai_oauth_pure,
     resolve_provider,
@@ -278,6 +282,129 @@ def test_xai_callback_cors_origin_rejects_unknown_origin():
     assert _xai_callback_cors_origin("") == ""
 
 
+def test_xai_callback_server_accepts_fallback_code_while_browser_connection_is_stuck():
+    """Regression: Chrome/xAI can leave a loopback connection open after
+    showing the Grok Build fallback code. A single-threaded callback server then
+    blocks forever and cannot accept the manual fallback callback.
+    """
+    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    stuck = socket.create_connection((XAI_OAUTH_REDIRECT_HOST, server.server_address[1]), timeout=2)
+    try:
+        stuck.sendall(b"GET /callback?code=stuck")
+        callback_url = f"{redirect_uri}?code=fallback-code&state=state-123"
+        with urllib.request.urlopen(callback_url, timeout=2) as response:
+            body = response.read().decode("utf-8")
+        assert response.status == 200
+        assert "xAI authorization received" in body
+        assert result["code"] == "fallback-code"
+        assert result["state"] == "state-123"
+    finally:
+        stuck.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
+def test_xai_callback_server_latches_first_terminal_callback_result():
+    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    try:
+        with urllib.request.urlopen(f"{redirect_uri}?code=first-code&state=state-1", timeout=2) as response:
+            assert response.status == 200
+        with urllib.request.urlopen(
+            f"{redirect_uri}?error=access_denied&error_description=late&state=state-2",
+            timeout=2,
+        ) as response:
+            body = response.read().decode("utf-8")
+        assert response.status == 200
+        assert "xAI authorization failed" in body
+        assert result["code"] == "first-code"
+        assert result["state"] == "state-1"
+        assert result["error"] is None
+        assert result["error_description"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
+# ---------------------------------------------------------------------------
+# Loopback callback handler GET responses
+# ---------------------------------------------------------------------------
+
+
+def _get_callback(redirect_uri: str, query: str = "") -> tuple[int, str]:
+    """GET the loopback callback URL with an optional query string."""
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError
+
+    target = redirect_uri + (("?" + query) if query else "")
+    req = Request(target, method="GET")
+    try:
+        with urlopen(req, timeout=5.0) as resp:
+            return resp.getcode(), resp.read().decode("utf-8", "replace")
+    except HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+
+
+def test_xai_callback_handler_returns_400_when_callback_url_lacks_code_and_error():
+    """Bare loopback URL (no code, no error) must not claim authorization received.
+
+    Regression for #27385: when xAI's auth backend fails to redirect and the user
+    manually navigates to http://127.0.0.1:<port>/callback, the handler used to
+    return 200 "xAI authorization received" while the CLI's wait loop still timed
+    out — leaving the user with a contradictory success page and a CLI error.
+    """
+    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    try:
+        status, body = _get_callback(redirect_uri)
+        assert status == 400
+        assert "not received" in body.lower()
+        assert "hermes auth add xai-oauth" in body
+        # Wait loop must still see no code/error so it raises a real timeout,
+        # rather than treating this empty hit as a successful callback.
+        assert result["code"] is None
+        assert result["error"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
+def test_xai_callback_handler_accepts_callback_with_code():
+    """A real OAuth redirect (code + state) still records both and shows success."""
+    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    try:
+        status, body = _get_callback(redirect_uri, query="code=abc&state=xyz")
+        assert status == 200
+        assert "xAI authorization received" in body
+        assert result["code"] == "abc"
+        assert result["state"] == "xyz"
+        assert result["error"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
+def test_xai_callback_handler_records_error_callback():
+    """A redirect carrying an `error` param must surface the failure page and capture detail."""
+    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    try:
+        status, body = _get_callback(
+            redirect_uri,
+            query="error=access_denied&error_description=user%20cancelled",
+        )
+        assert status == 200
+        assert "xAI authorization failed" in body
+        assert result["error"] == "access_denied"
+        assert result["error_description"] == "user cancelled"
+        assert result["code"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
 # ---------------------------------------------------------------------------
 # Token roundtrip + reads
 # ---------------------------------------------------------------------------
@@ -428,6 +555,123 @@ def test_resolve_xai_runtime_credentials_honours_env_base_url(tmp_path, monkeypa
 
 
 # ---------------------------------------------------------------------------
+# Quarantine: terminal refresh failure clears dead tokens (#28155 sibling)
+# ---------------------------------------------------------------------------
+
+_STALE_XAI_OAUTH_STATE = {
+    "tokens": {
+        "access_token": "dead-access-token",
+        "refresh_token": "dead-refresh-token",
+        "id_token": "",
+        "expires_in": 3600,
+        "token_type": "Bearer",
+    },
+    "discovery": {"token_endpoint": "https://auth.x.ai/oauth2/token"},
+    "redirect_uri": "http://127.0.0.1:51827/callback",
+    "last_refresh": "2000-01-01T00:00:00Z",
+    "auth_mode": "oauth_pkce",
+}
+
+
+def _seed_xai_oauth_state(
+    hermes_home: Path, state: dict, *, active_provider: str = "xai-oauth"
+) -> None:
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_store = {
+        "version": 1,
+        "active_provider": active_provider,
+        "providers": {"xai-oauth": state},
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store, indent=2))
+
+
+def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terminal refresh failure (relogin_required=True, code=xai_refresh_failed)
+    must clear access_token/refresh_token from auth.json and write a
+    last_auth_error marker so subsequent calls fail fast without a network retry.
+    Mirrors the credential_pool.py quarantine for the singleton/direct resolve path.
+    """
+    hermes_home = tmp_path / "hermes"
+    _seed_xai_oauth_state(hermes_home, dict(_STALE_XAI_OAUTH_STATE), active_provider="nous")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _terminal_refresh(tokens, **kwargs):
+        raise AuthError(
+            "xAI token refresh failed. Response: invalid_grant",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_xai_oauth_tokens", _terminal_refresh)
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_xai_oauth_runtime_credentials(force_refresh=True)
+
+    assert exc_info.value.code == "xai_refresh_failed"
+    assert exc_info.value.relogin_required is True
+
+    raw = json.loads((hermes_home / "auth.json").read_text())
+    tokens = raw["providers"]["xai-oauth"]["tokens"]
+
+    # Dead OAuth fields must be cleared.
+    assert "access_token" not in tokens
+    assert "refresh_token" not in tokens
+
+    # Non-credential metadata must be preserved.
+    assert tokens.get("token_type") == "Bearer"
+
+    # Structured diagnostic blob must be written.
+    err = raw["providers"]["xai-oauth"].get("last_auth_error")
+    assert isinstance(err, dict)
+    assert err["provider"] == "xai-oauth"
+    assert err["code"] == "xai_refresh_failed"
+    assert err["reason"] == "runtime_refresh_failure"
+    assert err["relogin_required"] is True
+    assert "at" in err
+
+    # Active provider must be unchanged.
+    assert raw["active_provider"] == "nous"
+
+
+def test_resolve_credentials_does_not_quarantine_on_transient_refresh_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transient refresh failure (relogin_required=False, e.g. 429 / 5xx) must
+    NOT trigger the quarantine path — tokens stay on disk for the next attempt.
+    """
+    hermes_home = tmp_path / "hermes"
+    _seed_xai_oauth_state(hermes_home, dict(_STALE_XAI_OAUTH_STATE))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _transient_refresh(tokens, **kwargs):
+        raise AuthError(
+            "xAI token refresh failed: connection error",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=False,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_xai_oauth_tokens", _transient_refresh)
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_xai_oauth_runtime_credentials(force_refresh=True)
+
+    assert exc_info.value.relogin_required is False
+
+    # Tokens must be untouched — no quarantine on transient errors.
+    raw = json.loads((hermes_home / "auth.json").read_text())
+    tokens = raw["providers"]["xai-oauth"]["tokens"]
+    assert tokens["refresh_token"] == "dead-refresh-token"
+    assert tokens["access_token"] == "dead-access-token"
+    assert "last_auth_error" not in raw["providers"]["xai-oauth"]
+
+
+# ---------------------------------------------------------------------------
 # Auth status surface
 # ---------------------------------------------------------------------------
 
@@ -487,6 +731,53 @@ def test_refresh_xai_oauth_pure_no_relogin_on_500(monkeypatch):
         )
     assert exc.value.code == "xai_refresh_failed"
     assert exc.value.relogin_required is False
+
+
+def test_refresh_xai_oauth_pure_403_marked_tier_denied_not_relogin(monkeypatch):
+    """403 from xAI's token endpoint is tier/entitlement, not stale tokens.
+
+    Regression test for #26847 — xAI's backend has been seen to 403
+    standard SuperGrok subscribers despite the in-app subscription
+    being active. Re-running ``hermes model`` won't help in that
+    case, so the AuthError must NOT set ``relogin_required=True``,
+    and must carry the dedicated ``xai_oauth_tier_denied`` code so
+    ``format_auth_error`` doesn't append the misleading re-auth hint.
+    """
+    response = _StubHTTPResponse(403, {"error": "permission_denied"})
+    _patch_httpx_client(monkeypatch, response)
+    with pytest.raises(AuthError) as exc:
+        refresh_xai_oauth_pure(
+            "at", "rt", token_endpoint="https://auth.x.ai/oauth2/token"
+        )
+    assert exc.value.code == "xai_oauth_tier_denied"
+    assert exc.value.relogin_required is False
+    message = str(exc.value).lower()
+    assert "403" in message
+    assert "xai_api_key" in message
+    assert "tier" in message
+
+
+def test_format_auth_error_tier_denied_does_not_suggest_relogin():
+    """``xai_oauth_tier_denied`` must not append the re-authenticate hint.
+
+    Regression for #26847: telling a tier-gated user to ``hermes model``
+    is actively wrong — re-logging in won't change xAI's allowlist
+    decision. The full message (with ``XAI_API_KEY`` fallback) is built
+    into the error itself.
+    """
+    err = AuthError(
+        "xAI token refresh failed with HTTP 403. Response: forbidden. "
+        "This OAuth account is not authorized for xAI API access — "
+        "xAI may be restricting API/OAuth use to specific SuperGrok tiers. "
+        "Set ``XAI_API_KEY`` and switch to ``provider: xai``.",
+        provider="xai-oauth",
+        code="xai_oauth_tier_denied",
+        relogin_required=False,
+    )
+    rendered = format_auth_error(err)
+    assert "re-authenticate" not in rendered.lower()
+    assert "hermes model" not in rendered.lower()
+    assert "XAI_API_KEY" in rendered
 
 
 def test_refresh_xai_oauth_pure_returns_updated_tokens(monkeypatch):

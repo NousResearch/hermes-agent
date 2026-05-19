@@ -24,6 +24,7 @@
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "flag-icons": "^7.5.0",
     "gsap": "^3.15.0",
     "leva": "^0.10.1",
     "lucide-react": "^0.577.0",

@@ -16,6 +16,7 @@ import {
   stableComposerColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
+import { composerPromptText } from '../lib/prompt.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
@@ -170,7 +171,7 @@ const ComposerPane = memo(function ComposerPane({
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
-  const promptText = sh ? '$' : ui.theme.brand.prompt
+  const promptText = composerPromptText(ui.theme.brand.prompt, ui.info?.profile_name, sh)
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth)

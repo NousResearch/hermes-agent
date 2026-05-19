@@ -3474,7 +3474,7 @@ class GatewayRunner:
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
         except Exception:
-            logger.debug(
+            logger.warning(
                 "plugin discovery failed at gateway startup", exc_info=True,
             )
 

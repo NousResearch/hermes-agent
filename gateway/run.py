@@ -949,6 +949,9 @@ _NOX_ACTIVE_PHASE_STATUSES = {
     "awaiting_approval",
     "awaiting_nox_pm_approval",
 }
+# Plain text in a project employee topic while a run is active/parked should
+# steer or amend that run, not start an unrelated main chat in the worker topic.
+_NOX_LIVE_WORKER_STATUSES = set(_NOX_ACTIVE_PHASE_STATUSES)
 
 _NOX_PROJECT_RUN_MARKERS: tuple[str, ...] = (
     "запусти",
@@ -1728,6 +1731,12 @@ class GatewayRunner:
         import threading as _threading
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
+        # Hidden Nox project-worker agents keyed by durable run/task id.
+        # These worker turns are spawned outside the normal gateway session
+        # loop, so `_running_agents` cannot be used for live steer.
+        self._nox_worker_agents_by_run_id: Dict[str, Any] = {}
+        self._nox_worker_agents_by_task_id: Dict[str, Any] = {}
+        self._nox_worker_agents_lock = _threading.RLock()
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
@@ -2642,6 +2651,223 @@ class GatewayRunner:
         self._save_nox_phase_runs(runs)
         return state
 
+    def _refresh_nox_phase_state(self, run_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Reload durable run state before building worker prompts.
+
+        Background plan/phase tasks are scheduled with a state snapshot. Live
+        amendments can arrive after scheduling but before the worker builds its
+        prompt, so refresh from disk and preserve any newer fields.
+        """
+        try:
+            fresh = self._load_nox_phase_runs().get(str(run_id))
+        except Exception:
+            fresh = None
+        if isinstance(fresh, dict):
+            merged = dict(state or {})
+            merged.update(fresh)
+            return merged
+        return dict(state or {})
+
+    def _ensure_nox_worker_agent_registry(self) -> None:
+        if not isinstance(getattr(self, "_nox_worker_agents_by_run_id", None), dict):
+            self._nox_worker_agents_by_run_id = {}
+        if not isinstance(getattr(self, "_nox_worker_agents_by_task_id", None), dict):
+            self._nox_worker_agents_by_task_id = {}
+        if getattr(self, "_nox_worker_agents_lock", None) is None:
+            self._nox_worker_agents_lock = threading.RLock()
+
+    def _register_nox_worker_agent(
+        self,
+        *,
+        run_id: Optional[str],
+        task_id: str,
+        agent: Any,
+    ) -> None:
+        self._ensure_nox_worker_agent_registry()
+        lock = self._nox_worker_agents_lock
+        with lock:
+            if run_id:
+                self._nox_worker_agents_by_run_id[str(run_id)] = agent
+            if task_id:
+                self._nox_worker_agents_by_task_id[str(task_id)] = agent
+
+    def _release_nox_worker_agent(
+        self,
+        *,
+        run_id: Optional[str],
+        task_id: str,
+        agent: Any,
+    ) -> None:
+        self._ensure_nox_worker_agent_registry()
+        lock = self._nox_worker_agents_lock
+        with lock:
+            if run_id and self._nox_worker_agents_by_run_id.get(str(run_id)) is agent:
+                self._nox_worker_agents_by_run_id.pop(str(run_id), None)
+            if task_id and self._nox_worker_agents_by_task_id.get(str(task_id)) is agent:
+                self._nox_worker_agents_by_task_id.pop(str(task_id), None)
+
+    def _nox_worker_agent_for_run(self, run_id: str) -> Optional[Any]:
+        self._ensure_nox_worker_agent_registry()
+        lock = self._nox_worker_agents_lock
+        with lock:
+            return self._nox_worker_agents_by_run_id.get(str(run_id))
+
+    def _nox_live_steer_text(self, event: MessageEvent, message_text: str) -> str:
+        text = str(getattr(event, "text", "") or "").strip()
+        if not text:
+            text = self._strip_nox_gateway_author_prefix(message_text)
+        text = (text or "").strip()
+        try:
+            from agent.redact import redact_sensitive_text
+            text = redact_sensitive_text(text)
+        except Exception:
+            pass
+        if len(text) > 3000:
+            text = text[:3000].rstrip() + "…"
+        return text
+
+    def _nox_live_steer_payload(
+        self,
+        *,
+        run_id: str,
+        state: Dict[str, Any],
+        amendment: Dict[str, Any],
+    ) -> str:
+        return (
+            "LIVE STEER / USER AMENDMENT\n"
+            f"run_id: {run_id}\n"
+            f"project: {state.get('display') or state.get('project') or ''}\n"
+            f"phase_index: {state.get('phase_index') or 0}\n"
+            f"message_id: {amendment.get('message_id') or ''}\n"
+            "Instruction from Danya; incorporate immediately if still relevant:\n"
+            f"{amendment.get('text') or ''}"
+        )
+
+    def _find_nox_live_worker_run(
+        self,
+        *,
+        source: SessionSource,
+        message_text: str,
+    ) -> tuple[Optional[str], Optional[Dict[str, Any]], Optional[str]]:
+        runs = self._load_nox_phase_runs()
+        if not runs:
+            return None, None, None
+        raw_lower = (message_text or "").lower()
+        normalized = self._nox_bashnya_normalize_text(message_text)
+        explicit_run_id = None
+        for run_id in runs:
+            run_id_text = str(run_id or "")
+            if not run_id_text:
+                continue
+            if run_id_text.lower() in raw_lower or self._nox_bashnya_normalize_text(run_id_text) in normalized:
+                explicit_run_id = run_id_text
+                break
+        chat_id = str(source.chat_id or "")
+        thread_id = str(source.thread_id or "")
+        candidates: list[tuple[str, Dict[str, Any]]] = []
+        for run_id, state in runs.items():
+            if str(state.get("status") or "") not in _NOX_LIVE_WORKER_STATUSES:
+                continue
+            if explicit_run_id and str(run_id) != explicit_run_id:
+                continue
+            employee_match = (
+                chat_id == str(state.get("employee_chat_id") or "")
+                and thread_id == str(state.get("employee_thread_id") or "")
+            )
+            if employee_match:
+                candidates.append((str(run_id), state))
+        if not candidates:
+            return None, None, None
+        if len(candidates) > 1 and not explicit_run_id:
+            ids = ", ".join(run_id for run_id, _ in candidates[:5])
+            return None, None, f"Нужен run_id: в этом worker-топике несколько активных runs ({ids})."
+        candidates.sort(key=lambda item: str(item[1].get("updated_at") or ""), reverse=True)
+        return candidates[0][0], candidates[0][1], None
+
+    def _append_nox_live_amendment(
+        self,
+        *,
+        run_id: str,
+        state: Dict[str, Any],
+        event: MessageEvent,
+        text: str,
+        delivery: str,
+        delivery_error: Optional[str] = None,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        now = self._nox_now_iso()
+        amendment_id = f"amend-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{os.urandom(2).hex()}"
+        amendment: Dict[str, Any] = {
+            "id": amendment_id,
+            "created_at": now,
+            "source": "telegram",
+            "chat_id": str(getattr(event.source, "chat_id", "") or ""),
+            "thread_id": str(getattr(event.source, "thread_id", "") or ""),
+            "message_id": str(getattr(event, "message_id", "") or ""),
+            "user_id": str(getattr(event.source, "user_id", "") or ""),
+            "user_name": str(getattr(event.source, "user_name", "") or ""),
+            "text": text,
+            "delivery": delivery,
+        }
+        if delivery_error:
+            amendment["delivery_error"] = delivery_error
+        runs = self._load_nox_phase_runs()
+        current = dict(runs.get(run_id) or state or {})
+        amendments = current.get("amendments")
+        if not isinstance(amendments, list):
+            amendments = []
+        amendments.append(amendment)
+        current["amendments"] = amendments
+        current["last_amendment_at"] = now
+        current["run_id"] = run_id
+        current["updated_at"] = now
+        runs[run_id] = current
+        self._save_nox_phase_runs(runs)
+        return current, amendment
+
+    def _update_nox_live_amendment_delivery(
+        self,
+        *,
+        run_id: str,
+        amendment_id: str,
+        delivery: str,
+        delivery_error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        runs = self._load_nox_phase_runs()
+        state = dict(runs.get(run_id) or {})
+        amendments = state.get("amendments")
+        if isinstance(amendments, list):
+            for item in amendments:
+                if isinstance(item, dict) and item.get("id") == amendment_id:
+                    item["delivery"] = delivery
+                    item["delivered_at"] = self._nox_now_iso()
+                    if delivery_error:
+                        item["delivery_error"] = delivery_error
+                    else:
+                        item.pop("delivery_error", None)
+                    break
+        state["updated_at"] = self._nox_now_iso()
+        runs[run_id] = state
+        self._save_nox_phase_runs(runs)
+        return state
+
+    def _render_nox_live_amendments(self, state: Dict[str, Any]) -> str:
+        amendments = state.get("amendments")
+        if not isinstance(amendments, list) or not amendments:
+            return ""
+        lines = ["Live amendments / user steering:"]
+        for item in amendments[-12:]:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            if len(text) > 1200:
+                text = text[:1200].rstrip() + "…"
+            stamp = str(item.get("created_at") or "")
+            delivery = str(item.get("delivery") or "saved")
+            lines.append(f"- [{stamp}] ({delivery}) {text}")
+        return "\n".join(lines) if len(lines) > 1 else ""
+
     def _redact_nox_goal_for_state(self, text: str) -> str:
         goal = (text or "").strip()
         try:
@@ -2803,12 +3029,15 @@ class GatewayRunner:
         return next_phase, task_id, updated
 
     def _build_nox_worker_plan_prompt(self, state: Dict[str, Any]) -> str:
+        amendments = self._render_nox_live_amendments(state)
+        amendments_block = f"\n{amendments}\n\n" if amendments else ""
         return (
             "Ты работаешь как Nox project employee lane, НЕ как Башня управления.\n"
             "Сейчас нужен только ТЗ/план, без выполнения фаз.\n\n"
             f"run_id: {state.get('run_id')}\n"
             f"Проект: {state.get('display')}\n"
             f"Исходная задача:\n{state.get('goal')}\n\n"
+            f"{amendments_block}"
             "Сделай короткий рабочий план в формате:\n"
             "1. Цель и критерий готовности.\n"
             "2. Scope / ограничения / риски.\n"
@@ -2821,6 +3050,8 @@ class GatewayRunner:
             "- Заверши строкой: `План готов для Nox PM review`.")
 
     def _build_nox_worker_phase_prompt(self, state: Dict[str, Any], phase_number: int) -> str:
+        amendments = self._render_nox_live_amendments(state)
+        amendments_block = f"\n{amendments}\n\n" if amendments else ""
         return (
             "Ты работаешь в project employee lane. Выполни только одну утверждённую фазу.\n\n"
             f"run_id: {state.get('run_id')}\n"
@@ -2828,6 +3059,7 @@ class GatewayRunner:
             f"Фаза к выполнению: {phase_number}\n\n"
             f"Исходная задача:\n{state.get('goal')}\n\n"
             f"Утверждённый план:\n{state.get('plan') or '(план не сохранён)'}\n\n"
+            f"{amendments_block}"
             "Правила выполнения:\n"
             "- Выполни только эту фазу, не переходи к следующей сам.\n"
             "- Safe scoped edits/checks allowed; destructive/high-risk только если явно уже утверждено Даней.\n"
@@ -2866,6 +3098,7 @@ class GatewayRunner:
         source: SessionSource,
         task_id: str,
         max_iterations: int,
+        run_id: Optional[str] = None,
     ) -> str:
         """Run one hidden worker agent turn and return its final text."""
         from run_agent import AIAgent
@@ -2917,6 +3150,7 @@ class GatewayRunner:
                 session_db=self._session_db,
                 fallback_model=self._fallback_model,
             )
+            self._register_nox_worker_agent(run_id=run_id, task_id=task_id, agent=agent)
             try:
                 result = agent.run_conversation(user_message=prompt, task_id=task_id)
                 response = result.get("final_response", "") if result else ""
@@ -2924,6 +3158,7 @@ class GatewayRunner:
                     response = f"Error: {result['error']}"
                 return response or "(No response generated)"
             finally:
+                self._release_nox_worker_agent(run_id=run_id, task_id=task_id, agent=agent)
                 self._cleanup_agent_resources(agent)
 
         return await self._run_in_executor_with_context(run_sync)
@@ -2967,6 +3202,7 @@ class GatewayRunner:
     ) -> None:
         del route  # route is captured for monkeypatch/test symmetry; state is source of truth.
         try:
+            state = self._refresh_nox_phase_state(run_id, state)
             try:
                 max_turns = int(os.getenv("NOX_WORKER_PLAN_MAX_TURNS", str(_NOX_WORKER_PLAN_MAX_TURNS_DEFAULT)))
             except (TypeError, ValueError):
@@ -2978,6 +3214,7 @@ class GatewayRunner:
                 source=source,
                 task_id=task_id,
                 max_iterations=max(1, max_turns),
+                run_id=run_id,
             )
             phase_count = self._extract_nox_plan_phase_count(plan)
             human_reason = self._nox_human_approval_reason(state.get("goal", ""), plan)
@@ -3080,6 +3317,8 @@ class GatewayRunner:
         del route
         phase_number = int(state.get("phase_index") or 1)
         try:
+            state = self._refresh_nox_phase_state(run_id, state)
+            phase_number = int(state.get("phase_index") or 1)
             try:
                 max_turns = int(os.getenv("NOX_WORKER_PHASE_MAX_TURNS", str(_NOX_WORKER_PHASE_MAX_TURNS_DEFAULT)))
             except (TypeError, ValueError):
@@ -3091,6 +3330,7 @@ class GatewayRunner:
                 source=source,
                 task_id=task_id,
                 max_iterations=max(1, max_turns),
+                run_id=run_id,
             )
             phase_count = int(state.get("phase_count") or 1)
             next_phase = phase_number + 1
@@ -3368,6 +3608,86 @@ class GatewayRunner:
             f"Куда: {updated.get('topic_name')}\n"
             f"task_id: `{task_id}`\n"
             "Gate: дальше Nox PM продолжит safe-фазы сам; Даню спрошу только при риске."
+        )
+
+    async def _maybe_handle_nox_worker_live_steer(
+        self,
+        event: MessageEvent,
+        message_text: str,
+    ) -> Optional[str]:
+        """Persist/steer plain project-employee follow-ups into the active worker run.
+
+        This is the Telegram-topic equivalent of `/steer`: while a hidden
+        project worker is planning/running (or parked on a gate), Danya's
+        follow-up in the employee topic amends that run instead of starting a
+        fresh main LLM session in the same topic.
+        """
+        source = getattr(event, "source", None)
+        if source is None or source.platform != Platform.TELEGRAM:
+            return None
+        try:
+            profile = self._active_profile_name()
+        except Exception:
+            profile = "default"
+        if str(profile or "default") != _NOX_BASHNYA_PROFILE:
+            return None
+        if event.get_command():
+            return None
+        if not self._nox_project_employee_route_for_source(source):
+            return None
+        # Approval commands are handled by _maybe_handle_nox_worker_approval
+        # just before this hook.  Keep this guard for direct unit calls too.
+        if self._nox_worker_approval_command_text(str(getattr(event, "text", "") or ""), message_text):
+            return None
+        steer_text = self._nox_live_steer_text(event, message_text)
+        if not steer_text:
+            return None
+        run_id, state, error = self._find_nox_live_worker_run(source=source, message_text=steer_text)
+        if error:
+            return f"Нужен Даня: {error}"
+        if not run_id or not state:
+            return None
+        state, amendment = self._append_nox_live_amendment(
+            run_id=run_id,
+            state=state,
+            event=event,
+            text=steer_text,
+            delivery="saved_for_worker",
+        )
+        delivery = "saved_for_worker"
+        agent = self._nox_worker_agent_for_run(run_id)
+        if agent is not None and hasattr(agent, "steer"):
+            payload = self._nox_live_steer_payload(run_id=run_id, state=state, amendment=amendment)
+            try:
+                accepted = bool(agent.steer(payload))
+            except Exception as exc:
+                delivery = "saved_for_worker"
+                state = self._update_nox_live_amendment_delivery(
+                    run_id=run_id,
+                    amendment_id=str(amendment.get("id") or ""),
+                    delivery=delivery,
+                    delivery_error=str(exc),
+                )
+                logger.warning("Nox live steer failed for %s: %s", run_id, exc)
+            else:
+                if accepted:
+                    delivery = "delivered_live"
+                    state = self._update_nox_live_amendment_delivery(
+                        run_id=run_id,
+                        amendment_id=str(amendment.get("id") or ""),
+                        delivery=delivery,
+                    )
+        if delivery == "delivered_live":
+            return (
+                "Усвоил прямо сейчас: live steer доставлен worker'у\n"
+                f"run_id: `{run_id}`\n"
+                f"Куда: {state.get('topic_name') or 'project employee lane'}"
+            )
+        return (
+            "Принял: сохранил amendment для текущего worker-run\n"
+            f"run_id: `{run_id}`\n"
+            f"Куда: {state.get('topic_name') or 'project employee lane'}\n"
+            "Доставка: worker подхватит из durable ledger на следующем шаге/после рестарта."
         )
 
     def _build_nox_project_employee_packet(
@@ -9940,6 +10260,10 @@ class GatewayRunner:
         _nox_worker_approval = await self._maybe_handle_nox_worker_approval(event, message_text)
         if _nox_worker_approval is not None:
             return _nox_worker_approval
+
+        _nox_worker_live_steer = await self._maybe_handle_nox_worker_live_steer(event, message_text)
+        if _nox_worker_live_steer is not None:
+            return _nox_worker_live_steer
 
         # Nox v2 Башня coordinator router: known heavy project tasks must be
         # packeted to the mapped `<Project> · Сотрудник` topic before the

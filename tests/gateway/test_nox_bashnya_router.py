@@ -178,6 +178,8 @@ def _make_runner(source: SessionSource, adapter: CaptureAdapter) -> Any:
     runner._reasoning_config = None
     runner._service_tier = None
     runner._background_tasks = set()
+    runner._nox_worker_agents_by_run_id = {}
+    runner._nox_worker_agents_by_task_id = {}
     runner._active_profile_name = lambda: "nox-v2"
     runner._is_telegram_topic_lane = lambda _source: False
     runner._set_session_env = lambda _context: []
@@ -729,6 +731,176 @@ async def test_project_employee_approval_without_matching_run_stops_before_agent
     assert "Нет worker-фазы" in reply
     assert "Ryadom · Сотрудник" in reply
     assert runner._load_nox_phase_runs()["meta-run"]["status"] == "awaiting_approval"
+
+
+class FakeSteerAgent:
+    def __init__(self) -> None:
+        self.steers: list[str] = []
+
+    def steer(self, text: str) -> bool:
+        self.steers.append(text)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_employee_live_steer_delivers_to_running_worker_agent_and_persists_amendment(bashnya_routes_path):
+    """Plain text in `<Project> · Сотрудник` during an active worker run is live-steered, not run as a new chat."""
+    event = _make_employee_event("усвой прямо сейчас: не коммить, только покажи report")
+    runner = _make_runner(event.source, CaptureAdapter())
+    runner._save_nox_phase_runs(
+        {
+            "run-live": {
+                "run_id": "run-live",
+                "status": "running_phase",
+                "project": "metaauto",
+                "display": "MetaAuto",
+                "goal": "почини metaauto импорты",
+                "plan": "Фаза 1: диагностика",
+                "phase_index": 1,
+                "phase_count": 1,
+                "phase_task_id": "phase-task-id",
+                "bashnya_chat_id": BASHNYA_CHAT_ID,
+                "bashnya_thread_id": BASHNYA_THREAD_ID,
+                "employee_chat_id": BASHNYA_CHAT_ID,
+                "employee_thread_id": "31",
+                "topic_name": "MetaAuto · Сотрудник",
+            }
+        }
+    )
+    fake_agent = FakeSteerAgent()
+    runner._nox_worker_agents_by_run_id = {"run-live": fake_agent}
+
+    reply = await runner._maybe_handle_nox_worker_live_steer(event, "[Danya] " + event.text)
+
+    assert "Усвоил прямо сейчас" in reply
+    assert "run-live" in reply
+    assert fake_agent.steers, "active worker agent must receive a live steer"
+    assert "не коммить" in fake_agent.steers[0]
+    assert "run_id: run-live" in fake_agent.steers[0]
+    runs = runner._load_nox_phase_runs()
+    amendment = runs["run-live"]["amendments"][-1]
+    assert amendment["delivery"] == "delivered_live"
+    assert amendment["message_id"] == "employee-msg-1"
+    assert "только покажи report" in amendment["text"]
+
+
+@pytest.mark.asyncio
+async def test_employee_live_steer_without_registered_worker_is_saved_and_blocks_main_agent(bashnya_routes_path):
+    """If the hidden worker is starting/restarted, employee follow-up is still stored as run amendment and does not hit the main LLM."""
+    event = _make_employee_event("добавь ограничение: без production deploy")
+    adapter = CaptureAdapter()
+    runner = _make_runner(event.source, adapter)
+    runner._save_nox_phase_runs(
+        {
+            "run-planning": {
+                "run_id": "run-planning",
+                "status": "planning",
+                "project": "metaauto",
+                "display": "MetaAuto",
+                "goal": "почини metaauto импорты",
+                "phase_index": 0,
+                "phase_count": 0,
+                "bashnya_chat_id": BASHNYA_CHAT_ID,
+                "bashnya_thread_id": BASHNYA_THREAD_ID,
+                "employee_chat_id": BASHNYA_CHAT_ID,
+                "employee_thread_id": "31",
+                "topic_name": "MetaAuto · Сотрудник",
+            }
+        }
+    )
+
+    async def fail_if_agent_runs(**_kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("employee live steer must be handled before _run_agent")
+
+    runner._run_agent = fail_if_agent_runs
+
+    reply = await runner._handle_message_with_agent(
+        event,
+        event.source,
+        build_session_key(event.source),
+        run_generation=1,
+    )
+
+    assert "сохранил amendment" in reply
+    assert "run-planning" in reply
+    runs = runner._load_nox_phase_runs()
+    assert runs["run-planning"]["amendments"][-1]["delivery"] == "saved_for_worker"
+    assert "без production deploy" in runs["run-planning"]["amendments"][-1]["text"]
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_employee_live_steer_multiple_active_runs_requires_explicit_run_id(bashnya_routes_path):
+    """Ambiguous employee-topic amendments stop until Danya names the target run_id."""
+    event = _make_employee_event("добавь это ограничение в текущую фазу")
+    runner = _make_runner(event.source, CaptureAdapter())
+    base_state = {
+        "status": "running_phase",
+        "project": "metaauto",
+        "display": "MetaAuto",
+        "goal": "почини metaauto импорты",
+        "phase_index": 1,
+        "phase_count": 2,
+        "bashnya_chat_id": BASHNYA_CHAT_ID,
+        "bashnya_thread_id": BASHNYA_THREAD_ID,
+        "employee_chat_id": BASHNYA_CHAT_ID,
+        "employee_thread_id": "31",
+        "topic_name": "MetaAuto · Сотрудник",
+    }
+    runner._save_nox_phase_runs(
+        {
+            "run-a": {**base_state, "run_id": "run-a", "updated_at": "2026-05-19T12:00:00"},
+            "run-b": {**base_state, "run_id": "run-b", "updated_at": "2026-05-19T12:01:00"},
+        }
+    )
+
+    ambiguous_reply = await runner._maybe_handle_nox_worker_live_steer(event, "[Danya] " + event.text)
+
+    assert "Нужен Даня" in ambiguous_reply
+    assert "несколько активных runs" in ambiguous_reply
+    runs = runner._load_nox_phase_runs()
+    assert "amendments" not in runs["run-a"]
+    assert "amendments" not in runs["run-b"]
+
+    explicit_event = _make_employee_event("run-a: применяй только к первой фазе")
+    explicit_reply = await runner._maybe_handle_nox_worker_live_steer(
+        explicit_event,
+        "[Danya] " + explicit_event.text,
+    )
+
+    assert "сохранил amendment" in explicit_reply
+    runs = runner._load_nox_phase_runs()
+    assert runs["run-a"]["amendments"][-1]["text"] == "run-a: применяй только к первой фазе"
+    assert "amendments" not in runs["run-b"]
+
+
+def test_worker_phase_prompt_includes_saved_live_amendments(bashnya_routes_path):
+    """Saved live-steer amendments are injected into later worker prompts after restarts/gates."""
+    event = _make_employee_event("placeholder")
+    runner = _make_runner(event.source, CaptureAdapter())
+    state = {
+        "run_id": "run-with-amendment",
+        "status": "running_phase",
+        "project": "metaauto",
+        "display": "MetaAuto",
+        "goal": "почини metaauto импорты",
+        "plan": "Фаза 1: диагностика",
+        "phase_index": 1,
+        "phase_count": 1,
+        "amendments": [
+            {
+                "id": "a1",
+                "created_at": "2026-05-19T12:00:00",
+                "text": "не коммить; только report",
+                "delivery": "saved_for_worker",
+            }
+        ],
+    }
+
+    prompt = runner._build_nox_worker_phase_prompt(state, 1)
+
+    assert "Live amendments / user steering" in prompt
+    assert "не коммить; только report" in prompt
 
 
 @pytest.mark.asyncio

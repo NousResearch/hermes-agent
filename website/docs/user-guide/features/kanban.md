@@ -337,6 +337,13 @@ Any profile that should be able to work kanban tasks must load the `kanban-worke
 3. Call `kanban_heartbeat(note="...")` every few minutes during long operations.
 4. Complete with `kanban_complete(summary="...", metadata={...})`, or `kanban_block(reason="...")` if stuck.
 
+That final `kanban_complete` / `kanban_block` call is part of the worker
+protocol. If the worker process exits with status 0 while the task is still
+`running`, the dispatcher treats that as a protocol violation, emits a
+`protocol_violation` event, and auto-blocks the task on the next tick instead
+of respawning it into the same loop. This usually means the model wrote a
+plain-text answer and exited without using the Kanban tool surface.
+
 `kanban-worker` is a bundled skill, synced into every profile during install and
 update — there is no separate Skills Hub install step. Verify it is present in
 whichever profile you use for kanban workers (`researcher`, `writer`, `ops`,
@@ -826,6 +833,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `crashed` | `{pid, claimer}` | Worker PID no longer alive but TTL hadn't expired yet. |
 | `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill}` | `max_runtime_seconds` exceeded; dispatcher SIGTERM'd (then SIGKILL'd after 5 s grace) and re-queued. |
 | `spawn_failed` | `{error, failures}` | One spawn attempt failed (missing PATH, workspace unmountable, …). Counter increments; task returns to `ready` for retry. |
+| `protocol_violation` | `{pid, claimer, exit_code}` | Worker exited successfully while the task was still `running`, usually because it answered without calling `kanban_complete` or `kanban_block`. The dispatcher also emits `gave_up` and auto-blocks immediately instead of retrying. |
 | `gave_up` | `{failures, effective_limit, limit_source, error}` | Circuit breaker fired after N consecutive non-successful attempts. Task auto-blocks with the last error. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. |
 
 `hermes kanban tail <id>` shows these for a single task. `hermes kanban watch` streams them board-wide.

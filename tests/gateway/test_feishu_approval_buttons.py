@@ -209,6 +209,101 @@ class TestFeishuExecApproval:
 
 
 # ===========================================================================
+# send_update_prompt — interactive card with buttons
+# ===========================================================================
+
+class TestFeishuUpdatePrompt:
+    """Test send_update_prompt sends an interactive card."""
+
+    @pytest.mark.asyncio
+    async def test_sends_interactive_card(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_up_001"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_update_prompt(
+                chat_id="oc_12345",
+                prompt="Restore stashed changes after update?",
+                default="y",
+                session_key="agent:main:feishu:group:oc_12345",
+                metadata={"thread_id": "th_1"},
+            )
+
+        assert result.success is True
+        assert result.message_id == "msg_up_001"
+
+        kwargs = mock_send.call_args[1]
+        assert kwargs["chat_id"] == "oc_12345"
+        assert kwargs["msg_type"] == "interactive"
+        assert kwargs["metadata"] == {"thread_id": "th_1"}
+
+        card = json.loads(kwargs["payload"])
+        assert card["header"]["template"] == "orange"
+        assert "Restore stashed changes after update?" in card["elements"][0]["content"]
+        assert "Default: `y`" in card["elements"][0]["content"]
+        actions = card["elements"][1]["actions"]
+        assert [a["value"]["hermes_update_prompt_action"] for a in actions] == ["y", "n"]
+
+    @pytest.mark.asyncio
+    async def test_stores_prompt_state(self):
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_up_002"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            await adapter.send_update_prompt(
+                chat_id="oc_12345",
+                prompt="Continue update?",
+                session_key="my-session-key",
+            )
+
+        assert len(adapter._update_prompt_state) == 1
+        prompt_id = list(adapter._update_prompt_state.keys())[0]
+        state = adapter._update_prompt_state[prompt_id]
+        assert state["session_key"] == "my-session-key"
+        assert state["message_id"] == "msg_up_002"
+        assert state["chat_id"] == "oc_12345"
+
+    @pytest.mark.asyncio
+    async def test_not_connected(self):
+        adapter = _make_adapter()
+        adapter._client = None
+        result = await adapter.send_update_prompt(
+            chat_id="oc_12345",
+            prompt="Continue update?",
+            session_key="s",
+        )
+        assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_send_failure_returns_error(self):
+        adapter = _make_adapter()
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            side_effect=TimeoutError("timed out"),
+        ):
+            result = await adapter.send_update_prompt(
+                chat_id="oc_12345",
+                prompt="Continue update?",
+                session_key="s",
+            )
+
+        assert result.success is False
+        assert "timed out" in (result.error or "")
+
+
+# ===========================================================================
 # _resolve_approval — approval state pop + gateway resolution
 # ===========================================================================
 
@@ -442,3 +537,166 @@ class TestCardActionCallbackResponse:
         card = response.card.data
         assert "Old Name" not in card["elements"][0]["content"]
         assert "ou_expired" in card["elements"][0]["content"]
+
+    def test_returns_card_for_update_prompt_yes(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._update_prompt_state[1] = {
+            "session_key": "sess-up-1",
+            "message_id": "msg_up_003",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 1},
+            open_id="ou_bob",
+        )
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "answered: Yes" in card["header"]["title"]["content"]
+        assert "Bob" in card["elements"][0]["content"]
+
+    def test_returns_card_for_update_prompt_no(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._update_prompt_state[2] = {
+            "session_key": "sess-up-2",
+            "message_id": "msg_up_004",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "n", "update_prompt_id": 2},
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "red"
+        assert "answered: No" in card["header"]["title"]["content"]
+
+    def test_ignores_missing_update_prompt_id(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        data = _make_card_action_data({"hermes_update_prompt_action": "y"})
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
+    def test_already_resolved_update_prompt_returns_no_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 99},
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
+    def test_update_prompt_schedule_failure_returns_no_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._update_prompt_state[1] = {
+            "session_key": "sess-up-1",
+            "message_id": "msg_up_005",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 1},
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=RuntimeError("loop closed")):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+
+    def test_update_prompt_unauthorized_operator_returns_no_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._update_prompt_state[1] = {
+            "session_key": "sess-up-1",
+            "message_id": "msg_up_006",
+            "chat_id": "oc_12345",
+        }
+        adapter._allowed_group_users = {"ou_allowed"}
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 1},
+            open_id="ou_intruder",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
+
+class TestResolveUpdatePrompt:
+    """Test update prompt resolution persists the response file."""
+
+    @pytest.mark.asyncio
+    async def test_writes_response_file(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+        adapter._update_prompt_state[1] = {
+            "session_key": "sess-up-1",
+            "message_id": "msg_up_003",
+            "chat_id": "oc_12345",
+        }
+
+        await adapter._resolve_update_prompt(1, "y", "Alice")
+
+        assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
+        assert 1 not in adapter._update_prompt_state
+
+    @pytest.mark.asyncio
+    async def test_overwrites_existing_response_file(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / ".update_response").write_text("n")
+        adapter._update_prompt_state[2] = {
+            "session_key": "sess-up-2",
+            "message_id": "msg_up_004",
+            "chat_id": "oc_12345",
+        }
+
+        await adapter._resolve_update_prompt(2, "y", "Alice")
+
+        assert (home / ".update_response").read_text() == "y"
+
+    @pytest.mark.asyncio
+    async def test_unknown_prompt_id_drops_silently(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+
+        await adapter._resolve_update_prompt(99, "n", "Nobody")
+
+        assert not (tmp_path / ".hermes" / ".update_response").exists()

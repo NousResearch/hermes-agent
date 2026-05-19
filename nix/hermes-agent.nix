@@ -1,7 +1,9 @@
 # nix/hermes-agent.nix — Overridable Hermes Agent package
 #
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
-# Users override via: pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+# Users override via:
+#   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+#   pkgs.hermes-agent.override { extraDependencyGroups = [ "hindsight" ]; }
 {
   lib,
   stdenv,
@@ -25,11 +27,13 @@
   rev ? null,
   # Overridable parameters
   extraPythonPackages ? [ ],
+  extraDependencyGroups ? [ ],
 }:
 let
   nodejs = nodejs_22;
   hermesVenv = callPackage ./python.nix {
     inherit uv2nix pyproject-nix pyproject-build-systems;
+    dependency-groups = [ "all" ] ++ extraDependencyGroups;
   };
 
   hermesNpmLib = callPackage ./lib.nix {
@@ -188,7 +192,6 @@ stdenv.mkDerivation {
         source .venv/bin/activate
         uv pip install -e ".[all]"
         [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
-        [ -d tinker-atropos ] && uv pip install -e ./tinker-atropos 2>/dev/null || true
         mkdir -p .nix-stamps
         echo "$STAMP_VALUE" > "$STAMP"
       else

@@ -19,6 +19,7 @@ Execute plans via delegate_task subagents (2-stage review).
 | Version | `1.1.0` |
 | Author | Hermes Agent (adapted from obra/superpowers) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `delegation`, `subagent`, `implementation`, `workflow`, `parallel` |
 | Related skills | [`writing-plans`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans), [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) |
 

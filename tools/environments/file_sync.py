@@ -284,12 +284,15 @@ class FileSyncManager:
             # Windows: no flock — run without serialization
             self._sync_back_impl()
             return
-        lock_fd = open(lock_path, "w")
+        lock_fd = open(lock_path, "w", encoding="utf-8")
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             self._sync_back_impl()
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
             lock_fd.close()
 
     def _sync_back_impl(self) -> None:

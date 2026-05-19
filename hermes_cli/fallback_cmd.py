@@ -307,7 +307,7 @@ def cmd_fallback_clear(args) -> None:  # noqa: ARG001
         print()
         print("  Cancelled.")
         return
-    if resp not in ("y", "yes"):
+    if resp not in {"y", "yes"}:
         print("  Cancelled — no change.")
         return
 
@@ -347,11 +347,11 @@ def _numbered_pick(question: str, choices: List[str]) -> Optional[int]:
 def cmd_fallback(args) -> None:
     """Top-level dispatcher for ``hermes fallback [subcommand]``."""
     sub = getattr(args, "fallback_command", None)
-    if sub in (None, "", "list", "ls"):
+    if sub in {None, "", "list", "ls"}:
         cmd_fallback_list(args)
     elif sub == "add":
         cmd_fallback_add(args)
-    elif sub in ("remove", "rm"):
+    elif sub in {"remove", "rm"}:
         cmd_fallback_remove(args)
     elif sub == "clear":
         cmd_fallback_clear(args)

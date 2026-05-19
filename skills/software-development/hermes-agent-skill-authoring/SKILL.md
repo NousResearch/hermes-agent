@@ -4,6 +4,7 @@ description: "Author in-repo SKILL.md: frontmatter, validator, structure."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [skills, authoring, hermes-agent, conventions, skill-md]

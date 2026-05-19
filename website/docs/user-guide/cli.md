@@ -68,9 +68,12 @@ A persistent status bar sits above the input area, updating in real time:
 | Token count | Context tokens used / max context window |
 | Context bar | Visual fill indicator with color-coded thresholds |
 | Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
+| 🗜️ N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
+| ▶ N | **Active background tasks** — how many `/background` prompts are still running in the current session. Appears whenever at least one task is in flight. |
 | Duration | Elapsed session time |
+| ⚠ YOLO | **YOLO mode warning** — shown whenever `HERMES_YOLO_MODE` is on (either `hermes --yolo` at launch or `/yolo` toggled mid-session). Mirrors the banner-line warning so you can't forget you're in auto-approve mode. |
 
-The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration only) below 52.
+The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration, plus the YOLO badge when active) below 52.
 
 **Context color coding:**
 
@@ -92,7 +95,7 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Alt+Enter` or `Ctrl+J` | New line (multi-line input) |
+| `Alt+Enter`, `Ctrl+J`, or `Shift+Enter` | New line (multi-line input). `Shift+Enter` requires a terminal that distinguishes it from `Enter` — see below. On Windows Terminal, `Alt+Enter` is captured by the terminal (fullscreen toggle); use `Ctrl+Enter` or `Ctrl+J` instead. |
 | `Alt+V` | Paste an image from the clipboard when supported by the terminal |
 | `Ctrl+V` | Paste text and opportunistically attach clipboard images |
 | `Ctrl+B` | Start/stop voice recording when voice mode is enabled (`voice.record_key`, default: `ctrl+b`) |
@@ -125,6 +128,8 @@ Common examples:
 | `/voice tts` | Toggle spoken playback for Hermes replies |
 | `/reasoning high` | Increase reasoning effort |
 | `/title My Session` | Name the current session |
+| `/status` | Show session info — model/profile/tokens/duration — followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest user prompt + assistant reply). Pure local compute; no LLM call. |
+| `/sessions` | Open an interactive session picker right inside the classic CLI (same surface the TUI uses). Type to filter, arrow keys to navigate, Enter to resume. |
 
 For the full built-in CLI and messaging lists, see [Slash Commands Reference](../reference/slash-commands.md).
 
@@ -204,7 +209,7 @@ personalities:
 
 There are two ways to enter multi-line messages:
 
-1. **`Alt+Enter` or `Ctrl+J`** — inserts a new line
+1. **`Alt+Enter`, `Ctrl+J`, or `Shift+Enter`** — inserts a new line
 2. **Backslash continuation** — end a line with `\` to continue:
 
 ```
@@ -214,8 +219,21 @@ There are two ways to enter multi-line messages:
 ```
 
 :::info
-Pasting multi-line text is supported — use `Alt+Enter` or `Ctrl+J` to insert newlines, or simply paste content directly.
+Pasting multi-line text is supported — use any of the newline keys above, or simply paste content directly.
 :::
+
+### Shift+Enter compatibility
+
+Most terminals send the same byte sequence for `Enter` and `Shift+Enter` by default, so applications cannot distinguish them. Hermes recognises `Shift+Enter` only when the terminal sends a distinct sequence via the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) or xterm's `modifyOtherKeys` mode.
+
+| Terminal | Status |
+|---|---|
+| Kitty, foot, WezTerm, Ghostty | Distinct `Shift+Enter` enabled by default |
+| iTerm2 (recent), Alacritty, VS Code terminal, Warp | Supported once the Kitty protocol is enabled in settings |
+| Windows Terminal Preview 1.25+ | Supported once the Kitty protocol is enabled in settings |
+| macOS Terminal.app, stock Windows Terminal (stable) | Not supported — `Shift+Enter` is indistinguishable from `Enter` |
+
+Where the terminal cannot distinguish them, `Alt+Enter` and `Ctrl+J` continue to work everywhere. **On Windows Terminal specifically, `Alt+Enter` is captured by the terminal (toggles fullscreen) and never reaches Hermes — use `Ctrl+Enter` (delivered as `Ctrl+J`) or `Ctrl+J` directly for a newline.**
 
 ## Interrupting the Agent
 
@@ -355,7 +373,7 @@ compression:
 # Summarization model configured under auxiliary:
 auxiliary:
   compression:
-    model: "google/gemini-3-flash-preview"  # Model used for summarization
+    model: ""  # Leave empty to use the main chat model (default). Or pin a cheap fast model, e.g. "google/gemini-3-flash-preview".
 ```
 
 When compression triggers, middle turns are summarized while the first 3 and last 20 turns are always preserved.

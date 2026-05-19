@@ -128,7 +128,7 @@ def _try_gh_cli_token() -> Optional[str]:
 
     # Build a clean env so gh doesn't short-circuit on GITHUB_TOKEN / GH_TOKEN
     clean_env = {k: v for k, v in os.environ.items()
-                 if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
+                 if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
 
     for gh_path in _gh_cli_candidates():
         cmd = [gh_path, "auth", "token"]
@@ -212,9 +212,9 @@ def copilot_device_code_login(
     print("  Waiting for authorization...", end="", flush=True)
 
     # Step 3: Poll for completion
-    deadline = time.time() + timeout_seconds
+    deadline = time.monotonic() + timeout_seconds
 
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         time.sleep(interval + _DEVICE_CODE_POLL_SAFETY_MARGIN)
 
         poll_data = urllib.parse.urlencode({

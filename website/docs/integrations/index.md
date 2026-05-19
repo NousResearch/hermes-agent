@@ -56,12 +56,12 @@ See [Browser Automation](/docs/user-guide/features/browser) for setup and usage.
 Text-to-speech and speech-to-text across all messaging platforms:
 
 | Provider | Quality | Cost | API Key |
-||----------|---------|------|---------|
-|| **Edge TTS** (default) | Good | Free | None needed |
-|| **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
-|| **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
-|| **MiniMax** | Good | Paid | `MINIMAX_API_KEY` |
-|| **NeuTTS** | Good | Free | None needed |
+|----------|---------|------|---------|
+| **Edge TTS** (default) | Good | Free | None needed |
+| **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
+| **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
+| **MiniMax** | Good | Paid | `MINIMAX_API_KEY` |
+| **NeuTTS** | Good | Free | None needed |
 
 Speech-to-text supports six providers: local faster-whisper (free, runs on-device), a local command wrapper, Groq, OpenAI Whisper API, Mistral, and xAI. Voice message transcription works across Telegram, Discord, WhatsApp, and other messaging platforms. See [Voice & TTS](/docs/user-guide/features/tts) and [Voice Mode](/docs/user-guide/features/voice-mode) for details.
 
@@ -80,9 +80,9 @@ Speech-to-text supports six providers: local faster-whisper (free, runs on-devic
 
 ## Messaging Platforms
 
-Hermes runs as a gateway bot on 15+ messaging platforms, all configured through the same `gateway` subsystem:
+Hermes runs as a gateway bot on 19+ messaging platforms, all configured through the same `gateway` subsystem:
 
-- **[Telegram](/docs/user-guide/messaging/telegram)**, **[Discord](/docs/user-guide/messaging/discord)**, **[Slack](/docs/user-guide/messaging/slack)**, **[WhatsApp](/docs/user-guide/messaging/whatsapp)**, **[Signal](/docs/user-guide/messaging/signal)**, **[Matrix](/docs/user-guide/messaging/matrix)**, **[Mattermost](/docs/user-guide/messaging/mattermost)**, **[Email](/docs/user-guide/messaging/email)**, **[SMS](/docs/user-guide/messaging/sms)**, **[DingTalk](/docs/user-guide/messaging/dingtalk)**, **[Feishu/Lark](/docs/user-guide/messaging/feishu)**, **[WeCom](/docs/user-guide/messaging/wecom)**, **[WeCom Callback](/docs/user-guide/messaging/wecom-callback)**, **[Weixin](/docs/user-guide/messaging/weixin)**, **[BlueBubbles](/docs/user-guide/messaging/bluebubbles)**, **[QQ Bot](/docs/user-guide/messaging/qqbot)**, **[Home Assistant](/docs/user-guide/messaging/homeassistant)**, **[Webhooks](/docs/user-guide/messaging/webhooks)**
+- **[Telegram](/docs/user-guide/messaging/telegram)**, **[Discord](/docs/user-guide/messaging/discord)**, **[Slack](/docs/user-guide/messaging/slack)**, **[WhatsApp](/docs/user-guide/messaging/whatsapp)**, **[Signal](/docs/user-guide/messaging/signal)**, **[Matrix](/docs/user-guide/messaging/matrix)**, **[Mattermost](/docs/user-guide/messaging/mattermost)**, **[Email](/docs/user-guide/messaging/email)**, **[SMS](/docs/user-guide/messaging/sms)**, **[DingTalk](/docs/user-guide/messaging/dingtalk)**, **[Feishu/Lark](/docs/user-guide/messaging/feishu)**, **[WeCom](/docs/user-guide/messaging/wecom)**, **[WeCom Callback](/docs/user-guide/messaging/wecom-callback)**, **[Weixin](/docs/user-guide/messaging/weixin)**, **[BlueBubbles](/docs/user-guide/messaging/bluebubbles)**, **[QQ Bot](/docs/user-guide/messaging/qqbot)**, **[Yuanbao](/docs/user-guide/messaging/yuanbao)**, **[Home Assistant](/docs/user-guide/messaging/homeassistant)**, **[Microsoft Teams](/docs/user-guide/messaging/teams)**, **[Webhooks](/docs/user-guide/messaging/webhooks)**
 
 See the [Messaging Gateway overview](/docs/user-guide/messaging) for the platform comparison table and setup guide.
 
@@ -97,5 +97,4 @@ See the [Messaging Gateway overview](/docs/user-guide/messaging) for the platfor
 
 ## Training & Evaluation
 
-- **[RL Training](/docs/user-guide/features/rl-training)** — Generate trajectory data from agent sessions for reinforcement learning and model fine-tuning. Supports Atropos environments with customizable reward functions.
 - **[Batch Processing](/docs/user-guide/features/batch-processing)** — Run the agent across hundreds of prompts in parallel, generating structured ShareGPT-format trajectory data for training data generation or evaluation.

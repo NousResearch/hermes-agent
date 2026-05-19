@@ -5,6 +5,7 @@ version: 1.0.0
 requires: Blender 4.3+ (desktop instance required, headless not supported)
 author: alireza78a
 tags: [blender, 3d, animation, modeling, bpy, mcp]
+platforms: [linux, macos, windows]
 ---
 
 # Blender MCP

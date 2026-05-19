@@ -33,7 +33,7 @@ from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 # ---------------------------------------------------------------------------
 
 def _make_adapter(routes, **extra_kw) -> WebhookAdapter:
-    extra = {"host": "0.0.0.0", "port": 0, "routes": routes}
+    extra = {"host": "127.0.0.1", "port": 0, "routes": routes}
     extra.update(extra_kw)
     config = PlatformConfig(enabled=True, extra=extra)
     return WebhookAdapter(config)

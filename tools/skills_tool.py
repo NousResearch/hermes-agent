@@ -78,6 +78,7 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -365,7 +366,7 @@ def _capture_required_environment_variables(
 
 
 def _is_gateway_surface() -> bool:
-    if os.getenv("HERMES_GATEWAY_SESSION"):
+    if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
     from gateway.session_context import get_session_env
     return bool(get_session_env("HERMES_SESSION_PLATFORM"))
@@ -721,7 +722,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
 
         # Extract unique categories
         categories = sorted(
-            set(s.get("category") for s in all_skills if s.get("category"))
+            {s.get("category") for s in all_skills if s.get("category")}
         )
 
         return json.dumps(
@@ -868,6 +869,7 @@ def skill_view(
         JSON string with skill content or error message
     """
     try:
+        local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────
         # Names containing ':' are routed to the plugin skill registry.
         # Bare names fall through to the existing flat-tree scan below.
@@ -928,8 +930,12 @@ def skill_view(
                     },
                     ensure_ascii=False,
                 )
-            # Plugin itself not found — fall through to flat-tree scan
-            # which will return a normal "not found" with suggestions.
+            # Plugin itself not found — fall through to flat-tree scan.
+            # Categorized local skills also use `category:skill` in config and
+            # gateway prompts, so preserve that form and translate it to the
+            # on-disk `category/skill` path during the local scan below.
+            if bare:
+                local_category_name = f"{namespace}/{bare}"
 
         from agent.skill_utils import get_external_skills_dirs
 
@@ -951,40 +957,83 @@ def skill_view(
         skill_dir = None
         skill_md = None
 
-        # Search all dirs: local first, then external (first match wins)
+        # Collision detection: collect ALL candidates across every dir using
+        # every lookup strategy (direct path, recursive by parent dir name,
+        # legacy flat <name>.md). If more than one matches, refuse and tell
+        # the caller — silent shadowing of a local skill by a same-named
+        # external skill is a real bug class (`/skills` shows one, agent
+        # loaded the other) so we surface it loudly instead of guessing.
+        from agent.skill_utils import iter_skill_index_files
+
+        candidates: List[Tuple[Optional[Path], Path]] = []  # (skill_dir, skill_md)
+        seen_md: set = set()
+
+        def _record(sd: Optional[Path], smd: Path) -> None:
+            try:
+                key = smd.resolve()
+            except Exception:
+                key = smd
+            if key in seen_md:
+                return
+            seen_md.add(key)
+            candidates.append((sd, smd))
+
         for search_dir in all_dirs:
-            # Try direct path first (e.g., "mlops/axolotl")
+            # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
+            # at the top of the dir).
             direct_path = search_dir / name
             if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
-                skill_dir = direct_path
-                skill_md = direct_path / "SKILL.md"
-                break
+                _record(direct_path, direct_path / "SKILL.md")
             elif direct_path.with_suffix(".md").exists():
-                skill_md = direct_path.with_suffix(".md")
-                break
+                _record(None, direct_path.with_suffix(".md"))
 
-        # Search by directory name across all dirs
-        if not skill_md:
-            for search_dir in all_dirs:
-                from agent.skill_utils import iter_skill_index_files
+            # Strategy 1b: categorized form for plugin namespace fall-through
+            # (e.g., a "myplugin:explore" name with no plugin registered also
+            # tries the on-disk path "myplugin/explore").
+            if local_category_name:
+                categorized_path = search_dir / local_category_name
+                if categorized_path.is_dir() and (categorized_path / "SKILL.md").exists():
+                    _record(categorized_path, categorized_path / "SKILL.md")
+                elif categorized_path.with_suffix(".md").exists():
+                    _record(None, categorized_path.with_suffix(".md"))
 
-                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
-                    if found_skill_md.parent.name == name:
-                        skill_dir = found_skill_md.parent
-                        skill_md = found_skill_md
-                        break
-                if skill_md:
-                    break
+            # Strategy 2: recursive by directory name (catches nested skills
+            # like "foundations/runtime/explore-codebase" called by bare name).
+            for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                if found_skill_md.parent.name == name:
+                    _record(found_skill_md.parent, found_skill_md)
 
-        # Legacy: flat .md files
-        if not skill_md:
-            for search_dir in all_dirs:
-                for found_md in search_dir.rglob(f"{name}.md"):
-                    if found_md.name != "SKILL.md":
-                        skill_md = found_md
-                        break
-                if skill_md:
-                    break
+            # Strategy 3: legacy flat <name>.md files anywhere under the dir.
+            for found_md in search_dir.rglob(f"{name}.md"):
+                if found_md.name != "SKILL.md":
+                    _record(None, found_md)
+
+        if len(candidates) > 1:
+            paths = [str(smd) for _, smd in candidates]
+            logging.getLogger(__name__).warning(
+                "Skill name collision for '%s': %d candidates — %s",
+                name, len(candidates), "; ".join(paths),
+            )
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"Ambiguous skill name '{name}': {len(candidates)} skills "
+                        "match across your local skills dir and external_dirs. "
+                        "Refusing to guess — load one explicitly by its categorized path."
+                    ),
+                    "matches": paths,
+                    "hint": (
+                        "Pass the full relative path instead of the bare name "
+                        "(e.g., 'category/skill-name'), or rename one of the "
+                        "colliding skills so each name is unique."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        if candidates:
+            skill_dir, skill_md = candidates[0]
 
         if not skill_md or not skill_md.exists():
             available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
@@ -1119,7 +1168,7 @@ def skill_view(
                             available_files["assets"].append(rel)
                         elif rel.startswith("scripts/"):
                             available_files["scripts"].append(rel)
-                        elif f.suffix in [
+                        elif f.suffix in {
                             ".md",
                             ".py",
                             ".yaml",
@@ -1127,7 +1176,7 @@ def skill_view(
                             ".json",
                             ".tex",
                             ".sh",
-                        ]:
+                        }:
                             available_files["other"].append(rel)
 
                 # Remove empty categories

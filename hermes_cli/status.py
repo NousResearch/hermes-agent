@@ -141,8 +141,6 @@ def show_status(args):
         "Browser Use": "BROWSER_USE_API_KEY",  # Optional — local browser works without this
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
         "FAL": "FAL_KEY",
-        "Tinker": "TINKER_API_KEY",
-        "WandB": "WANDB_API_KEY",
         "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
@@ -261,6 +259,27 @@ def show_status(args):
     if minimax_status.get("error") and not minimax_logged_in:
         print(f"    Error:      {minimax_status.get('error')}")
 
+    # xAI OAuth — separate try/except so an import failure here cannot
+    # disrupt the already-printed Nous/Codex/Qwen/MiniMax rows above.
+    try:
+        from hermes_cli.auth import get_xai_oauth_auth_status
+        xai_oauth_status = get_xai_oauth_auth_status() or {}
+    except Exception:
+        xai_oauth_status = {}
+
+    xai_oauth_logged_in = bool(xai_oauth_status.get("logged_in"))
+    print(
+        f"  {'xAI OAuth':<12}  {check_mark(xai_oauth_logged_in)} "
+        f"{'logged in' if xai_oauth_logged_in else 'not logged in (run: hermes auth add xai-oauth)'}"
+    )
+    xai_auth_file = xai_oauth_status.get("auth_store")
+    if xai_auth_file:
+        print(f"    Auth file:  {xai_auth_file}")
+    if xai_oauth_status.get("last_refresh"):
+        print(f"    Refreshed:  {_format_iso_timestamp(xai_oauth_status.get('last_refresh'))}")
+    if xai_oauth_status.get("error") and not xai_oauth_logged_in:
+        print(f"    Error:      {xai_oauth_status.get('error')}")
+
     # =========================================================================
     # Nous Subscription Features
     # =========================================================================
@@ -367,7 +386,7 @@ def show_status(args):
         if persist is None:
             persist_enabled = bool(terminal_cfg.get("container_persistent", True))
         else:
-            persist_enabled = persist.lower() in ("1", "true", "yes", "on")
+            persist_enabled = persist.lower() in {"1", "true", "yes", "on"}
         auth_status = describe_vercel_auth()
         sdk_ok = importlib.util.find_spec("vercel") is not None
         sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[vercel]')"

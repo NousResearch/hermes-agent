@@ -84,8 +84,8 @@ Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. That
 
 ```bash
 hermes curator status         # last run, counts, pinned list, LRU top 5
-hermes curator run            # trigger a review now (background by default)
-hermes curator run --sync     # same, but block until the LLM pass finishes
+hermes curator run            # trigger a review now (blocks until the LLM pass finishes)
+hermes curator run --background  # fire-and-forget: start the LLM pass in a background thread
 hermes curator run --dry-run  # preview only — report without any mutations
 hermes curator backup         # take a manual snapshot of ~/.hermes/skills/
 hermes curator rollback       # restore from the newest snapshot
@@ -157,10 +157,10 @@ If you want to protect a specific skill from ever being touched — for example 
 
 ## Pinning a skill
 
-Pinning is a hard fence against both automated and agent-driven changes. Once a skill is pinned:
+Pinning protects a skill from deletion — both the curator's automated archive passes and the agent's `skill_manage(action="delete")` tool call. Once a skill is pinned:
 
 - The **curator** skips it during auto-transitions (`active → stale → archived`), and its LLM review pass is instructed to leave it alone.
-- The **agent's `skill_manage` tool** refuses every write action on it. Calls to `edit`, `patch`, `delete`, `write_file`, and `remove_file` return a refusal that tells the model to ask the user to run `hermes curator unpin <name>`. This prevents the agent from silently rewriting a skill mid-conversation.
+- The **agent's `skill_manage` tool** refuses `delete` on it, pointing the user at `hermes curator unpin <name>`. Patches and edits still go through, so the agent can improve a pinned skill's content as pitfalls come up without a pin/unpin/re-pin dance.
 
 Pin and unpin with:
 
@@ -173,7 +173,7 @@ The flag is stored as `"pinned": true` on the skill's entry in `~/.hermes/skills
 
 Only **agent-created** skills can be pinned — bundled and hub-installed skills are never subject to curator mutation in the first place, and `hermes curator pin` will refuse with an explanatory message if you try.
 
-If you need to update a pinned skill yourself, edit `~/.hermes/skills/<name>/SKILL.md` directly with your editor. The pin only guards the agent's tool path, not your own filesystem access.
+If you want a stronger guarantee than "no deletion" — for instance, freezing a skill's content entirely while the agent still reads it — edit `~/.hermes/skills/<name>/SKILL.md` directly with your editor. The pin guards tool-driven deletion, not your own filesystem access.
 
 ## Usage telemetry
 
@@ -216,6 +216,10 @@ Every curator run writes a timestamped directory under `~/.hermes/logs/curator/`
 ```
 
 `REPORT.md` is a quick way to see what a given run did — which skills transitioned, what the LLM reviewer said, which skills it patched. Good for auditing without having to grep `agent.log`.
+
+### Rename map in the summary
+
+If a run consolidated multiple skills under an umbrella (or merged near-duplicates), the user-visible summary printed at the end of the run includes an explicit rename map showing every `old-name → new-name` pair the curator applied. This is in addition to per-skill transition lines, so when a wave of renames lands you can spot them at a glance without diffing the JSON report. The hint also surfaces under `hermes curator pin` so you can pin the umbrella name immediately if you want to lock the new label in.
 
 ## Restoring an archived skill
 

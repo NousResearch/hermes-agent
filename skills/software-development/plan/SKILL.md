@@ -4,6 +4,7 @@ description: "Plan mode: write markdown plan to .hermes/plans/, no exec."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [planning, plan-mode, implementation, workflow]

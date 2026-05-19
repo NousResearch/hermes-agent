@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -282,3 +283,103 @@ class TestIntegrationWithModelsModule:
             result = get_curated_nous_model_ids()
 
         assert result == ["anthropic/claude-opus-4.7", "moonshotai/kimi-k2.6"]
+
+    def test_picker_nous_row_uses_manifest(self, tmp_path, monkeypatch):
+        """The /model picker must surface the manifest's nous list, not the
+        in-repo _PROVIDER_MODELS["nous"] snapshot. Regression: before this
+        fix, list_authenticated_providers() built the curated dict from
+        _PROVIDER_MODELS only — so newly-added Portal models never reached
+        the slash-command picker until the next Hermes release.
+        """
+        # We deliberately do NOT use the ``isolated_home`` fixture here:
+        # that fixture monkeypatches ``Path.home`` to ``tmp_path``, which
+        # trips the auth-store seat-belt in ``_auth_file_path()`` because
+        # ``HERMES_HOME / auth.json`` then resolves to the same path the
+        # seat-belt thinks is the "real" user store. Use the autouse
+        # ``_hermetic_environment`` HERMES_HOME directly instead.
+        import importlib
+        from hermes_cli import model_catalog
+        importlib.reload(model_catalog)
+        try:
+            from hermes_cli.model_switch import list_picker_providers
+
+            active_home = Path(os.environ["HERMES_HOME"])
+            (active_home / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "providers": {"nous": {"access_token": "fake"}},
+                        "credential_pool": {},
+                    }
+                )
+            )
+
+            with patch.object(
+                model_catalog, "_fetch_manifest", return_value=_valid_manifest()
+            ):
+                picker = list_picker_providers(
+                    current_provider="nous", max_models=99
+                )
+        finally:
+            model_catalog.reset_cache()
+
+        nous_row = next((r for r in picker if r["slug"] == "nous"), None)
+        assert nous_row is not None, "nous row must appear when authed"
+        assert nous_row["models"] == [
+            "anthropic/claude-opus-4.7",
+            "moonshotai/kimi-k2.6",
+        ]
+
+
+# -----------------------------------------------------------------------------
+# Drift guard — prevent the in-repo curated lists from going out of sync with
+# the docs-hosted manifest at website/static/api/model-catalog.json.
+#
+# History: qwen/qwen3.6-plus was added to _PROVIDER_MODELS["nous"] in commit
+# 9dd6e5510 but website/static/api/model-catalog.json was not regenerated for
+# weeks, so free-tier users on a new install fetched a stale manifest and the
+# free-tier picker showed "No free models currently available." even though
+# the Portal was serving qwen/qwen3.6-plus as free. CI must catch this.
+# -----------------------------------------------------------------------------
+
+
+class TestManifestMatchesInRepoLists:
+    """Fail if the on-disk manifest is out of date relative to in-repo lists."""
+
+    @staticmethod
+    def _strip_volatile(catalog: dict) -> dict:
+        """Drop fields that always change (timestamps) for diff comparison."""
+        out = dict(catalog)
+        out.pop("updated_at", None)
+        return out
+
+    def test_in_repo_lists_match_manifest(self):
+        """``scripts/build_model_catalog.py`` output must match the committed file.
+
+        If this fails, run ``python scripts/build_model_catalog.py`` and
+        commit the regenerated ``website/static/api/model-catalog.json``.
+        """
+        # Resolve the repo root from this test file's location.
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
+
+        if not manifest_path.exists():
+            pytest.skip(f"manifest missing at {manifest_path}")
+
+        # Build expected catalog using the same script CI would.
+        import importlib.util
+        script_path = repo_root / "scripts" / "build_model_catalog.py"
+        spec = importlib.util.spec_from_file_location("_build_model_catalog", script_path)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+        expected = mod.build_catalog()
+
+        with open(manifest_path, encoding="utf-8") as fh:
+            actual = json.load(fh)
+
+        assert self._strip_volatile(actual) == self._strip_volatile(expected), (
+            "website/static/api/model-catalog.json is out of sync with "
+            "_PROVIDER_MODELS['nous'] / OPENROUTER_MODELS. "
+            "Run: python scripts/build_model_catalog.py && "
+            "git add website/static/api/model-catalog.json"
+        )

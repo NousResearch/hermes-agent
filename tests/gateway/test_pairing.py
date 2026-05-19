@@ -238,6 +238,42 @@ class TestLockout:
             code = store.generate_code("telegram", "newuser")
         assert code is None
 
+    def test_lockout_blocks_code_approval(self, tmp_path):
+        """Regression guard for #10195: lockout must also gate approve_code.
+
+        Prior to the fix, 5 failed approvals set the lockout flag but
+        approve_code() never consulted it — so any valid code already
+        in `pending` (or a later lucky guess) still got accepted,
+        nullifying the brute-force protection.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            # Generate a valid code before triggering the lockout.
+            valid_code = store.generate_code("telegram", "attacker", "Attacker")
+            assert valid_code is not None
+
+            # Trigger the lockout with wrong codes.
+            for _ in range(MAX_FAILED_ATTEMPTS):
+                assert store.approve_code("telegram", "WRONGCODE") is None
+            assert store._is_locked_out("telegram") is True
+
+            # The valid code must be rejected while the lockout is active,
+            # and the user must NOT land in the approved list.
+            result = store.approve_code("telegram", valid_code)
+            assert result is None
+            assert store.is_approved("telegram", "attacker") is False
+
+            # Simulate lockout expiry — the valid code is still in pending
+            # (we didn't pop it) and must now approve normally.
+            limits = store._load_json(store._rate_limit_path())
+            limits["_lockout:telegram"] = time.time() - 1
+            store._save_json(store._rate_limit_path(), limits)
+
+            result = store.approve_code("telegram", valid_code)
+            assert result is not None
+            assert result["user_id"] == "attacker"
+            assert store.is_approved("telegram", "attacker") is True
+
     def test_lockout_expires(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()

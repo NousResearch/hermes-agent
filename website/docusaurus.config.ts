@@ -24,7 +24,20 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en'],
+    locales: ['en', 'zh-Hans', 'ko'],
+    localeConfigs: {
+      en: {
+        label: 'English',
+      },
+      'zh-Hans': {
+        label: '简体中文',
+        htmlLang: 'zh-Hans',
+      },
+      ko: {
+        label: '한국어',
+        htmlLang: 'ko',
+      },
+    },
   },
 
   themes: [
@@ -34,7 +47,7 @@ const config: Config = {
       /** @type {import("@easyops-cn/docusaurus-search-local").PluginOptions} */
       ({
         hashed: true,
-        language: ['en'],
+        language: ['en', 'zh'],
         indexBlog: false,
         docsRouteBasePath: '/',
         // Disabled: appends ?_highlight=... to URLs (before the #anchor),
@@ -103,6 +116,10 @@ const config: Config = {
           to: '/skills',
           label: 'Skills',
           position: 'left',
+        },
+        {
+          type: 'localeDropdown',
+          position: 'right',
         },
         {
           href: 'https://hermes-agent.nousresearch.com',

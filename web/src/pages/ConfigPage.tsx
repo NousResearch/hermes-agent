@@ -46,6 +46,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
@@ -117,7 +118,9 @@ export default function ConfigPage() {
   const [yamlText, setYamlText] = useState("");
   const [yamlLoading, setYamlLoading] = useState(false);
   const [yamlSaving, setYamlSaving] = useState(false);
+  const [configPath, setConfigPath] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>("");
+  const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
@@ -174,6 +177,10 @@ export default function ConfigPage() {
     api
       .getDefaults()
       .then(setDefaults)
+      .catch(() => {});
+    api
+      .getStatus()
+      .then((resp) => setConfigPath(resp.config_path))
       .catch(() => {});
   }, []);
 
@@ -290,11 +297,17 @@ export default function ConfigPage() {
     // "reset this tab", not "wipe my entire config.yaml".
     const scopedFields = isSearching ? searchMatchedFields : activeFields;
     if (scopedFields.length === 0) return;
+    setConfirmReset(true);
+  };
+
+  const executeReset = () => {
+    if (!defaults || !config) return;
+    setConfirmReset(false);
+    const scopedFields = isSearching ? searchMatchedFields : activeFields;
+    if (scopedFields.length === 0) return;
     const scopeLabel = isSearching
       ? t.config.searchResults
       : prettyCategoryName(activeCategory);
-    const message = t.config.confirmResetScope.replace("{scope}", scopeLabel);
-    if (!window.confirm(message)) return;
     let next: Record<string, unknown> = config;
     for (const [key] of scopedFields) {
       next = setNestedValue(next, key, getNestedValue(defaults, key));
@@ -404,14 +417,14 @@ export default function ConfigPage() {
       <PluginSlot name="config:top" />
       <Toast toast={toast} />
 
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <Settings2 className="h-4 w-4 text-muted-foreground" />
-          <code className="text-xs text-muted-foreground bg-muted/50 px-2 py-0.5">
-            {t.config.configPath}
+      <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+        <div className="flex min-w-0 items-center gap-2 sm:flex-1">
+          <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <code className="min-w-0 flex-1 break-words text-xs text-muted-foreground bg-muted/50 px-2 py-0.5">
+            {configPath ?? t.config.configPath}
           </code>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5 sm:shrink-0">
           <Button
             ghost
             size="icon"
@@ -627,6 +640,22 @@ export default function ConfigPage() {
         </div>
       )}
       <PluginSlot name="config:bottom" />
+      <ConfirmDialog
+        open={confirmReset}
+        onCancel={() => setConfirmReset(false)}
+        onConfirm={executeReset}
+        title={t.config.confirmResetScope.replace(
+          "{scope}",
+          isSearching
+            ? t.config.searchResults
+            : prettyCategoryName(activeCategory),
+        )}
+        description={`This will reset ${
+          (isSearching ? searchMatchedFields : activeFields).length
+        } field(s) to their default values.`}
+        destructive
+        confirmLabel={t.config.resetDefaults}
+      />
     </div>
   );
 }

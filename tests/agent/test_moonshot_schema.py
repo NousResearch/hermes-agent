@@ -6,6 +6,11 @@ the JSON Schema ecosystem accepts:
 1. Properties without ``type`` — Moonshot requires ``type`` on every node.
 2. ``type`` at the parent of ``anyOf`` — Moonshot requires it only inside
    ``anyOf`` children.
+3. ``$ref`` with sibling keywords — Moonshot expands the ref first and then
+   rejects ``description``/``type`` siblings on the same node.
+   (Ported from anomalyco/opencode#24730.)
+4. Tuple-style ``items`` arrays — Moonshot requires a single item schema,
+   not positional ones. (Ported from anomalyco/opencode#24730.)
 
 These tests cover the repairs applied by ``agent/moonshot_schema.py``.
 """
@@ -178,6 +183,164 @@ class TestAnyOfParentType:
         assert "anyOf" not in db_type
         assert db_type["type"] == "string"
         assert db_type["enum"] == ["mysql", "postgresql"]  # "" stripped by enum cleanup
+
+
+class TestRefSiblingStripping:
+    """Rule 4: ``$ref`` nodes may not carry sibling keywords on Moonshot.
+
+    Ported from anomalyco/opencode#24730.  The real-world failure was MCP tools
+    whose generated schemas put a ``description`` on a ``$ref`` property so the
+    model would see the field's human-readable hint.  The reference stays — the
+    referenced definition still owns the description (on the target node itself)
+    and still serves the model's context.
+    """
+
+    def test_description_sibling_stripped_from_ref(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "variantOptions": {
+                    "$ref": "#/$defs/VariantOptions",
+                    "description": "Required. The variant options for generation.",
+                },
+            },
+            "$defs": {
+                "VariantOptions": {
+                    "type": "object",
+                    "properties": {},
+                    "description": "Configuration options.",
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        # Sibling stripped.
+        assert out["properties"]["variantOptions"] == {"$ref": "#/$defs/VariantOptions"}
+        # The target definition's own description is preserved — we only strip
+        # siblings ON the $ref node, not on the thing it points at.
+        assert out["$defs"]["VariantOptions"]["description"] == "Configuration options."
+
+    def test_multiple_siblings_all_stripped(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "p": {
+                    "$ref": "#/$defs/T",
+                    "type": "object",
+                    "description": "x",
+                    "default": {},
+                    "title": "P",
+                },
+            },
+            "$defs": {"T": {"type": "object"}},
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["p"] == {"$ref": "#/$defs/T"}
+
+    def test_ref_without_siblings_unchanged(self):
+        params = {
+            "type": "object",
+            "properties": {"p": {"$ref": "#/$defs/T"}},
+            "$defs": {"T": {"type": "object"}},
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["p"] == {"$ref": "#/$defs/T"}
+
+    def test_ref_inside_anyof_children(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "v": {
+                    "anyOf": [
+                        {"$ref": "#/$defs/A", "description": "variant A"},
+                        {"type": "null"},
+                    ],
+                },
+            },
+            "$defs": {"A": {"type": "object"}},
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        # Main's existing Rule 2 collapses anyOf-with-null down to the
+        # single non-null branch (Moonshot rejects null branches in anyOf
+        # outright).  That branch was originally `{"$ref": ..., "description": ...}`;
+        # Rule 4 then strips the sibling, leaving exactly `{"$ref": "..."}`.
+        # The test name still applies — Rule 4 ran on the $ref branch — it
+        # just happens after the anyOf collapse on this input.
+        assert out["properties"]["v"] == {"$ref": "#/$defs/A"}
+
+
+class TestTupleItems:
+    """Rule 5: tuple-style ``items`` arrays collapse to a single schema.
+
+    Ported from anomalyco/opencode#24730.  Moonshot's schema engine requires
+    ``items`` to be ONE schema object applied to every array element; tuple-
+    style positional item schemas are rejected.  We collapse to the first
+    element's schema (which is the "closest" interpretation of positional →
+    single) and drop the rest.
+    """
+
+    def test_tuple_items_collapsed_to_first(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "renderedSize": {
+                    "type": "array",
+                    "items": [{"type": "number"}, {"type": "number"}],
+                    "minItems": 2,
+                    "maxItems": 2,
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["renderedSize"]["items"] == {"type": "number"}
+        # Sibling constraints are preserved — only the tuple shape is repaired.
+        assert out["properties"]["renderedSize"]["minItems"] == 2
+
+    def test_empty_tuple_items_becomes_empty_schema(self):
+        # Empty tuple collapses to ``{}``; the generic repair then fills a
+        # synthetic ``type`` because Moonshot requires ``type`` on every
+        # schema node.  Either ``{}`` or ``{"type": "string"}`` is a valid
+        # final shape for Moonshot — both accept any string element — but we
+        # always go through ``_fill_missing_type`` so the result is fully
+        # well-formed without needing the consumer to patch it later.
+        params = {
+            "type": "object",
+            "properties": {
+                "things": {"type": "array", "items": []},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        items = out["properties"]["things"]["items"]
+        # Must be a dict and must carry a ``type`` (the whole point of Rule 1).
+        assert isinstance(items, dict)
+        assert items.get("type")
+
+    def test_tuple_items_first_element_is_repaired(self):
+        # The first element itself has a missing type — it should be filled.
+        params = {
+            "type": "object",
+            "properties": {
+                "pair": {
+                    "type": "array",
+                    "items": [{"description": "first"}, {"description": "second"}],
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        # Repaired to a single schema with a synthetic type.
+        assert out["properties"]["pair"]["items"] == {
+            "description": "first",
+            "type": "string",
+        }
+
+    def test_single_schema_items_unchanged(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "tags": {"type": "array", "items": {"type": "string"}},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["tags"]["items"] == {"type": "string"}
 
 
 class TestTopLevelGuarantees:

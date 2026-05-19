@@ -418,6 +418,12 @@ def _unpin_message(token: str, channel_id: str, message_id: str, **_kwargs: Any)
     return json.dumps({"success": True, "message": f"Message {message_id} unpinned."})
 
 
+def _delete_message(token: str, channel_id: str, message_id: str, **_kwargs: Any) -> str:
+    """Delete a message from a channel or thread."""
+    _discord_request("DELETE", f"/channels/{channel_id}/messages/{message_id}", token)
+    return json.dumps({"success": True, "message": f"Message {message_id} deleted."})
+
+
 def _create_thread(
     token: str, channel_id: str, name: str,
     message_id: Optional[str] = None,
@@ -476,6 +482,7 @@ _ACTIONS = {
     "list_pins": _list_pins,
     "pin_message": _pin_message,
     "unpin_message": _unpin_message,
+    "delete_message": _delete_message,
     "create_thread": _create_thread,
     "add_role": _add_role,
     "remove_role": _remove_role,
@@ -502,6 +509,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("list_pins", "(channel_id)", "pinned messages in a channel"),
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
+    ("delete_message", "(channel_id, message_id)", "delete a message"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
@@ -522,6 +530,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "list_pins": ["channel_id"],
     "pin_message": ["channel_id", "message_id"],
     "unpin_message": ["channel_id", "message_id"],
+    "delete_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
@@ -757,6 +766,9 @@ _ACTION_403_HINT = {
     ),
     "unpin_message": (
         "Bot lacks MANAGE_MESSAGES permission in this channel."
+    ),
+    "delete_message": (
+        "Bot lacks MANAGE_MESSAGES permission in this channel, or cannot view the channel/message."
     ),
     "create_thread": (
         "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it."

@@ -77,7 +77,7 @@ def _coerce_content_to_text(content: Any) -> str:
                 if p.get("type") == "text" and isinstance(p.get("text"), str):
                     pieces.append(p["text"])
                 # Multimodal (image_url, etc.) — stub for now; log and skip
-                elif p.get("type") in ("image_url", "input_audio"):
+                elif p.get("type") in {"image_url", "input_audio"}:
                     logger.debug("Dropping multimodal part (not yet supported): %s", p.get("type"))
         return "\n".join(pieces)
     return str(content)
@@ -450,7 +450,13 @@ def _make_stream_chunk(
     finish_reason: Optional[str] = None,
     reasoning: str = "",
 ) -> _GeminiStreamChunk:
-    delta_kwargs: Dict[str, Any] = {"role": "assistant"}
+    delta_kwargs: Dict[str, Any] = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": None,
+        "reasoning": None,
+        "reasoning_content": None,
+    }
     if content:
         delta_kwargs["content"] = content
     if tool_call_delta is not None:

@@ -374,6 +374,34 @@ def get_cache_directory_mounts(
     return mounts
 
 
+def to_agent_visible_cache_path(
+    host_path: str,
+    container_base: str = "/root/.hermes",
+) -> str:
+    """Translate a host cache path to its mounted path inside the sandbox.
+
+    Returns the input unchanged if it is not under any auto-mounted cache
+    directory, or if the active terminal backend does not require path
+    translation (only Docker for now).
+    """
+    # Only Docker backend requires translation at this time.  Other backends
+    # (Modal, Daytona, Vercel) use different mount semantics and will be
+    # addressed separately if needed.  Backend is identified by TERMINAL_ENV
+    # (same env var tools/terminal_tool.py reads in _get_environment_config).
+    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+        return host_path
+
+    path = Path(host_path)
+    for mount in get_cache_directory_mounts(container_base=container_base):
+        host_dir = Path(mount["host_path"])
+        try:
+            rel = path.relative_to(host_dir)
+            return str(Path(mount["container_path"]) / rel)
+        except ValueError:
+            continue
+    return host_path
+
+
 def iter_cache_files(
     container_base: str = "/root/.hermes",
 ) -> List[Dict[str, str]]:

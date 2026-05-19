@@ -202,7 +202,8 @@ def emit_llms_index() -> str:
     lines.append(
         "> The self-improving AI agent built by Nous Research. A terminal-native "
         "autonomous coding and task agent with persistent memory, agent-created skills, "
-        "and a messaging gateway that lives on 15+ platforms (Telegram, Discord, Slack, "
+        "and a messaging gateway that lives on 21+ messaging platforms — 19 native to "
+        "the gateway plus IRC and Microsoft Teams via plugins (Telegram, Discord, Slack, "
         "SMS, Matrix, ...). Runs on local, Docker, SSH, Daytona, Modal, or Singularity "
         "backends. Works with Nous Portal, OpenRouter, OpenAI, Anthropic, Google, or any "
         "OpenAI-compatible endpoint."
@@ -279,7 +280,7 @@ def emit_llms_full() -> str:
         rel = path.relative_to(DOCS)
         parts = rel.parts
         if len(parts) >= 3 and parts[0] == "user-guide" and parts[1] == "skills" \
-                and parts[2] in ("bundled", "optional"):
+                and parts[2] in {"bundled", "optional"}:
             continue
         seen.add(path)
         meta, body = read_frontmatter(path)

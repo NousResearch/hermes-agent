@@ -4,6 +4,7 @@ description: "Clone/create/fork repos; manage remotes, releases."
 version: 1.1.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [GitHub, Repositories, Git, Releases, Secrets, Configuration]

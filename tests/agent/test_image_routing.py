@@ -109,6 +109,21 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
+    def test_auto_uses_text_for_text_only_modalities_even_with_attachment_flag(self):
+        registry = {
+            "xiaomi": {
+                "models": {
+                    "mimo-v2.5-pro": {
+                        "attachment": True,
+                        "modalities": {"input": ["text"]},
+                        "tool_call": True,
+                    },
+                },
+            },
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            assert decide_image_input_mode("xiaomi", "mimo-v2.5-pro", {}) == "text"
+
 
 # ─── build_native_content_parts ──────────────────────────────────────────────
 
@@ -127,7 +142,11 @@ class TestBuildNativeContentParts:
         parts, skipped = build_native_content_parts("hello", [str(img)])
         assert skipped == []
         assert len(parts) == 2
-        assert parts[0] == {"type": "text", "text": "hello"}
+        assert parts[0]["type"] == "text"
+        # User caption is preserved and a per-image path hint is appended so
+        # the model can use the local path as a string argument for tools
+        # that take ``image_url: str`` (issue #18960).
+        assert parts[0]["text"] == f"hello\n\n[Image attached at: {img}]"
         assert parts[1]["type"] == "image_url"
         assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
@@ -137,16 +156,50 @@ class TestBuildNativeContentParts:
         parts, skipped = build_native_content_parts("", [str(img)])
         assert skipped == []
         # Even with empty user text, we insert a neutral prompt so the turn
-        # isn't just pixels.
+        # isn't just pixels, and the path hint is appended after.
         assert parts[0]["type"] == "text"
-        assert parts[0]["text"] == "What do you see in this image?"
+        assert parts[0]["text"] == (
+            f"What do you see in this image?\n\n[Image attached at: {img}]"
+        )
         assert parts[1]["type"] == "image_url"
 
     def test_missing_file_is_skipped(self, tmp_path: Path):
         parts, skipped = build_native_content_parts("hi", [str(tmp_path / "missing.png")])
         assert skipped == [str(tmp_path / "missing.png")]
-        # Only text remains.
+        # Skipped paths are NOT advertised in the path hints — the model
+        # would otherwise be told a non-existent file is attached.
         assert parts == [{"type": "text", "text": "hi"}]
+
+    def test_path_hint_appended(self, tmp_path: Path):
+        """The local path of each attached image is appended to the user
+        text part so MCP/skill tools that take ``image_url: str`` can be
+        invoked on the same image (issue #18960). Mirrors text-mode
+        behaviour (`Runner._enrich_message_with_vision`).
+        """
+        img = tmp_path / "scan.png"
+        img.write_bytes(_png_bytes())
+        parts, _ = build_native_content_parts("attach this", [str(img)])
+        text_part = next(p for p in parts if p.get("type") == "text")
+        assert "[Image attached at:" in text_part["text"]
+        assert str(img) in text_part["text"]
+        # User caption is preserved verbatim ahead of the hint.
+        assert text_part["text"].startswith("attach this")
+
+    def test_path_hint_one_per_attached_image(self, tmp_path: Path):
+        """Each successfully attached image gets its own path hint line;
+        skipped images do NOT appear in the hints.
+        """
+        good = tmp_path / "good.png"
+        good.write_bytes(_png_bytes())
+        missing = tmp_path / "missing.png"  # never created
+        parts, skipped = build_native_content_parts(
+            "see attached", [str(good), str(missing)]
+        )
+        assert skipped == [str(missing)]
+        text_part = next(p for p in parts if p.get("type") == "text")
+        assert text_part["text"].count("[Image attached at:") == 1
+        assert str(good) in text_part["text"]
+        assert str(missing) not in text_part["text"]
 
     def test_multiple_images(self, tmp_path: Path):
         img1 = tmp_path / "a.png"
@@ -157,20 +210,40 @@ class TestBuildNativeContentParts:
         assert skipped == []
         image_parts = [p for p in parts if p.get("type") == "image_url"]
         assert len(image_parts) == 2
+        # Both paths surface in the text part, one per line.
+        text_part = next(p for p in parts if p.get("type") == "text")
+        assert text_part["text"].count("[Image attached at:") == 2
+        assert str(img1) in text_part["text"]
+        assert str(img2) in text_part["text"]
 
     def test_mime_inference_jpg(self, tmp_path: Path):
+        # Real JPEG bytes (SOI marker FF D8 FF): sniffing now wins over suffix.
         img = tmp_path / "photo.jpg"
-        img.write_bytes(_png_bytes())  # bytes are PNG but extension is jpg
+        img.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01" + b"\x00" * 32)
         parts, _ = build_native_content_parts("x", [str(img)])
         url = parts[1]["image_url"]["url"]
         assert url.startswith("data:image/jpeg;base64,")
 
     def test_mime_inference_webp(self, tmp_path: Path):
+        # Real WEBP bytes (RIFF....WEBP): sniffing now wins over suffix.
         img = tmp_path / "pic.webp"
-        img.write_bytes(_png_bytes())
+        img.write_bytes(b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 32)
         parts, _ = build_native_content_parts("", [str(img)])
         url = parts[1]["image_url"]["url"]
         assert url.startswith("data:image/webp;base64,")
+
+    def test_mime_sniff_overrides_misleading_extension(self, tmp_path: Path):
+        """Discord-style bug: file is named .webp but contains PNG bytes.
+        Anthropic rejects on MIME mismatch (HTTP 400) so we MUST sniff.
+        Regression guard for the user-reported Discord PNG-as-WEBP failure.
+        """
+        img = tmp_path / "discord_cached.webp"
+        img.write_bytes(_png_bytes())  # bytes are PNG, suffix lies
+        parts, _ = build_native_content_parts("", [str(img)])
+        url = parts[1]["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,"), (
+            f"Expected MIME sniffing to detect PNG bytes regardless of .webp suffix, got: {url[:60]}"
+        )
 
 
 # ─── Oversize handling ───────────────────────────────────────────────────────

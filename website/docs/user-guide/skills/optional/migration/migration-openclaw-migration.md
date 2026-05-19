@@ -19,6 +19,7 @@ Migrate a user's OpenClaw customization footprint into Hermes Agent. Imports Her
 | Version | `1.0.0` |
 | Author | Hermes Agent (Nous Research) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Migration`, `OpenClaw`, `Hermes`, `Memory`, `Persona`, `Import` |
 | Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
 

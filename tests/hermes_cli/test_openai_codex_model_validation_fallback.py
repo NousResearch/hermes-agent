@@ -1,9 +1,18 @@
 """Regression tests for OpenAI Codex model validation when the listing lags behind
 actually usable backend model IDs.
 
-The bug: `/model` and `switch_model()` reject `gpt-5.3-codex-spark` because the
-OpenAI Codex listing omits it, even though direct runtime calls with
-`--provider openai-codex -m gpt-5.3-codex-spark` succeed.
+The bug originally reported in #16172: `/model` and `switch_model()` rejected
+`gpt-5.3-codex-spark` because the curated listing omitted it, even though direct
+runtime calls succeeded. PR #19729 fixed this by soft-accepting unknown-but-
+plausible Codex slugs with a warning, and this test pins the soft-accept
+behavior so it doesn't regress.
+
+Note: gpt-5.3-codex-spark itself is now in the curated catalog (PR #22991),
+so the real-world Spark request takes the `recognized=True` fast path. This
+test still uses Spark as the example slug but explicitly mocks
+``provider_model_ids`` to omit it, exercising the soft-accept path generically
+for any future entitlement-gated Codex slug that ships before Hermes catalogs
+it.
 """
 
 from unittest.mock import patch

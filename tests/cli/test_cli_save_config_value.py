@@ -1,15 +1,13 @@
 """Tests for save_config_value() in cli.py — atomic write behavior."""
 
-import os
 import yaml
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 
 class TestSaveConfigValueAtomic:
-    """save_config_value() must use atomic_yaml_write to avoid data loss."""
+    """save_config_value() must use atomic round-trip YAML updates."""
 
     @pytest.fixture
     def config_env(self, tmp_path, monkeypatch):
@@ -24,18 +22,15 @@ class TestSaveConfigValueAtomic:
         monkeypatch.setattr("cli._hermes_home", hermes_home)
         return config_path
 
-    def test_calls_atomic_yaml_write(self, config_env, monkeypatch):
-        """save_config_value must route through atomic_yaml_write, not bare open()."""
-        mock_atomic = MagicMock()
-        monkeypatch.setattr("utils.atomic_yaml_write", mock_atomic)
+    def test_calls_roundtrip_yaml_update(self, config_env, monkeypatch):
+        """save_config_value must preserve user-edited YAML structure."""
+        mock_update = MagicMock()
+        monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", mock_update)
 
         from cli import save_config_value
         save_config_value("display.skin", "mono")
 
-        mock_atomic.assert_called_once()
-        written_path, written_data = mock_atomic.call_args[0]
-        assert Path(written_path) == config_env
-        assert written_data["display"]["skin"] == "mono"
+        mock_update.assert_called_once_with(config_env, "display.skin", "mono")
 
     def test_preserves_existing_keys(self, config_env):
         """Writing a new key must not clobber existing config entries."""
@@ -82,6 +77,47 @@ class TestSaveConfigValueAtomic:
         assert result["model"]["default"] == "doubao-pro"
         assert result["custom_providers"][0]["api_key"] == "${TU_ZI_API_KEY}"
 
+    def test_preserves_comments_after_config_mutation(self, config_env):
+        """CLI config writes should not strip existing user comments."""
+        config_env.write_text(
+            "# user selected model\n"
+            "model:\n"
+            "  # keep this provider note\n"
+            "  provider: openrouter\n"
+            "display:\n"
+            "  skin: default  # inline skin note\n",
+            encoding="utf-8",
+        )
+
+        from cli import save_config_value
+        save_config_value("display.skin", "mono")
+
+        text = config_env.read_text(encoding="utf-8")
+        result = yaml.safe_load(text)
+        assert result["display"]["skin"] == "mono"
+        assert "# user selected model" in text
+        assert "# keep this provider note" in text
+        assert "# inline skin note" in text
+
+    def test_preserves_readable_unicode_after_config_mutation(self, config_env):
+        """Non-ASCII prompts should remain readable instead of \\u-escaped."""
+        config_env.write_text(
+            "agent:\n"
+            "  system_prompt: 你好，保持中文输出\n"
+            "display:\n"
+            "  skin: default\n",
+            encoding="utf-8",
+        )
+
+        from cli import save_config_value
+        save_config_value("display.skin", "mono")
+
+        text = config_env.read_text(encoding="utf-8")
+        result = yaml.safe_load(text)
+        assert result["agent"]["system_prompt"] == "你好，保持中文输出"
+        assert "你好，保持中文输出" in text
+        assert "\\u4f60" not in text
+
     def test_file_not_truncated_on_error(self, config_env, monkeypatch):
         """If atomic_yaml_write raises, the original file is untouched."""
         original_content = config_env.read_text()
@@ -89,7 +125,7 @@ class TestSaveConfigValueAtomic:
         def exploding_write(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr("utils.atomic_yaml_write", exploding_write)
+        monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", exploding_write)
 
         from cli import save_config_value
         result = save_config_value("display.skin", "broken")

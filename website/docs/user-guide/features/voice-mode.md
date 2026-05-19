@@ -281,10 +281,10 @@ In the [Developer Portal](https://discord.com/developers/applications) → your 
 | Intent | Purpose |
 |--------|---------|
 | **Presence Intent** | Detect user online/offline status |
-| **Server Members Intent** | Map voice SSRC identifiers to Discord user IDs |
+| **Server Members Intent** | Resolve usernames in `DISCORD_ALLOWED_USERS` to numeric IDs (conditional) |
 | **Message Content Intent** | Read text message content in channels |
 
-All three are required for full voice channel functionality. **Server Members Intent** is especially critical — without it, the bot cannot identify who is speaking in the voice channel.
+**Message Content Intent** is required. **Server Members Intent** is only needed if your `DISCORD_ALLOWED_USERS` list uses usernames — if you use numeric user IDs, you can leave it OFF. Voice-channel SSRC → user_id mapping comes from Discord's SPEAKING opcode on the voice websocket and does **not** require the Server Members Intent.
 
 #### 3. Opus Codec
 
@@ -391,6 +391,11 @@ voice:
 
 # Speech-to-Text
 stt:
+  enabled: true                     # set to false to skip auto-transcription —
+                                    # the gateway still caches the audio file and
+                                    # passes its path to the agent as part of the
+                                    # inbound message, useful for custom pipelines
+                                    # (diarization, alignment, archival, etc.)
   provider: "local"                  # "local" (free) | "groq" | "openai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3

@@ -52,6 +52,50 @@ describe('forceTruecolor', () => {
     )
   })
 
+  it('downgrades Apple Terminal when truecolor is only advertised by env', async () => {
+    await withCleanEnv(
+      () => {
+        process.env.TERM_PROGRAM = 'Apple_Terminal'
+        process.env.COLORTERM = 'truecolor'
+        process.env.FORCE_COLOR = '3'
+      },
+      async () => {
+        const mod = await import('../lib/forceTruecolor.js?t=downgrade-' + importId++)
+        expect(
+          mod.shouldDowngradeAppleTerminalTruecolor({
+            TERM_PROGRAM: 'Apple_Terminal',
+            COLORTERM: 'truecolor',
+            FORCE_COLOR: '3'
+          } as NodeJS.ProcessEnv)
+        ).toBe(true)
+        expect(process.env.COLORTERM).toBeUndefined()
+        expect(process.env.FORCE_COLOR).toBeUndefined()
+      }
+    )
+  })
+
+  it('keeps non-Apple terminals untouched when they advertise truecolor', async () => {
+    await withCleanEnv(
+      () => {
+        process.env.TERM_PROGRAM = 'vscode'
+        process.env.COLORTERM = 'truecolor'
+        process.env.FORCE_COLOR = '3'
+      },
+      async () => {
+        const mod = await import('../lib/forceTruecolor.js?t=keep-non-apple-' + importId++)
+        expect(
+          mod.shouldDowngradeAppleTerminalTruecolor({
+            TERM_PROGRAM: 'vscode',
+            COLORTERM: 'truecolor',
+            FORCE_COLOR: '3'
+          } as NodeJS.ProcessEnv)
+        ).toBe(false)
+        expect(process.env.COLORTERM).toBe('truecolor')
+        expect(process.env.FORCE_COLOR).toBe('3')
+      }
+    )
+  })
+
   it('sets COLORTERM=truecolor and FORCE_COLOR=3 when explicitly enabled', async () => {
     await withCleanEnv(
       () => {
@@ -75,6 +119,30 @@ describe('forceTruecolor', () => {
         await import('../lib/forceTruecolor.js?t=optout-' + importId++)
         expect(process.env.COLORTERM).toBeUndefined()
         expect(process.env.FORCE_COLOR).toBeUndefined()
+      }
+    )
+  })
+
+  it('lets explicit opt-in keep Apple truecolor advertisement', async () => {
+    await withCleanEnv(
+      () => {
+        process.env.TERM_PROGRAM = 'Apple_Terminal'
+        process.env.COLORTERM = 'truecolor'
+        process.env.FORCE_COLOR = '3'
+        process.env.HERMES_TUI_TRUECOLOR = '1'
+      },
+      async () => {
+        const mod = await import('../lib/forceTruecolor.js?t=apple-explicit-on-' + importId++)
+        expect(
+          mod.shouldDowngradeAppleTerminalTruecolor({
+            TERM_PROGRAM: 'Apple_Terminal',
+            COLORTERM: 'truecolor',
+            FORCE_COLOR: '3',
+            HERMES_TUI_TRUECOLOR: '1'
+          } as NodeJS.ProcessEnv)
+        ).toBe(false)
+        expect(process.env.COLORTERM).toBe('truecolor')
+        expect(process.env.FORCE_COLOR).toBe('3')
       }
     )
   })

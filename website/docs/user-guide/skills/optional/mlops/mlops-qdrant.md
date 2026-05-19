@@ -20,6 +20,7 @@ High-performance vector similarity search engine for RAG and semantic search. Us
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `qdrant-client>=1.12.0` |
+| Platforms | linux, macos, windows |
 | Tags | `RAG`, `Vector Search`, `Qdrant`, `Semantic Search`, `Embeddings`, `Similarity Search`, `HNSW`, `Production`, `Distributed` |
 
 ## Reference: full SKILL.md

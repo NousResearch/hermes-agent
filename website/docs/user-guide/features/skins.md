@@ -67,6 +67,7 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `session_border` | Session ID dim border color | `#8B8682` |
 | `status_bar_bg` | Background color for the TUI status / usage bar | `#1a1a2e` |
 | `voice_status_bg` | Background color for the voice-mode status badge | `#1a1a2e` |
+| `selection_bg` | Background color for the TUI mouse-selection highlighter. Falls back to `completion_menu_current_bg` when unset. | `#333355` |
 | `completion_menu_bg` | Background color for the completion menu list | `#1a1a2e` |
 | `completion_menu_current_bg` | Background color for the active completion row | `#333355` |
 | `completion_menu_meta_bg` | Background color for the completion meta column | `#1a1a2e` |
@@ -139,6 +140,7 @@ colors:
   session_border: "#8B8682"
   status_bar_bg: "#1a1a2e"
   voice_status_bg: "#1a1a2e"
+  selection_bg: "#333355"
   completion_menu_bg: "#1a1a2e"
   completion_menu_current_bg: "#333355"
   completion_menu_meta_bg: "#1a1a2e"

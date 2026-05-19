@@ -298,7 +298,7 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     if len(first_parts) == 1:
         prefix = first_parts.pop()
         # Only strip if it looks like a hermes dir name
-        if prefix in (".hermes", "hermes"):
+        if prefix in {".hermes", "hermes"}:
             return prefix + "/"
 
     return ""
@@ -349,7 +349,7 @@ def run_import(args) -> None:
             except (EOFError, KeyboardInterrupt):
                 print("\nAborted.")
                 sys.exit(1)
-            if answer not in ("y", "yes"):
+            if answer not in {"y", "yes"}:
                 print("Aborted.")
                 return
 
@@ -573,7 +573,7 @@ def create_quick_snapshot(
         "total_size": sum(manifest.values()),
         "files": manifest,
     }
-    with open(snap_dir / "manifest.json", "w") as f:
+    with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
     # Auto-prune
@@ -599,7 +599,7 @@ def list_quick_snapshots(
         manifest_path = d / "manifest.json"
         if manifest_path.exists():
             try:
-                with open(manifest_path) as f:
+                with open(manifest_path, encoding="utf-8") as f:
                     results.append(json.load(f))
             except (json.JSONDecodeError, OSError):
                 results.append({"id": d.name, "file_count": 0, "total_size": 0})
@@ -629,7 +629,7 @@ def restore_quick_snapshot(
     if not manifest_path.exists():
         return False
 
-    with open(manifest_path) as f:
+    with open(manifest_path, encoding="utf-8") as f:
         meta = json.load(f)
 
     restored = 0
@@ -802,8 +802,7 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
     Operators who genuinely don't want a backup should set
     ``updates.pre_update_backup: false`` in config — that gates creation.
     """
-    if keep < 1:
-        keep = 1
+    keep = max(keep, 1)
     if not backup_dir.exists():
         return 0
 
@@ -875,8 +874,7 @@ def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
     Only touches files matching ``pre-migration-*.zip`` so other backups in
     the same directory are never touched.
     """
-    if keep < 0:
-        keep = 0
+    keep = max(keep, 0)
     if not backup_dir.exists():
         return 0
 

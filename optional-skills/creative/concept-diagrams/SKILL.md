@@ -5,6 +5,7 @@ version: 0.1.0
 author: v1k22 (original PR), ported into hermes-agent
 license: MIT
 dependencies: []
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [diagrams, svg, visualization, education, physics, chemistry, engineering]

@@ -2,6 +2,7 @@
 
 import os
 import pytest
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -388,6 +389,66 @@ class TestSearchPathValidation:
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
 
+class TestSearchFilesFallbackHiddenPaths:
+    def _make_env(self):
+        env = MagicMock()
+        env.cwd = "/"
+
+        def execute(command, **kwargs):
+            completed = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                capture_output=True,
+            )
+            return {
+                "output": completed.stdout,
+                "returncode": completed.returncode,
+            }
+
+        env.execute = execute
+        return env
+
+    def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
+        """Fallback find should include visible files when path is inside hidden root."""
+        root = tmp_path / ".hermes" / "logs"
+        root.mkdir(parents=True)
+        visible_file = root / "agent.log"
+        hidden_dir_file = root / ".hidden" / "secret.log"
+        nested_hidden_file = root / "nested" / ".secret.log"
+        visible_nested_file = root / "nested" / "visible.log"
+
+        for p in [visible_file, nested_hidden_file, visible_nested_file, hidden_dir_file]:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("*.log", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+
+    def test_normal_root_still_excludes_hidden_descendants(self, tmp_path, monkeypatch):
+        """Fallback find should still exclude hidden descendant paths for normal roots."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        visible_file = root / "agent.log"
+        visible_nested_file = root / "nested" / "visible.log"
+        hidden_dir_file = root / ".hidden" / "secret.log"
+
+        for p in [visible_file, visible_nested_file, hidden_dir_file]:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("*.log", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+
+
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")
@@ -518,3 +579,129 @@ class TestPatchReplacePostWriteVerification:
         result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
+
+
+# =========================================================================
+# Git baseline check for write_file warning
+# =========================================================================
+
+class TestGitBaselineCheck:
+    """Regression tests for _check_git_baseline and warning in write_file result (#27856)."""
+
+    def _make_mock(self, side_effect_fn, cwd="/tmp/test"):
+        env = MagicMock()
+        env.cwd = cwd
+        env.execute.side_effect = side_effect_fn
+        ops = ShellFileOperations(env)
+        return ops
+
+    def test_git_not_available_returns_none(self):
+        """When git is not on PATH, _check_git_baseline returns None."""
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "", "returncode": 1}
+            return {"output": "", "returncode": 0}
+        ops = self._make_mock(side_effect)
+        assert ops._check_git_baseline("/some/file.py") is None
+
+    def test_not_in_git_repo_returns_none(self):
+        """When the path is not inside a git work tree, returns None."""
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "yes\n", "returncode": 0}
+            if "git rev-parse --is-inside-work-tree" in command:
+                return {"output": "false\n", "returncode": 128}
+            return {"output": "", "returncode": 0}
+        ops = self._make_mock(side_effect)
+        assert ops._check_git_baseline("/some/file.py") is None
+
+    def test_clean_repo_returns_none(self):
+        """When the git working tree is clean, returns None."""
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "yes\n", "returncode": 0}
+            if "git rev-parse --is-inside-work-tree" in command:
+                return {"output": "true\n", "returncode": 0}
+            if "git rev-parse --abbrev-ref HEAD" in command:
+                return {"output": "main\n", "returncode": 0}
+            if "git status --porcelain" in command:
+                return {"output": "", "returncode": 0}
+            return {"output": "", "returncode": 0}
+        ops = self._make_mock(side_effect)
+        assert ops._check_git_baseline("/some/file.py") is None
+
+    def test_dirty_repo_returns_warning(self):
+        """When the git working tree has uncommitted changes, returns a warning string."""
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "yes\n", "returncode": 0}
+            if "git rev-parse --is-inside-work-tree" in command:
+                return {"output": "true\n", "returncode": 0}
+            if "git rev-parse --abbrev-ref HEAD" in command:
+                return {"output": "feature-branch\n", "returncode": 0}
+            if "git status --porcelain" in command:
+                return {"output": " M file.py\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+        ops = self._make_mock(side_effect)
+        warning = ops._check_git_baseline("/repo/file.py")
+        assert warning is not None
+        assert "dirty" in warning.lower()
+        assert "feature-branch" in warning
+
+    def test_write_file_includes_git_warning_when_dirty(self):
+        """write_file result dict includes warning key when git tree is dirty."""
+        state = {"content": "initial\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "yes\n", "returncode": 0}
+            if "git rev-parse --is-inside-work-tree" in command:
+                return {"output": "true\n", "returncode": 0}
+            if "git rev-parse --abbrev-ref HEAD" in command:
+                return {"output": "main\n", "returncode": 0}
+            if "git status --porcelain" in command:
+                return {"output": " M test.txt\n", "returncode": 0}
+            if command.startswith("cat >"):  # write
+                if stdin_data is not None:
+                    state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        ops = self._make_mock(side_effect)
+        result = ops.write_file("/repo/test.txt", "new content\n")
+        d = result.to_dict()
+        assert "warning" in d
+        assert d["warning"] is not None
+        assert "dirty" in d["warning"].lower()
+
+    def test_write_file_omits_warning_when_clean(self):
+        """write_file result dict has no warning key when git tree is clean."""
+        state = {"content": "initial\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "yes\n", "returncode": 0}
+            if "git rev-parse --is-inside-work-tree" in command:
+                return {"output": "true\n", "returncode": 0}
+            if "git rev-parse --abbrev-ref HEAD" in command:
+                return {"output": "main\n", "returncode": 0}
+            if "git status --porcelain" in command:
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat >"):  # write
+                if stdin_data is not None:
+                    state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        ops = self._make_mock(side_effect)
+        result = ops.write_file("/repo/test.txt", "new content\n")
+        d = result.to_dict()
+        assert "warning" not in d or d["warning"] is None

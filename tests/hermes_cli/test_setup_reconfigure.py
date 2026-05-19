@@ -63,7 +63,6 @@ def _enter_existing_install_patches(stack, **extra):
         ("hermes_cli.setup.get_env_value", {"return_value": None}),
         ("hermes_cli.auth.get_active_provider", {"return_value": "openrouter"}),
         ("hermes_cli.setup._print_setup_summary", {}),
-        ("hermes_cli.setup._offer_launch_chat", {}),
         ("hermes_cli.setup._offer_openclaw_migration", {"return_value": False}),
     ]:
         stack.enter_context(patch(target, **kwargs))

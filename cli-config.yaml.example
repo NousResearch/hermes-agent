@@ -30,6 +30,7 @@ model:
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
+  #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
   #
   # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
@@ -44,6 +45,14 @@ model:
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
+
+  # Azure Foundry keyless auth example:
+  # provider: "azure-foundry"
+  # base_url: "https://<resource>.openai.azure.com/openai/v1"
+  # auth_mode: "entra_id"      # DefaultAzureCredential: az login, managed identity, workload identity, etc.
+  # default: "gpt-4o"          # Deployment/model name
+  # entra:
+  #   scope: "https://ai.azure.com/.default"  # Optional; this is the default.
 
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #
@@ -203,6 +212,12 @@ terminal:
 #   docker_forward_env:
 #     - "GITHUB_TOKEN"
 #     - "NPM_TOKEN"
+#   # Optional: extra flags passed verbatim to docker run (appended after security defaults).
+#   # Useful for adding capabilities (e.g. apt installs needing SETUID) or custom options.
+#   # Example: add a Linux capability not included by default
+#   # docker_extra_args:
+#   #   - "--cap-add"
+#   #   - "SETUID"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container
@@ -358,6 +373,18 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
+  # Number of non-system messages to protect at the head of the transcript, in
+  # ADDITION to the system prompt (which is always implicitly protected).
+  # Head messages are NEVER summarized — they survive every compression
+  # indefinitely. This gives stable early context for short/medium sessions,
+  # but in long-running sessions that rely on rolling compaction the pinned
+  # opening turns may not match how you want the session framed over time.
+  # Set to 0 to preserve ONLY the system prompt (plus the rolling summary
+  # and recent tail) — the cleanest configuration for long-running sessions.
+  # Default 3 preserves the system prompt plus the first three non-system
+  # head messages, matching the pre-feature behaviour.
+  protect_first_n: 3
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 
@@ -439,7 +466,7 @@ prompt_caching:
 # Two stores: MEMORY.md (agent's notes) and USER.md (user profile).
 # Character limits keep the memory small and focused. The agent manages
 # pruning -- when at the limit, it must consolidate or replace entries.
-# Disabled by default in batch_runner and RL environments.
+# Disabled by default in batch_runner.
 #
 memory:
   # Agent's personal notes: environment facts, conventions, things learned
@@ -500,6 +527,7 @@ group_sessions_per_user: true
 # Stream tokens to messaging platforms in real-time. The bot sends a message
 # on first token, then progressively edits it as more tokens arrive.
 # Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
+# For Telegram, partial edits are sent as plain text and only the final edit uses MarkdownV2.
 streaming:
   enabled: false
   # transport: edit           # "edit" = progressive editMessageText
@@ -601,7 +629,7 @@ agent:
 #   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams
+# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams, google_chat
 #
 # Examples:
 #
@@ -632,6 +660,7 @@ agent:
 #   homeassistant: hermes-homeassistant  (same as telegram)
 #   qqbot:            hermes-qqbot            (same as telegram)
 #   teams:            hermes-teams            (same as telegram)
+#   google_chat:      hermes-google_chat      (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -644,6 +673,7 @@ platform_toolsets:
   qqbot: [hermes-qqbot]
   yuanbao: [hermes-yuanbao]
   teams: [hermes-teams]
+  google_chat: [hermes-google_chat]
 
 # =============================================================================
 # Gateway Platform Settings
@@ -654,8 +684,22 @@ platform_toolsets:
 # platforms:
 #   telegram:
 #     reply_to_mode: "first"  # off | first | all
+#     # guest_mode lets explicit @mentions from non-allowlisted groups through.
+#     # Default false; ordinary messages, replies, and regex wake words stay blocked.
+#     guest_mode: false
+#     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#
+# Discord-specific settings (config.yaml top-level, not under platforms:):
+#
+# discord:
+#   require_mention: true            # Require @mention in server channels (default: true)
+#   auto_thread: true                # Auto-create thread on @mention (default: true)
+#   free_response_channels: ""       # Channel IDs where no mention is needed
+#   reactions: true                  # Show processing reactions (default: true)
+#   history_backfill: true           # Recover missed channel messages on mention (default: true)
+#   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
@@ -680,10 +724,9 @@ platform_toolsets:
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
-#   rl           - rl_list_environments, rl_start_training, etc. (requires TINKER_API_KEY)
 #
 # PRESETS (curated bundles):
-#   hermes-cli       - All of the above except rl + send_message
+#   hermes-cli       - All of the above except send_message
 #   hermes-telegram  - terminal, file, web, vision, image_gen, tts, browser,
 #                      skills, todo, cronjob, send_message
 #   hermes-discord   - Same as hermes-telegram
@@ -709,7 +752,6 @@ platform_toolsets:
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
 #   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI, MiniMax, Mistral)
 #   cronjob      - Schedule and manage automated tasks (CLI-only)
-#   rl           - RL training tools (Tinker-Atropos)
 #
 # Composite toolsets:
 #   debugging    - terminal + web + file (for troubleshooting)
@@ -875,6 +917,22 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # Auto-cleanup of temporary progress bubbles after the final response lands.
+  # On platforms that support message deletion (currently Telegram), this
+  # removes the tool-progress bubble, "⏳ Still working..." notices, and
+  # context-pressure status messages once the final reply has been delivered —
+  # keeping long-running turns visible live, then tidy afterward. Failed runs
+  # leave the bubbles in place as breadcrumbs. Off by default.
+  # Per-platform override: display.platforms.telegram.cleanup_progress
+  #   true:  Delete tracked progress/status bubbles on successful turn
+  #   false: Leave everything in place (default)
+  # Example:
+  #   display:
+  #     platforms:
+  #       telegram:
+  #         cleanup_progress: true
+  cleanup_progress: false
+
   # Gateway-only natural mid-turn assistant updates.
   # When true, completed assistant status messages are sent as separate chat
   # messages. This is independent of tool_progress and gateway streaming.
@@ -923,6 +981,9 @@ display:
   #   true:  Stream tokens as they arrive (default)
   #   false: Wait for the full response before rendering
   streaming: true
+
+  # Show [HH:MM] timestamps on user input and assistant response labels.
+  # timestamps: false
 
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme

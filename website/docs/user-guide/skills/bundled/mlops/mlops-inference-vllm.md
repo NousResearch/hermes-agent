@@ -20,6 +20,7 @@ vLLM: high-throughput LLM serving, OpenAI API, quantization.
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `vllm`, `torch`, `transformers` |
+| Platforms | linux, macos |
 | Tags | `vLLM`, `Inference Serving`, `PagedAttention`, `Continuous Batching`, `High Throughput`, `Production`, `OpenAI API`, `Quantization`, `Tensor Parallelism` |
 
 ## Reference: full SKILL.md

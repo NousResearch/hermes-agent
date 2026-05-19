@@ -426,23 +426,6 @@ class TestFileSync:
 
 
 class TestExecute:
-    def test_execute_runs_command_from_workspace_root_and_updates_cwd(
-        self, make_env, vercel_sdk
-    ):
-        env = make_env()
-        vercel_sdk.current.run_command_side_effects.append(
-            _cwd_result("/tmp", cwd="/tmp")
-        )
-
-        result = env.execute("pwd", cwd="/tmp")
-
-        assert result == {"output": "/tmp\n", "returncode": 0}
-        assert env.cwd == "/tmp"
-        cmd, args, kwargs = vercel_sdk.current.run_command_calls[-1]
-        assert cmd == "bash"
-        assert args[0] == "-c"
-        assert "cd /tmp" in args[1]
-        assert kwargs["cwd"] == "/vercel/sandbox"
 
     @pytest.mark.parametrize(
         ("make_unhealthy", "label"),

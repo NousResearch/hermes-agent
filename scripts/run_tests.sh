@@ -44,7 +44,15 @@ PYTHON="$VENV/bin/python"
 # ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
   echo "→ installing pytest-split into $VENV"
-  "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install --python "$PYTHON" --quiet "pytest-split>=0.9,<1"
+  elif "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+  else
+    echo "error: neither uv nor pip is available in $VENV — pytest-split is missing" >&2
+    echo "  fix: run  uv pip install -e \".[dev]\"  from $REPO_ROOT" >&2
+    exit 1
+  fi
 fi
 
 # ── Hermetic environment ────────────────────────────────────────────────────
@@ -67,6 +75,7 @@ unset HERMES_YOLO_MODE HERMES_INTERACTIVE HERMES_QUIET HERMES_TOOL_PROGRESS \
       HERMES_TOOL_PROGRESS_MODE HERMES_MAX_ITERATIONS HERMES_SESSION_PLATFORM \
       HERMES_SESSION_CHAT_ID HERMES_SESSION_CHAT_NAME HERMES_SESSION_THREAD_ID \
       HERMES_SESSION_SOURCE HERMES_SESSION_KEY HERMES_GATEWAY_SESSION \
+      HERMES_CRON_SESSION \
       HERMES_PLATFORM HERMES_INFERENCE_PROVIDER HERMES_MANAGED HERMES_DEV \
       HERMES_CONTAINER HERMES_EPHEMERAL_SYSTEM_PROMPT HERMES_TIMEZONE \
       HERMES_REDACT_SECRETS HERMES_BACKGROUND_NOTIFICATIONS HERMES_EXEC_ASK \
@@ -77,6 +86,22 @@ export TZ=UTC
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export PYTHONHASHSEED=0
+
+# ── Live-gateway test guard (developer machines) ────────────────────────────
+# If a system-wide hermes pytest_live_guard plugin is installed at
+# $HOME/.hermes/pytest_live_guard.py, force-load it here so every test run
+# from this script gets the protection regardless of which worktree is
+# checked out (in-tree tests/conftest.py guard may be missing on stale
+# branches). Harmless on CI / fresh machines that don't have the file.
+if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
+  case ":${PYTHONPATH:-}:" in
+    *":$HOME/.hermes:"*) ;;
+    *) export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$HOME/.hermes" ;;
+  esac
+  if [[ ",${PYTEST_PLUGINS:-}," != *,pytest_live_guard,* ]]; then
+    export PYTEST_PLUGINS="${PYTEST_PLUGINS:+$PYTEST_PLUGINS,}pytest_live_guard"
+  fi
+fi
 
 # ── Worker count ────────────────────────────────────────────────────────────
 # CI uses `-n auto` on ubuntu-latest which gives 4 workers. A 20-core

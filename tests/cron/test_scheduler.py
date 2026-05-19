@@ -151,6 +151,53 @@ class TestResolveDeliveryTarget:
             "thread_id": "topic-7",
         }
 
+    def test_telegram_cron_thread_id_overrides_home_thread_id(self, monkeypatch):
+        """TELEGRAM_CRON_THREAD_ID wins over TELEGRAM_HOME_CHANNEL_THREAD_ID for cron (#24409)."""
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1001234567890")
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", "5")
+        monkeypatch.setenv("TELEGRAM_CRON_THREAD_ID", "42")
+
+        assert _resolve_delivery_target({"deliver": "telegram"}) == {
+            "platform": "telegram",
+            "chat_id": "-1001234567890",
+            "thread_id": "42",
+        }
+
+    def test_telegram_cron_thread_id_sets_thread_when_home_thread_unset(self, monkeypatch):
+        """TELEGRAM_CRON_THREAD_ID supplies a thread when no home thread is configured."""
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1001234567890")
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", raising=False)
+        monkeypatch.setenv("TELEGRAM_CRON_THREAD_ID", "42")
+
+        assert _resolve_delivery_target({"deliver": "telegram"}) == {
+            "platform": "telegram",
+            "chat_id": "-1001234567890",
+            "thread_id": "42",
+        }
+
+    def test_telegram_cron_thread_id_does_not_leak_to_other_platforms(self, monkeypatch):
+        """TELEGRAM_CRON_THREAD_ID is Telegram-only; other platforms keep their own thread resolution."""
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "parent-42")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL_THREAD_ID", "topic-7")
+        monkeypatch.setenv("TELEGRAM_CRON_THREAD_ID", "42")
+
+        assert _resolve_delivery_target({"deliver": "discord"}) == {
+            "platform": "discord",
+            "chat_id": "parent-42",
+            "thread_id": "topic-7",
+        }
+
+    def test_explicit_telegram_topic_target_overrides_cron_thread_id(self, monkeypatch):
+        """Explicit ``telegram:chat:thread`` targets bypass TELEGRAM_CRON_THREAD_ID."""
+        monkeypatch.setenv("TELEGRAM_CRON_THREAD_ID", "999")
+
+        job = {"deliver": "telegram:-1003724596514:17"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-1003724596514",
+            "thread_id": "17",
+        }
+
     def test_explicit_telegram_topic_target_with_thread_id(self):
         """deliver: 'telegram:chat_id:thread_id' parses correctly."""
         job = {
@@ -349,6 +396,95 @@ class TestResolveDeliveryTarget:
         from cron.scheduler import _resolve_delivery_targets
 
         assert _resolve_delivery_targets({"deliver": []}) == []
+
+
+class TestRoutingIntents:
+    """``all`` routing intent expands at fire time."""
+
+    def test_all_expands_to_every_connected_home_channel(self, monkeypatch):
+        """deliver='all' fans out to every platform with a configured home channel."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "C333")
+        # Sanity: platforms without the env var must NOT appear in the expansion.
+        monkeypatch.delenv("SIGNAL_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
+
+        targets = _resolve_delivery_targets({"deliver": "all", "origin": None})
+        platforms = sorted(t["platform"] for t in targets)
+
+        assert "telegram" in platforms
+        assert "discord" in platforms
+        assert "slack" in platforms
+        assert "signal" not in platforms
+        assert "matrix" not in platforms
+
+    def test_all_combines_with_explicit_target_and_dedups(self, monkeypatch):
+        """'telegram:-999,all' yields every home channel + the explicit target without dupes."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
+
+        # Explicit telegram target precedes 'all'. Expansion adds discord;
+        # the dedup pass collapses any (platform, chat_id, thread_id) repeats.
+        job = {"deliver": "telegram:-999,all", "origin": None}
+        targets = _resolve_delivery_targets(job)
+
+        platforms = sorted(t["platform"].lower() for t in targets)
+        assert "telegram" in platforms
+        assert "discord" in platforms
+        # Every target is unique on (platform, chat_id, thread_id).
+        keys = [(t["platform"].lower(), str(t["chat_id"]), t.get("thread_id")) for t in targets]
+        assert len(keys) == len(set(keys))
+
+    def test_all_with_no_connected_channels_returns_empty(self, monkeypatch):
+        """deliver='all' with nothing connected returns [] — delivery is recorded as failed upstream."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        for var in ("TELEGRAM_HOME_CHANNEL", "DISCORD_HOME_CHANNEL", "SLACK_HOME_CHANNEL",
+                    "SIGNAL_HOME_CHANNEL", "MATRIX_HOME_ROOM", "MATTERMOST_HOME_CHANNEL",
+                    "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL",
+                    "FEISHU_HOME_CHANNEL", "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL",
+                    "BLUEBUBBLES_HOME_CHANNEL", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL"):
+            monkeypatch.delenv(var, raising=False)
+
+        assert _resolve_delivery_targets({"deliver": "all", "origin": None}) == []
+
+    def test_origin_comma_all_preserves_origin_first(self, monkeypatch):
+        """'origin,all' delivers to the origin platform plus every other home channel."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
+
+        job = {
+            "deliver": "origin,all",
+            "origin": {"platform": "discord", "chat_id": "888"},
+        }
+        targets = _resolve_delivery_targets(job)
+        platforms = sorted(t["platform"].lower() for t in targets)
+        assert "telegram" in platforms
+        assert "discord" in platforms
+
+        # The origin's explicit chat_id (888) wins the dedup race over the
+        # discord home channel (-222) because origin is resolved first.
+        discord = next(t for t in targets if t["platform"].lower() == "discord")
+        assert discord["chat_id"] == "888"
+
+    def test_all_token_case_insensitive(self, monkeypatch):
+        """'ALL' / 'All' / 'all' are all recognized."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
+
+        for token in ("ALL", "All", "all"):
+            targets = _resolve_delivery_targets({"deliver": token, "origin": None})
+            platforms = sorted(t["platform"].lower() for t in targets)
+            assert platforms == ["discord", "telegram"], f"token={token!r} -> {platforms}"
 
 
 class TestDeliverResultWrapping:
@@ -1307,6 +1443,103 @@ class TestRunJobConfigLogging:
             f"Expected 'failed to parse prefill messages' warning in logs, got: {[r.message for r in caplog.records]}"
 
 
+class TestRunJobConfigEnvVarExpansion:
+    """Verify that ${VAR} references in config.yaml are expanded when running cron jobs."""
+
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+    }
+
+    def test_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
+        """${VAR} in config.yaml model: is expanded using env after .env is loaded."""
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n")
+        monkeypatch.setenv("_HERMES_TEST_CRON_MODEL", "gpt-4o-mini-cron-test")
+
+        job = {"id": "env-job", "name": "env test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["model"] == "gpt-4o-mini-cron-test", (
+            f"Expected model='gpt-4o-mini-cron-test', got {kwargs['model']!r}. "
+            "config.yaml ${VAR} was not expanded in the cron execution path."
+        )
+
+    def test_fallback_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
+        """${VAR} in config.yaml fallback_providers model: is expanded."""
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: ${_HERMES_TEST_CRON_FALLBACK}\n"
+        )
+        monkeypatch.setenv("_HERMES_TEST_CRON_FALLBACK", "gpt-4o-fallback-test")
+
+        job = {"id": "fb-job", "name": "fallback test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        fb = kwargs.get("fallback_model") or []
+        fb_list = fb if isinstance(fb, list) else [fb]
+        expanded = [e.get("model") for e in fb_list if isinstance(e, dict)]
+        assert "gpt-4o-fallback-test" in expanded, (
+            f"Expected expanded fallback model in {expanded!r}. "
+            "config.yaml ${VAR} in fallback_providers was not expanded."
+        )
+
+    def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
+        """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")
+        monkeypatch.delenv("_HERMES_TEST_CRON_UNSET_VAR", raising=False)
+
+        job = {"id": "unset-job", "name": "unset var test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        kwargs = mock_agent_cls.call_args.kwargs
+        # Unresolved refs are kept verbatim — _expand_env_vars contract
+        assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
+
+
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
         job = {
@@ -1587,6 +1820,24 @@ class TestSilentDelivery:
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
 
+    def test_whitespace_only_response_is_marked_failed_not_delivered(self):
+        """Whitespace-only final responses should behave like empty responses."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "   \n\t  ", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_not_called()
+        mark_mock.assert_called_once_with(
+            "monitor-job",
+            False,
+            "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
+            delivery_error=None,
+        )
+
 
 class TestBuildJobPromptSilentHint:
     """Verify _build_job_prompt always injects [SILENT] guidance."""
@@ -1599,6 +1850,11 @@ class TestBuildJobPromptSilentHint:
 
     def test_hint_present_even_without_prompt(self):
         job = {"prompt": ""}
+        result = _build_job_prompt(job)
+        assert "[SILENT]" in result
+
+    def test_hint_present_when_legacy_prompt_is_null(self):
+        job = {"id": "abc123deadbe", "name": None, "prompt": None}
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
 
@@ -1958,8 +2214,8 @@ class TestParallelTick:
         """Point the tick file lock at a per-test temp dir to avoid xdist contention."""
         lock_dir = tmp_path / "cron"
         lock_dir.mkdir()
-        with patch("cron.scheduler._LOCK_DIR", lock_dir), \
-             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"):
+        lock_file = lock_dir / ".tick.lock"
+        with patch("cron.scheduler._get_lock_paths", return_value=(lock_dir, lock_file)):
             yield
 
     def test_parallel_jobs_run_concurrently(self):
@@ -2139,6 +2395,65 @@ class TestDeliverResultTimeoutCancelsFuture:
         # 2. The standalone fallback delivered — no double send, no silent drop
         assert result is None, f"expected successful delivery, got error: {result!r}"
         standalone_send.assert_awaited_once()
+
+    def test_live_adapter_thread_fallback_records_delivery_error(self):
+        """A cron target with an explicit topic must not be marked clean if
+        Telegram falls back to the base chat after "thread not found".
+        """
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(
+            success=True,
+            message_id="42",
+            raw_response={
+                "requested_thread_id": 7072,
+                "thread_fallback": True,
+            },
+        )
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=send_result)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "thread-fallback-job",
+            "deliver": "telegram:226252250:7072",
+        }
+
+        completed_future = Future()
+        completed_future.set_result(send_result)
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result == (
+            "configured thread_id 7072 for telegram:226252250 was not found; "
+            "delivered without thread_id"
+        )
+        adapter.send.assert_called_once_with(
+            "226252250",
+            "Hello world",
+            metadata={"thread_id": "7072"},
+        )
 
 
 class TestSendMediaTimeoutCancelsFuture:

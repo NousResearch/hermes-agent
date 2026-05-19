@@ -821,10 +821,17 @@ def init_agent(
         quiet_mode=agent.quiet_mode,
     )
     
-    # Show tool configuration and store valid tool names for validation
+    def _refresh_projected_tool_names(*, freeze: bool = False) -> None:
+        from agent.tool_projection import refresh_agent_tool_projection
+
+        refresh_agent_tool_projection(agent, freeze=freeze)
+
+    agent._refresh_projected_tool_names = _refresh_projected_tool_names
+
+    # Show tool configuration and store valid projected tool names for validation
     agent.valid_tool_names = set()
     if agent.tools:
-        agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
+        agent._refresh_projected_tool_names()
         tool_names = sorted(agent.valid_tool_names)
         if not agent.quiet_mode:
             print(f"🛠️  Loaded {len(agent.tools)} tools: {', '.join(tool_names)}")
@@ -1053,6 +1060,7 @@ def init_agent(
             if _tname:
                 agent.valid_tool_names.add(_tname)
                 _existing_tool_names.add(_tname)
+        agent._refresh_projected_tool_names()
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
@@ -1364,6 +1372,7 @@ def init_agent(
                 agent.valid_tool_names.add(_tname)
                 agent._context_engine_tool_names.add(_tname)
                 _existing_tool_names.add(_tname)
+        agent._refresh_projected_tool_names()
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

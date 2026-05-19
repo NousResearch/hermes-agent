@@ -232,11 +232,23 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
+    if hasattr(agent, "_refresh_projected_tool_names"):
+        agent._refresh_projected_tool_names(freeze=True)
+
+    from agent.tool_projection import (
+        PatchToolSurface,
+        project_messages_for_patch_surface,
+    )
+
     tools_for_api = agent.tools
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
-        anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
+        projected_messages = project_messages_for_patch_surface(
+            api_messages,
+            patch_surface=PatchToolSurface.HERMES_PATCH,
+        )
+        anthropic_messages = agent._prepare_anthropic_messages_for_api(projected_messages)
         ctx_len = getattr(agent, "context_compressor", None)
         ctx_len = ctx_len.context_length if ctx_len else None
         ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
@@ -262,9 +274,13 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _bt = agent._get_transport()
         region = getattr(agent, "_bedrock_region", None) or "us-east-1"
         guardrail = getattr(agent, "_bedrock_guardrail_config", None)
+        projected_messages = project_messages_for_patch_surface(
+            api_messages,
+            patch_surface=PatchToolSurface.HERMES_PATCH,
+        )
         return _bt.build_kwargs(
             model=agent.model,
-            messages=api_messages,
+            messages=projected_messages,
             tools=tools_for_api,
             max_tokens=agent.max_tokens or 4096,
             region=region,
@@ -316,6 +332,9 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             session_id=getattr(agent, "session_id", None),
             max_tokens=agent.max_tokens,
             request_overrides=agent.request_overrides,
+            provider=agent.provider,
+            base_url=agent.base_url,
+            patch_surface=getattr(agent, "_patch_tool_surface", None),
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
@@ -402,7 +421,10 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # Strip image parts for non-vision models that have provider profiles
         # (e.g. DeepSeek, Kimi). The legacy path below already does this, but
         # registered providers with profiles were bypassing the strip.
-        api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
+        api_messages = project_messages_for_patch_surface(
+            agent._prepare_messages_for_non_vision_model(api_messages),
+            patch_surface=PatchToolSurface.HERMES_PATCH,
+        )
 
         return _ct.build_kwargs(
             model=agent.model,
@@ -434,7 +456,10 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         agent._ephemeral_max_output_tokens = None
 
     # Strip image parts for non-vision models (no-op when vision-capable).
-    _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
+    _msgs_for_chat = project_messages_for_patch_surface(
+        agent._prepare_messages_for_non_vision_model(api_messages),
+        patch_surface=PatchToolSurface.HERMES_PATCH,
+    )
 
     return _ct.build_kwargs(
         model=agent.model,
@@ -640,10 +665,13 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                 _, embedded_response_item_id = agent._split_responses_tool_id(raw_id)
                 response_item_id = embedded_response_item_id
 
-            response_item_id = agent._derive_responses_function_call_id(
-                call_id,
-                response_item_id if isinstance(response_item_id, str) else None,
-            )
+            if getattr(tool_call, "type", "function") == "apply_patch":
+                response_item_id = response_item_id if isinstance(response_item_id, str) else None
+            else:
+                response_item_id = agent._derive_responses_function_call_id(
+                    call_id,
+                    response_item_id if isinstance(response_item_id, str) else None,
+                )
 
             tc_dict = {
                 "id": call_id,
@@ -804,6 +832,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.api_mode = fb_api_mode
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
+        if hasattr(agent, "_refresh_projected_tool_names"):
+            agent._refresh_projected_tool_names()
         agent._fallback_activated = True
 
         # Honor per-provider / per-model request_timeout_seconds for the
@@ -952,6 +982,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # Same safety net as the main loop: drop thinking-only assistant
         # turns so Anthropic-family providers don't 400 the summary call.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+        if agent.api_mode != "codex_responses":
+            from agent.tool_projection import (
+                PatchToolSurface,
+                project_messages_for_patch_surface,
+            )
+            if hasattr(agent, "_refresh_projected_tool_names"):
+                agent._refresh_projected_tool_names()
+            api_messages = project_messages_for_patch_surface(
+                api_messages,
+                patch_surface=PatchToolSurface.HERMES_PATCH,
+            )
 
         summary_extra_body = {}
         try:

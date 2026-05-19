@@ -101,7 +101,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             function_args = {}
 
         # Checkpoint for file-mutating tools
-        if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
+        if function_name in {"write_file", "patch", "apply_patch"} and agent._checkpoint_mgr.enabled:
             try:
                 file_path = function_args.get("path", "")
                 if file_path:
@@ -567,7 +567,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logging.debug(f"Tool start callback error: {cb_err}")
 
         # Checkpoint: snapshot working dir before file-mutating tools
-        if not _execution_blocked and function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
+        if not _execution_blocked and function_name in {"write_file", "patch", "apply_patch"} and agent._checkpoint_mgr.enabled:
             try:
                 file_path = function_args.get("path", "")
                 if file_path:

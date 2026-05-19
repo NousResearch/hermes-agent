@@ -19,6 +19,10 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.tool_projection import (
+    PatchToolSurface,
+    responses_tools_for_surface,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -202,25 +206,18 @@ def _derive_responses_function_call_id(
 # Schema conversion
 # ---------------------------------------------------------------------------
 
-def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
+def _responses_tools(
+    tools: Optional[List[Dict[str, Any]]] = None,
+    *,
+    apply_patch_tool_kind: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
     """Convert chat-completions tool schemas to Responses function-tool schemas."""
-    if not tools:
-        return None
-
-    converted: List[Dict[str, Any]] = []
-    for item in tools:
-        fn = item.get("function", {}) if isinstance(item, dict) else {}
-        name = fn.get("name")
-        if not isinstance(name, str) or not name.strip():
-            continue
-        converted.append({
-            "type": "function",
-            "name": name,
-            "description": fn.get("description", ""),
-            "strict": False,
-            "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
-        })
-    return converted or None
+    surface = (
+        PatchToolSurface.CODEX_FREEFORM_APPLY_PATCH
+        if apply_patch_tool_kind == "freeform"
+        else PatchToolSurface.HERMES_PATCH
+    )
+    return responses_tools_for_surface(tools, patch_surface=surface)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +258,7 @@ def _chat_messages_to_responses_input(
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
+    custom_apply_patch_call_ids: set[str] = set()
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -407,6 +405,24 @@ def _chat_messages_to_responses_input(
                             arguments = str(arguments)
                         arguments = arguments.strip() or "{}"
 
+                        tc_type = str(tc.get("type") or "function").strip()
+                        if tc_type == "apply_patch" and fn_name == "apply_patch":
+                            try:
+                                parsed_args = json.loads(arguments)
+                            except Exception:
+                                parsed_args = {}
+                            patch = parsed_args.get("patch") if isinstance(parsed_args, dict) else None
+                            if not isinstance(patch, str):
+                                patch = arguments
+                            items.append({
+                                "type": "custom_tool_call",
+                                "call_id": call_id,
+                                "name": "apply_patch",
+                                "input": patch,
+                            })
+                            custom_apply_patch_call_ids.add(call_id)
+                            continue
+
                         items.append({
                             "type": "function_call",
                             "call_id": call_id,
@@ -450,11 +466,23 @@ def _chat_messages_to_responses_input(
             else:
                 output_value = str(tool_content or "")
 
-            items.append({
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": output_value,
-            })
+            if call_id in custom_apply_patch_call_ids or msg.get("name") == "apply_patch":
+                output_text = (
+                    output_value
+                    if isinstance(output_value, str)
+                    else json.dumps(output_value, ensure_ascii=False)
+                )
+                items.append({
+                    "type": "custom_tool_call_output",
+                    "call_id": call_id,
+                    "output": output_text,
+                })
+            else:
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": output_value,
+                })
 
     return items
 
@@ -497,6 +525,30 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                     "arguments": arguments,
                 }
             )
+            continue
+
+        if item_type == "custom_tool_call":
+            call_id = item.get("call_id")
+            name = item.get("name")
+            if not isinstance(call_id, str) or not call_id.strip():
+                raise ValueError(f"Codex Responses input[{idx}] custom_tool_call is missing call_id.")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"Codex Responses input[{idx}] custom_tool_call is missing name.")
+            custom_input = item.get("input", "")
+            if custom_input is None:
+                custom_input = ""
+            elif not isinstance(custom_input, str):
+                custom_input = str(custom_input)
+            normalized_item = {
+                "type": "custom_tool_call",
+                "call_id": call_id.strip(),
+                "name": name.strip(),
+                "input": custom_input,
+            }
+            item_id = item.get("id")
+            if isinstance(item_id, str) and item_id.strip():
+                normalized_item["id"] = item_id.strip()
+            normalized.append(normalized_item)
             continue
 
         if item_type == "function_call_output":
@@ -544,6 +596,24 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             normalized.append(
                 {
                     "type": "function_call_output",
+                    "call_id": call_id.strip(),
+                    "output": output,
+                }
+            )
+            continue
+
+        if item_type == "custom_tool_call_output":
+            call_id = item.get("call_id")
+            if not isinstance(call_id, str) or not call_id.strip():
+                raise ValueError(f"Codex Responses input[{idx}] custom_tool_call_output is missing call_id.")
+            output = item.get("output", "")
+            if output is None:
+                output = ""
+            elif not isinstance(output, str):
+                output = str(output)
+            normalized.append(
+                {
+                    "type": "custom_tool_call_output",
                     "call_id": call_id.strip(),
                     "output": output,
                 }
@@ -709,7 +779,22 @@ def _preflight_codex_api_kwargs(
         for idx, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
-            if tool.get("type") != "function":
+            tool_type = tool.get("type")
+            if tool_type == "custom":
+                name = tool.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError(f"Codex Responses tools[{idx}] custom tool is missing a valid name.")
+                normalized_tool = {
+                    "type": "custom",
+                    "name": name.strip(),
+                    "description": str(tool.get("description") or ""),
+                }
+                fmt = tool.get("format")
+                if isinstance(fmt, dict):
+                    normalized_tool["format"] = fmt
+                normalized_tools.append(normalized_tool)
+                continue
+            if tool_type != "function":
                 raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
 
             name = tool.get("name")
@@ -1001,6 +1086,10 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             arguments = getattr(item, "input", "{}")
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments, ensure_ascii=False)
+            tool_type = "function"
+            if fn_name == "apply_patch":
+                tool_type = "apply_patch"
+                arguments = json.dumps({"patch": arguments}, ensure_ascii=False)
             raw_call_id = getattr(item, "call_id", None)
             raw_item_id = getattr(item, "id", None)
             embedded_call_id, _ = _split_responses_tool_id(raw_item_id)
@@ -1014,7 +1103,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
                 id=call_id,
                 call_id=call_id,
                 response_item_id=response_item_id,
-                type="function",
+                type=tool_type,
                 function=SimpleNamespace(name=fn_name, arguments=arguments),
             ))
 

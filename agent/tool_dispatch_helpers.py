@@ -56,7 +56,7 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 })
 
 # File tools can run concurrently when they target independent paths.
-_PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
+_PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch", "apply_patch"})
 
 # Patterns that indicate a terminal command may modify/delete files.
 _DESTRUCTIVE_PATTERNS = re.compile(
@@ -247,6 +247,19 @@ def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List
     if tool_name == "write_file":
         p = args.get("path")
         return [str(p)] if p else []
+    if tool_name == "apply_patch":
+        body = args.get("patch") or ""
+        if not isinstance(body, str) or not body:
+            return []
+        return [
+            m.group(1).strip()
+            for m in re.finditer(
+                r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$',
+                body,
+                re.MULTILINE,
+            )
+            if m.group(1).strip()
+        ]
     # tool_name == "patch"
     mode = args.get("mode") or "replace"
     if mode == "replace":

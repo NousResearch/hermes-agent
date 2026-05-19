@@ -3682,7 +3682,7 @@ class AIAgent:
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
-        _STRIP_KEYS = {"call_id", "response_item_id"}
+        _STRIP_KEYS = {"call_id", "response_item_id", "_hermes_patch_tool_intent"}
         api_msg["tool_calls"] = [
             {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
             if isinstance(tc, dict) else tc

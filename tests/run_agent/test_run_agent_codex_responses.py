@@ -1,3 +1,5 @@
+import copy
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -311,6 +313,257 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "timeout" not in kwargs
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
+
+
+def test_build_api_kwargs_codex_projects_patch_history_to_custom_apply_patch(monkeypatch):
+    patch_text = "*** Begin Patch\n*** Delete File: old.txt\n*** End Patch\n"
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "patch",
+                "description": "Hermes patch",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kwargs: tools)
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    messages = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "edit"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_patch",
+                    "type": "function",
+                    "function": {
+                        "name": "patch",
+                        "arguments": json.dumps({"mode": "patch", "patch": patch_text}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "patch",
+            "tool_call_id": "call_patch",
+            "content": "{\"success\": true}",
+        },
+    ]
+    stored_messages = copy.deepcopy(messages)
+
+    kwargs = agent._build_api_kwargs(messages)
+
+    assert agent.valid_tool_names == {"apply_patch", "read_file"}
+    assert messages == stored_messages
+    assert [tool.get("name") for tool in kwargs["tools"] if tool["type"] == "function"] == ["read_file"]
+    custom_tools = [tool for tool in kwargs["tools"] if tool["type"] == "custom"]
+    assert len(custom_tools) == 1
+    assert custom_tools[0]["name"] == "apply_patch"
+    assert {"type": "apply_patch"} not in kwargs["tools"]
+    assert kwargs["input"][1] == {
+        "type": "custom_tool_call",
+        "call_id": "call_patch",
+        "name": "apply_patch",
+        "input": patch_text,
+    }
+    assert kwargs["input"][2]["type"] == "custom_tool_call_output"
+
+
+def test_build_api_kwargs_keeps_apply_patch_surface_after_fallback_like_mutation(monkeypatch):
+    patch_text = "*** Begin Patch\n*** Delete File: old.txt\n*** End Patch\n"
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "patch",
+                "description": "Hermes patch",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kwargs: tools)
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    messages = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "edit"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_patch",
+                    "type": "apply_patch",
+                    "function": {
+                        "name": "apply_patch",
+                        "arguments": json.dumps({"patch": patch_text}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "apply_patch",
+            "tool_call_id": "call_patch",
+            "content": "{\"success\": true}",
+        },
+    ]
+
+    first_kwargs = agent._build_api_kwargs(messages)
+    assert first_kwargs["input"][1]["type"] == "custom_tool_call"
+
+    agent.provider = "openai"
+    agent.base_url = "https://api.openai.com/v1"
+    agent.model = "gpt-5.4-mini"
+    agent._base_url_hostname = "api.openai.com"
+    agent._base_url_lower = "https://api.openai.com/v1"
+    agent.api_mode = "codex_responses"
+
+    fallback_kwargs = agent._build_api_kwargs(messages)
+
+    assert agent.valid_tool_names == {"apply_patch", "read_file"}
+    assert fallback_kwargs["input"][1] == first_kwargs["input"][1]
+    assert fallback_kwargs["input"][1] == {
+        "type": "custom_tool_call",
+        "call_id": "call_patch",
+        "name": "apply_patch",
+        "input": patch_text,
+    }
+    assert fallback_kwargs["input"][2]["type"] == "custom_tool_call_output"
+
+
+def test_responses_tools_can_replace_patch_with_codex_freeform_apply_patch(monkeypatch):
+    from agent.codex_responses_adapter import _responses_tools
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "patch",
+                "description": "Hermes patch",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+
+    converted = _responses_tools(tools, apply_patch_tool_kind="freeform")
+
+    assert [tool.get("name") for tool in converted if tool["type"] == "function"] == ["read_file"]
+    custom_tools = [tool for tool in converted if tool["type"] == "custom"]
+    assert len(custom_tools) == 1
+    assert custom_tools[0]["name"] == "apply_patch"
+    assert custom_tools[0]["format"]["type"] == "grammar"
+    assert custom_tools[0]["format"]["syntax"] == "lark"
+    assert "begin_patch" in custom_tools[0]["format"]["definition"]
+
+
+def test_custom_apply_patch_call_round_trips_as_responses_items(monkeypatch):
+    from agent.codex_responses_adapter import (
+        _chat_messages_to_responses_input,
+        _normalize_codex_response,
+    )
+
+    patch = "*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch\n"
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="custom_tool_call",
+                id="ctc_123",
+                call_id="call_123",
+                name="apply_patch",
+                input=patch,
+            )
+        ],
+    )
+    message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert message.tool_calls[0].type == "apply_patch"
+    assert message.tool_calls[0].function.name == "apply_patch"
+
+    replay = _chat_messages_to_responses_input([
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "call_id": "call_123",
+                    "type": "apply_patch",
+                    "function": {
+                        "name": "apply_patch",
+                        "arguments": message.tool_calls[0].function.arguments,
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "apply_patch",
+            "tool_call_id": "call_123",
+            "content": "{\"success\": true}",
+        },
+    ])
+
+    assert replay == [
+        {
+            "type": "custom_tool_call",
+            "call_id": "call_123",
+            "name": "apply_patch",
+            "input": patch,
+        },
+        {
+            "type": "custom_tool_call_output",
+            "call_id": "call_123",
+            "output": "{\"success\": true}",
+        },
+    ]
 
 
 def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):

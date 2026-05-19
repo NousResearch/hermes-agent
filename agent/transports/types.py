@@ -44,7 +44,7 @@ class ToolCall:
     # shim, while keeping ToolCall's canonical fields flat.
     @property
     def type(self) -> str:
-        return "function"
+        return str((self.provider_data or {}).get("type") or "function")
 
     @property
     def function(self) -> ToolCall:

@@ -943,6 +943,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return tool_error(str(e))
 
 
+def apply_patch_tool(patch: str = None, task_id: str = "default") -> str:
+    """Apply a freeform Codex-style patch through Hermes file operations."""
+    if not patch:
+        return tool_error("apply_patch requires patch")
+    return patch_tool(mode="patch", patch=patch, task_id=task_id)
+
+
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,

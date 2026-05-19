@@ -47,6 +47,12 @@ def _no_backoff_wait(monkeypatch):
     import time as _time
 
     monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    # The conversation loop was extracted out of run_agent.py into
+    # agent.conversation_loop, which holds its own `from agent.retry_utils
+    # import jittered_backoff` reference. Patching `run_agent.jittered_backoff`
+    # alone leaves the live retry path using real ~2s waits. Patch both.
+    from agent import conversation_loop as _conv_loop
+    monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0)
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
 
     # Also fast-path asyncio.sleep — the gateway's _run_agent path has

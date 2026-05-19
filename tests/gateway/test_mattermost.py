@@ -197,7 +197,19 @@ class TestMattermostSend:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
+        # send() now calls _resolve_root_id → _api_get("posts/<id>") first
+        # to make sure root_id points to a thread root, so we need to mock
+        # the GET too.  Return an empty dict (no root_id) so the resolver
+        # falls back to the original reply_to as the root.
+        mock_get_resp = AsyncMock()
+        mock_get_resp.status = 200
+        mock_get_resp.json = AsyncMock(return_value={"id": "root_post", "root_id": ""})
+        mock_get_resp.text = AsyncMock(return_value="")
+        mock_get_resp.__aenter__ = AsyncMock(return_value=mock_get_resp)
+        mock_get_resp.__aexit__ = AsyncMock(return_value=False)
+
         self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = MagicMock(return_value=mock_get_resp)
 
         result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
 

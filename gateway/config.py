@@ -322,15 +322,21 @@ class PlatformConfig:
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
 
+        # gateway_restart_notification may be bridged into extra via the
+        # shared-key loop in load_gateway_config(); check both top-level
+        # and extra so YAML ``discord: gateway_restart_notification: false``
+        # works without needing a separate platforms: block.
+        _grn = data.get("gateway_restart_notification")
+        if _grn is None:
+            _grn = data.get("extra", {}).get("gateway_restart_notification")
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
-            gateway_restart_notification=_coerce_bool(
-                data.get("gateway_restart_notification"), True
-            ),
+            gateway_restart_notification=_coerce_bool(_grn, True),
             extra=data.get("extra", {}),
         )
 
@@ -849,6 +855,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                if "gateway_restart_notification" in platform_cfg:
+                    bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

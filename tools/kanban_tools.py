@@ -1,8 +1,10 @@
 """Kanban tools — structured tool-call surface for worker + orchestrator agents.
 
-These tools are only registered into the model's schema when the agent is
-running under the dispatcher (env var ``HERMES_KANBAN_TASK`` set). A
-normal ``hermes chat`` session sees **zero** kanban tools in its schema.
+These tools are registered into the model's schema when the agent is
+running under the dispatcher (env var ``HERMES_KANBAN_TASK`` set) or when
+the active profile explicitly enables the ``kanban`` toolset for
+orchestrator work. A normal ``hermes chat`` session still sees **zero**
+kanban tools in its schema unless configured.
 
 Why tools instead of just shelling out to ``hermes kanban``?
 
@@ -20,8 +22,9 @@ Why tools instead of just shelling out to ``hermes kanban``?
 
 Humans continue to use the CLI (``hermes kanban …``), the dashboard
 (``hermes dashboard``), and the slash command (``/kanban …``) — all
-three bypass the agent entirely. The tools are ONLY for the worker
-agent's handoff back to the kernel.
+three bypass the agent entirely. The tools are for dispatcher-spawned
+worker handoffs and for configured orchestrator profiles that route work
+through the board.
 """
 from __future__ import annotations
 

@@ -4785,12 +4785,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
-        if not update.message:
+        msg = self._effective_update_message(update)
+        if not msg:
             return
-        if not self._should_process_message(update.message):
+        if not self._should_process_message(msg):
             return
-        
-        msg = update.message
         
         # Determine media type
         if msg.sticker:

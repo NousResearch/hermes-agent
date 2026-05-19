@@ -1193,6 +1193,87 @@ def test_create_task_no_warning_on_triage(client, monkeypatch):
     assert "warning" not in r.json() or not r.json()["warning"]
 
 
+# ---------------------------------------------------------------------------
+# _task_dict — outer try/except fallback when task_age raises
+#
+# Background: kanban_db.task_age was hardened in 061a1830 to return None for
+# corrupt timestamp values via _safe_int. The companion fix added a belt-and-
+# suspenders try/except in plugin_api._task_dict so that *any future* exception
+# from task_age (not just ValueError on '%s') still yields a usable dict
+# instead of 500'ing GET /board for the entire org.
+#
+# kanban_db._safe_int / task_age corruption paths are covered in
+# tests/hermes_cli/test_kanban_db.py. The OUTER fallback here is not, which
+# means a refactor that drops the try/except would not be caught by CI. The
+# tests below pin that contract.
+# ---------------------------------------------------------------------------
+
+
+_FALLBACK_AGE = {
+    "created_age_seconds": None,
+    "started_age_seconds": None,
+    "time_to_complete_seconds": None,
+}
+
+
+def test_board_endpoint_survives_task_age_exception(client, monkeypatch):
+    """If task_age raises for any reason, GET /board must NOT 500.
+
+    Pre-fix behavior (without the try/except in _task_dict): a single corrupt
+    row turned the entire board response into a 500. The fallback dict lets
+    the dashboard render every other card normally.
+    """
+    create = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "doomed", "assignee": "alice"},
+    )
+    assert create.status_code == 200, create.text
+
+    # Force task_age to raise an exception type _safe_int does NOT handle —
+    # simulates a future regression where someone re-introduces an unguarded
+    # operation in task_age. ValueError on '%s' would be absorbed by _safe_int
+    # and never reach the outer try/except, so it would not exercise the
+    # contract this test pins.
+    def _boom(_task):
+        raise RuntimeError("simulated future task_age bug")
+    monkeypatch.setattr("hermes_cli.kanban_db.task_age", _boom)
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+
+    payload = r.json()
+    # /board returns columns as a list of {name, tasks} — not a dict — so
+    # flatten across all columns to find our seeded task.
+    tasks = [t for col in payload["columns"] for t in col["tasks"]]
+    assert len(tasks) == 1, f"expected exactly the seeded task, got {tasks!r}"
+    # Strict equality: the literal fallback dict from plugin_api._task_dict
+    # is the published contract the dashboard UI relies on. Key renames or
+    # silent additions should fail this test on purpose.
+    assert tasks[0]["age"] == _FALLBACK_AGE
+
+
+def test_single_task_endpoint_survives_task_age_exception(client, monkeypatch):
+    """GET /tasks/:id also calls _task_dict — same fallback should kick in.
+
+    This is the "drawer view" path: the user clicks one card and we serialize
+    just that task. A corrupt timestamp on a single task should not block the
+    user from opening its drawer.
+    """
+    create = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "drawer-target", "assignee": "bob"},
+    )
+    task_id = create.json()["task"]["id"]
+
+    def _boom(_task):
+        raise RuntimeError("simulated future task_age bug")
+    monkeypatch.setattr("hermes_cli.kanban_db.task_age", _boom)
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["age"] == _FALLBACK_AGE
+
+
 def test_create_task_probe_error_does_not_break_create(client, monkeypatch):
     """Probe failure must never break task creation."""
     def _raise():

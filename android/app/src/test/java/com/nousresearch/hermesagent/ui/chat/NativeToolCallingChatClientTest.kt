@@ -219,6 +219,55 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun compactsSensorCapabilitiesWithoutDroppingHardwareMetadata() {
+        val capabilities = JSONArray()
+        repeat(20) { index ->
+            capabilities.put(
+                JSONObject()
+                    .put("sensor_type", if (index % 2 == 0) "accelerometer" else "gyroscope")
+                    .put("sensor_label", if (index % 2 == 0) "Accelerometer" else "Gyroscope")
+                    .put("sensor_name", "Motion Sensor $index")
+                    .put("vendor", "Vendor $index")
+                    .put("available", true)
+                    .put("unit", if (index % 2 == 0) "m/s^2" else "rad/s")
+                    .put("maximum_range", 19.6 + index)
+                    .put("resolution", 0.001)
+                    .put("power_ma", 0.8)
+                    .put("min_delay_us", 5000)
+                    .put("max_delay_us", 200000)
+                    .put("reporting_mode", "continuous")
+                    .put("wake_up", index == 0)
+                    .put("fifo_max_event_count", 512),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "sensor_snapshot")
+            .put("sensor_capability_count", 20)
+            .put("motion_sensor_count", 20)
+            .put("wake_up_sensor_count", 1)
+            .put("sensor_capabilities", capabilities)
+            .put("cards", JSONArray().put(JSONObject().put("title", "Sensor Hardware").put("body", "20 sensors")))
+            .toString()
+
+        val compacted = NativeToolContextCompressor.compactToolResult(result)
+        val parsed = JSONObject(compacted)
+        val compactedCapabilities = parsed.getJSONObject("sensor_capabilities")
+        val first = compactedCapabilities.getJSONArray("items").getJSONObject(0)
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(20, parsed.getInt("sensor_capability_count"))
+        assertEquals(20, parsed.getInt("motion_sensor_count"))
+        assertEquals(1, parsed.getInt("wake_up_sensor_count"))
+        assertEquals(20, compactedCapabilities.getInt("original_count"))
+        assertEquals("accelerometer", first.getString("sensor_type"))
+        assertEquals("Motion Sensor 0", first.getString("sensor_name"))
+        assertEquals(19.6, first.getDouble("maximum_range"), 0.01)
+        assertEquals("continuous", first.getString("reporting_mode"))
+        assertTrue(first.getBoolean("wake_up"))
+    }
+
+    @Test
     fun compactsCompletedNativeToolRoundsButKeepsLatestAssistantBlock() {
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", "tools enabled"))

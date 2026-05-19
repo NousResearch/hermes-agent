@@ -227,6 +227,48 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesSensorCapabilityRowsWithHardwareMetadata() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Sensor Hardware")
+                        .put("body", "Sensor metadata rows.")
+                        .put("graph_type", "sensor_capability")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("sensor_type", "gyroscope")
+                                    .put("sensor_label", "Gyroscope")
+                                    .put("sensor_name", "BMI160 Gyroscope")
+                                    .put("vendor", "Bosch")
+                                    .put("available", true)
+                                    .put("unit", "rad/s")
+                                    .put("maximum_range", 34.91)
+                                    .put("resolution", 0.001)
+                                    .put("power_ma", 0.9)
+                                    .put("min_delay_us", 5000)
+                                    .put("reporting_mode", "continuous")
+                                    .put("wake_up", true),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("Gyroscope", row.label)
+        assertEquals("range 34.91 rad/s", row.valueLabel)
+        assertTrue(row.detail.contains("Bosch"))
+        assertTrue(row.detail.contains("200.0 Hz"))
+        assertTrue(row.detail.contains("wake-up"))
+        assertTrue(row.fraction > 0.8f)
+    }
+
+    @Test
     fun parsesRadioCapabilityRowsAsLimitsWhenHardwareIsExternal() {
         val content = JSONObject()
             .put(

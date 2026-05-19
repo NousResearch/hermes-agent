@@ -1166,10 +1166,10 @@ class NativeToolCallingChatClient(
     private fun systemMessage(toolsEnabled: Boolean): JSONObject {
         val content = if (toolsEnabled) {
             "You are Hermes running inside the native Android app. " +
-                "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensors, camera capability checks, Wi-Fi analysis/channel ratings, Bluetooth nearby scans/service metadata, radio capability checks, resource summaries, or Tasker-style automation. " +
+                "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata, camera capability checks, Wi-Fi analysis/channel ratings, Bluetooth nearby scans/service metadata, radio capability checks, resource summaries, or Tasker-style automation. " +
                 "When writing multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
                 "For HTML/browser work: write the file with file_write_tool, then call android_automation_tool action=open_uri with data_uri set to the workspace filename. " +
-                "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings, Bluetooth nearby devices/service metadata, camera/sensor status, active overlays, tool catalog, RF capability limits, MediaTek/Snapdragon/SOC context, or phone preflight checks before TikTok/Instagram/Gmail work. " +
+                "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings, Bluetooth nearby devices/service metadata, camera/sensor status plus accelerometer/gyroscope hardware metadata, active overlays, tool catalog, RF capability limits, MediaTek/Snapdragon/SOC context, or phone preflight checks before TikTok/Instagram/Gmail work. " +
                 "Use hindsight_memory_tool to retain, recall, and reflect durable local memories before or after complex work. " +
                 "Report missing Android permissions honestly. Keep replies brief."
         } else {
@@ -1227,12 +1227,12 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, channel ratings, vendor/OUI metadata and filter facets, nearby Bluetooth devices plus service/manufacturer/proximity metadata, camera capability, sensors, overlay status, SOC/GPU compatibility context, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, channel ratings, vendor/OUI metadata and filter facets, nearby Bluetooth devices plus service/manufacturer/proximity metadata, camera capability, sensors with range/resolution/power/sampling-rate metadata, overlay status, SOC/GPU compatibility context, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
                         .put("action", stringProp("status, top_apps, wifi_scan, wifi_channel_rating, bluetooth_scan, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("refresh", boolProp("For wifi_scan or bluetooth_scan, request Android to refresh scan results before reading available results."))
-                        .put("sensor_types", stringProp("Comma-separated sensor types such as accelerometer, gyroscope, magnetic_field, light, proximity."))
+                        .put("sensor_types", stringProp("Comma-separated sensor types such as accelerometer, gyroscope, magnetic_field, light, proximity; returned rows include sensor range, resolution, power, FIFO, wake-up, and sampling-rate metadata when Android exposes it."))
                         .put("timeout_ms", intProp("Sensor or Bluetooth sampling timeout in milliseconds."))
                         .put("message", stringProp("Overlay message for show_active_overlay."))
                         .put("position", stringProp("Overlay position for show_active_overlay: top, center, or bottom."))
@@ -1447,6 +1447,12 @@ class NativeToolCallingChatClient(
                     "beacon",
                     "sensor",
                     "sensors",
+                    "sensor metadata",
+                    "sensor capability",
+                    "sensor range",
+                    "sensor resolution",
+                    "sensor power",
+                    "sampling rate",
                     "gyroscope",
                     "gyrometer",
                     "accelerometer",
@@ -3206,6 +3212,9 @@ internal object NativeToolContextCompressor {
                 "wifi_filter_count",
                 "camera_count",
                 "sensor_count",
+                "sensor_capability_count",
+                "motion_sensor_count",
+                "wake_up_sensor_count",
                 "bluetooth_device_count",
                 "bluetooth_metadata_count",
                 "bluetooth_service_uuid_count",
@@ -3270,6 +3279,7 @@ internal object NativeToolContextCompressor {
         "radio_bands",
         "radio_scan_rows",
         "sensor_samples",
+        "sensor_capabilities",
         "native_tools",
         "diagnostics_actions",
         "available_actions",
@@ -3351,9 +3361,25 @@ internal object NativeToolContextCompressor {
         "supported",
         "sampled",
         "sensor_type",
+        "sensor_label",
         "sensor_name",
+        "vendor",
+        "version",
         "values",
         "unit",
+        "maximum_range",
+        "resolution",
+        "power_ma",
+        "min_delay_us",
+        "max_delay_us",
+        "reporting_mode",
+        "wake_up",
+        "dynamic_sensor",
+        "direct_channel_supported",
+        "highest_direct_report_rate_level",
+        "fifo_reserved_event_count",
+        "fifo_max_event_count",
+        "accuracy_label",
         "available",
         "content",
         "source",

@@ -17,6 +17,7 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.hardware.Sensor
+import android.hardware.SensorDirectChannel
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
@@ -367,6 +368,7 @@ object HermesDeviceDiagnosticsBridge {
             if (androidType != null && sensor != null) key to sensor else null
         }
         val samples = sampleSensors(sensorManager, requested, targets, timeoutMs)
+        val capabilities = sensorCapabilityRows(sensorManager, requested)
         val available = sensorTypeCatalog(appContext)
         return JSONObject()
             .put("success", true)
@@ -375,17 +377,30 @@ object HermesDeviceDiagnosticsBridge {
             .put("sample_timeout_ms", timeoutMs)
             .put("available_sensor_types", JSONArray(available))
             .put("sensor_samples", samples)
+            .put("sensor_capabilities", capabilities)
+            .put("sensor_capability_count", capabilities.length())
+            .put("motion_sensor_count", countSensorCapabilities(capabilities, MOTION_SENSOR_TYPES))
+            .put("wake_up_sensor_count", countSensorCapabilityFlag(capabilities, "wake_up"))
             .put("supported_watcher_types", JSONArray(SENSOR_TYPE_LABELS.keys))
             .put(
                 "cards",
-                JSONArray().put(
-                    graphCard(
-                        title = "Motion Sensors",
-                        body = "${samples.length()} one-shot accelerometer, gyroscope, magnetic, light, or proximity rows captured for the agent.",
-                        graphType = "sensor_vector",
-                        rows = samples,
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "Motion Sensors",
+                            body = "${samples.length()} one-shot accelerometer, gyroscope, magnetic, light, or proximity rows captured for the agent.",
+                            graphType = "sensor_vector",
+                            rows = samples,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Sensor Hardware",
+                            body = "${capabilities.length()} sensor capability row(s) with vendor, range, resolution, power, FIFO, wake-up, and sampling-rate metadata.",
+                            graphType = "sensor_capability",
+                            rows = capabilities,
+                        ),
                     ),
-                ),
             )
     }
 
@@ -735,10 +750,7 @@ object HermesDeviceDiagnosticsBridge {
         if (targets.isEmpty()) {
             requested.forEach { key ->
                 samples.put(
-                    JSONObject()
-                        .put("sensor_type", key)
-                        .put("available", false)
-                        .put("sampled", false),
+                    unavailableSensorJson(key),
                 )
             }
             return samples
@@ -750,14 +762,13 @@ object HermesDeviceDiagnosticsBridge {
                 if (readings.containsKey(event.sensor.type)) return
                 val values = JSONArray()
                 event.values.forEach { values.put(it.toDouble()) }
-                readings[event.sensor.type] = JSONObject()
-                    .put("sensor_type", canonicalSensorType(event.sensor))
-                    .put("sensor_name", event.sensor.name.orEmpty())
-                    .put("vendor", event.sensor.vendor.orEmpty())
+                val sensorType = canonicalSensorType(event.sensor)
+                readings[event.sensor.type] = sensorMetadataJson(sensorType, event.sensor)
+                    .put("sampled", true)
                     .put("values", values)
-                    .put("unit", unitForSensorType(canonicalSensorType(event.sensor)))
                     .put("timestamp_nanos", event.timestamp)
                     .put("accuracy", event.accuracy)
+                    .put("accuracy_label", sensorAccuracyLabel(event.accuracy))
                 latch.countDown()
             }
 
@@ -782,9 +793,11 @@ object HermesDeviceDiagnosticsBridge {
         targets.forEach { (key, sensor) ->
             samples.put(
                 readings[sensor.type] ?: JSONObject()
+                    .put("sensor_label", SENSOR_TYPE_LABELS[key] ?: key)
                     .put("sensor_type", key)
                     .put("sensor_name", sensor.name.orEmpty())
                     .put("vendor", sensor.vendor.orEmpty())
+                    .put("unit", unitForSensorType(key))
                     .put("available", true)
                     .put("sampled", false),
             )
@@ -792,13 +805,80 @@ object HermesDeviceDiagnosticsBridge {
         val sampledKeys = targets.map { it.first }.toSet()
         requested.filterNot { it in sampledKeys }.forEach { key ->
             samples.put(
-                JSONObject()
-                    .put("sensor_type", key)
-                    .put("available", false)
-                    .put("sampled", false),
+                unavailableSensorJson(key),
             )
         }
         return samples
+    }
+
+    private fun sensorCapabilityRows(sensorManager: SensorManager, requested: List<String>): JSONArray {
+        val rows = JSONArray()
+        requested.forEach { key ->
+            val sensor = androidSensorType(key)?.let { sensorManager.getDefaultSensor(it) }
+            rows.put(
+                if (sensor != null) {
+                    sensorMetadataJson(key, sensor)
+                } else {
+                    unavailableSensorJson(key)
+                },
+            )
+        }
+        return rows
+    }
+
+    private fun sensorMetadataJson(sensorType: String, sensor: Sensor): JSONObject {
+        return JSONObject()
+            .put("sensor_type", sensorType)
+            .put("sensor_label", SENSOR_TYPE_LABELS[sensorType] ?: sensorType)
+            .put("sensor_name", sensor.name.orEmpty())
+            .put("vendor", sensor.vendor.orEmpty())
+            .put("version", sensor.version)
+            .put("unit", unitForSensorType(sensorType))
+            .put("available", true)
+            .put("sampled", false)
+            .put("maximum_range", sensor.maximumRange.toDouble())
+            .put("resolution", sensor.resolution.toDouble())
+            .put("power_ma", sensor.power.toDouble())
+            .put("min_delay_us", sensor.minDelay)
+            .put("max_delay_us", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) sensor.maxDelay else 0)
+            .put("fifo_reserved_event_count", sensor.fifoReservedEventCount)
+            .put("fifo_max_event_count", sensor.fifoMaxEventCount)
+            .put("reporting_mode", sensorReportingModeLabel(sensor))
+            .put("wake_up", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) sensor.isWakeUpSensor else false)
+            .put("dynamic_sensor", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) sensor.isDynamicSensor else false)
+            .put("direct_channel_supported", sensorDirectChannelSupported(sensor))
+            .put("highest_direct_report_rate_level", sensorHighestDirectReportRate(sensor))
+    }
+
+    private fun unavailableSensorJson(sensorType: String): JSONObject {
+        return JSONObject()
+            .put("sensor_type", sensorType)
+            .put("sensor_label", SENSOR_TYPE_LABELS[sensorType] ?: sensorType)
+            .put("unit", unitForSensorType(sensorType))
+            .put("available", false)
+            .put("sampled", false)
+    }
+
+    private fun countSensorCapabilities(rows: JSONArray, sensorTypes: Set<String>): Int {
+        var count = 0
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            if (row.optBoolean("available", false) && row.optString("sensor_type") in sensorTypes) {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private fun countSensorCapabilityFlag(rows: JSONArray, flag: String): Int {
+        var count = 0
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            if (row.optBoolean(flag, false)) {
+                count += 1
+            }
+        }
+        return count
     }
 
     private fun scanResultJson(result: ScanResult): JSONObject {
@@ -1441,6 +1521,35 @@ object HermesDeviceDiagnosticsBridge {
         else -> ""
     }
 
+    private fun sensorAccuracyLabel(accuracy: Int): String = when (accuracy) {
+        SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> "high"
+        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> "medium"
+        SensorManager.SENSOR_STATUS_ACCURACY_LOW -> "low"
+        SensorManager.SENSOR_STATUS_UNRELIABLE -> "unreliable"
+        else -> "unknown"
+    }
+
+    private fun sensorReportingModeLabel(sensor: Sensor): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return "unknown"
+        return when (sensor.reportingMode) {
+            Sensor.REPORTING_MODE_CONTINUOUS -> "continuous"
+            Sensor.REPORTING_MODE_ON_CHANGE -> "on_change"
+            Sensor.REPORTING_MODE_ONE_SHOT -> "one_shot"
+            Sensor.REPORTING_MODE_SPECIAL_TRIGGER -> "special_trigger"
+            else -> "unknown"
+        }
+    }
+
+    private fun sensorDirectChannelSupported(sensor: Sensor): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        return sensor.isDirectChannelTypeSupported(SensorDirectChannel.TYPE_MEMORY_FILE) ||
+            sensor.isDirectChannelTypeSupported(SensorDirectChannel.TYPE_HARDWARE_BUFFER)
+    }
+
+    private fun sensorHighestDirectReportRate(sensor: Sensor): Int {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) sensor.highestDirectReportRateLevel else 0
+    }
+
     private fun isLocationEnabled(context: Context): Boolean {
         val locationManager = context.getSystemService(LocationManager::class.java) ?: return false
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -1557,6 +1666,8 @@ object HermesDeviceDiagnosticsBridge {
     private fun socProfileJson(): JSONObject {
         val socManufacturer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MANUFACTURER.orEmpty() else ""
         val socModel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL.orEmpty() else ""
+        val supportedAbis = Build.SUPPORTED_ABIS.toList()
+        val supported64BitAbis = Build.SUPPORTED_64_BIT_ABIS.toList()
         val values = listOf(
             socManufacturer,
             socModel,
@@ -1572,9 +1683,18 @@ object HermesDeviceDiagnosticsBridge {
             .put("soc_model", socModel)
             .put("hardware", Build.HARDWARE.orEmpty())
             .put("board", Build.BOARD.orEmpty())
+            .put("android_sdk_int", Build.VERSION.SDK_INT)
+            .put("android_release", Build.VERSION.RELEASE.orEmpty())
+            .put("primary_abi", supportedAbis.firstOrNull().orEmpty())
+            .put("supported_abis", JSONArray(supportedAbis))
+            .put("supported_64_bit_abis", JSONArray(supported64BitAbis))
+            .put("supports_64_bit_abi", supported64BitAbis.isNotEmpty())
+            .put("supports_arm64", supportedAbis.any { it.contains("arm64", ignoreCase = true) })
+            .put("supports_x86_64", supportedAbis.any { it.contains("x86_64", ignoreCase = true) })
             .put("likely_mediatek", isLikelyMediatekSoc(values))
             .put("likely_snapdragon", isLikelySnapdragonSoc(values))
             .put("compatibility_strategy", "Use Android SDK feature, permission, sensor, Wi-Fi, Bluetooth, camera, and storage APIs; avoid Adreno-only or Snapdragon-only assumptions.")
+            .put("native_abi_strategy", "Select packaged native artifacts from Build.SUPPORTED_ABIS and capability probes instead of assuming a Qualcomm/Adreno target.")
     }
 
     internal fun isLikelyMediatekSoc(values: List<String>): Boolean {
@@ -1976,6 +2096,7 @@ object HermesDeviceDiagnosticsBridge {
         "ambient_temperature" to "Ambient temperature",
         "relative_humidity" to "Relative humidity",
     )
+    private val MOTION_SENSOR_TYPES = setOf("accelerometer", "gyroscope", "gravity", "linear_acceleration", "rotation_vector")
     private val DEFAULT_SENSOR_TYPES = listOf("accelerometer", "gyroscope", "magnetic_field", "light", "proximity")
     private const val DEFAULT_LIMIT = 5
     private const val MAX_LIMIT = 20

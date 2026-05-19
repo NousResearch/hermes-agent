@@ -66,6 +66,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "bluetooth_metadata_summary" -> bluetoothMetadataSummaryRow(row)
                 "radio_frequency_capability" -> radioRow(row)
                 "sensor_vector" -> sensorRow(row)
+                "sensor_capability" -> sensorCapabilityRow(row)
                 else -> genericRow(row, index)
             }
             if (parsed != null) add(parsed)
@@ -223,6 +224,7 @@ private fun sensorRow(row: JSONObject): DiagnosticGraphRow {
     val detail = listOfNotNull(
         row.optString("sensor_name").takeIf { it.isNotBlank() },
         row.optString("vendor").takeIf { it.isNotBlank() },
+        row.optString("accuracy_label").takeIf { it.isNotBlank() && it != "unknown" }?.let { "accuracy $it" },
         unit,
     ).joinToString(" | ")
     return DiagnosticGraphRow(
@@ -234,6 +236,47 @@ private fun sensorRow(row: JSONObject): DiagnosticGraphRow {
         },
         detail = detail.ifBlank { if (sampled) "Sensor sample" else "Sensor unavailable" },
         fraction = if (sampled && magnitude != null) (magnitude / 20.0).toFloat().coerceIn(0.05f, 1f) else 0.08f,
+    )
+}
+
+private fun sensorCapabilityRow(row: JSONObject): DiagnosticGraphRow {
+    val label = row.optString("sensor_label").takeIf { it.isNotBlank() }
+        ?: row.optString("sensor_type").ifBlank { "Sensor" }
+    val available = row.optBoolean("available", false)
+    val unit = row.optString("unit").takeIf { it.isNotBlank() }
+    val maxRange = row.optNumber("maximum_range")?.toDouble()
+    val resolution = row.optNumber("resolution")?.toDouble()
+    val powerMa = row.optNumber("power_ma")?.toDouble()
+    val minDelayUs = row.optNumber("min_delay_us")?.toInt()
+    val reportingMode = row.optString("reporting_mode").takeIf { it.isNotBlank() && it != "unknown" }
+    val detail = listOfNotNull(
+        row.optString("sensor_name").takeIf { it.isNotBlank() },
+        row.optString("vendor").takeIf { it.isNotBlank() },
+        reportingMode?.replace('_', ' '),
+        minDelayUs?.takeIf { it > 0 }?.let { "${formatDecimal(1_000_000.0 / it, 1)} Hz" },
+        resolution?.takeIf { it > 0.0 }?.let { "res ${formatDecimal(it, 4)}${unit?.let { value -> " $value" }.orEmpty()}" },
+        powerMa?.takeIf { it > 0.0 }?.let { "${formatDecimal(it, 2)} mA" },
+        row.optBoolean("wake_up", false).takeIf { it }?.let { "wake-up" },
+        row.optBoolean("dynamic_sensor", false).takeIf { it }?.let { "dynamic" },
+        row.optBoolean("direct_channel_supported", false).takeIf { it }?.let { "direct channel" },
+    ).joinToString(" | ")
+    return DiagnosticGraphRow(
+        label = label,
+        valueLabel = if (available && maxRange != null && maxRange > 0.0) {
+            "range ${formatDecimal(maxRange, 2)}${unit?.let { " $it" }.orEmpty()}"
+        } else if (available) {
+            "available"
+        } else {
+            "unavailable"
+        },
+        detail = detail.ifBlank { if (available) "Sensor capability" else "Sensor unavailable" },
+        fraction = when {
+            !available -> 0.08f
+            powerMa == null || powerMa <= 0.0 -> 0.55f
+            powerMa <= 1.0 -> 0.9f
+            powerMa <= 5.0 -> 0.65f
+            else -> 0.35f
+        },
     )
 }
 

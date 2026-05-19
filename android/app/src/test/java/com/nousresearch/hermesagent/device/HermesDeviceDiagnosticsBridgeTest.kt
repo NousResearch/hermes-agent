@@ -180,6 +180,8 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getBoolean("requires_external_sdr_for_broad_rf"))
         assertTrue(result.has("bluetooth_scan_permission_status"))
         assertTrue(result.has("soc_profile"))
+        assertTrue(result.getJSONObject("soc_profile").has("supported_abis"))
+        assertTrue(result.getJSONObject("soc_profile").has("native_abi_strategy"))
         assertTrue(result.getJSONArray("limits").length() >= 2)
     }
 
@@ -207,6 +209,13 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertEquals("signal_graph_card", card.getString("type"))
         assertEquals("sensor_vector", card.getString("graph_type"))
         assertEquals(result.getJSONArray("sensor_samples").length(), card.getInt("row_count"))
+        val capabilityCard = result.getJSONArray("cards").getJSONObject(1)
+        assertEquals("Sensor Hardware", capabilityCard.getString("title"))
+        assertEquals("sensor_capability", capabilityCard.getString("graph_type"))
+        assertEquals(result.getJSONArray("sensor_capabilities").length(), capabilityCard.getInt("row_count"))
+        assertTrue(result.has("sensor_capability_count"))
+        assertTrue(result.has("motion_sensor_count"))
+        assertTrue(result.has("wake_up_sensor_count"))
     }
 
     @Test

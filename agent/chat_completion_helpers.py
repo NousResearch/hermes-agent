@@ -1466,6 +1466,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 summary_response = agent._anthropic_messages_create(_ant_kw)
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
+            elif agent.api_mode == "bedrock_converse":
+                from agent.bedrock_adapter import (
+                    _get_bedrock_runtime_client,
+                    normalize_converse_response,
+                )
+                _bsum_transport = agent._get_transport()
+                _bsum_kwargs = _bsum_transport.build_kwargs(
+                    model=agent.model, messages=api_messages, tools=None,
+                    max_tokens=agent.max_tokens, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
+                )
+                _bsum_region = _bsum_kwargs.pop("__bedrock_region__", "us-east-1")
+                _bsum_kwargs.pop("__bedrock_converse__", None)
+                _bsum_client = _get_bedrock_runtime_client(_bsum_region)
+                _bsum_raw = _bsum_client.converse(**_bsum_kwargs)
+                _bsum_result = _bsum_transport.normalize_response(normalize_converse_response(_bsum_raw))
+                final_response = (_bsum_result.content or "").strip()
             else:
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
                 _summary_result = agent._get_transport().normalize_response(summary_response)
@@ -1496,6 +1512,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 retry_response = agent._anthropic_messages_create(_ant_kw2)
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_retry_result.content or "").strip()
+            elif agent.api_mode == "bedrock_converse":
+                from agent.bedrock_adapter import (
+                    _get_bedrock_runtime_client,
+                    normalize_converse_response,
+                )
+                _bretry_transport = agent._get_transport()
+                _bretry_kwargs = _bretry_transport.build_kwargs(
+                    model=agent.model, messages=api_messages, tools=None,
+                    max_tokens=agent.max_tokens, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
+                )
+                _bretry_region = _bretry_kwargs.pop("__bedrock_region__", "us-east-1")
+                _bretry_kwargs.pop("__bedrock_converse__", None)
+                _bretry_client = _get_bedrock_runtime_client(_bretry_region)
+                _bretry_raw = _bretry_client.converse(**_bretry_kwargs)
+                _bretry_result = _bretry_transport.normalize_response(normalize_converse_response(_bretry_raw))
+                final_response = (_bretry_result.content or "").strip()
             else:
                 summary_kwargs = {
                     "model": agent.model,

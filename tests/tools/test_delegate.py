@@ -582,6 +582,48 @@ class TestDelegateObservability(unittest.TestCase):
             trace = result["results"][0]["tool_trace"]
             self.assertEqual(trace[0]["status"], "error")
 
+    def test_tool_trace_handles_non_string_content(self):
+        """Tool messages with list content must not crash tool_trace build (#28639)."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            # Anthropic / OpenAI-style multi-part tool content: a list of blocks,
+            # not a plain string. Previously, _looks_like_error_output() called
+            # content.lstrip() which raised AttributeError on lists, crashing
+            # the whole subagent result assembly.
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "vision", "arguments": '{"path": "a.png"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": [
+                        {"type": "text", "text": "ok"},
+                        {"type": "image", "source": {"type": "base64", "data": "..."}},
+                    ]},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test list content", parent_agent=parent))
+            entry = result["results"][0]
+            self.assertEqual(entry["exit_reason"], "completed")
+            trace = entry["tool_trace"]
+            self.assertEqual(len(trace), 1)
+            self.assertEqual(trace[0]["tool"], "vision")
+            self.assertIsInstance(trace[0]["result_bytes"], int)
+            self.assertGreaterEqual(trace[0]["result_bytes"], 0)
+            # List content does not match the conservative error detector.
+            self.assertEqual(trace[0]["status"], "ok")
+
     def test_parallel_tool_calls_paired_correctly(self):
         """Parallel tool calls should each get their own result via tool_call_id matching."""
         parent = _make_mock_parent(depth=0)

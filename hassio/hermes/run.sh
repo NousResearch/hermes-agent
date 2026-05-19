@@ -75,4 +75,4 @@ esac
 
 # 7. Launch Gateway (foreground)
 bashio::log.info "Launching Hermes Gateway..."
-exec hermes gateway
+exec stdbuf -oL -eL hermes gateway

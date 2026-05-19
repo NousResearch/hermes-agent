@@ -66,6 +66,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "tenant": t.tenant,
         "workspace_kind": t.workspace_kind,
         "workspace_path": t.workspace_path,
+        "branch_name": t.branch_name,
         "created_by": t.created_by,
         "created_at": t.created_at,
         "started_at": t.started_at,
@@ -92,23 +93,40 @@ def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
 def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
     """Parse ``--workspace`` into ``(kind, path|None)``.
 
-    Accepts: ``scratch``, ``worktree``, ``dir:<path>``.
+    Accepts: ``scratch``, ``worktree``, ``worktree:<path>``, ``dir:<path>``.
     """
     if not value:
         return ("scratch", None)
     v = value.strip()
     if v in {"scratch", "worktree"}:
         return (v, None)
-    if v.startswith("dir:"):
-        path = v[len("dir:"):].strip()
+    for prefix, kind in (("dir:", "dir"), ("worktree:", "worktree")):
+        if not v.startswith(prefix):
+            continue
+        path = v[len(prefix):].strip()
         if not path:
             raise argparse.ArgumentTypeError(
-                "--workspace dir: requires a path after the colon"
+                f"--workspace {prefix} requires a path after the colon"
             )
-        return ("dir", os.path.expanduser(path))
+        return (kind, os.path.expanduser(path))
     raise argparse.ArgumentTypeError(
-        f"unknown --workspace value {value!r}: use scratch, worktree, or dir:<path>"
+        f"unknown --workspace value {value!r}: use scratch, worktree, "
+        "worktree:<path>, or dir:<path>"
     )
+
+
+def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
+    """Normalize an optional branch name from ``kanban create --branch``."""
+    if value is None:
+        return None
+    branch = value.strip()
+    if not branch:
+        raise argparse.ArgumentTypeError("--branch requires a non-empty name")
+    if branch.startswith("-"):
+        raise argparse.ArgumentTypeError("--branch must not start with '-'")
+    if any(ch.isspace() for ch in branch):
+        raise argparse.ArgumentTypeError("--branch must not contain whitespace")
+    return branch
 
 
 def _check_dispatcher_presence() -> tuple[bool, str]:
@@ -290,7 +308,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
     p_create.add_argument("--workspace", default="scratch",
-                          help="scratch | worktree | dir:<path> (default: scratch)")
+                          help="scratch | worktree | worktree:<path> | dir:<path> "
+                               "(default: scratch)")
+    p_create.add_argument("--branch", default=None,
+                          help="Branch name for worktree tasks, e.g. wt/t6-wire")
     p_create.add_argument("--tenant", default=None, help="Tenant namespace")
     p_create.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
     p_create.add_argument("--triage", action="store_true",
@@ -1235,7 +1256,15 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
-    ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+    try:
+        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+        branch_name = _parse_branch_flag(getattr(args, "branch", None))
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    if branch_name and ws_kind != "worktree":
+        print("kanban: --branch is only valid with --workspace worktree", file=sys.stderr)
+        return 2
     try:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
     except ValueError as exc:
@@ -1258,6 +1287,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind,
             workspace_path=ws_path,
+            branch_name=branch_name,
             tenant=args.tenant,
             priority=args.priority,
             parents=tuple(args.parent or ()),
@@ -1434,6 +1464,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  tenant:    {task.tenant}")
     print(f"  workspace: {task.workspace_kind}" +
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
+    if task.branch_name:
+        print(f"  branch:    {task.branch_name}")
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
     if task.model_override:
@@ -2572,6 +2604,15 @@ def run_slash(rest: str) -> str:
                 _choice.prog = f"/kanban {_name}"
                 _choice.exit_on_error = False  # type: ignore[attr-defined]
 
+    def _usage_for_error() -> str:
+        if tokens:
+            for _action in kanban_parser._actions:
+                if isinstance(_action, argparse._SubParsersAction):
+                    subparser = _action.choices.get(tokens[0])
+                    if subparser is not None:
+                        return subparser.format_usage().rstrip()
+        return kanban_parser.format_usage().rstrip()
+
     buf_out = io.StringIO()
     buf_err = io.StringIO()
     # ``-h`` / ``--help`` makes argparse print to stdout and SystemExit(0).
@@ -2589,7 +2630,7 @@ def run_slash(rest: str) -> str:
         body = err or out
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
-        return f"⚠ /kanban usage error: {exc}"
+        return f"⚠ /kanban usage error\n{_usage_for_error()}\n{exc}"
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

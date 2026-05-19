@@ -616,6 +616,7 @@ class Task:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     tenant: Optional[str]
+    branch_name: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -681,6 +682,7 @@ class Task:
             completed_at=row["completed_at"],
             workspace_kind=row["workspace_kind"],
             workspace_path=row["workspace_path"],
+            branch_name=row["branch_name"] if "branch_name" in keys else None,
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
@@ -817,6 +819,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at         INTEGER,
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
+    branch_name          TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
@@ -1074,6 +1077,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
     if "result" not in cols:
         _add_column_if_missing(conn, "tasks", "result", "result TEXT")
+    if "branch_name" not in cols:
+        _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -1334,6 +1339,7 @@ def create_task(
     created_by: Optional[str] = None,
     workspace_kind: str = "scratch",
     workspace_path: Optional[str] = None,
+    branch_name: Optional[str] = None,
     tenant: Optional[str] = None,
     priority: int = 0,
     parents: Iterable[str] = (),
@@ -1382,6 +1388,10 @@ def create_task(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
             f"got {workspace_kind!r}"
         )
+    if branch_name is not None:
+        branch_name = str(branch_name).strip() or None
+    if branch_name and workspace_kind != "worktree":
+        raise ValueError("branch_name is only valid for worktree workspaces")
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -1497,9 +1507,9 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        tenant, idempotency_key, max_runtime_seconds, skills,
-                        max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        branch_name, tenant, idempotency_key, max_runtime_seconds,
+                        skills, max_retries, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1512,6 +1522,7 @@ def create_task(
                         now,
                         workspace_kind,
                         workspace_path,
+                        branch_name,
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
@@ -1534,6 +1545,7 @@ def create_task(
                         "status": task_status,
                         "parents": list(parents),
                         "tenant": tenant,
+                        "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
@@ -5129,6 +5141,8 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    if task.branch_name:
+        env["HERMES_KANBAN_BRANCH"] = task.branch_name
     if task.current_run_id is not None:
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
@@ -5359,6 +5373,8 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(f"Max runtime: {task.max_runtime_seconds}s")
         if effective_terminal_timeout:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
+    if task.branch_name:
+        lines.append(f"Branch:   {task.branch_name}")
     lines.append("")
 
     if task.body and task.body.strip():

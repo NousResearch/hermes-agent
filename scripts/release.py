@@ -182,6 +182,7 @@ AUTHOR_MAP = {
     "kiranvk2011@gmail.com": "kiranvk-2011",  # PR #24815 salvage (image documents → vision)
     "kosmonaut-t@centrum.cz": "rak135",  # PR #25960 salvage (Windows /restart)
     "bot.chi.online@gmail.com": "B0Tch1",  # PR #27634 salvage (disable_topic_auto_rename)
+    "1037461232@qq.com": "jackjin1997",  # PR #27239 salvage (restore DM topic thread_id after split)
     "282919977+eliteworkstation94-ai@users.noreply.github.com": "eliteworkstation94-ai",  # PR #28157 salvage (group reply session splits)
     "androidhtml@yandex.com": "hllqkb",
     "25840394+Bongulielmi@users.noreply.github.com": "Bongulielmi",

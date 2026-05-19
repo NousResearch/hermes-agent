@@ -5652,6 +5652,19 @@ class GatewayRunner:
                             )
 
             if timed_out:
+                # Clear pre-drain markers for sessions that finished gracefully
+                # during the drain window.  Their last turn completed cleanly,
+                # so they must not carry a stale resume_pending flag.
+                for _sk in _pre_drain_keys:
+                    if _sk not in self._running_agents:
+                        try:
+                            self.session_store.clear_resume_pending(_sk)
+                        except Exception as _e:
+                            logger.debug(
+                                "clear_resume_pending after timeout failed for %s: %s",
+                                _sk, _e,
+                            )
+
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
                     timeout,

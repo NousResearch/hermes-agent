@@ -3350,6 +3350,7 @@ def _resolve_chat_argv(
     # build unchanged for native CLI usage; only disable mouse tracking for
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
+    env.setdefault("HERMES_TUI_INLINE", "1")
 
     if resume:
         latest_resume, _latest_path = _session_latest_descendant(resume)

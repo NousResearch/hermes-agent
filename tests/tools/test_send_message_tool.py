@@ -230,6 +230,48 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_channel_resolution_not_found_message_unchanged(self):
+        """resolve_channel_name returning None (channel simply not found) is
+        untouched by this fix -- still the generic 'use action=list' hint."""
+        with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:Nonexistent Channel",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "Could not resolve 'Nonexistent Channel' on telegram." in result["error"]
+        assert "send_message(action='list')" in result["error"]
+
+    def test_channel_resolution_exception_is_logged_and_sanitized(self):
+        """resolve_channel_name raising is logged and the surfaced error is
+        sanitized -- exception text must not leak tokens/URLs/credentials."""
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            side_effect=Exception("lookup failed: https://api.example.com/?api_key=SUPERSECRET123"),
+        ), patch("tools.send_message_tool.logger") as logger_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:Coaching Chat / topic 17585",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "SUPERSECRET123" not in result["error"]
+        assert "api_key=***" in result["error"]
+        assert "Coaching Chat / topic 17585" in result["error"]
+        assert "Try using a numeric channel ID instead." in result["error"]
+        logger_mock.warning.assert_called_once()
+
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
         config, telegram_cfg = _make_config()
         cache_file = tmp_path / "channel_directory.json"

@@ -77,6 +77,9 @@ EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 EMAIL_ASSISTANT_MODE=true
 EMAIL_REQUIRE_MENTION_WHEN_NOT_DIRECT=true
 EMAIL_WAKE_PHRASES=@lila,lila please,lila:,[lila]
+
+# Optional no-send CRM intake: append human-review inbound lead records as JSONL
+EMAIL_LEAD_CAPTURE_PATH=~/.hermes/email-leads/inbound.jsonl
 ```
 
 ---
@@ -124,6 +127,24 @@ This is useful for workflows like:
 > Lila, please coordinate a time with everyone on this thread and send a calendar invite.
 
 Configure wake phrases with `EMAIL_WAKE_PHRASES` as a comma-separated list. Keep `EMAIL_ALLOWED_USERS` restricted while testing.
+
+### No-send CRM Intake
+
+Set `EMAIL_LEAD_CAPTURE_PATH` to append each processed inbound email to a local JSONL file before the agent replies:
+
+```bash
+EMAIL_LEAD_CAPTURE_PATH=~/.hermes/email-leads/inbound.jsonl
+```
+
+Each record is marked `no_send: true` and `human_review_required: true`, and includes the sender, subject, message IDs, a 1,000-character body excerpt, attachment count, detected contact paths (emails, phone numbers, URLs), and deterministic intent tags such as `pricing`, `scheduling`, `buying_intent`, `support`, or `partnership`. This is meant for CRM review/import workflows only; it does not send outbound email or call any CRM API.
+
+You can also configure the path in `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    lead_capture_path: ~/.hermes/email-leads/inbound.jsonl
+```
 
 ### Sending Replies
 
@@ -210,3 +231,4 @@ Email access follows the same pattern as all other Hermes platforms:
 | `EMAIL_ASSISTANT_MODE` | No | `false` | Ignore passive cc/group emails unless explicitly invoked |
 | `EMAIL_REQUIRE_MENTION_WHEN_NOT_DIRECT` | No | `true` | In assistant mode, require a wake phrase unless the email is one-to-one directly to the agent |
 | `EMAIL_WAKE_PHRASES` | No | `@lila,lila please,lila:,[lila]` | Comma-separated invocation phrases; `Lila,` / `Lila:` style local-part mentions are also detected automatically |
+| `EMAIL_LEAD_CAPTURE_PATH` | No | — | Append processed inbound emails as no-send, human-review JSONL lead records for CRM intake |

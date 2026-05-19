@@ -12,7 +12,9 @@ Covers:
 9. Message dispatch and threading
 """
 
+import json
 import os
+import tempfile
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -216,6 +218,48 @@ class TestHelperFunctions(unittest.TestCase):
         html = "a &amp; b &lt; c &gt; d"
         result = _strip_html(html)
         self.assertIn("a & b", result)
+
+    def test_build_inbound_lead_record_extracts_crm_fields(self):
+        from gateway.platforms.email import _build_inbound_lead_record
+
+        msg_data = {
+            "sender_addr": "founder@example.com",
+            "sender_name": "Founder",
+            "subject": "Need pricing for an AI receptionist pilot",
+            "message_id": "<lead@example.com>",
+            "in_reply_to": "",
+            "to_addrs": ["hermes@test.com"],
+            "cc_addrs": [],
+            "body": (
+                "Can we schedule a demo? Call me at (555) 123-4567 or see "
+                "https://example.com/intake. Ops can be reached at ops@example.com."
+            ),
+            "attachments": [{"filename": "brief.pdf"}],
+            "date": "Tue, 19 May 2026 01:15:00 -0400",
+        }
+
+        record = _build_inbound_lead_record(msg_data)
+
+        self.assertTrue(record["no_send"])
+        self.assertTrue(record["human_review_required"])
+        self.assertEqual(record["sender_email"], "founder@example.com")
+        self.assertIn("pricing", record["intent_tags"])
+        self.assertIn("scheduling", record["intent_tags"])
+        self.assertIn("buying_intent", record["intent_tags"])
+        self.assertEqual(record["contact_paths"]["emails"], ["ops@example.com"])
+        self.assertEqual(record["contact_paths"]["phones"], ["(555) 123-4567"])
+        self.assertEqual(
+            record["contact_paths"]["urls"], ["https://example.com/intake"]
+        )
+        self.assertEqual(record["attachment_count"], 1)
+
+    def test_build_inbound_lead_record_truncates_body_excerpt(self):
+        from gateway.platforms.email import _build_inbound_lead_record
+
+        record = _build_inbound_lead_record({"body": "x" * 1200})
+
+        self.assertEqual(len(record["body_excerpt"]), 1000)
+        self.assertTrue(record["body_truncated"])
 
 
 class TestExtractTextBody(unittest.TestCase):
@@ -522,6 +566,74 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(event.source.user_id, "john@example.com")
         self.assertEqual(event.source.user_name, "John Doe")
         self.assertEqual(event.source.chat_type, "dm")
+
+    def test_lead_capture_disabled_by_default(self):
+        """Dispatch should not create lead records unless configured."""
+        import asyncio
+
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        with tempfile.TemporaryDirectory() as tmpdir:
+            capture_path = Path(tmpdir) / "leads.jsonl"
+            adapter._lead_capture_path = None
+            msg_data = {
+                "uid": b"7",
+                "sender_addr": "buyer@example.com",
+                "sender_name": "Buyer",
+                "subject": "Pricing",
+                "message_id": "<lead7@test.com>",
+                "in_reply_to": "",
+                "body": "Can we schedule a pricing call?",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured_events), 1)
+            self.assertFalse(capture_path.exists())
+
+    def test_lead_capture_appends_jsonl_before_dispatch(self):
+        """Configured lead capture should append no-send JSONL records."""
+        import asyncio
+
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        with tempfile.TemporaryDirectory() as tmpdir:
+            capture_path = Path(tmpdir) / "nested" / "leads.jsonl"
+            adapter._lead_capture_path = capture_path
+            msg_data = {
+                "uid": b"8",
+                "sender_addr": "buyer@example.com",
+                "sender_name": "Buyer",
+                "subject": "Need a quote",
+                "message_id": "<lead8@test.com>",
+                "in_reply_to": "",
+                "body": "Interested in a pilot. Please call 555-111-2222.",
+                "attachments": [],
+                "date": "Tue, 19 May 2026 01:30:00 -0400",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured_events), 1)
+            records = [
+                json.loads(line) for line in capture_path.read_text().splitlines()
+            ]
+            self.assertEqual(len(records), 1)
+            self.assertTrue(records[0]["no_send"])
+            self.assertEqual(records[0]["sender_email"], "buyer@example.com")
+            self.assertIn("pricing", records[0]["intent_tags"])
+            self.assertIn("buying_intent", records[0]["intent_tags"])
+            self.assertEqual(records[0]["contact_paths"]["phones"], ["555-111-2222"])
 
     def test_non_allowlisted_sender_dropped(self):
         """Senders not in EMAIL_ALLOWED_USERS should be dropped before dispatch."""

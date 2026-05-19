@@ -223,6 +223,94 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+_PHONE_RE = re.compile(
+    r"(?<!\w)(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}(?!\w)"
+)
+_URL_RE = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
+_LEAD_INTENT_KEYWORDS = {
+    "pricing": ("price", "pricing", "quote", "proposal", "budget", "cost", "rate"),
+    "scheduling": (
+        "schedule",
+        "calendar",
+        "book",
+        "call",
+        "demo",
+        "meeting",
+        "available",
+    ),
+    "buying_intent": (
+        "interested",
+        "need",
+        "looking for",
+        "evaluate",
+        "trial",
+        "pilot",
+    ),
+    "support": ("help", "issue", "problem", "broken", "error", "support"),
+    "partnership": ("partner", "partnership", "collaborate", "reseller", "affiliate"),
+}
+
+
+def _compact_text(text: str) -> str:
+    """Normalize whitespace for storage in local no-send lead records."""
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _detect_lead_intents(subject: str, body: str) -> List[str]:
+    """Return deterministic intent labels for an inbound email."""
+    text = f"{subject}\n{body}".lower()
+    intents = [
+        intent
+        for intent, keywords in _LEAD_INTENT_KEYWORDS.items()
+        if any(keyword in text for keyword in keywords)
+    ]
+    return intents or ["inbound_email"]
+
+
+def _build_inbound_lead_record(msg_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a no-send, CRM-ready record from a fetched inbound email."""
+    subject = msg_data.get("subject", "")
+    body = msg_data.get("body", "")
+    body_excerpt = _compact_text(body)[:1000]
+    text = f"{subject}\n{body}"
+    contact_emails = sorted({
+        email.lower()
+        for email in _EMAIL_RE.findall(text)
+        if email.lower() != msg_data.get("sender_addr", "").lower()
+    })
+    return {
+        "schema": "hermes.email_inbound_lead.v1",
+        "no_send": True,
+        "human_review_required": True,
+        "source": "email_gateway",
+        "sender_email": msg_data.get("sender_addr", ""),
+        "sender_name": msg_data.get("sender_name", ""),
+        "subject": subject,
+        "date": msg_data.get("date", ""),
+        "message_id": msg_data.get("message_id", ""),
+        "in_reply_to": msg_data.get("in_reply_to", ""),
+        "to_addrs": msg_data.get("to_addrs", []),
+        "cc_addrs": msg_data.get("cc_addrs", []),
+        "intent_tags": _detect_lead_intents(subject, body),
+        "contact_paths": {
+            "emails": contact_emails,
+            "phones": sorted(set(_PHONE_RE.findall(text))),
+            "urls": sorted({url.rstrip(".,)") for url in _URL_RE.findall(text)}),
+        },
+        "body_excerpt": body_excerpt,
+        "body_truncated": len(_compact_text(body)) > len(body_excerpt),
+        "attachment_count": len(msg_data.get("attachments", [])),
+    }
+
+
+def _append_jsonl(path: Path, record: Dict[str, Any]) -> None:
+    """Append one JSON record to a local JSONL file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
 def _google_oauth_access_token() -> str:
     """Return a fresh Google OAuth access token from Hermes' Workspace token."""
     try:
@@ -360,6 +448,12 @@ class EmailAdapter(BasePlatformAdapter):
         else:
             wake_phrases = ["lila,", "@lila", "lila please", "lila:", "[lila]"]
         self._wake_phrases = [p.lower() for p in wake_phrases if p]
+        lead_capture_raw = os.getenv("EMAIL_LEAD_CAPTURE_PATH") or extra.get(
+            "lead_capture_path"
+        )
+        self._lead_capture_path = (
+            Path(lead_capture_raw).expanduser() if lead_capture_raw else None
+        )
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -422,6 +516,21 @@ class EmailAdapter(BasePlatformAdapter):
         # A one-to-one email directly to the assistant is intentional. Being
         # cc'd or addressed alongside others is passive unless explicitly asked.
         return to_addrs == [agent_addr] and not cc_addrs
+
+    def _capture_inbound_lead(self, msg_data: Dict[str, Any]) -> None:
+        """Optionally append a no-send inbound lead record for CRM review."""
+        if not self._lead_capture_path:
+            return
+        try:
+            record = _build_inbound_lead_record(msg_data)
+            _append_jsonl(self._lead_capture_path, record)
+            logger.info(
+                "[Email] Captured no-send inbound lead record from %s at %s",
+                record["sender_email"],
+                self._lead_capture_path,
+            )
+        except Exception as e:  # noqa: BLE001 — capture must not block replies
+            logger.warning("[Email] Lead capture failed: %s", e)
 
     def _imap_authenticate(self, imap: "imaplib.IMAP4") -> None:
         """Authenticate to IMAP using password or Gmail XOAUTH2."""
@@ -651,6 +760,8 @@ class EmailAdapter(BasePlatformAdapter):
                 msg_data.get("subject", ""),
             )
             return
+
+        self._capture_inbound_lead(msg_data)
 
         subject = msg_data["subject"]
         body = msg_data["body"].strip()

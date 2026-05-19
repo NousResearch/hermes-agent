@@ -1,0 +1,11 @@
+name: kubernetes
+version: 0.1.0
+description: "Read-only Kubernetes diagnostics via kubectl."
+author: community
+kind: standalone
+provides_tools:
+  - k8s_contexts
+  - k8s_get
+  - k8s_describe
+  - k8s_logs
+  - k8s_events

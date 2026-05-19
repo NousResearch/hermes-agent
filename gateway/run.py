@@ -37,6 +37,7 @@ import signal
 import tempfile
 import threading
 import time
+import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -4776,6 +4777,31 @@ class GatewayRunner:
         if max_spawn is not None:
             logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
 
+        # Cap the number of simultaneously running tasks so slow workers
+        # (local LLMs, resource-constrained hosts) don't pile up and time
+        # out. When set, the dispatcher skips spawning when the board
+        # already has this many tasks in 'running' status.
+        raw_max_in_progress = kanban_cfg.get("max_in_progress", None)
+        max_in_progress = None
+        if raw_max_in_progress is not None:
+            try:
+                max_in_progress = int(raw_max_in_progress)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.max_in_progress=%r; ignoring",
+                    raw_max_in_progress,
+                )
+                max_in_progress = None
+            else:
+                if max_in_progress < 1:
+                    logger.warning(
+                        "kanban dispatcher: kanban.max_in_progress=%r is below 1; ignoring",
+                        raw_max_in_progress,
+                    )
+                    max_in_progress = None
+                else:
+                    logger.info(f"kanban dispatcher: max_in_progress={max_in_progress}")
+
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:
             failure_limit = int(raw_failure_limit)
@@ -4794,6 +4820,18 @@ class GatewayRunner:
             )
             failure_limit = _kb.DEFAULT_FAILURE_LIMIT
 
+        # Read stale_timeout_seconds — 0 disables stale detection.
+        raw_stale = kanban_cfg.get("dispatch_stale_timeout_seconds", 0)
+        try:
+            stale_timeout_seconds = int(raw_stale or 0)
+        except (TypeError, ValueError):
+            logger.warning(
+                "kanban dispatcher: invalid kanban.dispatch_stale_timeout_seconds=%r; "
+                "disabling stale detection",
+                raw_stale,
+            )
+            stale_timeout_seconds = 0
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -4805,6 +4843,28 @@ class GatewayRunner:
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
+        disabled_corrupt_boards: dict[str, tuple[str, int | None, int | None]] = {}
+
+        def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
+            path = _kb.kanban_db_path(slug)
+            try:
+                resolved = str(path.expanduser().resolve())
+            except Exception:
+                resolved = str(path)
+            try:
+                stat = path.stat()
+            except OSError:
+                return (resolved, None, None)
+            return (resolved, stat.st_mtime_ns, stat.st_size)
+
+        def _is_corrupt_board_db_error(exc: Exception) -> bool:
+            if not isinstance(exc, sqlite3.DatabaseError):
+                return False
+            msg = str(exc).lower()
+            return (
+                "file is not a database" in msg
+                or "database disk image is malformed" in msg
+            )
 
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
@@ -4816,6 +4876,16 @@ class GatewayRunner:
             connection handle or accidentally claim across each other.
             """
             conn = None
+            fingerprint = _board_db_fingerprint(slug)
+            disabled_fingerprint = disabled_corrupt_boards.get(slug)
+            if disabled_fingerprint == fingerprint:
+                return None
+            if disabled_fingerprint is not None:
+                logger.info(
+                    "kanban dispatcher: board %s database changed; retrying dispatch",
+                    slug,
+                )
+                disabled_corrupt_boards.pop(slug, None)
             try:
                 conn = _kb.connect(board=slug)
                 # `connect()` runs the schema + idempotent migration on
@@ -4828,8 +4898,25 @@ class GatewayRunner:
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
+                    max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    stale_timeout_seconds=stale_timeout_seconds,
                 )
+            except sqlite3.DatabaseError as exc:
+                if _is_corrupt_board_db_error(exc):
+                    disabled_corrupt_boards[slug] = fingerprint
+                    logger.error(
+                        "kanban dispatcher: board %s database %s is not a valid "
+                        "SQLite database; disabling dispatch for this board "
+                        "until the file changes or the gateway restarts. Move "
+                        "or restore the file, then run `hermes kanban init` if "
+                        "you need a fresh board.",
+                        slug,
+                        fingerprint[0],
+                    )
+                    return None
+                logger.exception("kanban dispatcher: tick failed on board %s", slug)
+                return None
             except Exception:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
@@ -4879,6 +4966,8 @@ class GatewayRunner:
                 try:
                     conn = _kb.connect(board=slug)
                     if _kb.has_spawnable_ready(conn):
+                        return True
+                    if _kb.has_spawnable_review(conn):
                         return True
                 except Exception:
                     continue
@@ -6834,6 +6923,9 @@ class GatewayRunner:
         if canonical == "reload-skills":
             return await self._handle_reload_skills_command(event)
 
+        if canonical == "bundles":
+            return await self._handle_bundles_command(event)
+
         if canonical == "approve":
             return await self._handle_approve_command(event)
 
@@ -6962,6 +7054,34 @@ class GatewayRunner:
         # round-trip so /claude_code from Telegram autocomplete still resolves
         # to the claude-code skill.
         if command:
+            # Skill bundles take precedence over individual skill commands —
+            # /<bundle> loads multiple skills at once. Mirrors CLI dispatch.
+            _bundle_handled = False
+            try:
+                from agent.skill_bundles import (
+                    build_bundle_invocation_message,
+                    resolve_bundle_command_key,
+                )
+                bundle_key = resolve_bundle_command_key(command)
+                if bundle_key is not None:
+                    user_instruction = event.get_command_args().strip()
+                    bundle_result = build_bundle_invocation_message(
+                        bundle_key, user_instruction, task_id=_quick_key
+                    )
+                    if bundle_result:
+                        msg, _loaded, missing = bundle_result
+                        event.text = msg
+                        _bundle_handled = True
+                        if missing:
+                            logger.info(
+                                "Bundle %s skipped missing skills: %s",
+                                bundle_key, ", ".join(missing),
+                            )
+                        # Fall through to normal message processing with bundle content
+            except Exception as exc:
+                logger.debug("Bundle dispatch failed (non-fatal): %s", exc)
+
+        if command and not locals().get("_bundle_handled", False):
             try:
                 from agent.skill_commands import (
                     get_skill_commands,
@@ -10592,7 +10712,11 @@ class GatewayRunner:
             result_json = await asyncio.to_thread(
                 text_to_speech_tool, text=tts_text, output_path=audio_path
             )
-            result = json.loads(result_json)
+            try:
+                result = json.loads(result_json)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Auto voice reply TTS returned invalid JSON: %s", result_json[:200] if result_json else result_json)
+                return
 
             # Use the actual file path from result (may differ after opus conversion)
             actual_path = result.get("file_path", audio_path)
@@ -12594,6 +12718,41 @@ class GatewayRunner:
             logger.warning("Skills reload failed: %s", e)
             return t("gateway.reload_skills.failed", error=e)
 
+    async def _handle_bundles_command(self, event: MessageEvent) -> str:
+        """Handle /bundles — list installed skill bundles.
+
+        Mirrors the CLI ``/bundles`` handler. Returns a single text
+        message suitable for any gateway adapter; bundles are loaded by
+        invoking the bundle's own ``/<slug>`` command, not by this one.
+        """
+        try:
+            from agent.skill_bundles import list_bundles, _bundles_dir
+        except Exception as exc:
+            logger.warning("Bundles command unavailable: %s", exc)
+            return f"Bundles subsystem unavailable: {exc}"
+
+        bundles = list_bundles()
+        if not bundles:
+            return (
+                "No skill bundles installed.\n"
+                "Create one on the host with:\n"
+                "  `hermes bundles create <name> --skill <s1> --skill <s2>`\n"
+                f"Directory: `{_bundles_dir()}`"
+            )
+
+        lines = [f"**Skill Bundles** ({len(bundles)} installed):", ""]
+        for info in bundles:
+            skill_count = len(info.get("skills", []))
+            desc = info.get("description") or f"Load {skill_count} skills"
+            lines.append(
+                f"• `/{info['slug']}` — {desc} _({skill_count} skills)_"
+            )
+            for s in info.get("skills", []):
+                lines.append(f"    · {s}")
+        lines.append("")
+        lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------
     # Slash-command confirmation primitive (generic)
     # ------------------------------------------------------------------
@@ -13926,7 +14085,19 @@ class GatewayRunner:
                 from tools.process_registry import process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     from tools.ansi_strip import strip_ansi
-                    _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+                    _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
+                    # Truncate at line boundaries so notifications never start
+                    # mid-line (fixes #23284). Keep the last ~2000 chars but
+                    # snap to the nearest preceding newline, then prepend a
+                    # truncation marker when output was cut.
+                    _LIMIT = 2000
+                    if len(_raw) > _LIMIT:
+                        _tail = _raw[-_LIMIT:]
+                        _nl = _tail.find("\n")
+                        _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+                        _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
+                    else:
+                        _out = _raw
                     synth_text = (
                         f"[IMPORTANT: Background process {session_id} completed "
                         f"(exit code {session.exit_code}).\n"
@@ -15059,7 +15230,7 @@ class GatewayRunner:
         ) if _progress_thread_id else None
         _progress_reply_to = (
             event_message_id
-            if source.platform == Platform.FEISHU and source.thread_id and event_message_id
+            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
             else None
         )
 
@@ -15774,7 +15945,14 @@ class GatewayRunner:
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
-                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
+                        _TOOL_MEDIA_RE = re.compile(
+                            r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
+                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
+                            r'txt|csv|apk|ipa))',
+                            re.IGNORECASE
+                        )
+                        for _match in _TOOL_MEDIA_RE.finditer(_hc):
                             _p = _match.group(1).strip().rstrip('",}')
                             if _p:
                                 _history_media_paths.add(_p)
@@ -16063,7 +16241,14 @@ class GatewayRunner:
                     if msg.get("role") in {"tool", "function"}:
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
+                            _TOOL_MEDIA_RE = re.compile(
+                                r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+                                r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
+                                r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
+                                r'txt|csv|apk|ipa))',
+                                re.IGNORECASE
+                            )
+                            for match in _TOOL_MEDIA_RE.finditer(content):
                                 path = match.group(1).strip().rstrip('",}')
                                 if path and path not in _history_media_paths:
                                     media_tags.append(f"MEDIA:{path}")
@@ -16112,13 +16297,16 @@ class GatewayRunner:
                 try:
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
-                    # Route title-generation failures through the agent's
-                    # user-visible warning channel so a depleted auxiliary
-                    # provider doesn't silently leave sessions untitled
-                    # (issue #15775).
-                    _title_failure_cb = getattr(
-                        agent, "_emit_auxiliary_failure", None
-                    )
+                    # In Gateway mode, auto-title failures must NOT be
+                    # surfaced as user-visible messages (fixes #23246).
+                    # Log them at debug level only — they are not actionable
+                    # to the end user. CLI mode keeps the existing behaviour
+                    # via the agent's _emit_auxiliary_failure path.
+                    def _title_failure_cb(task: str, exc: BaseException) -> None:
+                        logger.debug(
+                            "Gateway auto-title failure suppressed (not user-visible): %s: %s",
+                            task, exc,
+                        )
                     maybe_auto_title_kwargs = {
                         "failure_callback": _title_failure_cb,
                         "main_runtime": {
@@ -17345,6 +17533,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "request) so systemd Restart=on-failure can revive the gateway."
         )
         return False  # → sys.exit(1) in the caller
+
+    # When the gateway is restarting via the service manager (SIGUSR1 →
+    # launchd_restart or /restart / /update commands), exit with code 75 so
+    # that launchd's ``KeepAlive → SuccessfulExit → false`` policy treats
+    # the exit as *unsuccessful* and relaunches the service.  This mirrors
+    # the systemd ``RestartForceExitStatus=75`` convention already used by
+    # the systemd unit template.
+    if runner._restart_via_service:
+        logger.info(
+            "Exiting with code 75 (service-restart requested) so "
+            "launchd KeepAlive relaunches the gateway."
+        )
+        raise SystemExit(75)
 
     return True
 

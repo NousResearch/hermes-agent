@@ -24,7 +24,7 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 | Endpoint | `https://api.x.ai/v1` |
 | Auth server | `https://accounts.x.ai` |
 | Requires env var | No (`XAI_API_KEY` is **not** used for this provider) |
-| Subscription | [SuperGrok](https://x.ai/grok) (any active tier) |
+| Subscription | [SuperGrok](https://x.ai/grok) — see note below |
 
 ## Prerequisites
 
@@ -32,6 +32,10 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 - Hermes Agent installed
 - An active SuperGrok subscription on your xAI account
 - A browser available on the local machine (or use `--no-browser` for remote sessions)
+
+:::warning xAI may restrict OAuth API access by tier
+xAI's backend enforces its own allowlist on the OAuth API surface and has been seen to reject standard SuperGrok subscribers with `HTTP 403` (see issue [#26847](https://github.com/NousResearch/hermes-agent/issues/26847)) even though the in-app subscription is active. If OAuth login succeeds in the browser but inference returns 403, set `XAI_API_KEY` and switch to the API-key path (`provider: xai`) — that surface is not subject to the same gating today.
+:::
 
 ## Quick Start
 
@@ -75,6 +79,18 @@ hermes auth add xai-oauth --no-browser
 Through a jump box / bastion: add `-J jump-user@jump-host`.
 
 See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) for the full step-by-step, including ProxyJump chains, mosh/tmux, and ControlMaster gotchas.
+
+### Browser-only remotes (Cloud Shell, Codespaces, EC2 Instance Connect)
+
+If you don't have a regular SSH client (e.g. you're running Hermes inside GCP Cloud Shell, GitHub Codespaces, AWS EC2 Instance Connect, Gitpod, or another browser-based console), the `ssh -L` recipe above isn't available. Use `--manual-paste` instead — Hermes skips the loopback listener and lets you paste the failed callback URL straight from your browser:
+
+```bash
+hermes auth add xai-oauth --manual-paste
+# Or via the model picker:
+hermes model --manual-paste
+```
+
+See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md#browser-only-remote-cloud-shell--codespaces--ec2-instance-connect) for the full walkthrough. Regression fix for [#26923](https://github.com/NousResearch/hermes-agent/issues/26923).
 
 ## How the Login Works
 
@@ -207,6 +223,21 @@ hermes auth add xai-oauth --no-browser
 ```
 
 Full walkthrough (jump boxes, mosh/tmux, port conflicts): [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md).
+
+### HTTP 403 after a successful login (tier / entitlement)
+
+OAuth completed in the browser, tokens are saved, but inference or token refresh returns `HTTP 403` with a message similar to *"The caller does not have permission to execute the specified operation"*.
+
+This is **not** a stale-token problem — re-running `hermes model` won't change it. xAI's backend has been seen to restrict OAuth API access to specific SuperGrok tiers despite the in-app subscription being active (issue [#26847](https://github.com/NousResearch/hermes-agent/issues/26847)).
+
+**Fix:** set `XAI_API_KEY` and switch to the API-key path:
+
+```bash
+export XAI_API_KEY=xai-...
+hermes config set model.provider xai
+```
+
+Or upgrade your subscription at [x.ai/grok](https://x.ai/grok) if the OAuth route is required.
 
 ### "No xAI credentials found" error at runtime
 

@@ -2179,6 +2179,31 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 {logged_response}
 """
         
+        # Auto-generate session title after successful cron run.
+        # Cron sessions bypass the gateway's per-message title-generation
+        # path (gateway/run.py), so we generate the title here before the
+        # session is closed in the finally block below.  Called
+        # synchronously so the title is guaranteed to persist before
+        # _session_db.close() tears down the connection.
+        if final_response and _session_db:
+            try:
+                from agent.title_generator import auto_title_session
+                auto_title_session(
+                    _session_db,
+                    _cron_session_id,
+                    prompt,
+                    final_response,
+                    main_runtime={
+                        "model": model,
+                        "provider": runtime.get("provider"),
+                        "base_url": runtime.get("base_url"),
+                        "api_key": runtime.get("api_key"),
+                        "api_mode": runtime.get("api_mode"),
+                    },
+                )
+            except Exception:
+                pass
+
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
         

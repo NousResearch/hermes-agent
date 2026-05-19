@@ -80,7 +80,7 @@ RUN npm install --prefer-offline --no-audit && \
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
 RUN uv sync --frozen --no-install-project --extra all --extra messaging
-RUN uv pip install --no-cache-dir google-cloud-pubsub google-api-python-client google-auth google-auth-oauthlib
+RUN uv pip install --no-cache-dir google-cloud-pubsub google-api-python-client google-auth google-auth-oauthlib mistune
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.

@@ -77,7 +77,6 @@ class NodeClient:
         duration: Optional[str] = None,
         headed: bool = False,
         mode: str = "transcribe",
-        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "url": url,
@@ -87,39 +86,22 @@ class NodeClient:
         }
         if duration is not None:
             payload["duration"] = duration
-        if session_id:
-            payload["session_id"] = session_id
         return self._rpc("start_bot", payload)
 
-    def stop(self, session_id: Optional[str] = None) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {}
-        if session_id:
-            payload["session_id"] = session_id
-        return self._rpc("stop", payload)
+    def stop(self) -> Dict[str, Any]:
+        return self._rpc("stop", {})
 
-    def status(self, session_id: Optional[str] = None) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {}
-        if session_id:
-            payload["session_id"] = session_id
-        return self._rpc("status", payload)
+    def status(self) -> Dict[str, Any]:
+        return self._rpc("status", {})
 
-    def transcript(
-        self,
-        last: Optional[int] = None,
-        session_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    def transcript(self, last: Optional[int] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {}
         if last is not None:
             payload["last"] = int(last)
-        if session_id:
-            payload["session_id"] = session_id
         return self._rpc("transcript", payload)
 
-    def say(self, text: str, session_id: Optional[str] = None) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"text": str(text)}
-        if session_id:
-            payload["session_id"] = session_id
-        return self._rpc("say", payload)
+    def say(self, text: str) -> Dict[str, Any]:
+        return self._rpc("say", {"text": str(text)})
 
     def ping(self) -> Dict[str, Any]:
         return self._rpc("ping", {})

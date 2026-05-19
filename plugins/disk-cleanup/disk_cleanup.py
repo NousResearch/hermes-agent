@@ -64,25 +64,18 @@ def get_log_file() -> Path:
 # ---------------------------------------------------------------------------
 
 def is_safe_path(path: Path) -> bool:
-    """Accept only real paths under HERMES_HOME or ``/tmp/hermes-*``.
+    """Accept only paths under HERMES_HOME or ``/tmp/hermes-*``.
 
-    Rejects Windows mounts (``/mnt/c`` etc.), system directories, and paths
-    that escape an allowed root through symlinks.
+    Rejects Windows mounts (``/mnt/c`` etc.) and any system directory.
     """
+    hermes_home = get_hermes_home()
     try:
-        resolved = path.resolve()
-        hermes_home = get_hermes_home().resolve()
-    except OSError:
-        return False
-
-    try:
-        resolved.relative_to(hermes_home)
+        path.resolve().relative_to(hermes_home)
         return True
-    except ValueError:
+    except (ValueError, OSError):
         pass
-
-    # Allow /tmp/hermes-* explicitly after resolving symlinks.
-    parts = resolved.parts
+    # Allow /tmp/hermes-* explicitly
+    parts = path.parts
     if len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-"):
         return True
     return False
@@ -160,50 +153,6 @@ def fmt_size(n: float) -> str:
     return f"{n:.1f} PB"
 
 
-def _tracked_path(item: Dict[str, Any]) -> Optional[Path]:
-    """Return a safe tracked path, treating tracked.json as untrusted input."""
-    raw_path = item.get("path") if isinstance(item, dict) else None
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        _log(f"REJECT: malformed tracked entry {item!r}")
-        return None
-
-    path = Path(raw_path)
-    if path.is_symlink():
-        _log(f"REJECT: {path} (symlink tracked entry)")
-        return None
-
-    try:
-        resolved = path.resolve()
-    except OSError as exc:
-        _log(f"REJECT: {path} (cannot resolve: {exc})")
-        return None
-
-    if not is_safe_path(resolved):
-        _log(f"REJECT: {path} (outside safe cleanup roots)")
-        return None
-    return resolved
-
-
-def _tracked_age_days(item: Dict[str, Any], now: datetime) -> Optional[int]:
-    timestamp = item.get("timestamp") if isinstance(item, dict) else None
-    if not isinstance(timestamp, str):
-        _log(f"REJECT: malformed timestamp in tracked entry {item!r}")
-        return None
-    try:
-        return (now - datetime.fromisoformat(timestamp)).days
-    except (TypeError, ValueError):
-        _log(f"REJECT: malformed timestamp in tracked entry {item!r}")
-        return None
-
-
-def _tracked_size(item: Dict[str, Any]) -> Optional[float]:
-    size = item.get("size") if isinstance(item, dict) else None
-    if isinstance(size, (int, float)) and size >= 0:
-        return size
-    _log(f"REJECT: malformed size in tracked entry {item!r}")
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Track / forget
 # ---------------------------------------------------------------------------
@@ -228,7 +177,7 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
     tracked = load_tracked()
 
     # Deduplicate
-    if any(isinstance(item, dict) and item.get("path") == str(path) for item in tracked):
+    if any(item["path"] == str(path) for item in tracked):
         return False
 
     tracked.append({
@@ -249,12 +198,7 @@ def forget(path_str: str) -> int:
     p = Path(path_str).resolve()
     tracked = load_tracked()
     before = len(tracked)
-    tracked = [
-        i for i in tracked
-        if not isinstance(i, dict)
-        or not isinstance(i.get("path"), str)
-        or Path(i["path"]).resolve() != p
-    ]
+    tracked = [i for i in tracked if Path(i["path"]).resolve() != p]
     removed = before - len(tracked)
     if removed:
         save_tracked(tracked)
@@ -290,13 +234,11 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
 
     for item in tracked:
         p = _tracked_path(item)
-        age = _tracked_age_days(item, now)
-        size = _tracked_size(item)
-        cat = item.get("category") if isinstance(item, dict) else None
-        if p is None or age is None or size is None or cat not in ALLOWED_CATEGORIES:
+        if p is None or not p.exists():
             continue
-        if not p.exists():
-            continue
+        age = (now - datetime.fromisoformat(item["timestamp"])).days
+        cat = item["category"]
+        size = item["size"]
 
         if cat == "test":
             auto.append(item)
@@ -333,16 +275,15 @@ def quick() -> Dict[str, Any]:
 
     for item in tracked:
         p = _tracked_path(item)
-        age = _tracked_age_days(item, now)
-        size = _tracked_size(item)
-        cat = item.get("category") if isinstance(item, dict) else None
-
-        if p is None or age is None or size is None or cat not in ALLOWED_CATEGORIES:
+        if p is None:
             continue
+        cat = item["category"]
 
         if not p.exists():
             _log(f"STALE: {p} (removed from tracking)")
             continue
+
+        age = (now - datetime.fromisoformat(item["timestamp"])).days
 
         should_delete = (
             cat == "test"
@@ -356,9 +297,9 @@ def quick() -> Dict[str, Any]:
                     p.unlink()
                 elif p.is_dir():
                     shutil.rmtree(p)
-                freed += size
+                freed += item["size"]
                 deleted += 1
-                _log(f"DELETED: {p} ({cat}, {fmt_size(size)})")
+                _log(f"DELETED: {p} ({cat}, {fmt_size(item['size'])})")
             except OSError as e:
                 _log(f"ERROR deleting {p}: {e}")
                 errors.append(f"{p}: {e}")
@@ -437,19 +378,16 @@ def deep(
 
     for item in tracked:
         p = _tracked_path(item)
-        age = _tracked_age_days(item, now)
-        size = _tracked_size(item)
-        cat = item.get("category") if isinstance(item, dict) else None
-        if p is None or age is None or size is None or cat not in ALLOWED_CATEGORIES:
+        if p is None or not p.exists():
             continue
-        if not p.exists():
-            continue
+        age = (now - datetime.fromisoformat(item["timestamp"])).days
+        cat = item["category"]
 
         if cat == "research" and age > 30:
             research.append(item)
         elif cat == "chrome-profile" and age > 14:
             chrome.append(item)
-        elif size > 500 * 1024 * 1024:
+        elif item["size"] > 500 * 1024 * 1024:
             large.append(item)
 
     research.sort(key=lambda x: x["timestamp"], reverse=True)
@@ -463,15 +401,14 @@ def deep(
             if confirm(item):
                 try:
                     p = _tracked_path(item)
-                    size = _tracked_size(item)
-                    if p is None or size is None or not p.exists():
+                    if p is None:
                         continue
                     if p.is_file():
                         p.unlink()
                     elif p.is_dir():
                         shutil.rmtree(p)
                     to_remove.append(item)
-                    freed += size
+                    freed += item["size"]
                     count += 1
                     _log(
                         f"DELETED: {p} ({item['category']}, "
@@ -496,21 +433,15 @@ def status() -> Dict[str, Any]:
     tracked = load_tracked()
     cats: Dict[str, Dict] = {}
     for item in tracked:
-        size = _tracked_size(item)
-        c = item.get("category") if isinstance(item, dict) else None
-        if size is None or c not in ALLOWED_CATEGORIES:
-            continue
+        c = item["category"]
         cats.setdefault(c, {"count": 0, "size": 0})
         cats[c]["count"] += 1
-        cats[c]["size"] += size
+        cats[c]["size"] += item["size"]
 
-    existing = []
-    for item in tracked:
-        p = _tracked_path(item)
-        size = _tracked_size(item)
-        c = item.get("category") if isinstance(item, dict) else None
-        if p is not None and size is not None and c in ALLOWED_CATEGORIES and p.exists():
-            existing.append((str(p), size, c))
+    existing = [
+        (i["path"], i["size"], i["category"])
+        for i in tracked if Path(i["path"]).exists()
+    ]
     existing.sort(key=lambda x: x[1], reverse=True)
 
     return {

@@ -19,7 +19,7 @@ Configuration in config.yaml::
             use_tls: true
             server_password: ""       # optional server password
             nickserv_password: ""     # optional NickServ identification
-            allowed_users: []         # empty = allow all, or list of nick!user@host masks
+            allowed_users: []         # empty = allow all, or list of nicks
             max_message_length: 450   # IRC line limit (safe default)
 
 Or via environment variables (overrides config.yaml):
@@ -89,13 +89,6 @@ def _extract_nick(prefix: str) -> str:
     return prefix.split("!")[0] if "!" in prefix else prefix
 
 
-def _extract_sender_identity(prefix: str) -> str:
-    """Return a gateway authorization identity for an IRC sender."""
-    if "!" not in prefix or "@" not in prefix.split("!", 1)[1]:
-        return ""
-    return prefix.lower()
-
-
 # ---------------------------------------------------------------------------
 # IRC Adapter
 # ---------------------------------------------------------------------------
@@ -128,9 +121,7 @@ class IRCAdapter(BasePlatformAdapter):
 
         # Auth
         self.allowed_users: list = extra.get("allowed_users", [])
-        # IRC nicknames are mutable. Treat allowlist entries as full
-        # nick!user@host masks so gateway authorization is not keyed only by
-        # a spoofable display nick.
+        # IRC nicks are case-insensitive — normalise for lookups
         self._allowed_users_lower: set = {u.lower() for u in self.allowed_users if isinstance(u, str)}
 
         # IRC limits
@@ -435,12 +426,7 @@ class IRCAdapter(BasePlatformAdapter):
 
         # PRIVMSG — incoming message (channel or DM)
         if command == "PRIVMSG" and len(params) >= 2:
-            sender_prefix = msg["prefix"]
-            sender_nick = _extract_nick(sender_prefix)
-            sender_identity = _extract_sender_identity(sender_prefix)
-            if not sender_identity:
-                logger.debug("IRC: ignoring message without full sender hostmask")
-                return
+            sender_nick = _extract_nick(msg["prefix"])
             target = params[0]
             text = params[1]
 
@@ -473,16 +459,16 @@ class IRCAdapter(BasePlatformAdapter):
                 if not addressed:
                     return  # Ignore unaddressed channel messages
 
-            # Auth check (case-insensitive full hostmask)
-            if self._allowed_users_lower and sender_identity not in self._allowed_users_lower:
-                logger.debug("IRC: ignoring message from unauthorized user %s", sender_identity)
+            # Auth check (case-insensitive)
+            if self._allowed_users_lower and sender_nick.lower() not in self._allowed_users_lower:
+                logger.debug("IRC: ignoring message from unauthorized user %s", sender_nick)
                 return
 
             await self._dispatch_message(
                 text=text,
                 chat_id=chat_id,
                 chat_type=chat_type,
-                user_id=sender_identity,
+                user_id=sender_nick,
                 user_name=sender_nick,
             )
 

@@ -85,22 +85,9 @@ def _get_safe_write_root() -> Optional[str]:
     return _shared_get_safe_write_root()
 
 
-def _is_write_denied(path: str, base_dir: str = None) -> bool:
+def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
-    return _shared_is_write_denied(path, base_dir=base_dir)
-
-
-def _v4a_write_denial_error(operations: List[Any]) -> Optional[str]:
-    """Return an error if a V4A operation targets a write-denied path."""
-    for op in operations:
-        paths = [getattr(op, "file_path", None)]
-        new_path = getattr(op, "new_path", None)
-        if new_path:
-            paths.append(new_path)
-        for path in paths:
-            if path and _is_write_denied(path):
-                return f"Patch denied: {path} is a protected path"
-    return None
+    return _shared_is_write_denied(path)
 
 
 # =============================================================================
@@ -495,6 +482,7 @@ class ShellFileOperations(FileOperations):
 
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
+        self._environment_home: Optional[str] = None
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
@@ -519,16 +507,15 @@ class ShellFileOperations(FileOperations):
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
 
-        result = self.env.execute(command, cwd=self._effective_cwd(cwd), **kwargs)
+        # Resolve cwd from the live env so `cd` commands are picked up.
+        # Fall through to init-time self.cwd only if the env doesn't track cwd.
+        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
+        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         return ExecuteResult(
             stdout=result.get("output", ""),
             exit_code=result.get("returncode", 0)
         )
     
-    def _effective_cwd(self, cwd: str = None) -> str:
-        """Return the cwd that _exec() will use for relative paths."""
-        return cwd or getattr(self.env, 'cwd', None) or self.cwd
-
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached)."""
         if cmd not in self._command_cache:
@@ -572,6 +559,27 @@ class ShellFileOperations(FileOperations):
             numbered.append(f"{i:6d}|{line}")
         return '\n'.join(numbered)
     
+    def _get_environment_home(self) -> Optional[str]:
+        """Return the terminal backend user's home directory when available."""
+        if self._environment_home is not None:
+            return self._environment_home
+
+        result = self._exec("echo $HOME")
+        if result.exit_code == 0 and result.stdout.strip():
+            self._environment_home = result.stdout.strip()
+            return self._environment_home
+        return None
+
+    def _is_write_denied(self, path: str) -> bool:
+        """Return True if a write path is denied locally or for this backend."""
+        if _is_write_denied(path):
+            return True
+
+        environment_home = self._get_environment_home()
+        if environment_home:
+            return _shared_is_write_denied(path, home=environment_home)
+        return False
+
     def _expand_path(self, path: str) -> str:
         """
         Expand shell-style paths like ~ and ~user to absolute paths.
@@ -585,9 +593,8 @@ class ShellFileOperations(FileOperations):
         # Handle ~ and ~user
         if path.startswith('~'):
             # Get home directory via the terminal environment
-            result = self._exec("echo $HOME")
-            if result.exit_code == 0 and result.stdout.strip():
-                home = result.stdout.strip()
+            home = self._get_environment_home()
+            if home:
                 if path == '~':
                     return home
                 elif path.startswith('~/'):
@@ -809,7 +816,7 @@ class ShellFileOperations(FileOperations):
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file via rm."""
         path = self._expand_path(path)
-        if _is_write_denied(path):
+        if self._is_write_denied(path):
             return WriteResult(error=f"Delete denied: {path} is a protected path")
         result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
         if result.exit_code != 0:
@@ -821,7 +828,7 @@ class ShellFileOperations(FileOperations):
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
-            if _is_write_denied(p):
+            if self._is_write_denied(p):
                 return WriteResult(error=f"Move denied: {p} is a protected path")
         result = self._exec(
             f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
@@ -860,7 +867,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if self._is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Capture pre-write content for lint-delta computation.  Only do this
@@ -939,7 +946,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
+        if self._is_write_denied(path):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content
@@ -1039,15 +1046,8 @@ class ShellFileOperations(FileOperations):
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
 
-        denial_error = _v4a_write_denial_error(operations)
-        if denial_error:
-            return PatchResult(error=denial_error)
-
         # Apply operations
         result = apply_v4a_operations(operations, self)
-        if result.error:
-            from agent.redact import redact_sensitive_text
-            result.error = redact_sensitive_text(result.error)
         return result
     
     def _check_lint(self, path: str, content: Optional[str] = None) -> LintResult:

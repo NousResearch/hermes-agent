@@ -508,7 +508,7 @@ curl -X POST "https://cloud.comfy.org/api/upload/image" \
 ## Cloud Specifics
 
 - **Base URL:** `https://cloud.comfy.org`
-- **Auth:** `X-API-Key` header (WebSocket uses a token-bearing URL internally; use `ws_monitor.py` so logs redact it)
+- **Auth:** `X-API-Key` header (or `?token=KEY` for WebSocket)
 - **API key:** set `$COMFY_CLOUD_API_KEY` once and the scripts pick it up automatically
 - **Output download:** `/api/view` returns a 302 to a signed URL; the scripts
   follow it and strip `X-API-Key` before fetching from the storage backend

@@ -41,65 +41,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BASE_URL = "https://api.retaindb.com"
 _ASYNC_SHUTDOWN = object()
 
-_LOCAL_FILE_UPLOAD_ENV = "RETAINDB_ENABLE_LOCAL_FILE_UPLOADS"
-_LOCAL_FILE_UPLOAD_ROOTS_ENV = "RETAINDB_FILE_UPLOAD_ROOTS"
-_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-_SENSITIVE_PATH_PARTS = {".env", ".hermes", ".ssh", ".aws", ".gcp", ".azure", ".kube"}
-_SENSITIVE_NAME_RE = re.compile(r"(secret|token|credential|apikey|api_key|private[_-]?key|id_rsa)", re.IGNORECASE)
-
-
-def _local_file_uploads_enabled() -> bool:
-    return os.environ.get(_LOCAL_FILE_UPLOAD_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _configured_upload_roots() -> list[Path]:
-    raw = os.environ.get(_LOCAL_FILE_UPLOAD_ROOTS_ENV, "")
-    roots = [Path(part).expanduser() for part in raw.split(os.pathsep) if part.strip()]
-    return roots or [Path.cwd()]
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
-def _validate_local_upload_path(local_path: str) -> tuple[Path | None, str | None]:
-    if not _local_file_uploads_enabled():
-        return None, (
-            "Local RetainDB file uploads are disabled. Set "
-            f"{_LOCAL_FILE_UPLOAD_ENV}=true and restrict {_LOCAL_FILE_UPLOAD_ROOTS_ENV} "
-            "to trusted directories to enable them."
-        )
-
-    path_obj = Path(local_path).expanduser()
-    if path_obj.is_symlink() or any(part.is_symlink() for part in path_obj.parents):
-        return None, "Refusing to upload symlinked paths"
-    try:
-        resolved = path_obj.resolve(strict=True)
-    except FileNotFoundError:
-        return None, f"File not found: {local_path}"
-
-    if not resolved.is_file():
-        return None, f"Not a regular file: {local_path}"
-
-    sensitive_parts = {part.lower() for part in resolved.parts}
-    if sensitive_parts & _SENSITIVE_PATH_PARTS or _SENSITIVE_NAME_RE.search(resolved.name):
-        return None, "Refusing to upload a sensitive-looking path"
-
-    roots = [root.resolve() for root in _configured_upload_roots()]
-    if not any(_is_relative_to(resolved, root) for root in roots):
-        root_list = ", ".join(str(root) for root in roots)
-        return None, f"File is outside allowed upload roots: {root_list}"
-
-    size = resolved.stat().st_size
-    if size > _MAX_UPLOAD_BYTES:
-        return None, f"File exceeds RetainDB upload limit of {_MAX_UPLOAD_BYTES} bytes"
-
-    return resolved, None
-
 
 # ---------------------------------------------------------------------------
 # Tool schemas
@@ -700,15 +641,12 @@ class RetainDBMemoryProvider(MemoryProvider):
     # ── Tools ──────────────────────────────────────────────────────────────
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        schemas = [
+        return [
             PROFILE_SCHEMA, SEARCH_SCHEMA, CONTEXT_SCHEMA,
             REMEMBER_SCHEMA, FORGET_SCHEMA,
-            FILE_LIST_SCHEMA, FILE_READ_SCHEMA,
+            FILE_UPLOAD_SCHEMA, FILE_LIST_SCHEMA, FILE_READ_SCHEMA,
             FILE_INGEST_SCHEMA, FILE_DELETE_SCHEMA,
         ]
-        if _local_file_uploads_enabled():
-            schemas.append(FILE_UPLOAD_SCHEMA)
-        return schemas
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
@@ -761,9 +699,9 @@ class RetainDBMemoryProvider(MemoryProvider):
             local_path = args.get("local_path", "")
             if not local_path:
                 return {"error": "local_path is required"}
-            path_obj, error = _validate_local_upload_path(local_path)
-            if error:
-                return {"error": error}
+            path_obj = Path(local_path)
+            if not path_obj.exists():
+                return {"error": f"File not found: {local_path}"}
             data = path_obj.read_bytes()
             import mimetypes
             mime = mimetypes.guess_type(path_obj.name)[0] or "application/octet-stream"

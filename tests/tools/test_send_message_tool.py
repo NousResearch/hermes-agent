@@ -1818,6 +1818,15 @@ def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
     )
 
 
+def _write_signal_cache_png(name: str, data: bytes = b"\x89PNG" + b"\x00" * 16) -> Path:
+    from hermes_constants import get_hermes_home
+
+    path = get_hermes_home() / "cache" / "images" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
 class TestSendSignalChunking:
     def test_text_only_single_rpc(self, monkeypatch):
         fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
@@ -1837,7 +1846,7 @@ class TestSendSignalChunking:
         assert params["message"] == "hello"
         assert "attachments" not in params
 
-    def test_chunks_attachments_above_max(self, tmp_path, monkeypatch):
+    def test_chunks_attachments_above_max(self, monkeypatch):
         """33 attachments → 2 batches; text only on first batch. Batch 1
         only needs 1 token and 18 remain after batch 0, so no sleep."""
         from gateway.platforms.signal_rate_limit import (
@@ -1846,8 +1855,7 @@ class TestSendSignalChunking:
 
         paths = []
         for i in range(33):
-            p = tmp_path / f"img_{i}.png"
-            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            p = _write_signal_cache_png(f"chunk_{i}.png")
             paths.append((str(p), False))
 
         fake = _FakeSignalHttp([
@@ -1880,7 +1888,7 @@ class TestSendSignalChunking:
         assert second["message"] == ""  # caption only on batch 0
         assert len(second["attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
 
-    def test_full_followup_batch_emits_pacing_notice(self, tmp_path, monkeypatch):
+    def test_full_followup_batch_emits_pacing_notice(self, monkeypatch):
         """64 attachments → 2 full batches. Batch 1 needs 14 more tokens
         than the 18 remaining after batch 0 — 56s wait crossing the 10s
         notice threshold."""
@@ -1892,8 +1900,7 @@ class TestSendSignalChunking:
 
         paths = []
         for i in range(64):
-            p = tmp_path / f"img_{i}.png"
-            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            p = _write_signal_cache_png(f"full_batch_{i}.png")
             paths.append((str(p), False))
 
         fake = _FakeSignalHttp([
@@ -1927,15 +1934,14 @@ class TestSendSignalChunking:
         ) * SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
         assert sleep_calls == [pytest.approx(expected, abs=1.0)]
 
-    def test_429_with_retry_after_drives_exact_backoff(self, tmp_path, monkeypatch):
+    def test_429_with_retry_after_drives_exact_backoff(self, monkeypatch):
         """signal-cli ≥ v0.14.3 surfaces Retry-After under
         error.data.response.results[*].retryAfterSeconds. The scheduler
         calibrates its refill rate from that value; the retry of n=1
         sleeps the per-token interval."""
         from gateway.platforms.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
 
-        p = tmp_path / "img.png"
-        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+        p = _write_signal_cache_png("retry_after.png")
 
         fake = _FakeSignalHttp([
             {
@@ -1972,13 +1978,12 @@ class TestSendSignalChunking:
         assert len(fake.calls) == 2  # initial + retry
         assert sleep_calls == [pytest.approx(42.0, abs=1.0)]
 
-    def test_429_without_retry_after_falls_back_to_default(self, tmp_path, monkeypatch):
+    def test_429_without_retry_after_falls_back_to_default(self, monkeypatch):
         """Older signal-cli (< v0.14.3) doesn't surface Retry-After.
         The scheduler keeps its default rate (1 token / 4s)."""
         from gateway.platforms.signal_rate_limit import SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
 
-        p = tmp_path / "img.png"
-        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+        p = _write_signal_cache_png("retry_default.png")
 
         fake = _FakeSignalHttp([
             {"error": {"message": "Failed: [429] Rate Limited"}},
@@ -2001,7 +2006,7 @@ class TestSendSignalChunking:
         assert result["success"] is True
         assert sleep_calls == [pytest.approx(SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER, abs=1.0)]
 
-    def test_429_retry_exhaust_continues_to_next_batch(self, tmp_path, monkeypatch):
+    def test_429_retry_exhaust_continues_to_next_batch(self, monkeypatch):
         """Both attempts on batch 0 fail; batch 1 still gets a chance.
         The scheduler's natural pacing (no more cooldown gate) lets the
         second batch through after its acquire wait."""
@@ -2009,8 +2014,7 @@ class TestSendSignalChunking:
 
         paths = []
         for i in range(33):  # forces 2 batches
-            p = tmp_path / f"img_{i}.png"
-            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            p = _write_signal_cache_png(f"retry_exhaust_{i}.png")
             paths.append((str(p), False))
 
         rate_limit_err = {
@@ -2054,10 +2058,9 @@ class TestSendSignalChunking:
         # 2 attempts on batch 0 + 1 successful batch 1 = 3 calls
         assert len(fake.calls) == 3
 
-    def test_non_rate_limit_error_returns_immediately(self, tmp_path, monkeypatch):
+    def test_non_rate_limit_error_returns_immediately(self, monkeypatch):
         """A non-429 RPC error should not retry — it returns an error result."""
-        p = tmp_path / "img.png"
-        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+        p = _write_signal_cache_png("non_rate_limit.png")
 
         fake = _FakeSignalHttp([
             {"error": {"message": "UntrustedIdentityException"}},
@@ -2077,9 +2080,8 @@ class TestSendSignalChunking:
         assert "UntrustedIdentityException" in result["error"]
         assert len(fake.calls) == 1  # no retry on non-429
 
-    def test_skipped_missing_files_reported_in_warnings(self, tmp_path, monkeypatch):
-        good = tmp_path / "ok.png"
-        good.write_bytes(b"\x89PNG" + b"\x00" * 16)
+    def test_skipped_missing_files_reported_in_warnings(self, monkeypatch):
+        good = _write_signal_cache_png("ok.png")
 
         fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
         _install_signal_http(monkeypatch, fake)
@@ -2089,7 +2091,7 @@ class TestSendSignalChunking:
                 {"http_url": "http://localhost:8080", "account": "+15551234567"},
                 "+15557654321",
                 "msg",
-                media_files=[(str(good), False), (str(tmp_path / "missing.png"), False)],
+                media_files=[(str(good), False), ("/definitely/missing.png", False)],
             )
         )
 

@@ -125,32 +125,43 @@ class NodeServer:
                 kwargs = {
                     k: payload[k]
                     for k in ("url", "guest_name", "duration", "headed",
-                              "auth_state", "session_id", "out_dir", "mode")
+                              "auth_state", "session_id", "out_dir")
                     if k in payload
                 }
                 if "url" not in kwargs:
                     return _proto.make_error(req_id, "missing 'url' in payload")
                 result = pm.start(**kwargs)
                 return _proto.make_response(req_id, result)
-            session_kw = (
-                {"session_id": payload["session_id"]}
-                if payload.get("session_id")
-                else {}
-            )
             if t == "stop":
                 reason_arg = payload.get("reason", "requested")
-                result = pm.stop(reason=reason_arg, **session_kw)
+                result = pm.stop(reason=reason_arg)
                 return _proto.make_response(req_id, result)
             if t == "status":
-                return _proto.make_response(req_id, pm.status(**session_kw))
+                return _proto.make_response(req_id, pm.status())
             if t == "transcript":
                 last = payload.get("last")
-                result = pm.transcript(last=last, **session_kw)
+                result = pm.transcript(last=last)
                 return _proto.make_response(req_id, result)
             if t == "say":
+                # v2 wiring: enqueue into say_queue.jsonl inside the
+                # active meeting's out_dir when present. The bot-side
+                # consumer is v3+ (for v1 this is a stub returning ok).
                 text = payload.get("text", "")
-                result = pm.enqueue_say(text, **session_kw)
-                return _proto.make_response(req_id, result)
+                active = pm._read_active()  # type: ignore[attr-defined]
+                enqueued = False
+                if active and active.get("out_dir"):
+                    queue = Path(active["out_dir"]) / "say_queue.jsonl"
+                    try:
+                        queue.parent.mkdir(parents=True, exist_ok=True)
+                        with queue.open("a", encoding="utf-8") as fh:
+                            fh.write(json.dumps({"text": text, "ts": time.time()}) + "\n")
+                        enqueued = True
+                    except OSError:
+                        enqueued = False
+                return _proto.make_response(
+                    req_id,
+                    {"ok": True, "enqueued": enqueued, "text": text},
+                )
         except Exception as exc:  # noqa: BLE001 — surface any pm crash to client
             return _proto.make_error(req_id, f"{type(exc).__name__}: {exc}")
 

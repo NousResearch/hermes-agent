@@ -2808,6 +2808,7 @@ class TestSessionIdHeader:
         """When X-Hermes-Session-Id is provided, it's passed to the agent and echoed in the response."""
         mock_result = {"final_response": "Continuing!", "messages": [], "api_calls": 1}
         mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "api-1234567890abcdef", "source": "api_server"}
         mock_db.get_messages_as_conversation.return_value = [
             {"role": "user", "content": "previous message"},
             {"role": "assistant", "content": "previous reply"},
@@ -2820,14 +2821,14 @@ class TestSessionIdHeader:
 
                 resp = await cli.post(
                     "/v1/chat/completions",
-                    headers={"X-Hermes-Session-Id": "my-session-123", "Authorization": "Bearer sk-secret"},
+                    headers={"X-Hermes-Session-Id": "api-1234567890abcdef", "Authorization": "Bearer sk-secret"},
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Continue"}]},
                 )
 
             assert resp.status == 200
-            assert resp.headers.get("X-Hermes-Session-Id") == "my-session-123"
+            assert resp.headers.get("X-Hermes-Session-Id") == "api-1234567890abcdef"
             call_kwargs = mock_run.call_args.kwargs
-            assert call_kwargs["session_id"] == "my-session-123"
+            assert call_kwargs["session_id"] == "api-1234567890abcdef"
 
     @pytest.mark.asyncio
     async def test_provided_session_id_loads_history_from_db(self, auth_adapter):
@@ -2838,6 +2839,7 @@ class TestSessionIdHeader:
             {"role": "assistant", "content": "stored reply 1"},
         ]
         mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "api-fedcba0987654321", "source": "api_server"}
         mock_db.get_messages_as_conversation.return_value = db_history
         auth_adapter._session_db = mock_db
         app = _create_app(auth_adapter)
@@ -2847,7 +2849,7 @@ class TestSessionIdHeader:
 
                 resp = await cli.post(
                     "/v1/chat/completions",
-                    headers={"X-Hermes-Session-Id": "existing-session", "Authorization": "Bearer sk-secret"},
+                    headers={"X-Hermes-Session-Id": "api-fedcba0987654321", "Authorization": "Bearer sk-secret"},
                     # Request body has different history — should be ignored
                     json={
                         "model": "hermes-agent",
@@ -2879,14 +2881,42 @@ class TestSessionIdHeader:
 
                 resp = await cli.post(
                     "/v1/chat/completions",
-                    headers={"X-Hermes-Session-Id": "some-session", "Authorization": "Bearer sk-secret"},
+                    headers={"X-Hermes-Session-Id": "api-0011223344556677", "Authorization": "Bearer sk-secret"},
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
                 )
 
             assert resp.status == 200
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
-            assert call_kwargs["session_id"] == "some-session"
+            assert call_kwargs["session_id"] == "api-0011223344556677"
+
+    @pytest.mark.asyncio
+    async def test_session_id_rejects_non_server_generated_value(self, auth_adapter):
+        """Only server-generated API session IDs may be used for continuation."""
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                headers={"X-Hermes-Session-Id": "../victim", "Authorization": "Bearer sk-secret"},
+                json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+            )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_session_id_rejects_non_api_server_session(self, auth_adapter):
+        """API clients must not load CLI or messaging-gateway transcripts."""
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "api-1234567890abcdef", "source": "telegram"}
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                headers={"X-Hermes-Session-Id": "api-1234567890abcdef", "Authorization": "Bearer sk-secret"},
+                json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+            )
+        assert resp.status == 404
+        mock_db.get_messages_as_conversation.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2929,6 +2959,7 @@ class TestSessionKeyHeader:
         """Both headers coexist: key scopes memory, id scopes transcript."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
         mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "api-aaaaaaaaaaaaaaaa", "source": "api_server"}
         mock_db.get_messages_as_conversation.return_value = []
         auth_adapter._session_db = mock_db
         app = _create_app(auth_adapter)
@@ -2939,7 +2970,7 @@ class TestSessionKeyHeader:
                     "/v1/chat/completions",
                     headers={
                         "X-Hermes-Session-Key": "channel-abc",
-                        "X-Hermes-Session-Id": "transcript-xyz",
+                        "X-Hermes-Session-Id": "api-aaaaaaaaaaaaaaaa",
                         "Authorization": "Bearer sk-secret",
                     },
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
@@ -2947,10 +2978,10 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             expected_key = _expected_api_session_key("channel-abc")
             assert resp.headers.get("X-Hermes-Session-Key") == expected_key
-            assert resp.headers.get("X-Hermes-Session-Id") == "transcript-xyz"
+            assert resp.headers.get("X-Hermes-Session-Id") == "api-aaaaaaaaaaaaaaaa"
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["gateway_session_key"] == expected_key
-            assert call_kwargs["session_id"] == "transcript-xyz"
+            assert call_kwargs["session_id"] == "api-aaaaaaaaaaaaaaaa"
 
     @pytest.mark.asyncio
     async def test_session_key_absent_yields_none(self, auth_adapter):

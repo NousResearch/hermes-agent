@@ -313,11 +313,10 @@ class BaseEnvironment(ABC):
         self.timeout = timeout
         self.env = env or {}
 
-        self._session_id = uuid.uuid4().hex
+        self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
-        self._artifact_dir = f"{temp_dir}/hermes-session-{self._session_id}"
-        self._snapshot_path = f"{self._artifact_dir}/snapshot.sh"
-        self._cwd_file = f"{self._artifact_dir}/cwd.txt"
+        self._snapshot_path = f"{temp_dir}/hermes-snap-{self._session_id}.sh"
+        self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
 
@@ -368,12 +367,9 @@ class BaseEnvironment(ABC):
         # caused ``C:/Users/.../hermes-snap-*.sh: No such file or directory``
         # errors on Windows, leaking via stderr (merged into stdout on Linux
         # backends) into every terminal-tool response.
-        _quoted_artifact_dir = shlex.quote(self._artifact_dir)
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
         bootstrap = (
-            "umask 077\n"
-            f"mkdir -p -m 700 {_quoted_artifact_dir} && chmod 700 {_quoted_artifact_dir} || exit 125\n"
             f"export -p > {_quoted_snap}\n"
             f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
             f"alias -p >> {_quoted_snap}\n"
@@ -427,14 +423,10 @@ class BaseEnvironment(ABC):
         # ``C:/Users/...``-shaped paths without glob-splitting the colon or
         # tripping on drive letters.  POSIX paths are unaffected.  See
         # :meth:`init_session` for the same fix on the bootstrap block.
-        _quoted_artifact_dir = shlex.quote(self._artifact_dir)
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
 
-        parts = [
-            "umask 077",
-            f"mkdir -p -m 700 {_quoted_artifact_dir} && chmod 700 {_quoted_artifact_dir} || exit 125",
-        ]
+        parts = []
 
         # Source snapshot (env vars from previous commands).
         # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain

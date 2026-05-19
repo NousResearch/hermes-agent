@@ -6,7 +6,7 @@ no stderr chatter.  Just the agent's final text to stdout.
 Toolsets = explicit --toolsets when provided, otherwise whatever the user has
 configured for "cli" in `hermes tools`.
 Rules / memory / AGENTS.md / preloaded skills = same as a normal chat turn.
-Approvals = fail-closed for dangerous commands unless --yolo is explicit.
+Approvals = auto-bypassed (HERMES_YOLO_MODE=1 is set for the call).
 Working directory = the user's CWD (AGENTS.md etc. resolve from there as usual).
 
 Model / provider selection mirrors `hermes chat`:
@@ -166,12 +166,9 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
-    # Mark this invocation as non-interactive oneshot so command guards
-    # can fail closed instead of prompting. Shell hooks keep their explicit
-    # non-interactive opt-in because hook prompts would otherwise block.
-    _oneshot_env_keys = ("HERMES_ONESHOT_MODE", "HERMES_ACCEPT_HOOKS")
-    _previous_env = {key: os.environ.get(key) for key in _oneshot_env_keys}
-    os.environ["HERMES_ONESHOT_MODE"] = "1"
+    # Auto-approve any shell / tool approvals.  Non-interactive by
+    # definition — a prompt would hang forever.
+    os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
 
     # Redirect stderr AND stdout to devnull for the entire call tree.
@@ -189,11 +186,6 @@ def run_oneshot(
                 use_config_toolsets=use_config_toolsets,
             )
     finally:
-        for key, value in _previous_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
         try:
             devnull.close()
         except Exception:
@@ -330,7 +322,7 @@ def _run_agent(
         #                HERMES_INTERACTIVE which we never set
         #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
         #                (set above); also falls back to deny on non-tty
-        #   - dangerous-command approval → command guards fail closed
+        #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
         #   - skill secret capture → returns gracefully when no callback set
         clarify_callback=_oneshot_clarify_callback,
     )

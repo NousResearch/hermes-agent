@@ -160,6 +160,32 @@ def _is_valid_installed_skill_name(name: str) -> bool:
     return bool(_VALID_NAME_RE.match(candidate))
 
 
+def _is_identifier_like(value: str) -> bool:
+    """Accept source identifiers, reject empty / sentinel-y values."""
+    if not isinstance(value, str):
+        return False
+    candidate = value.strip()
+    if not candidate or candidate.lower() in {"unknown", "none", "null"}:
+        return False
+    return "/" in candidate or ":" in candidate
+
+
+def _scan_source_for_bundle(bundle, meta, requested_identifier: str) -> str:
+    """Return the verified source identifier to use for install trust checks."""
+    metadata = getattr(bundle, "metadata", {}) or {}
+    resolved_github_identifier = metadata.get("resolved_github_identifier")
+    if (
+        getattr(bundle, "source", "") == "skills.sh"
+        and _is_identifier_like(resolved_github_identifier)
+    ):
+        return resolved_github_identifier
+    return (
+        getattr(bundle, "identifier", "")
+        or getattr(meta, "identifier", "")
+        or requested_identifier
+    )
+
+
 def _existing_categories() -> List[str]:
     """Return sorted subdirectory names under ``~/.hermes/skills/`` that look
     like category buckets (contain at least one ``SKILL.md`` somewhere below).
@@ -544,7 +570,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Scan
     c.print("[bold]Running security scan...[/]")
-    scan_source = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
+    scan_source = _scan_source_for_bundle(bundle, meta, identifier)
     result = scan_skill(q_path, source=scan_source)
     c.print(format_scan_report(result))
 

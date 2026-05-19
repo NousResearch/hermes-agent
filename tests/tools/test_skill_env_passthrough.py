@@ -38,22 +38,22 @@ def _create_skill(tmp_path, name, frontmatter_extra=""):
 
 class TestSkillViewRegistersPassthrough:
     def test_available_env_vars_registered(self, tmp_path, monkeypatch):
-        """When a skill declares an unmanaged required env var that IS set,
+        """When a skill declares required_environment_variables and the var IS set,
         it should be registered in the passthrough."""
         _create_skill(
             tmp_path,
             "test-skill",
             frontmatter_extra=(
                 "required_environment_variables:\n"
-                "  - name: CUSTOM_SKILL_API_KEY\n"
-                "    prompt: Enter your custom API key\n"
+                "  - name: TENOR_API_KEY\n"
+                "    prompt: Enter your Tenor API key\n"
             ),
         )
         monkeypatch.setattr(
             "tools.skills_tool.SKILLS_DIR", tmp_path
         )
         # Set the env var so it's "available"
-        monkeypatch.setenv("CUSTOM_SKILL_API_KEY", "test-value-123")
+        monkeypatch.setenv("TENOR_API_KEY", "test-value-123")
 
         # Patch the secret capture callback to not prompt
         with patch("tools.skills_tool._secret_capture_callback", None):
@@ -62,26 +62,26 @@ class TestSkillViewRegistersPassthrough:
             result = json.loads(skill_view(name="test-skill"))
 
         assert result["success"] is True
-        assert is_env_passthrough("CUSTOM_SKILL_API_KEY")
+        assert is_env_passthrough("TENOR_API_KEY")
 
-    def test_persisted_managed_skill_env_vars_not_registered(self, tmp_path, monkeypatch):
-        """Managed skill secrets can satisfy setup checks without becoming subprocess passthrough vars."""
+    def test_remote_backend_persisted_env_vars_registered(self, tmp_path, monkeypatch):
+        """Remote-backed skills still register locally available env vars."""
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         _create_skill(
             tmp_path,
             "test-skill",
             frontmatter_extra=(
                 "required_environment_variables:\n"
-                "  - name: NOTION_API_KEY\n"
-                "    prompt: Enter your Notion API key\n"
+                "  - name: TENOR_API_KEY\n"
+                "    prompt: Enter your Tenor API key\n"
             ),
         )
         monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
 
         from hermes_cli.config import save_env_value
 
-        save_env_value("NOTION_API_KEY", "persisted-value-123")
-        monkeypatch.delenv("NOTION_API_KEY", raising=False)
+        save_env_value("TENOR_API_KEY", "persisted-value-123")
+        monkeypatch.delenv("TENOR_API_KEY", raising=False)
 
         with patch("tools.skills_tool._secret_capture_callback", None):
             from tools.skills_tool import skill_view
@@ -91,7 +91,7 @@ class TestSkillViewRegistersPassthrough:
         assert result["success"] is True
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
-        assert not is_env_passthrough("NOTION_API_KEY")
+        assert is_env_passthrough("TENOR_API_KEY")
 
     def test_missing_env_vars_not_registered(self, tmp_path, monkeypatch):
         """When a skill declares required_environment_variables but the var is NOT set,

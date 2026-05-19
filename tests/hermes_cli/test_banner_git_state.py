@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock, patch
+import json
 
 
 def test_format_banner_version_label_without_git_state():
@@ -114,3 +115,34 @@ def test_get_git_banner_state_falls_back_when_live_git_returns_nothing(tmp_path)
         state = banner.get_git_banner_state(repo_dir)
 
     assert state == {"upstream": "cafef00d", "local": "cafef00d", "ahead": 0}
+
+
+def test_check_for_updates_cache_is_scoped_to_active_repo(tmp_path):
+    from hermes_cli import banner
+
+    hermes_home = tmp_path / "home"
+    hermes_home.mkdir()
+    repo_dir = tmp_path / "active-repo"
+    (repo_dir / ".git").mkdir(parents=True)
+    cache_file = hermes_home / ".update_check"
+    cache_file.write_text(
+        json.dumps({"ts": 999999, "repo": "/old/repo", "behind": 1708}),
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["git", "fetch"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/main"]:
+            return MagicMock(returncode=0, stdout="0\n", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with patch.object(banner, "get_hermes_home", return_value=hermes_home), \
+         patch.object(banner, "_resolve_repo_dir", return_value=repo_dir), \
+         patch.object(banner.time, "time", return_value=1000), \
+         patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        assert banner.check_for_updates() == 0
+
+    cached = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert cached["repo"] == str(repo_dir)
+    assert cached["behind"] == 0

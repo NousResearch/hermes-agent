@@ -1941,12 +1941,47 @@ class TestDashboardPluginManifestExtensions:
     """Tests for the extended plugin manifest fields (tab.override,
     tab.hidden, slots) read by _discover_dashboard_plugins()."""
 
-    def _write_plugin(self, tmp_path, name, manifest):
+    def _write_plugin(self, tmp_path, name, manifest, *, write_entry=True):
         import json
         plug_dir = tmp_path / "plugins" / name / "dashboard"
         plug_dir.mkdir(parents=True)
         (plug_dir / "manifest.json").write_text(json.dumps(manifest))
+        if write_entry:
+            entry = manifest.get("entry", "dist/index.js")
+            entry_path = plug_dir / entry
+            entry_path.parent.mkdir(parents=True, exist_ok=True)
+            entry_path.write_text("// stub\n")
         return plug_dir
+
+    def test_missing_entry_hides_tab(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "unbuilt", {
+            "name": "unbuilt",
+            "label": "Unbuilt",
+            "tab": {"path": "/unbuilt"},
+            "entry": "dist/index.js",
+        }, write_entry=False)
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "unbuilt")
+        assert entry["tab"]["hidden"] is True
+        assert entry["entry"] is None
+
+    def test_present_entry_shows_tab(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "built", {
+            "name": "built",
+            "label": "Built",
+            "tab": {"path": "/built"},
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "built")
+        assert entry["tab"].get("hidden", False) is False
+        assert entry["entry"] == "dist/index.js"
 
     def test_override_and_hidden_carried_through(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

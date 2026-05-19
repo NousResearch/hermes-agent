@@ -4084,6 +4084,14 @@ def _discover_dashboard_plugins() -> list:
                 # ``override`` to replace a built-in route, and ``hidden`` to
                 # register the plugin component/slots without adding a tab
                 # (useful for slot-only plugins like a header-crest injector).
+                entry = data.get("entry", "dist/index.js")
+                entry_path = child / "dashboard" / entry
+                entry_exists = entry_path.exists()
+                if not entry_exists:
+                    _log.debug(
+                        "Dashboard plugin %s has no built entry %s; hiding tab",
+                        name, entry_path,
+                    )
                 raw_tab = data.get("tab", {}) if isinstance(data.get("tab"), dict) else {}
                 tab_info = {
                     "path": raw_tab.get("path", f"/{name}"),
@@ -4092,7 +4100,7 @@ def _discover_dashboard_plugins() -> list:
                 override_path = raw_tab.get("override")
                 if isinstance(override_path, str) and override_path.startswith("/"):
                     tab_info["override"] = override_path
-                if bool(raw_tab.get("hidden")):
+                if bool(raw_tab.get("hidden")) or not entry_exists:
                     tab_info["hidden"] = True
                 # Slots: list of named slot locations this plugin populates.
                 # The frontend exposes ``registerSlot(pluginName, slotName, Component)``
@@ -4109,7 +4117,7 @@ def _discover_dashboard_plugins() -> list:
                     "version": data.get("version", "0.0.0"),
                     "tab": tab_info,
                     "slots": slots,
-                    "entry": data.get("entry", "dist/index.js"),
+                    "entry": entry if entry_exists else None,
                     "css": data.get("css"),
                     "has_api": bool(data.get("api")),
                     "source": source,

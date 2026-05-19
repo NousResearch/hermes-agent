@@ -127,6 +127,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    SESAME = "sesame"
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -432,6 +433,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.YUANBAO: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("app_secret")
     ),
+    Platform.SESAME: lambda cfg: bool(cfg.api_key or cfg.token or cfg.extra.get("api_key")),
     Platform.DINGTALK: lambda cfg: bool(
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
@@ -1269,6 +1271,30 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=telegram_home,
             name=os.getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
             thread_id=os.getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
+        )
+
+    # Sesame
+    sesame_api_key = os.getenv("SESAME_API_KEY")
+    if sesame_api_key:
+        if Platform.SESAME not in config.platforms:
+            config.platforms[Platform.SESAME] = PlatformConfig()
+        config.platforms[Platform.SESAME].enabled = True
+        config.platforms[Platform.SESAME].api_key = sesame_api_key
+    if Platform.SESAME in config.platforms:
+        sesame_cfg = config.platforms[Platform.SESAME]
+        if os.getenv("SESAME_API_URL"):
+            sesame_cfg.extra["api_url"] = os.getenv("SESAME_API_URL")
+        if os.getenv("SESAME_WS_URL"):
+            sesame_cfg.extra["ws_url"] = os.getenv("SESAME_WS_URL")
+        if os.getenv("SESAME_ALLOWED_USERS"):
+            sesame_cfg.extra["allowed_users"] = os.getenv("SESAME_ALLOWED_USERS")
+    sesame_home = os.getenv("SESAME_HOME_CHANNEL")
+    if sesame_home and Platform.SESAME in config.platforms:
+        config.platforms[Platform.SESAME].home_channel = HomeChannel(
+            platform=Platform.SESAME,
+            chat_id=sesame_home,
+            name=os.getenv("SESAME_HOME_CHANNEL_NAME", "Home"),
+            thread_id=os.getenv("SESAME_HOME_CHANNEL_THREAD_ID") or None,
         )
     
     # Discord

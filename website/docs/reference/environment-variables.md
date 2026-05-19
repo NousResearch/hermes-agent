@@ -381,6 +381,13 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `QQBOT_HOME_CHANNEL` | QQ user/group openID for cron delivery and notifications |
 | `QQBOT_HOME_CHANNEL_NAME` | Display name for the QQ home channel |
 | `QQ_PORTAL_HOST` | Override the QQ portal host (set to `sandbox.q.qq.com` to route through the sandbox gateway; default: `q.qq.com`). |
+| `SESAME_API_KEY` | Sesame agent API key |
+| `SESAME_API_URL` | Sesame REST API base URL (default: `https://api.sesame.space`) |
+| `SESAME_WS_URL` | Sesame realtime WebSocket base URL (default: `wss://ws.sesame.space`) |
+| `SESAME_ALLOWED_USERS` | Comma-separated Sesame principal IDs allowed to message the bot |
+| `SESAME_ALLOW_ALL_USERS` | Allow all Sesame users without an allowlist (`true`/`false`) |
+| `SESAME_HOME_CHANNEL` | Sesame channel ID for cron delivery and notifications |
+| `SESAME_HOME_CHANNEL_NAME` | Display name for the Sesame home channel |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

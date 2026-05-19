@@ -598,18 +598,35 @@ def _ast_scan_python(content: str, rel_path: str) -> List[Finding]:
             self.generic_visit(node)
 
         def visit_Import(self, node):
-            # Flag importlib import itself (often precedes dynamic import)
+            # Flag importlib and any importlib.* submodule (e.g. importlib.util,
+            # importlib.machinery) — all enable dynamic module loading.
             for alias in node.names:
-                if alias.name == "importlib":
+                if alias.name == "importlib" or alias.name.startswith("importlib."):
                     findings.append(Finding(
                         pattern_id="ast_importlib_import",
                         severity="medium",
                         category="obfuscation",
                         file=rel_path,
                         line=node.lineno,
-                        match="import importlib",
+                        match=f"import {alias.name}",
                         description="importlib imported — enables dynamic module loading",
                     ))
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node):
+            # Flag `from importlib import ...` and `from importlib.<sub> import ...`
+            # (e.g. `from importlib import import_module`, `from importlib.util import find_spec`).
+            module = node.module or ""
+            if module == "importlib" or module.startswith("importlib."):
+                findings.append(Finding(
+                    pattern_id="ast_importlib_import",
+                    severity="medium",
+                    category="obfuscation",
+                    file=rel_path,
+                    line=node.lineno,
+                    match=f"from {module} import ...",
+                    description="importlib imported — enables dynamic module loading",
+                ))
             self.generic_visit(node)
 
     _Visitor().visit(tree)

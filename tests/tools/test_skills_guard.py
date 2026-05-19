@@ -533,6 +533,54 @@ class TestAstScanPython:
         assert "ast_dynamic_import" in pids
         assert "ast_importlib_import" in pids
 
+    def test_importlib_submodule_import_detected(self, tmp_path):
+        """`import importlib.util` and similar submodules are flagged."""
+        f = tmp_path / "evil.py"
+        f.write_text("import importlib.util\n")
+        findings = scan_file(f, "evil.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_importlib_import" in pids
+
+    def test_importlib_submodule_aliased_import_detected(self, tmp_path):
+        """`import importlib.machinery as m` (aliased submodule) is flagged."""
+        f = tmp_path / "evil.py"
+        f.write_text("import importlib.machinery as m\n")
+        findings = scan_file(f, "evil.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_importlib_import" in pids
+
+    def test_from_importlib_import_detected(self, tmp_path):
+        """`from importlib import import_module` is flagged."""
+        f = tmp_path / "evil.py"
+        f.write_text("from importlib import import_module\n")
+        findings = scan_file(f, "evil.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_importlib_import" in pids
+
+    def test_from_importlib_submodule_import_detected(self, tmp_path):
+        """`from importlib.util import find_spec` is flagged."""
+        f = tmp_path / "evil.py"
+        f.write_text("from importlib.util import find_spec\n")
+        findings = scan_file(f, "evil.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_importlib_import" in pids
+
+    def test_importer_lookalike_not_flagged(self, tmp_path):
+        """`import importer` must NOT match — prefix check is dot-bounded, not substring."""
+        f = tmp_path / "ok.py"
+        f.write_text("import importer\n")
+        findings = scan_file(f, "ok.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_importlib_import" not in pids
+
+    def test_from_importer_lookalike_not_flagged(self, tmp_path):
+        """`from importer import something` must NOT match the importlib check."""
+        f = tmp_path / "ok.py"
+        f.write_text("from importer import something\n")
+        findings = scan_file(f, "ok.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_importlib_import" not in pids
+
     def test_dunder_import_with_computed_arg_detected(self, tmp_path):
         """__import__ with non-literal argument is flagged."""
         f = tmp_path / "evil.py"

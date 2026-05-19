@@ -4462,12 +4462,20 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready task in ``dispatch_once`` before any claim attempt.
+    Returning a reason defers the spawn this tick; the task stays in
+    ``ready`` and gets another chance on the next dispatcher tick.
+
     Checks in priority order:
 
     ``"blocker_auth"``
         The task's last failure error matches a quota / authentication
-        pattern.  Retrying immediately will not help; the dispatcher
-        should auto-block the task to stop the respawn cycle.
+        pattern. Retrying immediately is unlikely to help (rate limits
+        reset on a timer; auth needs human action), so we defer to the
+        next tick. The existing ``consecutive_failures`` counter still
+        trips the auto-block circuit breaker after ``failure_limit``
+        consecutive failures, so a persistent auth error eventually
+        blocks via the normal path — but a transient 429 gets a few
+        ticks of recovery first.
 
     ``"recent_success"``
         A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
@@ -4732,29 +4740,24 @@ def dispatch_once(
             continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
-        # blocker (quota / auth) that retrying won't resolve.
+        # blocker (quota / auth). The guard defers the spawn this tick so
+        # the task gets a chance to clear (rate limits often reset in
+        # seconds-to-minutes); the existing consecutive_failures counter
+        # still trips the auto-block circuit breaker after failure_limit
+        # consecutive failures, so a persistent auth error eventually
+        # blocks via the normal path rather than on first occurrence.
         guard_reason = check_respawn_guard(conn, row["id"])
         if guard_reason is not None:
-            if guard_reason == "blocker_auth" and not dry_run:
-                # Auto-block to stop the cycle — quota/auth errors are
-                # deterministic and retrying immediately wastes quota.
-                # block_task emits its own "blocked" event, so no
-                # additional respawn_guarded event is needed here.
-                if block_task(conn, row["id"], reason=f"respawn_guard: {guard_reason}"):
-                    result.auto_blocked.append(row["id"])
-                else:
-                    result.respawn_guarded.append((row["id"], guard_reason))
-            else:
-                result.respawn_guarded.append((row["id"], guard_reason))
-                # Emit an event so operators can see why the task was
-                # skipped when reading `hermes kanban tail` — without
-                # this the task appears stuck in ready with no diagnosis.
-                if not dry_run:
-                    with write_txn(conn):
-                        _append_event(
-                            conn, row["id"], "respawn_guarded",
-                            {"reason": guard_reason},
-                        )
+            result.respawn_guarded.append((row["id"], guard_reason))
+            # Emit an event so operators can see why the task was
+            # skipped when reading `hermes kanban tail` — without
+            # this the task appears stuck in ready with no diagnosis.
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "respawn_guarded",
+                        {"reason": guard_reason},
+                    )
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))

@@ -98,7 +98,7 @@ def _make_adapter(telegram_adapter_cls):
     return a
 
 
-def _make_channel_message(text="channel id test @hermes_bot"):
+def _make_channel_message(text="channel id test @hermes_bot", sticker=None):
     chat = SimpleNamespace(
         id=-1003950368353,
         type="channel",
@@ -120,6 +120,12 @@ def _make_channel_message(text="channel id test @hermes_bot"):
         quote=None,
         date=None,
         forum_topic_created=None,
+        sticker=sticker,
+        photo=None,
+        video=None,
+        audio=None,
+        voice=None,
+        document=None,
     )
 
 
@@ -177,5 +183,29 @@ async def test_command_handler_uses_effective_message_for_channel_post(telegram_
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "/status"
     assert event.message_type == MessageType.COMMAND
+    assert event.source.chat_type == "channel"
+    assert event.source.chat_id == "-1003950368353"
+
+
+@pytest.mark.asyncio
+async def test_media_handler_uses_effective_message_for_channel_post(telegram_adapter_cls):
+    """_handle_media_message must not drop channel posts.
+
+    PR #28531 fixed text and command handlers to use _effective_update_message
+    but missed _handle_media_message.  A channel_post update carries the media
+    in update.channel_post; update.message is None, so the old early-return
+    guard silently dropped all channel media posts.
+    """
+    adapter = _make_adapter(telegram_adapter_cls)
+    sticker = MagicMock()
+    msg = _make_channel_message(sticker=sticker)
+    update = _make_channel_update(msg)
+    adapter._handle_sticker = AsyncMock()
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_media_message(update, MagicMock())
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
     assert event.source.chat_type == "channel"
     assert event.source.chat_id == "-1003950368353"

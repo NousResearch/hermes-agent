@@ -5275,10 +5275,13 @@ def _gateway_command_inner(args):
                 launchd_start()
             elif is_windows():
                 from hermes_cli import gateway_windows
-                if gateway_windows.is_installed():
-                    gateway_windows.start()
-                else:
-                    run_gateway(verbose=0)
+                # On Windows, even without a registered Scheduled Task / Startup
+                # entry, gateway_windows.start() uses the safe detached
+                # pythonw.exe launcher.  Do not fall back to run_gateway() here:
+                # when invoked from a gateway-hosted agent/tool call, foreground
+                # run_gateway() is tied to the very gateway process we just
+                # stopped and can die before the replacement is stable.
+                gateway_windows.start()
             else:
                 run_gateway(verbose=0)
             return
@@ -5299,13 +5302,19 @@ def _gateway_command_inner(args):
                 pass
         elif is_windows():
             from hermes_cli import gateway_windows
-            if gateway_windows.is_installed():
-                service_configured = True
-                try:
-                    gateway_windows.restart()
-                    service_available = True
-                except (subprocess.CalledProcessError, RuntimeError):
-                    pass
+            # Prefer the Windows-specific restart path: it supports both
+            # registered Scheduled Task / Startup installs and no-service
+            # detached restarts.  In the normal successful Telegram-triggered
+            # restart flow, this avoids the generic foreground run_gateway()
+            # path that can be reaped with the old gateway process.  If the
+            # Windows backend raises, intentionally preserve the existing
+            # generic failure fallback below.
+            service_configured = gateway_windows.is_installed()
+            try:
+                gateway_windows.restart()
+                return
+            except (subprocess.CalledProcessError, RuntimeError, OSError):
+                pass
         
         if not service_available:
             # systemd/launchd restart failed — check if linger is the issue

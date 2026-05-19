@@ -40,6 +40,11 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 
+HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(
+    1500,
+    int(os.getenv("HERMES_KANBAN_SPECIFY_MAX_TOKENS", "6000")),
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -185,7 +190,7 @@ def specify_task(
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.3,
-            max_tokens=1500,
+            max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS,
             timeout=timeout or 120,
             extra_body=get_auxiliary_extra_body() or None,
         )
@@ -199,7 +204,7 @@ def specify_task(
         )
 
     try:
-        raw = resp.choices[0].message.content or ""
+        raw = (resp.choices[0].message.content or "").strip()
     except Exception:
         raw = ""
 

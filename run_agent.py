@@ -1019,7 +1019,15 @@ class AIAgent:
             return False
         if stripped.endswith("```"):
             return True
-        return stripped[-1] in '.!?:)"\']}。！？：）】」』》'
+        if stripped.endswith('^'):
+            return True
+        last = stripped[-1]
+        if last in '.!?:)"\']}。！？：）】」』》^':
+            return True
+        # Emoji ranges (Misc Symbols, Dingbats, Emoticons, Supplemental, etc.)
+        if ord(last) >= 0x1F300:
+            return True
+        return False
 
     def _is_ollama_glm_backend(self) -> bool:
         """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
@@ -1428,7 +1436,11 @@ class AIAgent:
         prefix = f"HTTP {status_code}: " if status_code else ""
         return f"{prefix}{raw[:500]}"
 
-    def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
+    def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
+        # Azure Foundry Entra ID bearer providers are callables — never
+        # invoke them in log paths; identify the auth surface instead.
+        if callable(key) and not isinstance(key, str):
+            return "<entra-id-bearer>"
         if not key:
             return None
         if len(key) <= 12:
@@ -3710,12 +3722,19 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
-        """Forwarder — see ``agent.conversation_compression.compress_context``."""
+    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None, force: bool = False) -> tuple:
+        """Forwarder — see ``agent.conversation_compression.compress_context``.
+
+        ``force=True`` is passed by the manual ``/compress`` slash command
+        so users can bypass the summary-failure cooldown after an
+        auto-compress abort.  Auto-compress callers use the default
+        ``force=False``.
+        """
         from agent.conversation_compression import compress_context
         return compress_context(
             self, messages, system_message,
             approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
+            force=force,
         )
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:

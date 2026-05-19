@@ -1087,7 +1087,16 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         current_provider = str(runtime.get("provider", "") or "")
         current_model = _resolve_model()
         current_base_url = str(runtime.get("base_url", "") or "")
-        current_api_key = str(runtime.get("api_key", "") or "")
+        # Preserve a callable api_key (Azure Foundry Entra ID bearer
+        # provider) unchanged — ``str(...)`` would produce
+        # ``"<function ...>"`` and poison downstream switch_model
+        # validation. Match the agent-present branch's behavior at the
+        # top of this block.
+        _runtime_key = runtime.get("api_key", "")
+        if callable(_runtime_key) and not isinstance(_runtime_key, str):
+            current_api_key = _runtime_key
+        else:
+            current_api_key = str(_runtime_key or "")
 
     # Load user-defined providers so switch_model can resolve named custom
     # endpoints (e.g. "ollama-launch") and validate against saved model lists.
@@ -1366,6 +1375,15 @@ def _probe_config_health(cfg: dict) -> str:
     return " ".join(warnings).strip()
 
 
+def _current_profile_name() -> str:
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
 def _session_info(agent) -> dict:
     reasoning_config = getattr(agent, "reasoning_config", None)
     reasoning_effort = ""
@@ -1388,6 +1406,7 @@ def _session_info(agent) -> dict:
         "update_behind": None,
         "update_command": "",
         "usage": _get_usage(agent),
+        "profile_name": _current_profile_name(),
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -2145,6 +2164,7 @@ def _(rid, params: dict) -> dict:
                 "skills": {},
                 "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
                 "lazy": True,
+                "profile_name": _current_profile_name(),
             },
         },
     )
@@ -4373,7 +4393,6 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
     {
         "sethome",
         "set-home",
-        "update",
         "commands",
         "approve",
         "deny",
@@ -5226,9 +5245,11 @@ def _(rid, params: dict) -> dict:
         from prompt_toolkit.formatted_text import to_plain_text
 
         from agent.skill_commands import get_skill_commands
+        from agent.skill_bundles import get_skill_bundles
 
         completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: get_skill_commands()
+            skill_commands_provider=lambda: get_skill_commands(),
+            skill_bundles_provider=lambda: get_skill_bundles(),
         )
         doc = Document(text, len(text))
         items = [

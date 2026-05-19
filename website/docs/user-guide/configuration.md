@@ -140,6 +140,9 @@ terminal:
   docker_volumes:                  # Host directory mounts
     - "/home/user/projects:/workspace/projects"
     - "/home/user/data:/data:ro"   # :ro for read-only
+  docker_extra_args:               # Extra flags appended verbatim to `docker run`
+    - "--gpus=all"
+    - "--network=host"
 
   # Resource limits
   container_cpu: 1                 # CPU cores (0 = unlimited)
@@ -147,6 +150,8 @@ terminal:
   container_disk: 51200            # MB (requires overlay2 on XFS+pquota)
   container_persistent: true       # Persist /workspace and /root across sessions
 ```
+
+**`terminal.docker_extra_args`** (also overridable via `TERMINAL_DOCKER_EXTRA_ARGS='["--gpus=all"]'`) lets you pass arbitrary `docker run` flags that Hermes doesn't surface as first-class keys — `--gpus`, `--network`, `--add-host`, alternative `--security-opt` overrides, etc. Each entry must be a string; the list is appended last to the assembled `docker run` invocation so it can override Hermes' defaults if needed. Use sparingly — flags that conflict with the sandbox hardening (capability drops, `--user`, the workspace bind mount) will silently weaken isolation.
 
 **Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle). Podman is supported out of the box: set `HERMES_DOCKER_BINARY=podman` (or the full path) to force it when both are installed.
 
@@ -762,6 +767,16 @@ credential_pool_strategies:
 
 Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
 
+## Prompt caching
+
+Hermes turns on cross-session prompt caching automatically when the active provider supports it — no user config needed.
+
+For Claude on **native Anthropic**, **OpenRouter**, and **Nous Portal**, Hermes attaches `cache_control` breakpoints with the 1-hour TTL (`ttl: "1h"`) on the system prompt and skill blocks. The first send within a fresh hour pays full input rates; subsequent sends across any session within the same hour pull from the cache at the discounted cached-read rate. This means the system prompt, loaded skill content, and the early portion of any long-context include get reused across `hermes` sessions and across forked subagents for the first hour.
+
+The Qwen Cloud (Alibaba DashScope) upstream caps cache TTL at 5 minutes, so Hermes uses the 5-minute breakpoint TTL there instead. Other Claude-via-third-party paths (AWS Bedrock, Azure Foundry) fall back to the provider's own caching defaults. xAI Grok uses a separate session-pinned conversation-id mechanism — see [xAI prompt caching](/docs/integrations/providers#xai-grok--responses-api--prompt-caching).
+
+No knob exists to disable this — caching is always-on and saves money even on single-turn conversations because the system prompt alone is a meaningful fraction of the input token count.
+
 ## Auxiliary Models
 
 Hermes uses "auxiliary" models for side tasks like image analysis, web page summarization, browser screenshot analysis, session-title generation, and context compression. By default (`auxiliary.*.provider: "auto"`), Hermes routes every auxiliary task to your **main chat model** — the same provider/model you picked in `hermes model`. You don't need to configure anything to get started, but be aware that on expensive reasoning models (Opus, MiniMax M2.7, etc.) auxiliary tasks add meaningful cost. If you want cheap-and-fast side tasks regardless of your main model, set `auxiliary.<task>.provider` and `auxiliary.<task>.model` explicitly (for example, Gemini Flash on OpenRouter for vision and web extraction).
@@ -1168,12 +1183,13 @@ display:
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
+  timestamps: false       # When true, prefixes user and assistant labels with [HH:MM] timestamps in the CLI / TUI transcript
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
     fields: ["model", "context_pct", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
-  language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | ja | de | es | fr | tr | uk
+  language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
 
 ### File-mutation verifier

@@ -579,3 +579,129 @@ class TestPatchReplacePostWriteVerification:
         result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
+
+
+# =========================================================================
+# Git baseline check for write_file warning
+# =========================================================================
+
+class TestGitBaselineCheck:
+    """Regression tests for _check_git_baseline and warning in write_file result (#27856)."""
+
+    def _make_mock(self, side_effect_fn, cwd="/tmp/test"):
+        env = MagicMock()
+        env.cwd = cwd
+        env.execute.side_effect = side_effect_fn
+        ops = ShellFileOperations(env)
+        return ops
+
+    def test_git_not_available_returns_none(self):
+        """When git is not on PATH, _check_git_baseline returns None."""
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "", "returncode": 1}
+            return {"output": "", "returncode": 0}
+        ops = self._make_mock(side_effect)
+        assert ops._check_git_baseline("/some/file.py") is None
+
+    def test_not_in_git_repo_returns_none(self):
+        """When the path is not inside a git work tree, returns None."""
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "yes\n", "returncode": 0}
+            if "git rev-parse --is-inside-work-tree" in command:
+                return {"output": "false\n", "returncode": 128}
+            return {"output": "", "returncode": 0}
+        ops = self._make_mock(side_effect)
+        assert ops._check_git_baseline("/some/file.py") is None
+
+    def test_clean_repo_returns_none(self):
+        """When the git working tree is clean, returns None."""
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "yes\n", "returncode": 0}
+            if "git rev-parse --is-inside-work-tree" in command:
+                return {"output": "true\n", "returncode": 0}
+            if "git rev-parse --abbrev-ref HEAD" in command:
+                return {"output": "main\n", "returncode": 0}
+            if "git status --porcelain" in command:
+                return {"output": "", "returncode": 0}
+            return {"output": "", "returncode": 0}
+        ops = self._make_mock(side_effect)
+        assert ops._check_git_baseline("/some/file.py") is None
+
+    def test_dirty_repo_returns_warning(self):
+        """When the git working tree has uncommitted changes, returns a warning string."""
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "yes\n", "returncode": 0}
+            if "git rev-parse --is-inside-work-tree" in command:
+                return {"output": "true\n", "returncode": 0}
+            if "git rev-parse --abbrev-ref HEAD" in command:
+                return {"output": "feature-branch\n", "returncode": 0}
+            if "git status --porcelain" in command:
+                return {"output": " M file.py\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+        ops = self._make_mock(side_effect)
+        warning = ops._check_git_baseline("/repo/file.py")
+        assert warning is not None
+        assert "dirty" in warning.lower()
+        assert "feature-branch" in warning
+
+    def test_write_file_includes_git_warning_when_dirty(self):
+        """write_file result dict includes warning key when git tree is dirty."""
+        state = {"content": "initial\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "yes\n", "returncode": 0}
+            if "git rev-parse --is-inside-work-tree" in command:
+                return {"output": "true\n", "returncode": 0}
+            if "git rev-parse --abbrev-ref HEAD" in command:
+                return {"output": "main\n", "returncode": 0}
+            if "git status --porcelain" in command:
+                return {"output": " M test.txt\n", "returncode": 0}
+            if command.startswith("cat >"):  # write
+                if stdin_data is not None:
+                    state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        ops = self._make_mock(side_effect)
+        result = ops.write_file("/repo/test.txt", "new content\n")
+        d = result.to_dict()
+        assert "warning" in d
+        assert d["warning"] is not None
+        assert "dirty" in d["warning"].lower()
+
+    def test_write_file_omits_warning_when_clean(self):
+        """write_file result dict has no warning key when git tree is clean."""
+        state = {"content": "initial\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if "command -v git" in command:
+                return {"output": "yes\n", "returncode": 0}
+            if "git rev-parse --is-inside-work-tree" in command:
+                return {"output": "true\n", "returncode": 0}
+            if "git rev-parse --abbrev-ref HEAD" in command:
+                return {"output": "main\n", "returncode": 0}
+            if "git status --porcelain" in command:
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat >"):  # write
+                if stdin_data is not None:
+                    state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        ops = self._make_mock(side_effect)
+        result = ops.write_file("/repo/test.txt", "new content\n")
+        d = result.to_dict()
+        assert "warning" not in d or d["warning"] is None

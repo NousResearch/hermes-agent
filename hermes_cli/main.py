@@ -1395,6 +1395,41 @@ def cmd_chat(args):
 
     _pin_kanban_board_env()
 
+    # Plan 003-D: auto-sync registries with auto_sync: true on startup.
+    # Best-effort: failure logs a warning and never blocks the chat launch.
+    try:
+        from agent.skill_utils import get_skill_registries
+        import subprocess as _subprocess
+        for _reg in get_skill_registries():
+            if _reg.auto_sync and _reg.remote and _reg.path.is_dir():
+                try:
+                    _result = _subprocess.run(
+                        ["git", "-C", str(_reg.path), "pull", "--ff-only", "--quiet"],
+                        timeout=5,
+                        capture_output=True,
+                    )
+                    if _result.returncode == 0:
+                        import logging as _logging
+                        _logging.getLogger(__name__).debug(
+                            "Auto-synced registry %r from %s", _reg.name, _reg.remote
+                        )
+                    else:
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "Auto-sync of registry %r failed (rc=%d). "
+                            "Continuing with cached local copy.",
+                            _reg.name, _result.returncode,
+                        )
+                except Exception as _sync_exc:
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "Auto-sync of registry %r raised: %s. "
+                        "Continuing with cached local copy.",
+                        _reg.name, _sync_exc,
+                    )
+    except Exception:
+        pass  # Registry feature not available — not a startup blocker.
+
     if use_tui:
         _launch_tui(
             getattr(args, "resume", None),

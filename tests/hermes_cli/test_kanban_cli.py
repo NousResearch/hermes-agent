@@ -402,3 +402,13 @@ def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):
     kc.run_slash("--board alpha list")
 
     assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+
+
+def test_run_slash_board_override_does_not_change_boards_show_current(kanban_home):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    kb.set_current_board("alpha")
+
+    out = kc.run_slash("--board beta boards show")
+
+    assert "Current board: alpha" in out

@@ -30,7 +30,10 @@ When in doubt, classify up. A medium classified as large wastes a little time; a
 - `claude` -- Claude Code CLI; `claude --version`
 - `codex` -- OpenAI Codex CLI; `codex --version`
 
-If Codex is unavailable, a `delegate_task` fallback exists but is **degraded mode only** and requires explicit user approval before use (see Procedure, Step 6). It is not equivalent to Codex.
+**Optional CLI (only for the optional pre-PR review step):**
+- `roborev` -- local AI review/history helper; `roborev version`
+
+If Codex is unavailable, a `delegate_task` fallback exists but is **degraded mode only** and requires explicit user approval before use (see Procedure, Step 6). It is not equivalent to Codex. If roborev is unavailable, skip only the optional roborev pre-PR review step; do not skip required gates.
 
 **Required credentials:**
 - `ANTHROPIC_API_KEY` set, or Claude OAuth active
@@ -53,7 +56,7 @@ If Codex is unavailable, a `delegate_task` fallback exists but is **degraded mod
 6. Run Codex quality/security gate (Gate 3) per pair; loop up to 3x
 7. Create isolated integration worktree; merge pair branches
 8. Run Integration conflict gate (Gate 4); stop and ask user if conflicts arise
-9. Run Final tests + PR gate (Gate 5); create PR -- stop, do not merge
+9. Run Final tests + PR gate (Gate 5); (optional) run roborev pre-PR review for large/risky PRs or when extra confidence is needed; create PR -- stop, do not merge
 10. If any gate is unresolvable: Escalation/abort gate (Gate 6)
 
 ## Quick Reference
@@ -67,6 +70,7 @@ If Codex is unavailable, a `delegate_task` fallback exists but is **degraded mod
 | 3 | Codex quality/security gate | After spec gate passes | Fix -> re-review (max 3 loops) -> escalate |
 | 4 | Integration conflict gate | After all pairs pass Gate 3 | Stop, report conflict details, ask user |
 | 5 | Final tests + PR gate | After integration clean | Stop; repair only after explicit user approval |
+| — | roborev pre-PR review (optional) | Before PR creation; large/risky PRs or on request | Report critical/important issues; repair only after explicit user approval; rerun roborev (max 3 loops); skip if unavailable or clean |
 | 6 | Escalation/abort gate | Any unresolvable failure | Stop all pairs, report, wait for user |
 
 ### Task Classification
@@ -387,6 +391,22 @@ git diff "$BASE_REF"...HEAD --stat
 - [ ] Secret scan or Hermes diff inspection finds no secrets
 - [ ] Diff looks reasonable -- no unintended file changes
 
+#### Optional roborev pre-PR review
+
+Use for large/risky PRs or when extra confidence is needed before PR creation. Not required by default; skip for small/routine changes or when roborev is unavailable.
+
+roborev is a pre-final/PR helper and review history layer. It does **not** replace the Codex Quality/Security Gate (Gate 3) or any final Codex judgment. Do **not** enable post-commit hooks or repo-wide daemon review.
+
+```bash
+# Preferred: review branch diff against base
+roborev review --branch --base "$BASE_REF" --local --agent codex --reasoning thorough --wait
+
+# Fallback: review uncommitted/staged changes
+roborev review --dirty --local --agent codex --reasoning thorough --wait
+```
+
+If roborev reports CRITICAL or IMPORTANT issues, stop and report them to the user. Repair only after explicit user approval; if approved, fix and rerun Gate 5 tests/secret scan/diff inspection, then rerun roborev (max 3 loops). MINOR/cosmetic findings are advisory only -- no blocking required. If 3 approved repair loops do not resolve CRITICAL or IMPORTANT issues, escalate (Gate 6).
+
 Only after all checks pass: create PR using `github-pr-workflow` skill.
 
 **Stop here -- do not merge. Wait for human review.**
@@ -514,6 +534,7 @@ VERDICT: APPROVED | REQUEST_CHANGES
 - [x] Codex quality/security gate (all pairs)
 - [x] Integration conflict gate
 - [x] Final tests + PR gate
+- [ ] roborev pre-PR review (optional -- check if ran for this PR)
 
 ## Test results
 <!-- Paste test output summary -->
@@ -555,4 +576,5 @@ Before declaring the workflow complete:
 - [ ] All worktrees removed: `git worktree list` shows only the main checkout
 - [ ] `$RESULT_DIR/` cleaned up or archived after the final report
 - [ ] PR created (not merged) with integration summary attached
+- [ ] (Optional) roborev pre-PR review ran and found no CRITICAL/IMPORTANT issues -- required only for large/risky PRs or when explicitly requested
 - [ ] User notified of PR URL and asked to review before any merge

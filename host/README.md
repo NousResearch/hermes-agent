@@ -20,7 +20,21 @@ If `hermes_install_host_cli_wrapper` is true, the playbook also installs a host-
 - Wrapper path: `/usr/local/bin/hermes-host`
 - Optional symlink to `/usr/local/bin/hermes`: controlled by `hermes_install_default_cli_symlink`
 
-The wrapper prefers:
+The wrapper can run in three modes via `hermes_host_cli_mode`:
+
+- `auto` — try the host venv first, then fall back to `docker exec`
+- `local` — require Hermes to be installed directly under `hermes_stack_dir`
+- `docker` — always execute Hermes inside `hermes_docker_container`
+
+For Dockerized installs, set:
+
+```bash
+-e hermes_host_cli_mode=docker \
+-e hermes_docker_container=<container_name> \
+-e hermes_container_cli_path=/opt/data/hermes-agent/venv/bin/hermes
+```
+
+The local wrapper path search prefers:
 1. `{{ hermes_stack_dir }}/.venv/bin/hermes`
 2. `{{ hermes_stack_dir }}/venv/bin/hermes`
 3. `python -m hermes_cli.main` from the matching venv
@@ -35,6 +49,9 @@ Override these when you run the playbook:
 - `hermes_compose_files` — filenames to probe for Docker Compose
 - `hermes_install_host_cli_wrapper` — install a host-side CLI wrapper
 - `hermes_install_default_cli_symlink` — make `/usr/local/bin/hermes` point to the wrapper
+- `hermes_host_cli_mode` — `auto`, `local`, or `docker`
+- `hermes_docker_container` — container name for Docker CLI mode
+- `hermes_container_cli_path` — Hermes executable path inside the container
 
 ## Example
 

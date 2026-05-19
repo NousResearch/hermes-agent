@@ -21,6 +21,14 @@
     hermes_host_cli_path: /usr/local/bin/hermes-host
     hermes_default_cli_path: /usr/local/bin/hermes
 
+    # Host CLI mode:
+    # - auto: use local venv when present, otherwise docker exec
+    # - local: require a host-side Hermes venv under hermes_stack_dir
+    # - docker: always docker exec into hermes_docker_container
+    hermes_host_cli_mode: auto
+    hermes_docker_container: hermes
+    hermes_container_cli_path: /opt/data/hermes-agent/venv/bin/hermes
+
     # Optional extras:
     # - Add systemd services to restart if your host runs Hermes components as units.
     # - Keep this list empty if Docker Compose is the only supervisor.
@@ -126,18 +134,63 @@
           set -euo pipefail
 
           STACK_DIR="{{ hermes_stack_dir }}"
-          if [ -x "$STACK_DIR/.venv/bin/hermes" ]; then
-            exec "$STACK_DIR/.venv/bin/hermes" "$@"
-          elif [ -x "$STACK_DIR/venv/bin/hermes" ]; then
-            exec "$STACK_DIR/venv/bin/hermes" "$@"
-          elif [ -x "$STACK_DIR/.venv/bin/python" ]; then
-            exec "$STACK_DIR/.venv/bin/python" -m hermes_cli.main "$@"
-          elif [ -x "$STACK_DIR/venv/bin/python" ]; then
-            exec "$STACK_DIR/venv/bin/python" -m hermes_cli.main "$@"
-          else
-            echo "Hermes CLI not found under $STACK_DIR/.venv or $STACK_DIR/venv" >&2
-            exit 1
-          fi
+          MODE="{{ hermes_host_cli_mode }}"
+          CONTAINER="{{ hermes_docker_container }}"
+          CONTAINER_CLI="{{ hermes_container_cli_path }}"
+
+          run_local() {
+            if [ -x "$STACK_DIR/.venv/bin/hermes" ]; then
+              exec "$STACK_DIR/.venv/bin/hermes" "$@"
+            elif [ -x "$STACK_DIR/venv/bin/hermes" ]; then
+              exec "$STACK_DIR/venv/bin/hermes" "$@"
+            elif [ -x "$STACK_DIR/.venv/bin/python" ]; then
+              exec "$STACK_DIR/.venv/bin/python" -m hermes_cli.main "$@"
+            elif [ -x "$STACK_DIR/venv/bin/python" ]; then
+              exec "$STACK_DIR/venv/bin/python" -m hermes_cli.main "$@"
+            fi
+            return 1
+          }
+
+          run_docker() {
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "docker is not available; cannot exec Hermes inside container $CONTAINER" >&2
+              return 1
+            fi
+            if ! docker inspect "$CONTAINER" >/dev/null 2>&1; then
+              echo "Docker container not found: $CONTAINER" >&2
+              return 1
+            fi
+
+            # Allocate a TTY only for interactive host terminal use; keep non-interactive
+            # commands pipe-friendly for scripts, Ansible, and cron.
+            if [ -t 0 ] && [ -t 1 ]; then
+              exec docker exec -it "$CONTAINER" "$CONTAINER_CLI" "$@"
+            else
+              exec docker exec -i "$CONTAINER" "$CONTAINER_CLI" "$@"
+            fi
+          }
+
+          case "$MODE" in
+            local)
+              run_local "$@" || {
+                echo "Hermes CLI not found under $STACK_DIR/.venv or $STACK_DIR/venv" >&2
+                exit 1
+              }
+              ;;
+            docker)
+              run_docker "$@"
+              ;;
+            auto)
+              run_local "$@" || run_docker "$@" || {
+                echo "Hermes CLI not found locally and Docker fallback failed" >&2
+                exit 1
+              }
+              ;;
+            *)
+              echo "Invalid hermes_host_cli_mode: $MODE (expected auto, local, or docker)" >&2
+              exit 1
+              ;;
+          esac
       when: hermes_install_host_cli_wrapper | bool
 
     - name: Optionally point the default hermes command at the host wrapper

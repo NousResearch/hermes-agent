@@ -137,7 +137,7 @@ def _conn(board: Optional[str] = None):
 # tasks into ``todo`` and makes the dashboard look like the Scheduled column
 # disappeared.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "scheduled", "ready", "running", "blocked", "done",
+    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
 ]
 
 
@@ -683,6 +683,23 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
             if not ok:
+                # For ``ready``, name the blocking parent(s) so the dashboard
+                # can render an actionable toast instead of a silent no-op.
+                # See #26744.
+                if s == "ready":
+                    blockers = _parents_blocking_ready(conn, task_id)
+                    if blockers:
+                        names = ", ".join(
+                            f"{p['title']!r} ({p['id']}, status={p['status']})"
+                            for p in blockers
+                        )
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"Cannot move to 'ready': blocked by parent(s) "
+                                f"not done — {names}"
+                            ),
+                        )
                 raise HTTPException(
                     status_code=409,
                     detail=f"status transition to {s!r} not valid from current state",
@@ -745,6 +762,29 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
         return {"deleted": True, "task_id": task_id}
     finally:
         conn.close()
+
+
+def _parents_blocking_ready(
+    conn: sqlite3.Connection, task_id: str,
+) -> list:
+    """Return parent rows (``id``, ``title``, ``status``) that aren't ``done``
+    and therefore prevent ``task_id`` from being promoted to ``ready``.
+
+    Used to enrich the 409 response from :func:`update_task` so the
+    dashboard can show an actionable toast (#26744) instead of a silent
+    no-op.  Returns ``[]`` when nothing blocks the transition (e.g. no
+    parents, or all parents already done).
+    """
+    rows = conn.execute(
+        "SELECT t.id, t.title, t.status FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ? AND t.status != 'done'",
+        (task_id,),
+    ).fetchall()
+    return [
+        {"id": r["id"], "title": r["title"], "status": r["status"]}
+        for r in rows
+    ]
 
 
 def _set_status_direct(

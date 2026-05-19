@@ -81,6 +81,25 @@ def test_workspace_kind_validation(kanban_home):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
 
 
+def test_create_task_rejects_natural_language_skill_names(kanban_home):
+    with kb.connect() as conn, pytest.raises(ValueError, match="invalid skill name"):
+        kb.create_task(conn, title="bad skill", assignee="default", skills=["ppt skill"])
+
+
+def test_create_task_accepts_slug_like_skill_names(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="good skill",
+            assignee="default",
+            skills=["kanban-worker", "plugin:skill_name"],
+        )
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.skills == ["kanban-worker", "plugin:skill_name"]
+
+
 def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     with kb.connect() as conn:

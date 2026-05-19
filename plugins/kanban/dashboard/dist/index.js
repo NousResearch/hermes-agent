@@ -2960,6 +2960,67 @@
     );
   }
 
+  function CompletionEvidenceSection(props) {
+    const ev = props.evidence;
+    if (!ev) return null;
+    const deps = (ev.dependencies && ev.dependencies.items) || [];
+    const counts = ev.run_counts || {};
+    const deliverables = ev.deliverables || [];
+    const suspicious = !!ev.suspicious;
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" },
+        suspicious ? "⚠ Completion evidence / 完成证据（存疑）" : "Completion evidence / 完成证据"),
+      h("div", { className: suspicious ? "hermes-kanban-diag hermes-kanban-diag--warning" : "hermes-kanban-comment" },
+        h("div", { className: "text-xs" },
+          `Runs: ${counts.completed || 0} completed / ${counts.failed || 0} failed / ${counts.total || 0} total`,
+          deps.length ? ` · Dependencies: ${(ev.dependencies && ev.dependencies.done) || 0}/${(ev.dependencies && ev.dependencies.total) || 0} done` : "",
+        ),
+        (ev.invalid_skills && ev.invalid_skills.length)
+          ? h("div", { className: "hermes-kanban-run-error" },
+              "Invalid task skills: ", ev.invalid_skills.join(", "),
+              " — worker startup can fail before doing any work.")
+          : null,
+        (ev.reasons && ev.reasons.length)
+          ? h("ul", { className: "text-xs mt-1" },
+              ev.reasons.map(function (r, i) { return h("li", { key: i }, "• ", r); }))
+          : null,
+        ev.latest_summary
+          ? h("div", { className: "mt-2" },
+              h("div", { className: "text-xs font-semibold" }, "Latest completion summary"),
+              h(MarkdownBlock, { source: ev.latest_summary, enabled: props.renderMarkdown }))
+          : null,
+        deliverables.length
+          ? h("div", { className: "mt-2" },
+              h("div", { className: "text-xs font-semibold" }, `Deliverables (${deliverables.length})`),
+              h("ul", { className: "text-xs" },
+                deliverables.slice(0, 12).map(function (d, i) {
+                  return h("li", { key: i }, h("code", null, d));
+                }),
+                deliverables.length > 12 ? h("li", null, `… ${deliverables.length - 12} more`) : null,
+              ))
+          : null,
+        deps.length
+          ? h("details", { className: "mt-2", open: suspicious },
+              h("summary", { className: "text-xs font-semibold cursor-pointer" },
+                `Dependencies / 子任务证据 (${(ev.dependencies && ev.dependencies.done) || 0}/${(ev.dependencies && ev.dependencies.total) || 0})`),
+              deps.map(function (d) {
+                return h("div", { key: d.id, className: "hermes-kanban-run" },
+                  h("div", { className: "hermes-kanban-run-head" },
+                    h("code", null, d.id),
+                    h("span", null, d.status),
+                    h("span", null, d.title || "")),
+                  d.latest_summary ? h("div", { className: "hermes-kanban-run-summary" }, d.latest_summary) : null,
+                  d.deliverables && d.deliverables.length
+                    ? h("div", { className: "text-xs" }, "Artifacts: ", d.deliverables.join(", "))
+                    : null,
+                );
+              }),
+            )
+          : null,
+      ),
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
@@ -3004,6 +3065,10 @@
         onPatch: props.onPatch,
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
+      }),
+      h(CompletionEvidenceSection, {
+        evidence: props.data.completion_evidence,
+        renderMarkdown: props.renderMarkdown,
       }),
       h(DiagnosticsSection, {
         task: t,

@@ -208,6 +208,145 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
     }
 
 
+def _extract_deliverables_from_metadata(meta: Any) -> list[str]:
+    """Pull human-checkable artifact paths/URLs out of run metadata."""
+    out: list[str] = []
+    if not isinstance(meta, dict):
+        return out
+
+    def add(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            v = value.strip()
+            if v and v not in out:
+                out.append(v)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                add(item)
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                if any(tok in str(k).lower() for tok in ("deliver", "artifact", "file", "path", "url", "diff", "pr")):
+                    add(v)
+
+    for key in (
+        "deliverable", "deliverables", "artifact", "artifacts",
+        "file", "files", "path", "paths", "url", "urls",
+        "changed_files", "diff_path", "pr_url",
+    ):
+        if key in meta:
+            add(meta.get(key))
+    return out
+
+
+def _looks_like_junk_completion(text: Optional[str]) -> bool:
+    """Heuristic for manual/compressed completions that are not evidence."""
+    s = (text or "").strip()
+    if not s:
+        return True
+    lowered = s.lower()
+    if lowered in {"ok", "done", "complete", "completed", "finish", "finished", "dddd", "test", "na", "n/a"}:
+        return True
+    if len(s) < 12:
+        return True
+    if len(set(s)) <= 2 and len(s) <= 16:
+        return True
+    return False
+
+
+def _invalid_task_skill_names(skills: Any) -> list[str]:
+    """Return obviously-invalid per-task skill names."""
+    bad: list[str] = []
+    if not skills:
+        return bad
+    for sk in skills:
+        name = str(sk or "").strip()
+        if not name:
+            continue
+        if any(ch.isspace() for ch in name) or "," in name or "/" in name:
+            bad.append(name)
+    return bad
+
+
+def _completion_evidence(conn: sqlite3.Connection, task: kanban_db.Task, runs: list[kanban_db.Run]) -> dict[str, Any]:
+    """Operator-facing proof-of-completion rollup for the drawer."""
+    task_id = task.id
+    failed_outcomes = {"spawn_failed", "timed_out", "crashed", "failed"}
+    failed_runs = [r for r in runs if r.outcome in failed_outcomes]
+    completed_runs = [r for r in runs if r.outcome == "completed"]
+    latest_completed = completed_runs[-1] if completed_runs else None
+    latest_summary = latest_completed.summary if latest_completed else kanban_db.latest_summary(conn, task_id)
+
+    deps: list[dict[str, Any]] = []
+    for row in conn.execute(
+        "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+        (task_id,),
+    ).fetchall():
+        dep = kanban_db.get_task(conn, row["parent_id"])
+        if dep is None:
+            continue
+        dep_summary = kanban_db.latest_summary(conn, dep.id)
+        dep_runs = kanban_db.list_runs(conn, dep.id)
+        dep_deliverables: list[str] = []
+        for r in dep_runs:
+            dep_deliverables.extend(_extract_deliverables_from_metadata(r.metadata))
+        seen: set[str] = set()
+        dep_deliverables = [d for d in dep_deliverables if not (d in seen or seen.add(d))]
+        deps.append({
+            "id": dep.id,
+            "title": dep.title,
+            "status": dep.status,
+            "completed_at": dep.completed_at,
+            "latest_summary": dep_summary,
+            "deliverables": dep_deliverables,
+        })
+
+    deliverables: list[str] = []
+    for r in runs:
+        deliverables.extend(_extract_deliverables_from_metadata(r.metadata))
+    for d in deps:
+        deliverables.extend(d.get("deliverables") or [])
+    seen_paths: set[str] = set()
+    deliverables = [d for d in deliverables if not (d in seen_paths or seen_paths.add(d))]
+
+    invalid_skills = _invalid_task_skill_names(task.skills)
+    suspicious = False
+    reasons: list[str] = []
+    if task.status == "done" and _looks_like_junk_completion(task.result or latest_summary):
+        suspicious = True
+        reasons.append("completion summary/result is empty or looks like filler text")
+    if failed_runs and task.status == "done" and _looks_like_junk_completion(latest_summary or task.result):
+        suspicious = True
+        reasons.append("task was marked done after previous failures but without a meaningful final summary")
+    if invalid_skills:
+        suspicious = True
+        reasons.append("task has invalid per-task skill names that can make worker startup fail")
+
+    return {
+        "status": task.status,
+        "is_done": task.status == "done",
+        "suspicious": suspicious,
+        "reasons": reasons,
+        "latest_summary": latest_summary,
+        "manual_result": task.result,
+        "latest_completed_run": _run_dict(latest_completed) if latest_completed else None,
+        "run_counts": {
+            "total": len(runs),
+            "completed": len(completed_runs),
+            "failed": len(failed_runs),
+            "crashed": len([r for r in runs if r.outcome == "crashed"]),
+            "blocked": len([r for r in runs if r.outcome == "blocked"]),
+        },
+        "dependencies": {
+            "total": len(deps),
+            "done": len([d for d in deps if d.get("status") == "done"]),
+            "items": deps,
+        },
+        "deliverables": deliverables,
+        "invalid_skills": invalid_skills,
+    }
+
+
 # Hallucination-warning event kinds — see complete_task() in kanban_db.py.
 # completion_blocked_hallucination: kernel rejected created_cards with
 #   phantom ids; task stays in prior state.
@@ -527,20 +666,19 @@ def get_task(
         if diag_list:
             task_d["diagnostics"] = diag_list
             task_d["warnings"] = _warnings_summary_from_diagnostics(diag_list)
+        runs = kanban_db.list_runs(
+            conn,
+            task_id,
+            state_type=run_state_type,
+            state_name=run_state_name,
+        )
         return {
             "task": task_d,
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "links": _links_for(conn, task_id),
-            "runs": [
-                _run_dict(r)
-                for r in kanban_db.list_runs(
-                    conn,
-                    task_id,
-                    state_type=run_state_type,
-                    state_name=run_state_name,
-                )
-            ],
+            "runs": [_run_dict(r) for r in runs],
+            "completion_evidence": _completion_evidence(conn, task, runs),
         }
     finally:
         conn.close()

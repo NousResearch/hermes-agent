@@ -275,6 +275,50 @@ def test_task_detail_includes_links_and_events(client):
 
     # Events exist from creation.
     assert len(data["events"]) >= 1
+    assert "completion_evidence" in data
+
+
+def test_task_detail_completion_evidence_rolls_up_dependencies(client):
+    req = client.post("/api/plugins/kanban/tasks", json={"title": "requirements"}).json()["task"]
+    final = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "final", "parents": [req["id"]], "skills": ["kanban-worker"]},
+    ).json()["task"]
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{req['id']}",
+        json={
+            "status": "done",
+            "summary": "requirements completed with a concrete artifact",
+            "metadata": {"deliverable": "/tmp/requirements.md"},
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{final['id']}",
+        json={"status": "done", "result": "dddd", "summary": "dddd"},
+    )
+    assert r.status_code == 200, r.text
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{final['id']}").json()
+    evidence = detail["completion_evidence"]
+    assert evidence["suspicious"] is True
+    assert evidence["dependencies"]["done"] == 1
+    assert evidence["dependencies"]["total"] == 1
+    assert evidence["dependencies"]["items"][0]["id"] == req["id"]
+    assert "/tmp/requirements.md" in evidence["deliverables"]
+    assert "completion summary/result is empty" in evidence["reasons"][0]
+
+
+def test_dashboard_bundle_renders_completion_evidence_section():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function CompletionEvidenceSection" in js
+    assert "Completion evidence / 完成证据" in js
+    assert "props.data.completion_evidence" in js
 
 
 def test_task_detail_404_on_unknown(client):

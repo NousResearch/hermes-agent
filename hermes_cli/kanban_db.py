@@ -98,6 +98,11 @@ VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", 
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
+# Per-task skills are passed to `hermes --skills <name>` at worker startup.
+# Hermes skill identifiers are slug-like; natural-language labels such as
+# "ppt skill" are invalid and make the worker fail before it can report a
+# useful kanban_block/kanban_complete handoff.
+_VALID_TASK_SKILL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 _IS_WINDOWS = sys.platform == "win32"
 
 # A running task's claim is valid for 15 minutes by default; after that the
@@ -865,8 +870,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     session_id           TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id);
-
 CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
     child_id   TEXT NOT NULL,
@@ -1174,10 +1177,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_session_id "
-            "ON tasks(session_id)"
-        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_session_id "
+        "ON tasks(session_id)"
+    )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -1419,6 +1422,12 @@ def create_task(
                 raise ValueError(
                     f"skill name cannot contain comma: {name!r} "
                     f"(pass a list of separate names instead of a comma-joined string)"
+                )
+            if not _VALID_TASK_SKILL_RE.match(name):
+                raise ValueError(
+                    f"invalid skill name {name!r}. Per-task skills must be installed skill "
+                    "identifiers such as 'kanban-worker' or 'plugin:skill'; do not use "
+                    "natural-language labels like 'ppt skill'."
                 )
             if name.casefold() in KNOWN_TOOLSET_NAMES:
                 toolset_typos.append(name)
@@ -5272,6 +5281,11 @@ def _default_spawn(
     if task.skills:
         for sk in task.skills:
             if sk and sk != "kanban-worker":
+                if not _VALID_TASK_SKILL_RE.match(str(sk)):
+                    raise RuntimeError(
+                        f"invalid per-task skill name {sk!r}; use an installed skill identifier "
+                        "such as 'kanban-worker' or clear the task's skills field"
+                    )
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])

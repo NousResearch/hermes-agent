@@ -1205,6 +1205,7 @@ AUTHOR_MAP = {
     "abc401011721@gmail.com": "samggggflynn",
     "yannsunn@users.noreply.github.com": "yannsunn",  # PR #28064 salvage (xai proxy upstream)
     "yannsunn1116@gmail.com": "yannsunn",
+    "asdlem@users.noreply.github.com": "asdlem",  # PR #27852 salvage (clarify full text in body)
 }
 
 

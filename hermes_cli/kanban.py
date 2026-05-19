@@ -692,6 +692,14 @@ def kanban_command(args: argparse.Namespace) -> int:
             )
         return 0
 
+    # Board-management commands operate on board metadata and the persisted
+    # current-board pointer itself. They must ignore the shared `--board`
+    # task-routing override; otherwise `/kanban --board beta boards show`
+    # reports beta as the current board even when the on-disk pointer is
+    # alpha.
+    if action == "boards":
+        return _dispatch_boards(args)
+
     # `--board <slug>` applies to every subcommand below by way of an
     # env-var pin for the duration of this call. Using HERMES_KANBAN_BOARD
     # (rather than threading `board=` through 50+ kb.connect() sites)
@@ -728,15 +736,6 @@ def kanban_command(args: argparse.Namespace) -> int:
             return 1
         os.environ["HERMES_KANBAN_BOARD"] = normed
         restore_board_env = True
-
-    # Boards management doesn't touch the DB at all — dispatch early so
-    # fresh installs that haven't initialized any DB can still use
-    # `hermes kanban boards create …`.
-    if action == "boards":
-        try:
-            return _dispatch_boards(args)
-        finally:
-            _restore_board_env()
 
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one

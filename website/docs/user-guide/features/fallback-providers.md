@@ -81,7 +81,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | Kimi / Moonshot (China) | `kimi-coding-cn` | `KIMI_CN_API_KEY` |
 | StepFun | `stepfun` | `STEPFUN_API_KEY` |
 | Tencent TokenHub | `tencent-tokenhub` | `TOKENHUB_API_KEY` |
-| Azure AI Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
+| Microsoft Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
 | LM Studio (local) | `lmstudio` | `LM_API_KEY` (or none for local) + `LM_BASE_URL` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
@@ -188,7 +188,6 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 | Vision | Image analysis, browser screenshots | `auxiliary.vision` |
 | Web Extract | Web page summarization | `auxiliary.web_extract` |
 | Compression | Context compression summaries | `auxiliary.compression` |
-| Session Search | Past session summarization | `auxiliary.session_search` |
 | Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
 | Approval | Smart command-approval classification | `auxiliary.approval` |
@@ -235,13 +234,6 @@ auxiliary:
     provider: "auto"
     model: ""
 
-  session_search:
-    provider: "auto"
-    model: ""
-    timeout: 30
-    max_concurrency: 3
-    extra_body: {}
-
   skills_hub:
     provider: "auto"
     model: ""
@@ -269,25 +261,6 @@ fallback_model:
   model: anthropic/claude-sonnet-4
   # base_url: http://localhost:8000/v1               # Optional custom endpoint
 ```
-
-For `auxiliary.session_search`, Hermes also supports:
-
-- `max_concurrency` to limit how many session summaries run at once
-- `extra_body` to pass provider-specific OpenAI-compatible request fields through on the summarization calls
-
-Example:
-
-```yaml
-auxiliary:
-  session_search:
-    provider: main
-    model: glm-4.5-air
-    max_concurrency: 2
-    extra_body:
-      enable_thinking: false
-```
-
-If your provider does not support a native OpenAI-compatible reasoning-control field, `extra_body` will not help for that part; in that case `max_concurrency` is still useful for reducing request-burst 429s.
 
 All three — auxiliary, compression, fallback — work the same way: set `provider` to pick who handles the request, `model` to pick which model, and `base_url` to point at a custom endpoint (overrides provider).
 
@@ -432,7 +405,6 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |
 | Web extraction | Layered (see above) + internal OpenRouter retry | `auxiliary.web_extract` |
 | Context compression | Layered (see above); degrades to no-summary if all layers unavailable | `auxiliary.compression` |
-| Session search | Layered (see above) | `auxiliary.session_search` |
 | Skills hub | Layered (see above) | `auxiliary.skills_hub` |
 | MCP helpers | Layered (see above) | `auxiliary.mcp` |
 | Approval classification | Layered (see above) | `auxiliary.approval` |

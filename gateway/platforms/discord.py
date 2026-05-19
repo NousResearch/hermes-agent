@@ -111,6 +111,7 @@ def check_discord_requirements() -> bool:
     Intents = _Intents
     commands = _commands
     DISCORD_AVAILABLE = True
+    _define_discord_view_classes()
     return True
 
 
@@ -4949,7 +4950,17 @@ def _component_check_auth(
     return False
 
 
-if DISCORD_AVAILABLE:
+def _define_discord_view_classes() -> None:
+    """Register Discord UI view classes as module globals.
+
+    Called at module load (when discord.py is pre-installed) and also from
+    check_discord_requirements() after a lazy install, so view classes are
+    always defined whenever DISCORD_AVAILABLE is True.  Without this,
+    ExecApprovalView and siblings are only defined at import time; a later
+    lazy install sets DISCORD_AVAILABLE=True but leaves the classes
+    undefined, causing NameError on the first button interaction.
+    """
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -5649,3 +5660,7 @@ if DISCORD_AVAILABLE:
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+
+
+if DISCORD_AVAILABLE:
+    _define_discord_view_classes()

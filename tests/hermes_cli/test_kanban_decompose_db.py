@@ -132,6 +132,22 @@ def test_decompose_rejects_out_of_range_parent(kanban_home):
             )
 
 
+def test_decompose_rejects_cyclic_parents(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(conn)
+        with pytest.raises(ValueError, match="cyclic dependency"):
+            kb.decompose_triage_task(
+                conn,
+                tid,
+                root_assignee="orch",
+                children=[
+                    {"title": "A", "parents": [1]},
+                    {"title": "B", "parents": [0]},
+                ],
+                author="me",
+            )
+
+
 def test_decompose_records_audit_comment_and_event(kanban_home):
     with kb.connect() as conn:
         tid = _create_triage(conn)

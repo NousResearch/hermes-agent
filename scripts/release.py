@@ -1202,6 +1202,8 @@ AUTHOR_MAP = {
     "maxmilian@gmail.com": "maxmilian",
     "41468846+samggggflynn@users.noreply.github.com": "samggggflynn",  # PR #27952 salvage (dingtalk pre_start)
     "abc401011721@gmail.com": "samggggflynn",
+    "yannsunn@users.noreply.github.com": "yannsunn",  # PR #28064 salvage (xai proxy upstream)
+    "yannsunn1116@gmail.com": "yannsunn",
 }
 
 

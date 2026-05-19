@@ -144,7 +144,7 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
     # empty, drop it entirely.
     if "enum" in repaired and isinstance(repaired["enum"], list):
         node_type = repaired.get("type")
-        if node_type in {"string", "integer", "number", "boolean"}:
+        if isinstance(node_type, str) and node_type in {"string", "integer", "number", "boolean"}:
             cleaned = [v for v in repaired["enum"]
                        if v is not None and v != ""]
             if cleaned:
@@ -166,8 +166,16 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
 
 def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     """Infer a reasonable ``type`` if this schema node has none."""
-    if "type" in node and node["type"] not in {None, ""}:
-        return node
+    if "type" in node:
+        t = node["type"]
+        # JSON Schema allows ``type`` to be a list for union types
+        # (e.g. ["number", "string"]).  These are valid type declarations
+        # and should be left as-is — they cannot be hashed for set
+        # membership checks.  Fixes #28291.
+        if isinstance(t, list):
+            return node
+        if t not in {None, ""}:
+            return node
 
     # Heuristic: presence of ``properties`` → object, ``items`` → array, ``enum``
     # → type of first enum value, else fall back to ``string`` (safest scalar).

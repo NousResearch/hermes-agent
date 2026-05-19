@@ -14,7 +14,7 @@ import threading
 import os
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
@@ -274,22 +274,17 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
 
 
 def _ensure_aware(dt: datetime) -> datetime:
-    """Return a timezone-aware datetime in Hermes configured timezone.
+    """Return a timezone-aware datetime in UTC.
 
-    Backward compatibility:
-    - Older stored timestamps may be naive.
-    - Naive values are interpreted as *system-local wall time* (the timezone
-      `datetime.now()` used when they were created), then converted to the
-      configured Hermes timezone.
+    All cron timestamps are now normalized to UTC to prevent double-firing
+    after system timezone changes, DST transitions, or config migrations.
 
-    This preserves relative ordering for legacy naive timestamps across
-    timezone changes and avoids false not-due results.
+    Naive timestamps from older versions are treated as UTC for safety.
     """
-    target_tz = _hermes_now().tzinfo
     if dt.tzinfo is None:
-        local_tz = datetime.now().astimezone().tzinfo
-        return dt.replace(tzinfo=local_tz).astimezone(target_tz)
-    return dt.astimezone(target_tz)
+        # Treat legacy naive timestamps as UTC (migration safety)
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _recoverable_oneshot_run_at(

@@ -1,0 +1,15 @@
+{
+  "domain": "hermes_agent",
+  "name": "Hermes Agent",
+  "codeowners": ["@thcuba"],
+  "documentation": "https://github.com/thcuba/HAOS-hermes-agent",
+  "homeassistant": "2024.12.0",
+  "requirements": [
+    "aiohttp>=3.9.0",
+    "websockets>=12.0"
+  ],
+  "version": "0.1.0",
+  "issue_tracker": "https://github.com/thcuba/HAOS-hermes-agent/issues",
+  "config_flow": true,
+  "integration_type": "service"
+}

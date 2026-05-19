@@ -45,10 +45,10 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 
     Most platforms route threaded sends with a generic ``thread_id`` metadata
     value. Telegram private-chat topics created through Hermes' DM-topic helper
-    are exposed in updates as ``message_thread_id`` plus a reply anchor, but
-    outbound sends only render in the correct Telegram lane when the adapter
-    supplies both ``message_thread_id`` and ``reply_to_message_id``. Mark those
-    lanes so the Telegram adapter can avoid the known-bad partial routes.
+    are exposed in updates as ``message_thread_id`` plus a reply anchor. Live
+    user-message replies route with ``message_thread_id`` + ``reply_to_message_id``;
+    synthetic/resumed sends that have no reply anchor fall back to Telegram's
+    ``direct_messages_topic_id`` when the Bot API supports it.
     """
     thread_id = getattr(source, "thread_id", None)
     if thread_id is None:
@@ -56,6 +56,9 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     metadata = {"thread_id": thread_id}
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
+        tid = str(thread_id)
+        if tid and tid not in {"", "1"}:
+            metadata["direct_messages_topic_id"] = tid
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
@@ -67,10 +70,9 @@ def _reply_anchor_for_event(event) -> str | None:
 
     Telegram forum/supergroup topics should be routed by topic metadata, not by
     replying to the triggering message. Hermes-created Telegram private-chat
-    topic lanes are different: Bot API sends reject their ``message_thread_id``
-    and do not route with ``direct_messages_topic_id``. Those lanes only remain
-    visible when sent with both the private topic thread id and a reply to the
-    triggering user message.
+    topic lanes prefer replying to the triggering user message so the answer
+    stays attached to the active lane; synthetic/resumed sends fall back to
+    ``direct_messages_topic_id`` metadata when no message id is available.
     """
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
@@ -832,6 +834,26 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ts": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",
+}
+
+
+# ---------------------------------------------------------------------------
+# Image document types
+#
+# Image extensions that platforms may deliver as "documents" rather than
+# native photo attachments (Telegram users uploading via the file picker,
+# clients that wrap stickers/screenshots as files, etc.). When we see one
+# of these, we route the bytes through the image cache and the normal
+# vision/photo handling path instead of rejecting them as unsupported
+# documents.
+# ---------------------------------------------------------------------------
+
+SUPPORTED_IMAGE_DOCUMENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
 }
 
 
@@ -2137,7 +2159,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -2157,12 +2179,20 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:
         """
-        Detect bare local file paths in response text for native media delivery.
+        Detect bare local file paths in response text for native delivery.
 
         Matches absolute paths (/...) and tilde paths (~/) ending in common
-        image or video extensions.  Validates each candidate with
-        ``os.path.isfile()`` to avoid false positives from URLs or
-        non-existent paths.
+        image, video, audio, or document extensions.  Validates each
+        candidate with ``os.path.isfile()`` to avoid false positives from
+        URLs or non-existent paths.
+
+        The extension list is broader than just images/video so the agent
+        can produce arbitrary artifacts (charts, PDFs, spreadsheets, code
+        archives, CSVs) and have them ship to the user as native uploads
+        without needing an explicit ``MEDIA:`` tag.  Image / video
+        extensions still embed inline where the platform supports it;
+        document extensions route through ``send_document``.  The dispatch
+        partition lives in ``gateway/run.py``.
 
         Paths inside fenced code blocks (``` ... ```) and inline code
         (`...`) are ignored so that code samples are never mutilated.
@@ -2172,8 +2202,22 @@ class BasePlatformAdapter(ABC):
             raw path strings removed).
         """
         _LOCAL_MEDIA_EXTS = (
-            '.png', '.jpg', '.jpeg', '.gif', '.webp',
+            # Images (embed inline)
+            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.svg',
+            # Video (embed inline where supported)
             '.mp4', '.mov', '.avi', '.mkv', '.webm',
+            # Audio (delivered as voice/audio where supported)
+            '.mp3', '.wav', '.ogg', '.m4a', '.flac',
+            # Documents (uploaded as file attachments)
+            '.pdf', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md',
+            # Spreadsheets / data
+            '.xlsx', '.xls', '.ods', '.csv', '.tsv', '.json', '.xml', '.yaml', '.yml',
+            # Presentations
+            '.pptx', '.ppt', '.odp', '.key',
+            # Archives
+            '.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar',
+            # Web / rendered output
+            '.html', '.htm',
         )
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 
@@ -3163,12 +3207,24 @@ class BasePlatformAdapter(ABC):
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
+                _tts_caption_delivered = False
                 if _tts_path and Path(_tts_path).exists():
                     try:
-                        await self.play_tts(
+                        telegram_tts_caption = None
+                        if (
+                            self.platform == Platform.TELEGRAM
+                            and text_content
+                            and text_content[:1024] == text_content
+                        ):
+                            telegram_tts_caption = text_content
+                        tts_result = await self.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
+                            caption=telegram_tts_caption,
                             metadata=_thread_metadata,
+                        )
+                        _tts_caption_delivered = bool(
+                            telegram_tts_caption and getattr(tts_result, "success", False)
                         )
                     finally:
                         try:
@@ -3177,7 +3233,7 @@ class BasePlatformAdapter(ABC):
                             pass
 
                 # Send the text portion
-                if text_content:
+                if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Mark final response messages for notification delivery.

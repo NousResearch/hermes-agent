@@ -378,6 +378,17 @@ TOOL_CATEGORIES = {
     "browser": {
         "name": "Browser Automation",
         "icon": "🌐",
+        # Per-provider rows for Browserbase, Browser Use, and Firecrawl are
+        # injected at runtime from plugins.browser.<vendor>.provider via
+        # _plugin_browser_providers() in _visible_providers(). Only
+        # non-provider UX setup-flow rows remain here:
+        #   - "Nous Subscription (Browser Use cloud)" — managed Browser Use
+        #     billed via Nous subscription (requires_nous_auth +
+        #     override_env_vars). Uses the browser-use plugin as the
+        #     underlying backend but has a distinct setup UX.
+        #   - "Local Browser" — non-cloud option, no CloudBrowserProvider.
+        #   - "Camofox" — anti-detection local Firefox; short-circuits the
+        #     cloud-provider dispatch path via _is_camofox_mode().
         "providers": [
             {
                 "name": "Nous Subscription (Browser Use cloud)",
@@ -396,37 +407,6 @@ TOOL_CATEGORIES = {
                 "tag": "Headless Chromium, no API key needed",
                 "env_vars": [],
                 "browser_provider": "local",
-                "post_setup": "agent_browser",
-            },
-            {
-                "name": "Browserbase",
-                "badge": "paid",
-                "tag": "Cloud browser with stealth and proxies",
-                "env_vars": [
-                    {"key": "BROWSERBASE_API_KEY", "prompt": "Browserbase API key", "url": "https://browserbase.com"},
-                    {"key": "BROWSERBASE_PROJECT_ID", "prompt": "Browserbase project ID"},
-                ],
-                "browser_provider": "browserbase",
-                "post_setup": "agent_browser",
-            },
-            {
-                "name": "Browser Use",
-                "badge": "paid",
-                "tag": "Cloud browser with remote execution",
-                "env_vars": [
-                    {"key": "BROWSER_USE_API_KEY", "prompt": "Browser Use API key", "url": "https://browser-use.com"},
-                ],
-                "browser_provider": "browser-use",
-                "post_setup": "agent_browser",
-            },
-            {
-                "name": "Firecrawl",
-                "badge": "paid",
-                "tag": "Cloud browser with remote execution",
-                "env_vars": [
-                    {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
-                ],
-                "browser_provider": "firecrawl",
                 "post_setup": "agent_browser",
             },
             {
@@ -1662,6 +1642,61 @@ def _plugin_web_search_providers() -> list[dict]:
     return rows
 
 
+# Mirror of _plugin_web_search_providers for cloud browser backends. After
+# PR #25214, Browserbase / Browser Use / Firecrawl live as plugins under
+# plugins/browser/<vendor>/; this helper is the sole source of provider rows
+# for those three in the "Browser Automation" picker. The hardcoded
+# ``TOOL_CATEGORIES["browser"]`` entries that drove the category before
+# were deleted in the same PR; only non-provider UX setup-flow rows remain
+# ("Nous Subscription", "Local Browser", "Camofox") — see the comment block
+# in ``TOOL_CATEGORIES["browser"]`` for why each one stays hardcoded.
+def _plugin_browser_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered cloud browser providers.
+
+    Each returned dict mirrors the legacy ``TOOL_CATEGORIES["browser"]``
+    schema (``name`` / ``badge`` / ``tag`` / ``env_vars`` /
+    ``browser_provider`` / ``post_setup``) so the picker behaves identically
+    whether a provider was hardcoded or plugin-registered.
+
+    Populates ``browser_provider`` (the legacy config key written to
+    ``browser.cloud_provider``) and a ``browser_plugin_name`` marker so
+    setup / write paths can route through the registry when they want to.
+    """
+    try:
+        from agent.browser_registry import list_providers as _list_browser_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = _list_browser_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        name = getattr(provider, "name", None)
+        if not name:
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "browser_provider": name,
+            "browser_plugin_name": name,
+        }
+        # Pass-through optional fields the schema can opt into.
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
+    return rows
+
+
 def _visible_providers(cat: dict, config: dict) -> list[dict]:
     """Return provider entries visible for the current auth/config state."""
     features = get_nous_subscription_features(config)
@@ -1690,6 +1725,14 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     # Self-Hosted") are non-provider UX setup-flow rows for firecrawl.
     if cat.get("name") == "Web Search & Extract":
         visible.extend(_plugin_web_search_providers())
+
+    # Inject plugin-registered cloud browser backends. After PR #25214,
+    # Browserbase / Browser Use / Firecrawl are the plugin-supplied rows;
+    # the hardcoded "Nous Subscription" / "Local Browser" / "Camofox" rows
+    # stay because they're non-provider UX setup flows (subscription auth,
+    # local fallback, and the REST-API anti-detection backend respectively).
+    if cat.get("name") == "Browser Automation":
+        visible.extend(_plugin_browser_providers())
 
     return visible
 

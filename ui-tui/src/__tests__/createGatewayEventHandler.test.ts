@@ -4,7 +4,7 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -130,6 +130,46 @@ describe('createGatewayEventHandler', () => {
     } as any)
 
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
+  })
+
+  it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+    const verdict = '✓ Goal achieved: long judge reason goes only in transcript, not merged with cwd label.'
+
+    vi.useFakeTimers()
+    try {
+      onEvent({
+        payload: { kind: 'goal', text: verdict },
+        type: 'status.update'
+      } as any)
+
+      expect(ctx.system.sys).toHaveBeenCalledWith(verdict)
+      expect(getUiState().status).toBe('✓ goal complete')
+
+      vi.advanceTimersByTime(6001)
+      expect(getUiState().status).toBe('ready')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('maps goal status.update prefixes to short status strings', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { kind: 'goal', text: '↻ Continuing toward goal (1/10): reason' },
+      type: 'status.update'
+    } as any)
+    expect(getUiState().status).toBe('↻ goal continuing')
+
+    onEvent({
+      payload: { kind: 'goal', text: '⏸ Goal paused — budget exhausted.' },
+      type: 'status.update'
+    } as any)
+    expect(getUiState().status).toBe('⏸ goal paused')
   })
 
   it('surfaces self-improvement review summaries as a persistent system line', () => {

@@ -608,6 +608,38 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- browser provider registration ---------------------------------------
+
+    def register_browser_provider(self, provider) -> None:
+        """Register a cloud browser backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.browser_provider.BrowserProvider`. The
+        ``provider.name`` attribute is what ``browser.cloud_provider`` in
+        ``config.yaml`` matches against when routing cloud-mode
+        ``browser_*`` tool calls.
+
+        Mirrors :meth:`register_web_search_provider` exactly — same
+        registration shape, same gating, same logging. The browser
+        subsystem's dispatcher (:func:`tools.browser_tool._get_cloud_provider`)
+        consults the registry built up by these calls.
+        """
+        from agent.browser_provider import BrowserProvider
+        from agent.browser_registry import register_provider as _register_browser_provider
+
+        if not isinstance(provider, BrowserProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a browser provider that does "
+                "not inherit from BrowserProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_browser_provider(provider)
+        logger.info(
+            "Plugin '%s' registered browser provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(

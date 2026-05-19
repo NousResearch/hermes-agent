@@ -21,9 +21,13 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Perplexity** (default) | `PERPLEXITY_API_KEY` | ✔ | — | — | Paid (pay-as-you-go) |
 | **Firecrawl** | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ | 500 credits/mo |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | — | ✔ Free (self-hosted) |
+| **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | — | 2 000 queries/mo |
+| **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | — | ✔ Free |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ | 1 000 searches/mo |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — | 1 000 searches/mo |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — | Paid |
+
+Perplexity, Brave Search, SearXNG, and DDGS are **search-only** — pair them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example Perplexity for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -307,7 +311,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "perplexity"   # perplexity | firecrawl | searxng | tavily | exa | parallel
+  backend: "perplexity"   # perplexity | firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel
 ```
 
 ### Per-capability configuration

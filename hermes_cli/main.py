@@ -10137,10 +10137,10 @@ def cmd_dashboard(args):
     except ImportError as e:
         print("Web UI dependencies not installed (need fastapi + uvicorn).")
         print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
+            f"Install the optional `[web]` extra into this interpreter:\n"
             f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
+            f"  {sys.executable} -m pip install -e '.[web]'\n"
+            "If `pip` is missing in this venv, use:  uv pip install -e '.[web]'"
         )
         print(f"Import error: {e}")
         sys.exit(1)

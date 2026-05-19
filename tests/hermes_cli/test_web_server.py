@@ -247,6 +247,17 @@ class TestWebServerEndpoints:
                     "issues": [],
                 }
 
+            def autonomous_loops(self):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "mode": "audit_only_no_create",
+                    "cron": {"job_count": 0},
+                    "goals": {"active_goal_count": 0},
+                    "guidance": [{"id": "cron_agent_prompt"}],
+                    "issues": [],
+                }
+
         class _Harness:
             @property
             def control_plane(self):
@@ -259,17 +270,20 @@ class TestWebServerEndpoints:
         gates = self.client.get("/api/harness/promotion-gates")
         hygiene = self.client.get("/api/harness/context-hygiene")
         lifecycle = self.client.get("/api/harness/skill-lifecycle")
+        loops = self.client.get("/api/harness/autonomous-loops")
 
         assert snapshot.status_code == 200
         assert replay.status_code == 200
         assert gates.status_code == 200
         assert hygiene.status_code == 200
         assert lifecycle.status_code == 200
+        assert loops.status_code == 200
         assert snapshot.json()["content_policy"] == "metadata_only"
         assert replay.json()["by_failure_kind"] == {"runtime_error": 1}
         assert gates.json()["blocked"] == 1
         assert hygiene.json()["content_policy"] == "metadata_only"
         assert lifecycle.json()["mode"] == "audit_only_no_delete"
+        assert loops.json()["mode"] == "audit_only_no_create"
         raw = json.dumps(
             {
                 "snapshot": snapshot.json(),
@@ -277,6 +291,7 @@ class TestWebServerEndpoints:
                 "gates": gates.json(),
                 "hygiene": hygiene.json(),
                 "lifecycle": lifecycle.json(),
+                "loops": loops.json(),
             },
             sort_keys=True,
         )

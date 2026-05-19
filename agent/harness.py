@@ -132,6 +132,11 @@ class ControlPlaneHarness:
 
         return skill_lifecycle.audit_skill_lifecycle()
 
+    def autonomous_loops(self) -> Dict[str, Any]:
+        from agent import autonomous_loops
+
+        return autonomous_loops.audit_autonomous_loops()
+
     def learning_health_unavailable(self, error: Optional[str] = None) -> Dict[str, Any]:
         from agent import harness_control_plane
 

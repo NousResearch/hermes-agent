@@ -122,3 +122,18 @@ def test_control_plane_harness_exposes_skill_lifecycle(monkeypatch):
         "content_policy": "metadata_only",
         "skill_count": 0,
     }
+
+
+def test_control_plane_harness_exposes_autonomous_loops(monkeypatch):
+    from agent import autonomous_loops
+
+    monkeypatch.setattr(
+        autonomous_loops,
+        "audit_autonomous_loops",
+        lambda: {"content_policy": "metadata_only", "mode": "audit_only_no_create"},
+    )
+
+    assert HermesHarness().control_plane.autonomous_loops() == {
+        "content_policy": "metadata_only",
+        "mode": "audit_only_no_create",
+    }

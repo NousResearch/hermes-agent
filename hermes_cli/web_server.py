@@ -678,6 +678,26 @@ async def get_harness_skill_lifecycle():
         }
 
 
+@app.get("/api/harness/autonomous-loops")
+async def get_harness_autonomous_loops():
+    """Return metadata-only autonomous-loop inventory status."""
+    try:
+        return _control_plane_or_unavailable().autonomous_loops()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "mode": "audit_only_no_create",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "cron": {},
+            "goals": {},
+            "guidance": [],
+            "issues": [],
+            "issue_count": 0,
+        }
+
+
 @app.get("/api/harness/core")
 async def get_core_harness_status():
     """Return the first-class seven-case Hermes core harness status."""

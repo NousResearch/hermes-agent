@@ -56,6 +56,11 @@ from tools.website_policy import check_website_access
 logger = logging.getLogger(__name__)
 
 
+# Integration tag passed to Firecrawl on every call so they can attribute
+# usage back to Hermes.
+FIRECRAWL_INTEGRATION_TAG = "hermes"
+
+
 # ---------------------------------------------------------------------------
 # Lazy Firecrawl SDK proxy
 # ---------------------------------------------------------------------------
@@ -408,7 +413,11 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         # let it propagate so the dispatcher emits the legacy envelope shape.
         client = _get_firecrawl_client()
         try:
-            response = client.search(query=query, limit=limit)
+            response = client.search(
+                query=query,
+                limit=limit,
+                integration=FIRECRAWL_INTEGRATION_TAG,
+            )
             web_results = _extract_web_search_results(response)
             logger.info("Firecrawl: found %d search results", len(web_results))
             return {"success": True, "data": {"web": web_results}}
@@ -487,6 +496,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                             _get_firecrawl_client().scrape,
                             url=url,
                             formats=formats,
+                            integration=FIRECRAWL_INTEGRATION_TAG,
                         ),
                         timeout=60,
                     )
@@ -623,6 +633,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             crawl_params = {
                 "limit": limit,
                 "scrape_options": {"formats": ["markdown"]},
+                "integration": FIRECRAWL_INTEGRATION_TAG,
             }
 
             # The SDK call is sync; run in a thread so we don't block the

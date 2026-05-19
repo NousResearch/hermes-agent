@@ -3725,10 +3725,11 @@ def mount_spa(application: FastAPI):
                 css = css.replace(f"url('{asset_dir}", f"url('{prefix}{asset_dir}")
         # Apply gzip compression + cache headers for CSS assets
         accept_encoding = request.headers.get("accept-encoding", "")
-        # Build vary header: always vary on prefix when present
-        vary_values = []
-        if prefix:
-            vary_values.append("x-forwarded-prefix")
+        # Always vary on x-forwarded-prefix: CSS representation depends on this
+        # header regardless of whether it's present in the current request.
+        # Without this, a shared cache could serve a no-prefix cached variant
+        # to a prefixed deployment, breaking url() path rewriting.
+        vary_values = ["x-forwarded-prefix"]
         if _accepts_gzip_static(accept_encoding):
             content = css.encode("utf-8")
             compressed = gzip.compress(content, compresslevel=_GZIP_COMPRESS_LEVEL)
@@ -3743,10 +3744,14 @@ def mount_spa(application: FastAPI):
                     return Response(headers=headers, media_type="text/css")
                 return Response(content=compressed, headers=headers, media_type="text/css")
         # Fallback: uncompressed with cache header
-        fallback_headers = {"cache-control": "public, max-age=31536000, immutable"}
-        if vary_values:
-            fallback_headers["vary"] = ", ".join(vary_values)
-        return Response(content=css, media_type="text/css", headers=fallback_headers)
+        return Response(
+            content=css,
+            media_type="text/css",
+            headers={
+                "cache-control": "public, max-age=31536000, immutable",
+                "vary": ", ".join(vary_values),
+            },
+        )
 
     # Compression level for gzip: 6 balances speed (higher is slower) vs ratio
     _GZIP_COMPRESS_LEVEL = 6

@@ -440,7 +440,7 @@ Each platform has its own toolset:
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
-| API Server | `hermes-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
+| API Server | `hermes-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` by default; add `messaging` to `platform_toolsets.api_server` to opt in to outbound messages) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 
 ## Operating a multi-platform gateway

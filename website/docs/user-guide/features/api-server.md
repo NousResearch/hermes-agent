@@ -328,6 +328,21 @@ The API server gives full access to hermes-agent's toolset, **including terminal
 The default bind address (`127.0.0.1`) is for local-only use. Browser access is disabled by default; enable it only for explicit trusted origins.
 :::
 
+## Tool Access
+
+API-created agents use the `hermes-api-server` toolset by default. That toolset keeps normal non-interactive tools such as web, files, terminal, memory, browser automation, delegation, and cron, but it intentionally leaves out interactive or outbound user-contact tools such as `clarify`, `text_to_speech`, and `send_message`.
+
+If you run a trusted API deployment that should be able to send messages through Hermes's connected gateway platforms, opt in explicitly with `platform_toolsets.api_server`:
+
+```yaml
+platform_toolsets:
+  api_server:
+    - hermes-api-server
+    - messaging
+```
+
+Treat this as a real security boundary. Any client with API access can then cause an API-created agent to call `send_message`, subject to the normal gateway configuration and target checks.
+
 ## Configuration
 
 ### Environment Variables
@@ -344,8 +359,11 @@ The default bind address (`127.0.0.1`) is for local-only use. Browser access is 
 ### config.yaml
 
 ```yaml
-# Not yet supported — use environment variables.
-# config.yaml support coming in a future release.
+# API server network/auth/model settings use API_SERVER_* environment variables.
+# Shared agent settings such as platform_toolsets still live in config.yaml.
+platform_toolsets:
+  api_server:
+    - hermes-api-server
 ```
 
 ## Security Headers

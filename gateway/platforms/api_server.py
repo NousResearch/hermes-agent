@@ -1232,6 +1232,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        service_tier: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1264,6 +1265,14 @@ class APIServerAdapter(BasePlatformAdapter):
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
+        service_tier = service_tier or GatewayRunner._load_service_tier()
+        request_overrides = None
+        if service_tier:
+            try:
+                from hermes_cli.models import resolve_fast_mode_overrides
+                request_overrides = resolve_fast_mode_overrides(model)
+            except Exception as e:
+                logger.debug("Failed to resolve API server fast-mode overrides for %s: %s", model, e)
 
         agent = AIAgent(
             model=model,
@@ -1283,8 +1292,20 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            service_tier=service_tier,
+            request_overrides=request_overrides,
         )
         return agent
+
+    @staticmethod
+    def _parse_request_service_tier(raw: Optional[str]) -> Optional[str]:
+        """Normalize per-request service tier header values."""
+        value = str(raw or "").strip().lower()
+        if value in {"fast", "priority", "on"}:
+            return "priority"
+        if value and value not in {"normal", "default", "standard", "off", "none"}:
+            logger.warning("Ignoring invalid X-Hermes-Service-Tier value: %r", raw)
+        return None
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -2278,6 +2299,16 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        max_history_messages = None
+        max_history_raw = request.headers.get("X-Hermes-Max-History-Messages", "").strip()
+        if max_history_raw:
+            try:
+                parsed_max_history = int(max_history_raw)
+                if parsed_max_history >= 0:
+                    max_history_messages = parsed_max_history
+            except ValueError:
+                logger.warning("Ignoring invalid X-Hermes-Max-History-Messages value: %r", max_history_raw)
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -2326,6 +2357,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     break
             session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
+
+        if max_history_messages is not None:
+            history = history[-max_history_messages:] if max_history_messages else []
+
+        request_service_tier = self._parse_request_service_tier(request.headers.get("X-Hermes-Service-Tier"))
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
@@ -2413,6 +2449,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                service_tier=request_service_tier,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2432,6 +2469,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                service_tier=request_service_tier,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3980,6 +4018,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        service_tier: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4003,6 +4042,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                service_tier=service_tier,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

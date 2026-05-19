@@ -339,6 +339,32 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_api_server_agent_receives_priority_request_overrides_when_fast_enabled(self):
+        adapter = _make_adapter()
+
+        with (
+            patch("run_agent.AIAgent") as mock_agent_cls,
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                "api_key": "***",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "provider": "openai-codex",
+                "api_mode": "codex_responses",
+            }),
+            patch("gateway.run._resolve_gateway_model", return_value="gpt-5.5"),
+            patch("gateway.run._load_gateway_config", return_value={}),
+            patch("hermes_cli.tools_config._get_platform_tools", return_value=set()),
+            patch("gateway.run.GatewayRunner._load_reasoning_config", return_value=None),
+            patch("gateway.run.GatewayRunner._load_fallback_model", return_value=None),
+            patch("gateway.run.GatewayRunner._load_service_tier", return_value="priority"),
+        ):
+            adapter._create_agent(session_id="clicky-fast-test")
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["service_tier"] == "priority"
+        assert kwargs["request_overrides"] == {"service_tier": "priority"}
+        assert kwargs["model"] == "gpt-5.5"
+        assert kwargs["session_id"] == "clicky-fast-test"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -3386,6 +3412,90 @@ class TestSessionIdHeader:
             # History must come from DB, not from the request body
             assert call_kwargs["conversation_history"] == db_history
             assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_can_limit_loaded_history_from_db(self, auth_adapter):
+        """X-Hermes-Max-History-Messages caps SessionDB history before running the agent."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        db_history = [
+            {"role": "user", "content": "stored message 1"},
+            {"role": "assistant", "content": "stored reply 1"},
+            {"role": "user", "content": "stored message 2"},
+            {"role": "assistant", "content": "stored reply 2"},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = db_history
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "X-Hermes-Session-Id": "existing-session",
+                        "X-Hermes-Max-History-Messages": "2",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "new question"}]},
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == db_history[-2:]
+            assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_can_disable_loaded_history_from_db(self, auth_adapter):
+        """X-Hermes-Max-History-Messages: 0 keeps session identity but sends no prior history."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "stored message"},
+            {"role": "assistant", "content": "stored reply"},
+        ]
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "X-Hermes-Session-Id": "existing-session",
+                        "X-Hermes-Max-History-Messages": "0",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "new question"}]},
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == []
+            assert call_kwargs["session_id"] == "existing-session"
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_priority_header_requests_fast_service_tier(self, auth_adapter):
+        """X-Hermes-Service-Tier: priority enables per-request fast mode for API clients."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Service-Tier": "priority",
+                    },
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "new question"}]},
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["service_tier"] == "priority"
 
     @pytest.mark.asyncio
     async def test_db_failure_falls_back_to_empty_history(self, auth_adapter):

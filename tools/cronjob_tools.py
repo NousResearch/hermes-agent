@@ -28,6 +28,7 @@ from cron.jobs import (
     remove_job,
     resolve_job_ref,
     resume_job,
+    normalize_reasoning_effort,
     trigger_job,
     update_job,
 )
@@ -391,6 +392,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "model": job.get("model"),
         "provider": job.get("provider"),
         "base_url": job.get("base_url"),
+        "reasoning_effort": job.get("reasoning_effort"),
         "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
@@ -432,6 +434,7 @@ def cronjob(
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
@@ -499,6 +502,7 @@ def cronjob(
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
+                reasoning_effort=normalize_reasoning_effort(reasoning_effort),
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
@@ -613,6 +617,8 @@ def cronjob(
                     if script_error:
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
+            if reasoning_effort is not None:
+                updates["reasoning_effort"] = normalize_reasoning_effort(reasoning_effort)
             if context_from is not None:
                 # Empty string / empty list clears the field; otherwise validate
                 # each referenced job exists before storing. Normalized to a list
@@ -754,6 +760,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
             },
+            "reasoning_effort": {
+                "type": "string",
+                "enum": ["middle", "high", "xhigh"],
+                "description": "Optional per-job reasoning override. Job value wins over global agent.reasoning_effort. Only middle/high/xhigh are allowed; middle maps to runtime medium."
+            },
             "no_agent": {
                 "type": "boolean",
                 "default": False,
@@ -849,6 +860,7 @@ registry.register(
         base_url=args.get("base_url"),
         reason=args.get("reason"),
         script=args.get("script"),
+        reasoning_effort=args.get("reasoning_effort"),
         context_from=args.get("context_from"),
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),

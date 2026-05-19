@@ -44,6 +44,28 @@ from hermes_time import now as _hermes_now
 logger = logging.getLogger(__name__)
 
 
+def _runtime_reasoning_effort(effort: Optional[object]) -> str:
+    """Map user-facing cron effort labels to runtime parser labels."""
+    text = str(effort or "").strip().lower()
+    if text == "middle":
+        return "medium"
+    return text
+
+
+def _resolve_job_reasoning_config(job: dict, cfg: dict) -> Optional[dict]:
+    """Resolve reasoning config for a cron run.
+
+    Job-specific ``reasoning_effort`` wins over the global ``agent.reasoning_effort``.
+    Jobs store Queen-facing ``middle``; model runtime expects ``medium``.
+    """
+    from hermes_constants import parse_reasoning_effort
+
+    job_effort = str(job.get("reasoning_effort") or "").strip()
+    global_effort = str((cfg.get("agent") or {}).get("reasoning_effort", "")).strip()
+    effort = job_effort or global_effort
+    return parse_reasoning_effort(_runtime_reasoning_effort(effort))
+
+
 class CronPromptInjectionBlocked(Exception):
     """Raised by _build_job_prompt when the fully-assembled prompt trips the
     injection scanner. Caught in run_job so the operator sees a clean
@@ -1512,10 +1534,8 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml
-        from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        reasoning_config = parse_reasoning_effort(effort)
+        # Reasoning config: per-job override wins over config.yaml default.
+        reasoning_config = _resolve_job_reasoning_config(job, _cfg)
 
         # Prefill messages from env or config.yaml
         prefill_messages = None

@@ -302,6 +302,34 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["provider"] == "openrouter"
         assert updated["job"]["base_url"] is None
 
+    def test_reasoning_effort_can_set_and_clear(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                reasoning_effort="middle",
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["reasoning_effort"] == "middle"
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                reasoning_effort="xhigh",
+            )
+        )
+        assert updated["success"] is True
+        assert updated["job"]["reasoning_effort"] == "xhigh"
+
+        cleared = json.loads(
+            cronjob(action="update", job_id=created["job_id"], reasoning_effort="")
+        )
+        assert cleared["success"] is True
+        assert cleared["job"]["reasoning_effort"] is None
+
     def test_create_skill_backed_job(self):
         result = json.loads(
             cronjob(

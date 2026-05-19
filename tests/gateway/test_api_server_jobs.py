@@ -169,6 +169,42 @@ class TestCreateJob:
                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
 
     @pytest.mark.asyncio
+    async def test_create_job_accepts_reasoning_effort(self, adapter):
+        """POST /api/jobs forwards normalized per-job reasoning override."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value={**SAMPLE_JOB, "reasoning_effort": "middle"})
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                    "reasoning_effort": "medium",
+                })
+                assert resp.status == 200
+                call_kwargs = mock_create.call_args[1]
+                assert call_kwargs["reasoning_effort"] == "middle"
+
+    @pytest.mark.asyncio
+    async def test_create_job_rejects_invalid_reasoning_effort(self, adapter):
+        """POST /api/jobs rejects unsupported reasoning effort labels."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "reasoning_effort": "low",
+                })
+                assert resp.status == 400
+                data = await resp.json()
+                assert "reasoning_effort" in data["error"]
+
+    @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
         """POST /api/jobs without name returns 400."""
         app = _create_app(adapter)
@@ -341,6 +377,40 @@ class TestUpdateJob:
                 sanitized = call_args[0][1]
                 assert "name" in sanitized
                 assert "schedule" in sanitized
+
+    @pytest.mark.asyncio
+    async def test_update_job_accepts_reasoning_effort(self, adapter):
+        """PATCH /api/jobs/{id} forwards normalized per-job reasoning override."""
+        app = _create_app(adapter)
+        updated_job = {**SAMPLE_JOB, "reasoning_effort": "middle"}
+        mock_update = MagicMock(return_value=updated_job)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"reasoning_effort": "medium"},
+                )
+                assert resp.status == 200
+                sanitized = mock_update.call_args[0][1]
+                assert sanitized["reasoning_effort"] == "middle"
+
+    @pytest.mark.asyncio
+    async def test_update_job_rejects_invalid_reasoning_effort(self, adapter):
+        """PATCH /api/jobs/{id} rejects unsupported reasoning effort labels."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"reasoning_effort": "low"},
+                )
+                assert resp.status == 400
+                data = await resp.json()
+                assert "reasoning_effort" in data["error"]
 
     @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):

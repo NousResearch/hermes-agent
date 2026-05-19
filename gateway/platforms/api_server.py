@@ -3640,7 +3640,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {
+        "name",
+        "schedule",
+        "prompt",
+        "deliver",
+        "skills",
+        "skill",
+        "repeat",
+        "enabled",
+        "reasoning_effort",
+    }
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -3698,6 +3708,7 @@ class APIServerAdapter(BasePlatformAdapter):
             deliver = body.get("deliver", "local")
             skills = body.get("skills")
             repeat = body.get("repeat")
+            reasoning_effort = body.get("reasoning_effort")
 
             if not name:
                 return web.json_response({"error": "Name is required"}, status=400)
@@ -3713,6 +3724,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+            if reasoning_effort is not None:
+                try:
+                    from cron.jobs import normalize_reasoning_effort
+                    reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+                except ValueError as exc:
+                    return web.json_response({"error": str(exc)}, status=400)
 
             kwargs = {
                 "prompt": prompt,
@@ -3725,6 +3742,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["skills"] = skills
             if repeat is not None:
                 kwargs["repeat"] = repeat
+            if reasoning_effort is not None:
+                kwargs["reasoning_effort"] = reasoning_effort
 
             job = _cron_create(**kwargs)
             return web.json_response({"job": job})
@@ -3776,6 +3795,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
+            if "reasoning_effort" in sanitized:
+                try:
+                    from cron.jobs import normalize_reasoning_effort
+                    sanitized["reasoning_effort"] = normalize_reasoning_effort(sanitized["reasoning_effort"])
+                except ValueError as exc:
+                    return web.json_response({"error": str(exc)}, status=400)
             job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)

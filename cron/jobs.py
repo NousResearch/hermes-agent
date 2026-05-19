@@ -94,6 +94,25 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def normalize_reasoning_effort(effort: Optional[Any]) -> Optional[str]:
+    """Normalize a per-cron reasoning effort override.
+
+    Cron jobs expose the Queen-facing budgets ``middle``, ``high``, and
+    ``xhigh``. The scheduler maps ``middle`` to the model-runtime value
+    ``medium`` at run time. Empty values clear the override.
+    """
+    if effort is None:
+        return None
+    text = str(effort).strip().lower()
+    if not text:
+        return None
+    aliases = {"medium": "middle"}
+    text = aliases.get(text, text)
+    if text not in {"middle", "high", "xhigh"}:
+        raise ValueError("reasoning_effort must be one of: middle, high, xhigh")
+    return text
+
+
 def _coerce_job_text(value: Any, fallback: str = "") -> str:
     """Coerce legacy/hand-edited nullable cron fields to strings for readers."""
     if value is None:
@@ -560,6 +579,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
@@ -582,6 +602,7 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        reasoning_effort: Optional per-job reasoning override: middle, high, or xhigh
         script: Optional path to a script whose stdout feeds the job. With
                 ``no_agent=True`` the script IS the job — its stdout is
                 delivered verbatim. Without ``no_agent``, its stdout is
@@ -644,6 +665,7 @@ def create_job(
     normalized_base_url = normalized_base_url or None
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
+    normalized_reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
@@ -678,6 +700,7 @@ def create_job(
         "model": normalized_model,
         "provider": normalized_provider,
         "base_url": normalized_base_url,
+        "reasoning_effort": normalized_reasoning_effort,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
         "context_from": context_from,
@@ -802,6 +825,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["profile"] = _normalize_profile(_profile)
 
         updated = _apply_skill_fields({**job, **updates})
+        if "reasoning_effort" in updates:
+            updated["reasoning_effort"] = normalize_reasoning_effort(updates.get("reasoning_effort"))
         schedule_changed = "schedule" in updates
 
         if "skills" in updates or "skill" in updates:

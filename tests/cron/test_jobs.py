@@ -20,6 +20,7 @@ from cron.jobs import (
     mark_job_run,
     advance_next_run,
     get_due_jobs,
+    normalize_reasoning_effort,
     save_job_output,
 )
 
@@ -268,6 +269,20 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_create_with_reasoning_effort(self, tmp_cron_dir):
+        job = create_job(prompt="Think carefully", schedule="30m", reasoning_effort="high")
+        assert job["reasoning_effort"] == "high"
+        assert get_job(job["id"])["reasoning_effort"] == "high"
+
+    def test_reasoning_effort_accepts_medium_alias_as_middle(self, tmp_cron_dir):
+        assert normalize_reasoning_effort("medium") == "middle"
+        job = create_job(prompt="Think normally", schedule="30m", reasoning_effort="medium")
+        assert job["reasoning_effort"] == "middle"
+
+    def test_reasoning_effort_rejects_low(self, tmp_cron_dir):
+        with pytest.raises(ValueError):
+            create_job(prompt="No low", schedule="30m", reasoning_effort="low")
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -309,6 +324,18 @@ class TestUpdateJob:
         assert updated["enabled"] is False
         fetched = get_job(job["id"])
         assert fetched["enabled"] is False
+
+    def test_update_reasoning_effort(self, tmp_cron_dir):
+        job = create_job(prompt="Retune me", schedule="every 1h", reasoning_effort="middle")
+        updated = update_job(job["id"], {"reasoning_effort": "xhigh"})
+        assert updated["reasoning_effort"] == "xhigh"
+        fetched = get_job(job["id"])
+        assert fetched["reasoning_effort"] == "xhigh"
+
+    def test_clear_reasoning_effort(self, tmp_cron_dir):
+        job = create_job(prompt="Clear me", schedule="every 1h", reasoning_effort="high")
+        updated = update_job(job["id"], {"reasoning_effort": ""})
+        assert updated["reasoning_effort"] is None
 
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})

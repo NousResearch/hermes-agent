@@ -39,6 +39,34 @@ def cron_env(tmp_path, monkeypatch):
     return hermes_home
 
 
+class TestJobReasoningResolution:
+    """Test per-cron reasoning overrides used by the scheduler."""
+
+    def test_job_reasoning_wins_over_global(self, cron_env):
+        from cron.scheduler import _resolve_job_reasoning_config
+
+        resolved = _resolve_job_reasoning_config(
+            {"reasoning_effort": "xhigh"},
+            {"agent": {"reasoning_effort": "high"}},
+        )
+        assert resolved == {"enabled": True, "effort": "xhigh"}
+
+    def test_middle_maps_to_runtime_medium(self, cron_env):
+        from cron.scheduler import _resolve_job_reasoning_config
+
+        resolved = _resolve_job_reasoning_config(
+            {"reasoning_effort": "middle"},
+            {"agent": {"reasoning_effort": "xhigh"}},
+        )
+        assert resolved == {"enabled": True, "effort": "medium"}
+
+    def test_global_used_when_job_has_no_override(self, cron_env):
+        from cron.scheduler import _resolve_job_reasoning_config
+
+        resolved = _resolve_job_reasoning_config({}, {"agent": {"reasoning_effort": "high"}})
+        assert resolved == {"enabled": True, "effort": "high"}
+
+
 class TestJobScriptField:
     """Test that the script field is stored and retrieved correctly."""
 

@@ -229,7 +229,7 @@ Browser tool использует `agent-browser` — Node-помощник дл
 Проверка:
 
 ```powershell
-Get-Command hermes        # should print C:\Users\<you>\AppData\Local\hermes\bin\hermes.cmd
+Get-Command hermes        # должен вывести C:\Users\<you>\AppData\Local\hermes\bin\hermes.cmd
 hermes --version
 ```
 

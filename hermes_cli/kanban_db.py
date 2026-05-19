@@ -4066,27 +4066,15 @@ def detect_stale_running(
             )
             reclaimed.append(tid)
 
-        # Increment failure counter. The task is already ``ready`` and the
-        # run is already closed; this just ticks the counter and may trip
-        # the circuit breaker.
-        _record_task_failure(
-            conn, tid,
-            error=(
-                f"no heartbeat for {int(hb_age)}s "
-                if hb_age is not None
-                else "no heartbeat ever"
-            ) + f" after {int(elapsed)}s running",
-            outcome="stale",
-            release_claim=False,
-            end_run=False,
-            event_payload_extra={
-                "elapsed_seconds": int(elapsed),
-                "heartbeat_age_seconds": (
-                    int(hb_age) if hb_age is not None else None
-                ),
-                "timeout_seconds": stale_timeout_seconds,
-            },
-        )
+        # Intentionally NOT calling _record_task_failure here. Stale reclaim
+        # is dispatcher-side detection of an absent heartbeat; the task is
+        # going straight back to ``ready`` for re-dispatch. Counting it as
+        # a worker failure would let two legitimately-long-running tasks
+        # (>4h without explicit heartbeat) trip the circuit breaker and
+        # auto-block, even though no worker actually failed. The 'stale'
+        # event already lives in task_events for auditability; that's the
+        # right surface for "this happened" without conflating with the
+        # spawn_failed / timed_out / crashed counters.
 
     return reclaimed
 

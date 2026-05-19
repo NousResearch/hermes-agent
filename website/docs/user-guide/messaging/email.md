@@ -138,6 +138,18 @@ platforms:
 
 When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
 
+### Archiving Sent Replies
+
+Every reply Hermes sends over SMTP is also copied into an IMAP folder (via `APPEND`), so outbound mail shows up in your mail client's Sent view. By default the folder is `Sent`. Configure it in your `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    sent_folder: "Sent"   # set to "" to disable IMAP archival entirely
+```
+
+The folder is created automatically if it does not exist. Archival is best-effort: if the `APPEND` fails or returns a non-`OK` status, a warning is logged but the SMTP send is never rolled back.
+
 ---
 
 ## Access Control

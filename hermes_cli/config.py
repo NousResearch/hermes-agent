@@ -3091,6 +3091,23 @@ _COMMENTED_SECTIONS = """
 """
 
 
+def merge_and_save_config(partial: Dict[str, Any]) -> None:
+    """Deep-merge a partial config into the on-disk config and save.
+
+    Reads the raw on-disk config (without merging defaults or expanding env
+    vars), applies *partial* on top via ``_deep_merge``, then saves the
+    result.  Keys in *partial* overwrite existing values; keys absent from
+    *partial* are preserved.
+
+    This is the safe entry point for web UI / API callers that only manage
+    a subset of config sections (e.g. agent, display) and must not destroy
+    unrelated sections (model, fallback_model, auxiliary, etc.).
+    """
+    existing = read_raw_config()
+    merged = _deep_merge(existing, partial)
+    save_config(merged)
+
+
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
     if is_managed():

@@ -111,10 +111,18 @@ fi
 # pick up token rotations from the Railway env var without manual steps.
 if command -v gh >/dev/null 2>&1 && [ -n "${GITHUB_TOKEN:-}" ]; then
     mkdir -p "$HERMES_HOME/home/.config/gh"
-    if echo "$GITHUB_TOKEN" | HOME="$HERMES_HOME/home" gh auth login --with-token --hostname github.com >/dev/null 2>&1; then
+    gh_err=$(printf '%s' "$GITHUB_TOKEN" | HOME="$HERMES_HOME/home" gh auth login --with-token --hostname github.com 2>&1)
+    if [ $? -eq 0 ]; then
         echo "gh: authenticated via GITHUB_TOKEN"
     else
-        echo "gh: auth login failed (check token validity)"
+        echo "gh: auth login failed: ${gh_err}"
+        echo "gh: falling back to direct hosts.yml write"
+        umask 077
+        cat > "$HERMES_HOME/home/.config/gh/hosts.yml" <<HOSTS_EOF
+github.com:
+    git_protocol: https
+    oauth_token: ${GITHUB_TOKEN}
+HOSTS_EOF
     fi
 fi
 

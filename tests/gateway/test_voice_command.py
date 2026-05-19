@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -477,6 +478,34 @@ class TestSendVoiceReply:
             await runner._send_voice_reply(event, "```code only```")
 
         mock_tts.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_outer_wait_detaches_voice_delivery(self, runner):
+        event = _make_event()
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+        release_tts = asyncio.Event()
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            await release_tts.wait()
+            return tts_result
+
+        with patch("gateway.run.asyncio.to_thread", side_effect=fake_to_thread), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            send_task = asyncio.create_task(runner._send_voice_reply(event, "Hello world"))
+            await asyncio.sleep(0)
+            send_task.cancel()
+            release_tts.set()
+            await send_task
+            await asyncio.sleep(0)
+
+        mock_adapter.send_voice.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_tts_failure_no_crash(self, runner):
@@ -1818,13 +1847,13 @@ class TestPlayInVoiceChannelUsesRunningLoop:
 # =====================================================================
 
 class TestSendVoiceReplyFilename:
-    """_send_voice_reply uses uuid for unique filenames."""
+    """_send_voice_reply inner worker uses uuid for unique filenames."""
 
     def test_filename_uses_uuid(self):
         """The method uses uuid in the filename, not time-based."""
         import inspect
         from gateway.run import GatewayRunner
-        source = inspect.getsource(GatewayRunner._send_voice_reply)
+        source = inspect.getsource(GatewayRunner._send_voice_reply_inner)
         assert "uuid" in source, \
             "_send_voice_reply should use uuid for unique filenames"
         assert "int(time.time())" not in source, \
@@ -2044,7 +2073,7 @@ class TestSendVoiceReplyCleanup:
         """The method has cleanup in a finally block, not inside try."""
         import inspect, textwrap, ast
         from gateway.run import GatewayRunner
-        source = textwrap.dedent(inspect.getsource(GatewayRunner._send_voice_reply))
+        source = textwrap.dedent(inspect.getsource(GatewayRunner._send_voice_reply_inner))
         tree = ast.parse(source)
         func = tree.body[0]
 

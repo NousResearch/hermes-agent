@@ -11067,6 +11067,18 @@ class GatewayRunner:
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
+        voice_task = asyncio.create_task(self._send_voice_reply_inner(event, text))
+        try:
+            await asyncio.shield(voice_task)
+        except asyncio.CancelledError:
+            logger.info(
+                "Auto voice reply cancelled by caller; detached delivery will continue for %s/%s",
+                event.source.platform,
+                event.source.chat_id,
+            )
+
+    async def _send_voice_reply_inner(self, event: MessageEvent, text: str) -> None:
+        """Best-effort TTS/send path for auto voice replies."""
         import uuid as _uuid
         audio_path = None
         actual_path = None
@@ -11075,6 +11087,11 @@ class GatewayRunner:
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
+                logger.info(
+                    "Auto voice reply skipped: stripped text empty for %s/%s",
+                    event.source.platform,
+                    event.source.chat_id,
+                )
                 return
 
             # Use .mp3 extension so edge-tts conversion to opus works correctly.

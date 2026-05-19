@@ -34,7 +34,10 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 │  │ & Caching    │  │ chat_compl.  │  │ (registry.py)│               │
 │  │              │  │ codex_resp.  │  │ 70+ tools    │               │
 │  │              │  │ anthropic    │  │ 28 toolsets  │               │
-│  └──────────────┘  └──────────────┘  └──────────────┘               │
+│  └──────────────┘  ┌──────────────┐  └──────────────┘               │
+│                    │ Kanban Board │                                  │
+│                    │ (kanban_db)  │                                  │
+│                    └──────────────┘                                  │
 └─────────┴─────────────────┴─────────────────┴───────────────────────┘
            │                                    │
            ▼                                    ▼
@@ -90,7 +93,13 @@ hermes-agent/
 │   ├── tools_config.py       # hermes tools — enable/disable per platform
 │   ├── plugins.py            # PluginManager — discovery, loading, hooks
 │   ├── callbacks.py          # Terminal callbacks (clarify, sudo, approval)
-│   └── gateway.py            # hermes gateway start/stop
+│   ├── gateway.py            # hermes gateway start/stop
+│   ├── kanban.py             # `hermes kanban` CLI subcommand
+│   ├── kanban_db.py          # SQLite-backed Kanban board (large file)
+│   ├── kanban_decompose.py   # Task decomposition into dependency graphs
+│   ├── kanban_specify.py     # One-liner → full task spec
+│   ├── kanban_diagnostics.py # Structured distress signals for tasks
+│   └── kanban_swarm.py       # Swarm topology helpers
 │
 ├── tools/                    # Tool implementations (one file per tool)
 │   ├── registry.py           # Central tool registry
@@ -102,6 +111,7 @@ hermes-agent/
 │   ├── browser_tool.py       # 10 browser automation tools
 │   ├── code_execution_tool.py # execute_code sandbox
 │   ├── delegate_tool.py      # Subagent delegation
+│   ├── kanban_tools.py       # Kanban tool-call surface for worker + orchestrator agents
 │   ├── mcp_tool.py           # MCP client (large file)
 │   ├── credential_files.py   # File-based credential passthrough
 │   ├── env_passthrough.py    # Env var passthrough for sandboxes
@@ -125,6 +135,7 @@ hermes-agent/
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)
+├── plugins/kanban/           # Kanban dashboard plugin (React frontend)
 ├── plugins/memory/           # Memory provider plugins
 ├── plugins/context_engine/   # Context engine plugins
 ├── skills/                   # Bundled skills (always available)
@@ -168,6 +179,17 @@ Scheduler tick → load due jobs from jobs.json
   → run job prompt
   → deliver response to target platform
   → update job state and next_run
+```
+
+### Kanban Multi-Agent
+
+```text
+Orchestrator agent → kanban_decompose: fan out into task graph
+  → kanban_db: persist tasks with dependencies
+  → Worker agents claim tasks → kanban_tools: update status
+  → kanban_diagnostics: detect stalled/blocked tasks
+  → kanban_swarm: coordinate parallel workers
+  → Dashboard plugin: real-time board visualization
 ```
 
 ## Recommended Reading Order
@@ -238,6 +260,12 @@ Three discovery sources: `~/.hermes/plugins/` (user), `.hermes/plugins/` (projec
 First-class agent tasks (not shell tasks). Jobs store in JSON, support multiple schedule formats, can attach skills and scripts, and deliver to any platform.
 
 → [Cron Internals](./cron-internals.md)
+
+### Kanban
+
+SQLite-backed multi-agent task board. Orchestrator agents decompose high-level goals into task graphs with dependencies; worker agents claim and execute tasks. The subsystem spans seven modules in `hermes_cli/` (board DB, CLI surface, decomposition, specification, diagnostics, swarm topology) plus `tools/kanban_tools.py` for agent-callable board operations and `plugins/kanban/` for the React dashboard. Eight canonical multi-agent collaboration patterns are built on top.
+
+→ [Kanban User Guide](/docs/user-guide/features/kanban)
 
 ### ACP Integration
 

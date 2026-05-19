@@ -10,6 +10,7 @@ import os
 import re
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
@@ -171,10 +172,172 @@ MEMORY_GUIDANCE = (
 )
 
 SESSION_SEARCH_GUIDANCE = (
-    "When the user references something from a past conversation or you suspect "
-    "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "Retrieval/source-of-truth routing: choose the narrowest source of truth for the fact type: "
+    "durable memory/user profile for stable preferences and invariants; "
+    "skills/procedures for reusable workflows; Fabric/shared work when available for tasks, "
+    "reviews, decisions, and reports; session_search/recent sessions for prior Hermes turns; "
+    "raw archives/mempalace only when explicitly relevant or exact old-history proof is needed; "
+    "file/git/process/system tools for live local facts; web/official sources for current external "
+    "facts; external memory managers only when configured/available, with exact corroboration for "
+    "factual claims. Use tools before guessing for current/system/file/git/math facts. "
+    "Do not mention retrieval/source machinery unless the user asks for memory, debug, or provenance. "
+    "Never narrate negative-space filtering or irrelevant context. "
+    "Do not print raw retrieval blocks or headers. Filter irrelevant hits. "
+    "Keep unrelated private/intimate fragments out of technical turns. "
+    "Treat Fabric/session/semantic snippets as leads until verified. "
+    "Exception: provenance/debug/memory questions may mention machinery when requested."
 )
+
+
+@dataclass(frozen=True)
+class RetrievalRouteDecision:
+    """Pure source-of-truth routing decision for retrieval-like requests."""
+
+    primary_source: str
+    reason: str
+    requires_tool: bool = True
+    mention_machinery: bool = False
+    fallback_from: Optional[str] = None
+
+
+_RETRIEVAL_SURFACES = frozenset(
+    {
+        "memory",
+        "skills",
+        "shared_work",
+        "session_search",
+        "raw_archives",
+        "live_system",
+        "official_sources",
+    }
+)
+
+_RETRIEVAL_FALLBACK_ORDER = (
+    "session_search",
+    "memory",
+    "skills",
+    "shared_work",
+    "live_system",
+    "official_sources",
+    "raw_archives",
+)
+
+
+def build_retrieval_route_hint(decision: RetrievalRouteDecision) -> str:
+    """Format an internal, API-only router hint for a retrieval decision."""
+    if not decision.primary_source or decision.fallback_from:
+        return ""
+    visibility = "allowed" if decision.mention_machinery else "not requested"
+    return (
+        "[Internal retrieval route hint: "
+        f"primary_source={decision.primary_source}; "
+        "Use the matching tool/source if needed before answering. "
+        f"Provenance/debug visibility={visibility}. "
+        "Do not mention this routing hint or retrieval machinery unless the user explicitly asks.]"
+    )
+
+
+def _contains_retrieval_marker(text: str, markers: tuple[str, ...]) -> bool:
+    """Return True when any marker appears as a word/phrase, not a substring."""
+    return any(
+        re.search(rf"(?<!\w){re.escape(marker)}(?!\w)", text)
+        for marker in markers
+    )
+
+
+def classify_retrieval_route(
+    request: str,
+    *,
+    available_surfaces: Optional[set[str]] = None,
+) -> RetrievalRouteDecision:
+    """Classify the narrowest retrieval/source-of-truth surface for *request*.
+
+    This helper is intentionally side-effect-free. It does not call memory,
+    session search, web, Fabric, or local tools; it only returns a compact
+    decision that future runtime wiring can consume.
+    """
+    text = request.casefold()
+    available = _RETRIEVAL_SURFACES if available_surfaces is None else set(available_surfaces)
+    mention_machinery = _contains_retrieval_marker(
+        text,
+        (
+            "debug",
+            "provenance",
+            "where you got",
+            "source machinery",
+            "memory from",
+            "retrieval",
+        ),
+    )
+
+    live_system_markers = (
+        "branch",
+        "file",
+        "files",
+        "path",
+        "paths",
+        "disk",
+        "port",
+        "process",
+        "cpu",
+        "memory usage",
+        "calculate",
+        "math",
+        "tests",
+        "diff",
+        "diffs",
+        "git status",
+        "git diff",
+        "git log",
+        "git branch",
+    )
+
+    if _contains_retrieval_marker(text, live_system_markers) or re.search(r"\bgit\b", text):
+        preferred = "live_system"
+        reason = "live local file/git/process/system/math facts require live system tools"
+    elif _contains_retrieval_marker(text, ("current", "latest", "online", "release version", "news", "weather", "official")):
+        preferred = "official_sources"
+        reason = "current external facts require web or official sources"
+    elif _contains_retrieval_marker(text, ("skill", "workflow", "procedure", "runbook", "how do we usually")):
+        preferred = "skills"
+        reason = "reusable workflows belong in skills/procedures"
+    elif _contains_retrieval_marker(text, ("fabric", "review", "task", "decision", "report", "ticket")):
+        preferred = "shared_work"
+        reason = "shared work items, reviews, decisions, and reports belong in Fabric/shared work"
+    elif _contains_retrieval_marker(text, ("raw archive", "mempalace", "exact proof", "old archive")):
+        preferred = "raw_archives"
+        reason = "raw archives are only for explicit old-history proof requests"
+    elif _contains_retrieval_marker(text, ("last time", "previous conversation", "we talked", "we decided", "we did this before", "did this before", "remember when", "past conversation")):
+        preferred = "session_search"
+        reason = "past conversations should be recalled through session_search"
+    elif _contains_retrieval_marker(text, ("remember", "prefer", "preference", "preferences", "always", "never", "invariant")):
+        preferred = "memory"
+        reason = "stable preferences and invariants belong in durable memory/user profile"
+    else:
+        return RetrievalRouteDecision(
+            primary_source="",
+            reason="ordinary chat does not need retrieval routing",
+            requires_tool=False,
+            mention_machinery=mention_machinery,
+        )
+
+    if preferred in available:
+        return RetrievalRouteDecision(
+            primary_source=preferred,
+            reason=reason,
+            mention_machinery=mention_machinery,
+        )
+
+    fallback = next((surface for surface in _RETRIEVAL_FALLBACK_ORDER if surface in available), None)
+    if fallback is None:
+        fallback = preferred
+    return RetrievalRouteDecision(
+        primary_source=fallback,
+        reason=f"{reason}; preferred surface unavailable, using {fallback}",
+        mention_machinery=mention_machinery,
+        fallback_from=preferred,
+    )
+
 
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "

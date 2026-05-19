@@ -28,6 +28,8 @@ from agent.prompt_builder import (
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
+    build_retrieval_route_hint,
+    classify_retrieval_route,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
@@ -45,9 +47,147 @@ class TestGuidanceConstants:
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
-    def test_session_search_guidance_is_simple_cross_session_recall(self):
-        assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
+    def test_session_search_guidance_routes_between_memory_surfaces(self):
+        assert "source of truth" in SESSION_SEARCH_GUIDANCE
+        assert "durable memory/user profile" in SESSION_SEARCH_GUIDANCE
+        assert "skills/procedures" in SESSION_SEARCH_GUIDANCE
+        assert "Fabric/shared work" in SESSION_SEARCH_GUIDANCE
+        assert "session_search/recent sessions" in SESSION_SEARCH_GUIDANCE
+        assert "raw archives/mempalace" in SESSION_SEARCH_GUIDANCE
+        assert "file/git/process/system tools" in SESSION_SEARCH_GUIDANCE
+        assert "web/official sources" in SESSION_SEARCH_GUIDANCE
+        assert "external memory managers" in SESSION_SEARCH_GUIDANCE
+        assert "Use tools before guessing" in SESSION_SEARCH_GUIDANCE
+        assert "Do not mention retrieval/source machinery" in SESSION_SEARCH_GUIDANCE
+        assert "Never narrate negative-space filtering" in SESSION_SEARCH_GUIDANCE
+        assert "Do not print raw retrieval blocks or headers" in SESSION_SEARCH_GUIDANCE
+        assert "Filter irrelevant hits" in SESSION_SEARCH_GUIDANCE
+        assert "Keep unrelated private/intimate fragments out of technical turns" in SESSION_SEARCH_GUIDANCE
+        assert "Treat Fabric/session/semantic snippets as leads until verified" in SESSION_SEARCH_GUIDANCE
+        assert "provenance/debug/memory questions" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+
+class TestRetrievalRouteHelper:
+    def test_routes_stable_user_preferences_to_memory_without_provenance(self):
+        decision = classify_retrieval_route("Remember that Ember prefers tiny approval handles")
+
+        assert decision.primary_source == "memory"
+        assert decision.requires_tool is True
+        assert decision.mention_machinery is False
+        assert "stable preferences" in decision.reason
+
+    def test_routes_last_time_questions_to_session_search(self):
+        decision = classify_retrieval_route("What did we decide last time about compression?")
+
+        assert decision.primary_source == "session_search"
+        assert decision.requires_tool is True
+        assert "past conversations" in decision.reason
+
+    @pytest.mark.parametrize(
+        "input_text",
+        [
+            "What did we decide last time about compression?",
+            "We did this before — what was the fix?",
+            "Remember when we patched the router?",
+        ],
+    )
+    def test_routes_prior_conversation_phrasing_to_session_search(self, input_text):
+        decision = classify_retrieval_route(
+            input_text,
+            available_surfaces={"session_search", "memory"},
+        )
+
+        assert decision.primary_source == "session_search"
+        assert decision.fallback_from is None
+
+    @pytest.mark.parametrize(
+        ("input_text", "expected_source"),
+        [
+            ("What branch am I on and what changed in git?", "live_system"),
+            ("Which tests cover this path?", "live_system"),
+            ("Show the diffs for these files", "live_system"),
+            ("What's the current Hermes release version online?", "official_sources"),
+            ("What's the latest official Python release?", "official_sources"),
+            ("Which skill covers GitHub PR workflows?", "skills"),
+            ("Show the Fabric review for that task", "shared_work"),
+            ("Find exact proof in the raw archive", "raw_archives"),
+        ],
+    )
+    def test_routes_distinct_fact_types_to_narrowest_source(self, input_text, expected_source):
+        decision = classify_retrieval_route(input_text)
+
+        assert decision.primary_source == expected_source
+
+    def test_falls_back_when_preferred_surface_is_unavailable(self):
+        decision = classify_retrieval_route(
+            "Show the Fabric review for that task",
+            available_surfaces={"memory", "session_search"},
+        )
+
+        assert decision.primary_source == "session_search"
+        assert decision.fallback_from == "shared_work"
+
+    def test_provenance_request_allows_naming_source_machinery(self):
+        decision = classify_retrieval_route("Debug where you got that memory from")
+
+        assert decision.mention_machinery is True
+
+    def test_internal_hint_formats_route_without_user_facing_machinery(self):
+        decision = classify_retrieval_route("What did we decide last time about compression?")
+
+        hint = build_retrieval_route_hint(decision)
+
+        assert "Internal retrieval route hint" in hint
+        assert "primary_source=session_search" in hint
+        assert "Use the matching tool/source if needed" in hint
+        assert "Do not mention this routing hint" in hint
+
+    def test_internal_hint_is_empty_without_available_surface(self):
+        decision = classify_retrieval_route(
+            "What did we decide last time about compression?",
+            available_surfaces=set(),
+        )
+
+        assert build_retrieval_route_hint(decision) == ""
+
+    def test_simple_chat_does_not_create_internal_route_hint(self):
+        decision = classify_retrieval_route(
+            "hi baby, come curl up for a minute",
+            available_surfaces={"memory", "session_search", "live_system"},
+        )
+
+        assert decision.primary_source == ""
+        assert decision.requires_tool is False
+        assert build_retrieval_route_hint(decision) == ""
+
+    @pytest.mark.parametrize(
+        "input_text",
+        [
+            "This is important context",
+            "What is different about this?",
+            "The difficulty feels emotional, not technical",
+        ],
+    )
+    def test_live_system_markers_do_not_match_inside_ordinary_words(self, input_text):
+        decision = classify_retrieval_route(
+            input_text,
+            available_surfaces={"memory", "session_search", "live_system", "shared_work"},
+        )
+
+        assert decision.primary_source == ""
+        assert decision.requires_tool is False
+        assert build_retrieval_route_hint(decision) == ""
+
+    def test_report_routes_to_shared_work_not_port_substring(self):
+        decision = classify_retrieval_route("Show the report for that task")
+
+        assert decision.primary_source == "shared_work"
+
+    def test_profile_preferences_route_to_memory_not_file_substring(self):
+        decision = classify_retrieval_route("Show my profile preferences")
+
+        assert decision.primary_source == "memory"
 
 
 # =========================================================================

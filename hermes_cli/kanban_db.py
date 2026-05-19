@@ -206,7 +206,7 @@ def get_current_board() -> str:
     if env:
         try:
             normed = _normalize_board_slug(env)
-            if normed:
+            if normed and board_exists(normed):
                 return normed
         except ValueError:
             pass

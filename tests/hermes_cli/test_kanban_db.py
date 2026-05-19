@@ -1046,6 +1046,91 @@ def test_dispatch_max_spawn_fills_remaining_capacity(
         assert kb.get_task(conn, ready_a).status == "running"
         assert kb.get_task(conn, ready_b).status == "ready"
 
+def test_dispatch_preflight_blocks_selection_packet_before_spawn(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="Scheduler-visible selection packet",
+            body="Selection packet for future dispatcher; not executable.",
+            assignee="default",
+        )
+        res = kb.dispatch_once(conn, failure_limit=1)
+        task = kb.get_task(conn, t)
+
+    assert res.preflight_blocked == [t]
+    assert res.spawned == []
+    assert task.status == "blocked"
+    assert "selection packet" in task.last_failure_error
+
+
+def test_strict_dispatch_preflight_requires_contract(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_DISPATCH_PREFLIGHT", "1")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="implementation without contract", assignee="default")
+        res = kb.dispatch_once(conn, failure_limit=1)
+        task = kb.get_task(conn, t)
+
+    assert res.preflight_blocked == [t]
+    assert res.spawned == []
+    assert task.status == "blocked"
+    assert "missing dispatch contract fields" in task.last_failure_error
+
+
+def test_strict_dispatch_preflight_requires_existing_worktree(kanban_home, monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_DISPATCH_PREFLIGHT", "1")
+    missing = tmp_path / ".worktrees" / "missing-task"
+    body = """
+    Workspace mode: worktree
+    Write authority: repo docs only
+    Kanban mutation authority: comments only
+    Max parallelism/conflict boundary: one writer
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="implementation with missing worktree",
+            body=body,
+            assignee="default",
+            workspace_kind="worktree",
+            workspace_path=str(missing),
+        )
+        res = kb.dispatch_once(conn, failure_limit=1)
+        task = kb.get_task(conn, t)
+
+    assert res.preflight_blocked == [t]
+    assert res.spawned == []
+    assert task.status == "blocked"
+    assert "worktree workspace does not exist" in task.last_failure_error
+
+
+def test_dispatch_preflight_blocks_duplicate_running_workspace(kanban_home, tmp_path):
+    workspace = tmp_path / "shared"
+    workspace.mkdir()
+    with kb.connect() as conn:
+        running = kb.create_task(
+            conn,
+            title="first writer",
+            assignee="default",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        assert kb.claim_task(conn, running) is not None
+        kb.set_workspace_path(conn, running, str(workspace))
+        contender = kb.create_task(
+            conn,
+            title="second writer",
+            assignee="default",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        res = kb.dispatch_once(conn, failure_limit=1)
+        task = kb.get_task(conn, contender)
+
+    assert res.preflight_blocked == [contender]
+    assert res.spawned == []
+    assert task.status == "blocked"
+    assert "workspace already has running task" in task.last_failure_error
+
 
 def test_dispatch_reclaims_stale_before_spawning(kanban_home):
     with kb.connect() as conn:

@@ -3584,6 +3584,8 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    preflight_blocked: list[str] = field(default_factory=list)
+    """Task ids refused by pre-dispatch validation before worker spawn."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -4562,7 +4564,6 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
             return True
     return False
 
-
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one review+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -4587,6 +4588,108 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
             return True
     return False
 
+
+
+def _strict_dispatch_preflight_enabled() -> bool:
+    """Return True when optional contract/workspace policy checks are enabled.
+
+    Existing profile-existence filtering remains always on in the dispatcher.
+    These stricter checks are opt-in so lightweight boards are not forced into
+    a CAT-style task contract overnight.
+    """
+    env = os.environ.get("HERMES_KANBAN_STRICT_DISPATCH_PREFLIGHT", "").strip().lower()
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    if env in {"0", "false", "no", "off"}:
+        return False
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return bool((cfg.get("kanban") or {}).get("strict_dispatch_preflight", False))
+    except Exception:
+        return False
+
+
+def _selection_packet_must_not_spawn(task: Task) -> Optional[str]:
+    text = f"{task.title or ''}\n{task.body or ''}".lower()
+    if "selection packet" in text or "scheduler-visible selection packet" in text:
+        return "selection packet is a planning artifact and must not auto-dispatch"
+    if "[selection" in text or "[packet" in text:
+        return "selection/packet task marker is non-runnable"
+    return None
+
+
+def _validate_dispatch_contract(task: Task) -> Optional[str]:
+    """CAT-style task contract lint for strict dispatcher mode."""
+    text = f"{task.title or ''}\n{task.body or ''}".lower()
+    required_any = {
+        "workspace mode": ("workspace mode", "workspace_mode", "workspace:"),
+        "write authority": ("write authority", "write_authority"),
+        "mutation authority": (
+            "mutation authority", "kanban mutation", "cron mutation", "git mutation",
+        ),
+        "conflict boundary": ("conflict boundary", "max parallelism", "parallelism"),
+    }
+    missing = [label for label, needles in required_any.items() if not any(n in text for n in needles)]
+    if missing:
+        return "missing dispatch contract fields: " + ", ".join(missing)
+    return None
+
+
+def _validate_workspace_preflight(task: Task, workspace: Path) -> Optional[str]:
+    kind = task.workspace_kind or "scratch"
+    if kind in {"dir", "worktree"} and not Path(str(workspace)).is_absolute():
+        return f"workspace path is not absolute: {workspace}"
+    if kind == "dir" and not workspace.exists():
+        return f"dir workspace does not exist: {workspace}"
+    if kind == "worktree":
+        if not workspace.exists():
+            return f"worktree workspace does not exist: {workspace}"
+        if not (workspace / ".git").exists():
+            return f"worktree workspace is not a git worktree: {workspace}"
+        try:
+            import subprocess
+            top = subprocess.run(
+                ["git", "-C", str(workspace), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if top.returncode != 0:
+                return f"worktree workspace is not inside a git checkout: {workspace}"
+        except Exception as exc:
+            return f"could not validate git worktree {workspace}: {exc}"
+    return None
+
+
+def _workspace_conflict_error(conn: sqlite3.Connection, task: Task, workspace: Path) -> Optional[str]:
+    rows = conn.execute(
+        "SELECT id, title FROM tasks "
+        "WHERE status = 'running' AND id != ? AND workspace_path = ? LIMIT 3",
+        (task.id, str(workspace)),
+    ).fetchall()
+    if rows:
+        ids = ", ".join(str(r["id"]) for r in rows)
+        return f"workspace already has running task(s): {ids}"
+    return None
+
+
+def _preflight_real_dispatch(
+    conn: sqlite3.Connection, task: Task, workspace: Path, *, strict: bool,
+) -> Optional[str]:
+    """Fail-closed guard run after claim but before worker spawn."""
+    selection_error = _selection_packet_must_not_spawn(task)
+    if selection_error:
+        return selection_error
+    conflict_error = _workspace_conflict_error(conn, task, workspace)
+    if conflict_error:
+        return conflict_error
+    if strict:
+        workspace_error = _validate_workspace_preflight(task, workspace)
+        if workspace_error:
+            return workspace_error
+        contract_error = _validate_dispatch_contract(task)
+        if contract_error:
+            return contract_error
+    return None
 
 def dispatch_once(
     conn: sqlite3.Connection,
@@ -4692,7 +4795,7 @@ def dispatch_once(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
             ).fetchone()[0]
         )
-
+    strict_preflight = _strict_dispatch_preflight_enabled()
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
@@ -4786,6 +4889,21 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
+        if spawn_fn is None:
+            preflight_error = _preflight_real_dispatch(
+                conn, claimed, workspace, strict=strict_preflight,
+            )
+            if preflight_error:
+                auto = _record_spawn_failure(
+                    conn,
+                    claimed.id,
+                    f"preflight: {preflight_error}",
+                    failure_limit=failure_limit,
+                )
+                result.preflight_blocked.append(claimed.id)
+                if auto:
+                    result.auto_blocked.append(claimed.id)
+                continue
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only

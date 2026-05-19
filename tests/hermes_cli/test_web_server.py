@@ -229,6 +229,14 @@ class TestWebServerEndpoints:
                     "recent_gates": [{"target": "harness-skill", "status": "blocked"}],
                 }
 
+            def context_hygiene(self):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "layers": {"memory": {"task_progress_hits": 0}},
+                    "issues": [],
+                }
+
         class _Harness:
             @property
             def control_plane(self):
@@ -239,15 +247,23 @@ class TestWebServerEndpoints:
         snapshot = self.client.get("/api/harness/learning-snapshot")
         replay = self.client.get("/api/harness/replay-corpus")
         gates = self.client.get("/api/harness/promotion-gates")
+        hygiene = self.client.get("/api/harness/context-hygiene")
 
         assert snapshot.status_code == 200
         assert replay.status_code == 200
         assert gates.status_code == 200
+        assert hygiene.status_code == 200
         assert snapshot.json()["content_policy"] == "metadata_only"
         assert replay.json()["by_failure_kind"] == {"runtime_error": 1}
         assert gates.json()["blocked"] == 1
+        assert hygiene.json()["content_policy"] == "metadata_only"
         raw = json.dumps(
-            {"snapshot": snapshot.json(), "replay": replay.json(), "gates": gates.json()},
+            {
+                "snapshot": snapshot.json(),
+                "replay": replay.json(),
+                "gates": gates.json(),
+                "hygiene": hygiene.json(),
+            },
             sort_keys=True,
         )
         assert "token" not in raw.lower()

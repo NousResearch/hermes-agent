@@ -92,3 +92,18 @@ def test_control_plane_harness_passes_profile_when_set(monkeypatch):
     status = ControlPlaneHarness(profile="founder").core_status()
 
     assert status == {"profile": "founder"}
+
+
+def test_control_plane_harness_exposes_context_hygiene(monkeypatch):
+    from agent import context_hygiene
+
+    monkeypatch.setattr(
+        context_hygiene,
+        "audit_context_hygiene",
+        lambda: {"content_policy": "metadata_only", "layers": {}},
+    )
+
+    assert HermesHarness().control_plane.context_hygiene() == {
+        "content_policy": "metadata_only",
+        "layers": {},
+    }

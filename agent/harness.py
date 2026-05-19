@@ -122,6 +122,11 @@ class ControlPlaneHarness:
 
         return harness_control_plane.promotion_gate_summary()
 
+    def context_hygiene(self) -> Dict[str, Any]:
+        from agent import context_hygiene
+
+        return context_hygiene.audit_context_hygiene()
+
     def learning_health_unavailable(self, error: Optional[str] = None) -> Dict[str, Any]:
         from agent import harness_control_plane
 

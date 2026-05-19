@@ -642,6 +642,23 @@ async def get_harness_promotion_gates():
         }
 
 
+@app.get("/api/harness/context-hygiene")
+async def get_harness_context_hygiene():
+    """Return metadata-only context-layer hygiene status."""
+    try:
+        return _control_plane_or_unavailable().context_hygiene()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "layers": {},
+            "issues": [],
+            "issue_count": 0,
+        }
+
+
 @app.get("/api/harness/core")
 async def get_core_harness_status():
     """Return the first-class seven-case Hermes core harness status."""

@@ -1146,6 +1146,7 @@ AUTHOR_MAP = {
     "192385615+LifeJiggy@users.noreply.github.com": "LifeJiggy",  # stale salvage commit alias (PR #28315)
     "beastant1@gmail.com": "nekwo",  # PR #26481 (PS5.1 UTF-8 BOM)
     "43717185+nekwo@users.noreply.github.com": "nekwo",
+    "9785479+stepanov1975@users.noreply.github.com": "stepanov1975",  # PR #22074 (setup config picker writes)
     "67979730+flooryyyy@users.noreply.github.com": "flooryyyy",  # PR #26374 (tool_trace error detection)
     "188585318+dgians@users.noreply.github.com": "dgians",  # PR #26034 (.ts/.py/.sh docs types)
     "zealy@tz.co": "dgians",  # PR #26034 (bot-committed by zealy-tzco under dgians' PR)

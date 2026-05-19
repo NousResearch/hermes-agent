@@ -128,6 +128,7 @@ def worker_env(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
@@ -308,6 +309,58 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     assert shown["task"]["status"] == "done"
     assert shown["runs"][-1]["summary"] == "finished with structured evidence"
     assert shown["runs"][-1]["metadata"] == handoff
+
+
+def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-trusted")
+    metadata = {"files": 2, "worker_session_id": "user-spoof"}
+
+    out = kt._handle_complete({
+        "summary": "done by scoped worker",
+        "metadata": metadata,
+    })
+    assert json.loads(out)["ok"] is True
+    assert metadata["worker_session_id"] == "user-spoof"
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata == {
+            "files": 2,
+            "worker_session_id": "session-trusted",
+        }
+    finally:
+        conn.close()
+
+
+def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
+    monkeypatch, worker_env
+):
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-trusted")
+
+    out = kt._handle_complete({
+        "task_id": worker_env,
+        "summary": "done outside worker scope",
+        "metadata": {"files": 2, "worker_session_id": "user-provided"},
+    })
+    assert json.loads(out)["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata == {
+            "files": 2,
+            "worker_session_id": "user-provided",
+        }
+    finally:
+        conn.close()
 
 
 def test_complete_with_result_only(worker_env):

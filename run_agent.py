@@ -679,12 +679,21 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
-    def _emit_status(self, message: str) -> None:
+    def _emit_status(self, message: str, *, visibility: str = "user") -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
 
         CLI users see the message via ``_vprint(force=True)`` so it is always
         visible regardless of verbose/quiet mode.  Gateway consumers receive
-        it through ``status_callback("lifecycle", ...)``.
+        it through ``status_callback("lifecycle", ...)`` — but only when
+        ``visibility="user"``.
+
+        Args:
+            message: The status message to emit.
+            visibility: ``"user"`` (default) pushes to all channels including
+                messaging platforms (Telegram, WeChat, etc.).  ``"debug"``
+                limits the message to CLI output and server logs only — ideal
+                for internal retry/fallback/compression details that would
+                clutter non-technical users' chat windows.
 
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
@@ -693,7 +702,7 @@ class AIAgent:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
             pass
-        if self.status_callback:
+        if self.status_callback and visibility == "user":
             try:
                 self.status_callback("lifecycle", message)
             except Exception:

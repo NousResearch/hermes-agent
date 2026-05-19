@@ -199,7 +199,8 @@ def run_conversation(
                 agent._emit_status(
                     "🔌 Detected stale connections from a previous provider "
                     "issue — cleaned up automatically. Proceeding with fresh "
-                    "connection."
+                    "connection.",
+                    visibility="debug",
                 )
         except Exception:
             pass
@@ -384,7 +385,8 @@ def run_conversation(
             agent._emit_status(
                 f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
                 f">= {agent.context_compressor.threshold_tokens:,} threshold. "
-                "This may take a moment."
+                "This may take a moment.",
+                visibility="debug",
             )
             # May need multiple passes for very large sessions with small
             # context windows (each pass summarises the middle N turns).
@@ -889,7 +891,7 @@ def run_conversation(
                             f"{agent.log_prefix}⏳ {_nous_msg} Trying fallback...",
                             force=True,
                         )
-                        agent._emit_status(f"⏳ {_nous_msg}")
+                        agent._emit_status(f"⏳ {_nous_msg}", visibility="debug")
                         if agent._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -1125,7 +1127,7 @@ def run_conversation(
                     # rate-limit symptom.  Switch to fallback immediately
                     # rather than retrying with extended backoff.
                     if agent._fallback_index < len(agent._fallback_chain):
-                        agent._emit_status("⚠️ Empty/malformed response — switching to fallback...")
+                        agent._emit_status("⚠️ Empty/malformed response — switching to fallback...", visibility="debug")
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -1195,13 +1197,13 @@ def run_conversation(
                     
                     if retry_count >= max_retries:
                         # Try fallback before giving up
-                        agent._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+                        agent._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...", visibility="debug")
                         if agent._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
                             continue
-                        agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
+                        agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.", visibility="debug")
                         logging.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
                         agent._persist_session(messages, conversation_history)
                         return {
@@ -2230,7 +2232,8 @@ def run_conversation(
                         if len(messages) < original_len or old_ctx > _reduced_ctx:
                             agent._emit_status(
                                 f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
-                                f"(was {old_ctx:,}), retrying..."
+                                f"(was {old_ctx:,}), retrying...",
+                                visibility="debug",
                             )
                             time.sleep(2)
                             restart_with_compressed_messages = True
@@ -2257,7 +2260,7 @@ def run_conversation(
                         base_url=getattr(agent, "base_url", None),
                     )
                     if not pool_may_recover:
-                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...", visibility="debug")
                         if agent._try_activate_fallback(reason=classified.reason):
                             retry_count = 0
                             compression_attempts = 0
@@ -2382,7 +2385,7 @@ def run_conversation(
                             "failed": True,
                             "compression_exhausted": True,
                         }
-                    agent._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
+                    agent._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...", visibility="debug")
 
                     original_len = len(messages)
                     messages, active_system_prompt = agent._compress_context(
@@ -2395,7 +2398,7 @@ def run_conversation(
                     conversation_history = None
 
                     if len(messages) < original_len:
-                        agent._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                        agent._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...", visibility="debug")
                         time.sleep(2)  # Brief pause between compression retries
                         restart_with_compressed_messages = True
                         break
@@ -2539,7 +2542,7 @@ def run_conversation(
                             "failed": True,
                             "compression_exhausted": True,
                         }
-                    agent._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
+                    agent._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...", visibility="debug")
 
                     original_len = len(messages)
                     messages, active_system_prompt = agent._compress_context(
@@ -2553,7 +2556,7 @@ def run_conversation(
 
                     if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                         if len(messages) < original_len:
-                            agent._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                            agent._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...", visibility="debug")
                         time.sleep(2)  # Brief pause between compression retries
                         restart_with_compressed_messages = True
                         break
@@ -2618,7 +2621,7 @@ def run_conversation(
                 if is_client_error:
                     # Try fallback before aborting — a different provider
                     # may not have the same issue (rate limit, auth, etc.)
-                    agent._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                    agent._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...", visibility="debug")
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -2630,7 +2633,8 @@ def run_conversation(
                         )
                     agent._emit_status(
                         f"❌ Non-retryable error (HTTP {status_code}): "
-                        f"{agent._summarize_api_error(api_error)}"
+                        f"{agent._summarize_api_error(api_error)}",
+                        visibility="debug",
                     )
                     agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
                     agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
@@ -2689,7 +2693,7 @@ def run_conversation(
                         retry_count = 0
                         continue
                     # Try fallback before giving up entirely
-                    agent._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                    agent._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...", visibility="debug")
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -2697,9 +2701,9 @@ def run_conversation(
                         continue
                     _final_summary = agent._summarize_api_error(api_error)
                     if is_rate_limited:
-                        agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+                        agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}", visibility="debug")
                     else:
-                        agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
+                        agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}", visibility="debug")
                     agent._vprint(f"{agent.log_prefix}   💀 Final error: {_final_summary}", force=True)
 
                     # Detect SSE stream-drop pattern (e.g. "Network
@@ -2773,9 +2777,9 @@ def run_conversation(
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 if is_rate_limited:
-                    agent._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
+                    agent._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...", visibility="debug")
                 else:
-                    agent._emit_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
+                    agent._emit_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...", visibility="debug")
                 logger.warning(
                     "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                     wait_time,
@@ -3260,7 +3264,8 @@ def run_conversation(
                     _turn_exit_reason = "guardrail_halt"
                     final_response = agent._toolguard_controlled_halt_response(decision)
                     agent._emit_status(
-                        f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
+                        f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}",
+                        visibility="debug",
                     )
                     messages.append({"role": "assistant", "content": final_response})
                     break
@@ -3366,7 +3371,8 @@ def run_conversation(
                         )
                         agent._emit_status(
                             "↻ Stream interrupted — using delivered content "
-                            "as final response"
+                            "as final response",
+                            visibility="debug",
                         )
                         final_response = _recovered
                         agent._response_was_previewed = True
@@ -3386,7 +3392,7 @@ def run_conversation(
                     if fallback and getattr(agent, '_last_content_tools_all_housekeeping', False):
                         _turn_exit_reason = "fallback_prior_turn_content"
                         logger.info("Empty follow-up after tool calls — using prior turn content as final response")
-                        agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
+                        agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer", visibility="debug")
                         agent._last_content_with_tools = None
                         agent._last_content_tools_all_housekeeping = False
                         agent._empty_content_retries = 0
@@ -3443,7 +3449,8 @@ def run_conversation(
                         )
                         agent._emit_status(
                             "⚠️ Model returned empty after tool calls — "
-                            "nudging to continue"
+                            "nudging to continue",
+                            visibility="debug",
                         )
                         # Append the empty assistant message first so the
                         # message sequence stays valid:
@@ -3489,7 +3496,8 @@ def run_conversation(
                         )
                         agent._emit_status(
                             f"↻ Thinking-only response — prefilling to continue "
-                            f"({agent._thinking_prefill_retries}/2)"
+                            f"({agent._thinking_prefill_retries}/2)",
+                            visibility="debug",
                         )
                         interim_msg = agent._build_assistant_message(
                             assistant_message, "incomplete"
@@ -3525,7 +3533,8 @@ def run_conversation(
                         )
                         agent._emit_status(
                             f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3)"
+                            f"({agent._empty_content_retries}/3)",
+                            visibility="debug",
                         )
                         continue
 
@@ -3544,13 +3553,15 @@ def run_conversation(
                         )
                         agent._emit_status(
                             "⚠️ Model returning empty responses — "
-                            "switching to fallback provider..."
+                            "switching to fallback provider...",
+                            visibility="debug",
                         )
                         if agent._try_activate_fallback():
                             agent._empty_content_retries = 0
                             agent._emit_status(
                                 f"↻ Switched to fallback: {agent.model} "
-                                f"({agent.provider})"
+                                f"({agent.provider})",
+                                visibility="debug",
                             )
                             logger.info(
                                 "Fallback activated after empty responses: "
@@ -3584,7 +3595,8 @@ def run_conversation(
                         )
                         agent._emit_status(
                             "⚠️ Model produced reasoning but no visible "
-                            "response after all retries. Returning empty."
+                            "response after all retries. Returning empty.",
+                            visibility="debug",
                         )
                     else:
                         logger.warning(
@@ -3597,7 +3609,8 @@ def run_conversation(
                         agent._emit_status(
                             "❌ Model returned no content after all retries"
                             + (" and fallback attempts." if agent._fallback_chain else
-                               ". No fallback providers configured.")
+                               ". No fallback providers configured."),
+                            visibility="debug",
                         )
 
                     final_response = "(empty)"
@@ -3728,7 +3741,8 @@ def run_conversation(
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         agent._emit_status(
             f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-            "— asking model to summarise"
+            "— asking model to summarise",
+            visibility="debug",
         )
         if not agent.quiet_mode:
             agent._safe_print(

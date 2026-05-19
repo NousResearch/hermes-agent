@@ -18,6 +18,7 @@ from hermes_cli.profiles import (
     normalize_profile_name,
     validate_profile_name,
     get_profile_dir,
+    create_wrapper_script,
     create_profile,
     delete_profile,
     list_profiles,
@@ -1093,6 +1094,25 @@ class TestInternalHelpers:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_active_profile_name() == "orchestrator"
+
+
+class TestWrapperScripts:
+    def test_wrapper_uses_plain_profile_exec_for_default_root(self, profile_env):
+        wrapper = create_wrapper_script("coder")
+        assert wrapper is not None
+        assert wrapper.read_text() == '#!/bin/sh\nexec hermes -p coder "$@"\n'
+
+    def test_wrapper_preserves_custom_hermes_home_root(self, tmp_path, monkeypatch):
+        custom_root = tmp_path / "opt" / "data"
+        custom_root.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(custom_root))
+
+        wrapper = create_wrapper_script("coder")
+        assert wrapper is not None
+        content = wrapper.read_text()
+        assert f"export HERMES_HOME={custom_root}" in content
+        assert 'exec hermes -p coder "$@"' in content
 
 
 # ===================================================================

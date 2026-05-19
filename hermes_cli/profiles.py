@@ -22,6 +22,7 @@ Usage::
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -354,7 +355,19 @@ def _is_wrapper_dir_in_path() -> bool:
     return wrapper_dir in os.environ.get("PATH", "").split(os.pathsep)
 
 
-def create_wrapper_script(name: str) -> Optional[Path]:
+def _build_wrapper_script(profile_name: str) -> str:
+    """Return wrapper contents for a profile-aware shell launcher."""
+    canon = normalize_profile_name(profile_name)
+    current_root = _get_default_hermes_home()
+    native_root = Path.home() / ".hermes"
+    lines = ["#!/bin/sh"]
+    if current_root.resolve() != native_root.resolve():
+        lines.append(f"export HERMES_HOME={shlex.quote(str(current_root))}")
+    lines.append(f'exec hermes -p {canon} "$@"')
+    return "\n".join(lines) + "\n"
+
+
+def create_wrapper_script(name: str, target_profile: Optional[str] = None) -> Optional[Path]:
     """Create a shell wrapper script at ~/.local/bin/<name>.
 
     Returns the path to the created wrapper, or None if creation failed.
@@ -369,7 +382,7 @@ def create_wrapper_script(name: str) -> Optional[Path]:
 
     wrapper_path = wrapper_dir / canon
     try:
-        wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {canon} "$@"\n')
+        wrapper_path.write_text(_build_wrapper_script(target_profile or canon))
         wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         return wrapper_path
     except OSError as e:

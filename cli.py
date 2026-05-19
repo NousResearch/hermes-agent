@@ -9630,6 +9630,43 @@ class HermesCLI:
         Returns ``"once"``, ``"always"``, or ``None`` (cancelled).  Callers
         proceed with the destructive action when the result is non-None.
         """
+        active_children = 0
+        active_background_tasks = 0
+        try:
+            bg_tasks = getattr(self, "_background_tasks", None)
+            if bg_tasks:
+                active_background_tasks = len(bg_tasks)
+        except Exception:
+            active_background_tasks = 0
+
+        agent = getattr(self, "agent", None)
+        if agent is not None:
+            try:
+                lock = getattr(agent, "_active_children_lock", None)
+                children = getattr(agent, "_active_children", None)
+                if lock is not None and children is not None:
+                    with lock:
+                        active_children = len(children)
+                elif children:
+                    active_children = len(children)
+            except Exception:
+                active_children = 0
+
+        if active_children or active_background_tasks:
+            active_lines = []
+            if active_children:
+                label = "subagent" if active_children == 1 else "subagents"
+                active_lines.append(f"- {active_children} delegated {label} still running")
+            if active_background_tasks:
+                label = "task" if active_background_tasks == 1 else "tasks"
+                active_lines.append(f"- {active_background_tasks} background {label} still running")
+            detail = (
+                f"{detail.rstrip()}\n\n"
+                "Active work is still running:\n"
+                f"{chr(10).join(active_lines)}\n\n"
+                "Starting a fresh session now may detach that work from the current conversation."
+            )
+
         # Gate check — respects prior "Always Approve" clicks.
         try:
             cfg = load_cli_config()
@@ -9640,7 +9677,7 @@ class HermesCLI:
         except Exception:
             confirm_required = True
 
-        if not confirm_required:
+        if not confirm_required and not (active_children or active_background_tasks):
             return "once"
 
         # Render a prompt_toolkit-native confirmation panel.  This keeps option

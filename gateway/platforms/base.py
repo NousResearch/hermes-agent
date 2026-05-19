@@ -3558,9 +3558,35 @@ class BasePlatformAdapter(ABC):
                 # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
+                    # Defensive check (#28093): before releasing the guard,
+                    # verify no pending message arrived between the
+                    # late-arrival drain above and this cleanup.  Under
+                    # heavy load or during context compaction, a message
+                    # can slip through the timing gap.
+                    _orphan = self._pending_messages.pop(session_key, None)
+                    if _orphan is not None:
+                        logger.warning(
+                            "[%s] Orphaned pending message detected during "
+                            "cleanup for %s — re-spawning drain task to "
+                            "prevent silent drop",
+                            self.name, session_key,
+                        )
+                        _active = self._active_sessions.get(session_key)
+                        if _active is not None:
+                            _active.clear()
+                        drain_task = asyncio.create_task(
+                            self._process_message_background(_orphan, session_key)
+                        )
+                        self._session_tasks[session_key] = drain_task
+                        try:
+                            self._background_tasks.add(drain_task)
+                            drain_task.add_done_callback(self._background_tasks.discard)
+                        except TypeError:
+                            pass
+                        return  # drain task owns the session now
                     del self._session_tasks[session_key]
                     self._release_session_guard(session_key, guard=interrupt_event)
-    
+
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
 

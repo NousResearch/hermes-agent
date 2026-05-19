@@ -456,6 +456,7 @@ def run_conversation(
             # context windows (each pass summarises the middle N turns).
             for _pass in range(3):
                 _orig_len = len(messages)
+                _pre_compress_interrupted = agent._interrupt_requested
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
@@ -486,6 +487,16 @@ def run_conversation(
                 )
                 if _preflight_tokens < agent.context_compressor.threshold_tokens:
                     break  # Under threshold
+                # If an interrupt arrived during preflight compression,
+                # stop compressing and let the tool loop detect the
+                # interrupt on its first iteration.  See #28093.
+                if not _pre_compress_interrupted and agent._interrupt_requested:
+                    logger.info(
+                        "%sInterrupt arrived during preflight compression "
+                        "— aborting multi-pass compression to drain pending",
+                        agent.log_prefix,
+                    )
+                    break
 
     # Plugin hook: pre_llm_call
     # Fired once per turn before the tool-calling loop.  Plugins can
@@ -3399,6 +3410,15 @@ def run_conversation(
 
                 if agent.compression_enabled and _compressor.should_compress(_real_tokens):
                     agent._safe_print("  ⟳ compacting context…")
+                    # Snapshot interrupt state BEFORE compression. If an
+                    # interrupt arrives during _compress_context (which is
+                    # synchronous and long-running), the interrupt flag will
+                    # be set but won't be checked until the next loop
+                    # iteration.  Record the pre-compression message count
+                    # so the post-compression check can detect whether
+                    # the interrupt message should take priority over
+                    # continued tool calling.  See #28093.
+                    _pre_compress_interrupted = agent._interrupt_requested
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
@@ -3408,6 +3428,18 @@ def run_conversation(
                     # _flush_messages_to_session_db writes compressed messages
                     # to the new session (see preflight compression comment).
                     conversation_history = None
+                    # If an interrupt arrived during compression, break out
+                    # immediately so the gateway can drain the pending
+                    # message without waiting for another tool-call round.
+                    if not _pre_compress_interrupted and agent._interrupt_requested:
+                        logger.info(
+                            "%sInterrupt arrived during compression — "
+                            "breaking out to drain pending message",
+                            agent.log_prefix,
+                        )
+                        interrupted = True
+                        _turn_exit_reason = "interrupted_by_user"
+                        break
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

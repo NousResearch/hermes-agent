@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import re
 import threading
 import time
@@ -44,8 +45,8 @@ DEFAULT_INTERVAL_SECONDS = 300   # 5 minutes
 class LoopState:
     """Serializable loop state stored per session."""
 
-    id: str                          # auto-generated short UID, e.g. "a3f1c2"
     prompt: str
+    id: Optional[str] = None        # auto-generated short UID, e.g. "a3f1c2"; None = fork compat
     interval_seconds: int = 300
     status: str = "active"           # active | paused | done
     last_fired_at: float = 0.0
@@ -59,8 +60,8 @@ class LoopState:
     def from_json(cls, raw: str) -> "LoopState":
         data = json.loads(raw)
         return cls(
-            id=data.get("id", ""),
             prompt=data.get("prompt", ""),
+            id=data.get("id") or None,
             interval_seconds=int(data.get("interval_seconds", 300) or 300),
             status=data.get("status", "active"),
             last_fired_at=float(data.get("last_fired_at", 0.0) or 0.0),
@@ -188,11 +189,16 @@ def _load_loop(session_id: str, uid: str) -> Optional[LoopState]:
     if not raw:
         return None
     try:
-        return LoopState.from_json(raw)
+        state = LoopState.from_json(raw)
     except Exception as exc:
         logger.warning("LoopManager: could not parse loop %s/%s: %s",
                        session_id, uid, exc)
         return None
+    # Fix up id for old serialized loops (pre-fork JSON without "id" key).
+    # The uid from the registry is authoritative — assign it if missing.
+    if state.id is None:
+        state.id = uid
+    return state
 
 
 def load_all_loops(session_id: str) -> Dict[str, LoopState]:
@@ -208,8 +214,12 @@ def load_all_loops(session_id: str) -> Dict[str, LoopState]:
 
 
 def _save_loop(session_id: str, state: LoopState) -> None:
-    """Persist a loop to SessionDB."""
-    if not session_id or not state.id:
+    """Persist a loop to SessionDB. Auto-generates id if None."""
+    if not session_id:
+        return
+    if state.id is None:
+        state.id = _gen_uid()
+    if not state.id:
         return
     db = _get_session_db()
     if db is None:
@@ -382,6 +392,11 @@ class LoopManager:
         self._states: Dict[str, LoopState] = load_all_loops(session_id)
         self._scheduler: Optional[LoopScheduler] = None
 
+        # Fork-pattern scheduler state (pending_input / is_idle mode)
+        self._pending_input: Optional[queue.Queue] = None
+        self._is_idle_cb: Optional[Callable[[], bool]] = None
+        self._on_message: Optional[Callable[[str], None]] = None
+
         # Always start scheduler when dispatch is available — it polls
         # SessionDB every tick and picks up loops persisted by the
         # slash_worker (which runs with dispatch=None).
@@ -392,9 +407,12 @@ class LoopManager:
 
     @property
     def state(self) -> Optional[LoopState]:
-        """Return the first active loop, or None."""
+        """Return the first non-done loop (active preferred, then paused)."""
         for s in self._states.values():
             if s.status == "active":
+                return s
+        for s in self._states.values():
+            if s.status == "paused":
                 return s
         return None
 
@@ -470,13 +488,54 @@ class LoopManager:
     # Legacy set() alias — always creates new loop now
     def set(self, prompt: str, *,
             interval_seconds: Optional[int] = None,
-            name: Optional[str] = None) -> LoopState:
-        """Create a new loop. *name* is ignored (kept for backward compat)."""
-        return self.add(prompt,
-                        interval_seconds=int(interval_seconds or DEFAULT_INTERVAL_SECONDS))
+            name: Optional[str] = None,
+            pending_input: Optional[queue.Queue] = None,
+            is_idle: Optional[Callable[[], bool]] = None,
+            on_message: Optional[Callable[[str], None]] = None) -> LoopState:
+        """Create a new loop.
 
-    def pause(self, uid: Optional[str] = None) -> List[LoopState]:
-        """Pause one loop by UID, or all if uid is None."""
+        *name* is ignored (kept for backward compat).
+        When both *pending_input* and *is_idle* are provided, the fork-pattern
+        scheduler is auto-started, injecting prompts into the queue when idle.
+        """
+        # Store fork-pattern params for later resume() calls
+        self._pending_input = pending_input
+        self._is_idle_cb = is_idle
+        self._on_message = on_message
+
+        state = self.add(prompt,
+                         interval_seconds=int(interval_seconds or DEFAULT_INTERVAL_SECONDS))
+
+        # Start fork-pattern scheduler when both callbacks provided.
+        # Guard: if a dispatch-mode scheduler is already running (from
+        # __init__ dispatch= kwarg), do NOT replace it — the dispatch
+        # scheduler already handles all loops including this new one.
+        if pending_input is not None and is_idle is not None:
+            if self._dispatch is not None and self._scheduler is not None:
+                logger.debug(
+                    "LoopManager: fork-pattern set() called but dispatch "
+                    "scheduler already running — skipping fork scheduler "
+                    "(dispatch handles all loops)"
+                )
+            else:
+                self._stop_scheduler()
+                self._scheduler = LoopScheduler(
+                    self.session_id, state,
+                    pending_input=pending_input,
+                    is_idle=is_idle,
+                    on_message=on_message,
+                )
+                self._scheduler.start()
+
+        return state
+
+    def pause(self, uid: Optional[str] = None, *,
+              reason: str = "user-paused") -> List[LoopState]:
+        """Pause one loop by UID, or all if uid is None.
+
+        *reason* is accepted for fork backward compat (currently unused).
+        In fork-pattern (pending_input) mode, also stops the scheduler.
+        """
         if uid is not None:
             s = self._states.get(uid)
             if s is None:
@@ -487,6 +546,9 @@ class LoopManager:
                 return []
             s.status = "paused"
             _save_loop(self.session_id, s)
+            # Stop scheduler in fork mode
+            if self._pending_input is not None:
+                self._stop_scheduler()
             return [s]
 
         paused = []
@@ -495,10 +557,28 @@ class LoopManager:
                 s.status = "paused"
                 _save_loop(self.session_id, s)
                 paused.append(s)
+        # Stop scheduler in fork mode
+        if paused and self._pending_input is not None:
+            self._stop_scheduler()
         return paused
 
-    def resume(self, uid: Optional[str] = None) -> List[LoopState]:
-        """Resume one loop by UID, or all if uid is None."""
+    def resume(self, uid: Optional[str] = None, *,
+               pending_input: Optional[queue.Queue] = None,
+               is_idle: Optional[Callable[[], bool]] = None,
+               on_message: Optional[Callable[[str], None]] = None) -> List[LoopState]:
+        """Resume one loop by UID, or all if uid is None.
+
+        In fork-pattern mode, pass *pending_input* and *is_idle* to
+        restart the scheduler on resume.
+        """
+        # Update stored fork-pattern params if provided
+        if pending_input is not None:
+            self._pending_input = pending_input
+        if is_idle is not None:
+            self._is_idle_cb = is_idle
+        if on_message is not None:
+            self._on_message = on_message
+
         if uid is not None:
             s = self._states.get(uid)
             if s is None:
@@ -510,6 +590,16 @@ class LoopManager:
             s.status = "active"
             s.last_fired_at = 0.0  # fire immediately on next tick
             _save_loop(self.session_id, s)
+            # Restart scheduler in fork mode
+            if self._pending_input is not None and self._is_idle_cb is not None:
+                self._stop_scheduler()
+                self._scheduler = LoopScheduler(
+                    self.session_id, s,
+                    pending_input=self._pending_input,
+                    is_idle=self._is_idle_cb,
+                    on_message=self._on_message,
+                )
+                self._scheduler.start()
             return [s]
 
         resumed = []
@@ -519,6 +609,18 @@ class LoopManager:
                 s.last_fired_at = 0.0
                 _save_loop(self.session_id, s)
                 resumed.append(s)
+        # Restart scheduler in fork mode
+        if resumed and self._pending_input is not None and self._is_idle_cb is not None:
+            active_state = self.state  # first active loop
+            if active_state is not None:
+                self._stop_scheduler()
+                self._scheduler = LoopScheduler(
+                    self.session_id, active_state,
+                    pending_input=self._pending_input,
+                    is_idle=self._is_idle_cb,
+                    on_message=self._on_message,
+                )
+                self._scheduler.start()
         return resumed
 
     def clear(self, uid: Optional[str] = None) -> int:
@@ -530,6 +632,9 @@ class LoopManager:
             s.status = "done"
             _save_loop(self.session_id, s)
             _del_loop_meta(self.session_id, uid)
+            # Stop scheduler in fork mode if no active loops remain
+            if not self.is_active() and self._pending_input is not None:
+                self._stop_scheduler()
             return 1
 
         count = len(self._states)
@@ -538,6 +643,8 @@ class LoopManager:
             _save_loop(self.session_id, s)
         self._states.clear()
         _del_all_loop_meta(self.session_id)
+        # Stop scheduler when clearing all loops
+        self._stop_scheduler()
         return count
 
     def delete(self) -> bool:
@@ -583,19 +690,32 @@ class LoopManager:
 class LoopScheduler:
     """Background daemon thread that ticks every second.
 
-    On each tick:
-    1. Reloads all loop states from SessionDB
-    2. For each active loop whose interval has elapsed,
-       calls ``dispatch(prompt)``
-    3. Updates ``last_fired_at`` and ``turns_completed`` on success
+    Supports two modes:
+
+    1. **dispatch mode** (upstream multi-loop): pass ``dispatch`` — a
+       callable that receives each prompt and returns ``True`` on success.
+       The scheduler reloads all loops from SessionDB each tick and
+       dispatches any active loop whose interval has elapsed.
+
+    2. **pending_input mode** (fork single-loop): pass ``pending_input``
+       (a ``queue.Queue``) and ``is_idle`` (a ``Callable[[], bool]``).
+       The scheduler checks ``is_idle()`` before each tick, and injects
+       the loop prompt into ``pending_input`` when the interval elapses.
     """
 
     TICK_INTERVAL = 1.0
 
-    def __init__(self, session_id: str, *,
-                 dispatch: Callable[[str], bool]):
+    def __init__(self, session_id: str, state: Optional[LoopState] = None, *,
+                 dispatch: Optional[Callable[[str], bool]] = None,
+                 pending_input: Optional[queue.Queue] = None,
+                 is_idle: Optional[Callable[[], bool]] = None,
+                 on_message: Optional[Callable[[str], None]] = None):
         self._session_id = session_id
+        self._state = state
         self._dispatch = dispatch
+        self._pending_input = pending_input
+        self._is_idle = is_idle
+        self._on_message = on_message
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -629,6 +749,39 @@ class LoopScheduler:
                 logger.debug("LoopScheduler tick error: %s", exc)
 
     def _tick(self) -> None:
+        # --- pending_input / is_idle mode (fork pattern) ---
+        if self._pending_input is not None and self._is_idle is not None:
+            # Idle gate — skip if agent is busy
+            if not self._is_idle():
+                return
+
+            # Reload the state from DB if we have a uid
+            if self._state is not None and self._state.id:
+                reloaded = _load_loop(self._session_id, self._state.id)
+                if reloaded is None:
+                    return
+                self._state = reloaded
+
+            state = self._state
+            if state is None or state.status != "active":
+                return
+
+            now = time.time()
+            if state.last_fired_at > 0 and (now - state.last_fired_at) < state.interval_seconds:
+                return
+
+            # Fire — inject prompt into pending_input queue
+            state.last_fired_at = now
+            state.turns_completed += 1
+            _save_loop(self._session_id, state)
+
+            try:
+                self._pending_input.put(state.prompt)
+            except Exception as exc:
+                logger.debug("LoopScheduler: failed to enqueue prompt: %s", exc)
+            return
+
+        # --- dispatch mode (upstream multi-loop pattern) ---
         states = load_all_loops(self._session_id)
         if not states:
             return
@@ -640,7 +793,7 @@ class LoopScheduler:
             if (state.last_fired_at > 0
                     and (now - state.last_fired_at) < state.interval_seconds):
                 continue
-            if self._dispatch(state.prompt):
+            if self._dispatch is not None and self._dispatch(state.prompt):
                 state.last_fired_at = now
                 state.turns_completed += 1
                 _save_loop(self._session_id, state)
@@ -685,4 +838,19 @@ def delete_loop(session_id: str, uid: Optional[str] = None) -> bool:
 
 # Public aliases for external callers (tests, gateway)
 save_loop = _save_loop
-load_loop = _load_loop
+
+
+def load_loop(session_id: str, uid: Optional[str] = None) -> Optional[LoopState]:
+    """Load a loop from SessionDB.
+
+    Backward-compatible: if *uid* is None, returns the first
+    non-done loop for the session (fork single-loop pattern).
+    """
+    if uid is not None:
+        return _load_loop(session_id, uid)
+    # Fork compat: load all, return first non-done loop
+    states = load_all_loops(session_id)
+    for s in states.values():
+        if s.status != "done":
+            return s
+    return None

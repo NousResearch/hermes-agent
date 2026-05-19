@@ -176,6 +176,12 @@ class TestCurrentBoard:
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "b")
         assert kb.get_current_board() == "b"
 
+    def test_stale_env_falls_through_to_file_pointer(self, fresh_home, monkeypatch):
+        kb.create_board("persisted")
+        kb.set_current_board("persisted")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "missing-board")
+        assert kb.get_current_board() == "persisted"
+
     def test_invalid_env_falls_through(self, fresh_home, monkeypatch):
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "!!bad!!")
         # Should not crash — falls through to default.
@@ -344,6 +350,22 @@ class TestConnectionIsolation:
             assert [t.title for t in kb.list_tasks(conn)] == ["via-env"]
         with kb.connect(board="persist") as conn:
             assert kb.list_tasks(conn) == []
+
+    def test_connect_stale_env_uses_fallback_board_without_recreating_it(
+        self, fresh_home, monkeypatch,
+    ):
+        kb.create_board("ephemeral")
+        kb.remove_board("ephemeral")
+        kb.create_board("persist")
+        kb.set_current_board("persist")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "ephemeral")
+
+        with kb.connect() as conn:
+            kb.create_task(conn, title="via-fallback", assignee="x")
+
+        with kb.connect(board="persist") as conn:
+            assert [t.title for t in kb.list_tasks(conn)] == ["via-fallback"]
+        assert not kb.board_exists("ephemeral")
 
 
 # ---------------------------------------------------------------------------

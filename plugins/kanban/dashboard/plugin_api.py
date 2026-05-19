@@ -722,6 +722,10 @@ def _set_status_direct(
                 return False
 
         was_running = prev["status"] == "running"
+        reopening_satisfied_parent = (
+            prev["status"] in {"done", "archived"}
+            and new_status not in {"done", "archived"}
+        )
 
         cur = conn.execute(
             "UPDATE tasks SET status = ?, "
@@ -745,6 +749,37 @@ def _set_status_direct(
             "VALUES (?, ?, 'status', ?, ?)",
             (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
         )
+        if reopening_satisfied_parent:
+            # A parent leaving done/archived invalidates any direct child that
+            # was sitting in ready solely because that parent used to satisfy
+            # the dependency gate. Demote those children immediately so the
+            # dashboard does not keep advertising stale-ready work.
+            for row in conn.execute(
+                "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id",
+                (task_id,),
+            ).fetchall():
+                child_id = row["child_id"]
+                demoted = conn.execute(
+                    "UPDATE tasks SET status = 'todo' "
+                    "WHERE id = ? AND status = 'ready'",
+                    (child_id,),
+                )
+                if demoted.rowcount == 1:
+                    conn.execute(
+                        "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                        "VALUES (?, 'status', ?, ?)",
+                        (
+                            child_id,
+                            json.dumps(
+                                {
+                                    "status": "todo",
+                                    "reason": "parent_reopened",
+                                    "parent": task_id,
+                                }
+                            ),
+                            int(time.time()),
+                        ),
+                    )
     # If we re-opened something, children may have gone stale.
     if new_status in {"done", "ready"}:
         kanban_db.recompute_ready(conn)

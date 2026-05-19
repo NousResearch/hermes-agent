@@ -9899,10 +9899,14 @@ class GatewayRunner:
 
         is_create = action == "create"
 
+        from hermes_cli import kanban as _kanban_mod
+        _kanban_mod._gateway_kanban_in_progress = True
         try:
             output = await asyncio.to_thread(run_slash, text)
         except Exception as exc:  # pragma: no cover - defensive
             return t("gateway.kanban.error_prefix", error=exc)
+        finally:
+            _kanban_mod._gateway_kanban_in_progress = False
 
         # Auto-subscribe on create. Parse the task id from the CLI's standard
         # success line ("Created t_abcd  (ready, assignee=...)"). If the user

@@ -228,18 +228,26 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     Existing installs that already have the old path (e.g. ``image_cache``)
     keep using it — no migration required.
 
+    When both old and new paths exist (e.g. after a partial migration or
+    tool update), the new path is preferred so the consolidated layout
+    takes effect without manual cleanup.
+
     Args:
         new_subpath: Preferred path relative to HERMES_HOME (e.g. ``"cache/images"``).
         old_name: Legacy path relative to HERMES_HOME (e.g. ``"image_cache"``).
 
     Returns:
-        Absolute ``Path`` — old location if it exists on disk, otherwise the new one.
+        Absolute ``Path`` — new location if it already exists, otherwise the
+        old location if it exists on disk, otherwise the new default.
     """
     home = get_hermes_home()
+    new_path = home / new_subpath
     old_path = home / old_name
+    if new_path.exists():
+        return new_path
     if old_path.exists():
         return old_path
-    return home / new_subpath
+    return new_path
 
 
 def display_hermes_home() -> str:

@@ -1,5 +1,14 @@
 # Hermes Agent - Development Guide
 
+> **Fork-specific deployment rules** (these supersede anything below for repo-wide workflow concerns):
+>
+> 1. **Never push directly to `main`.** This fork auto-deploys to Railway on every push to `main`, which restarts the live Discord gateway and interrupts whatever conversation the user is having with the bot. Always work on a branch named `<type>/<short-desc>` and open a PR with `gh pr create`. Stop after pushing the branch — do NOT merge your own PRs, even if you have write access.
+> 2. **`railway.toml` is the source of truth for Railway config.** Do not add a `railway.json` — both files coexisting is a landmine: divergent settings activate silently if one is deleted. If you need to change deploy config (start command, healthcheck, restart policy), edit `railway.toml` only.
+> 3. **Health checks do NOT fix Discord-bot interruptions.** The gateway is an outbound WebSocket; SIGTERM kills the active task regardless of healthcheck status. `/health` exists for completeness (Railway dashboard configures it) but it only narrows the dual-running window — it does not prevent task cancellation. The real fix for "don't interrupt me" is "don't deploy mid-conversation."
+> 4. **In-container `RAILWAY_TOKEN` is service-scoped.** It supports `railway status` and `railway <cmd> --service hermes-gateway` queries, but NOT `railway link`, `railway whoami`, or anything that mutates CLI account state. Deploy management beyond read-only queries must run from the developer's local Mac at `/Users/timrines/rines/hermes-agent`.
+
+---
+
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
 ## Development Environment

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -171,5 +172,11 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
+
+    if os.environ.get("TZ") and hasattr(time, "tzset"):
+        try:
+            time.tzset()
+        except Exception:
+            pass
 
     return loaded

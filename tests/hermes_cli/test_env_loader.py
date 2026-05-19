@@ -1,6 +1,7 @@
 import importlib
 import os
 import sys
+import time
 from pathlib import Path
 
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -68,6 +69,23 @@ def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
     assert loaded == [user_env, project_env]
     assert os.getenv("OPENAI_BASE_URL") == "https://user.example/v1"
     assert os.getenv("OPENAI_API_KEY") == "project-key"
+
+
+def test_tz_env_applies_to_process_timezone(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("TZ=Asia/Shanghai\n", encoding="utf-8")
+
+    calls = []
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.setattr(time, "tzset", lambda: calls.append(os.environ.get("TZ")), raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("TZ") == "Asia/Shanghai"
+    assert calls == ["Asia/Shanghai"]
 
 
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):

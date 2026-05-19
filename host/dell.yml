@@ -26,8 +26,9 @@
     # - local: require a host-side Hermes venv under hermes_stack_dir
     # - docker: always docker exec into hermes_docker_container
     hermes_host_cli_mode: auto
-    hermes_docker_container: hermes
-    hermes_container_cli_path: /opt/data/hermes-agent/venv/bin/hermes
+    hermes_docker_container: hermes-agent
+    hermes_docker_user: hermes
+    hermes_container_cli_path: /opt/hermes/.venv/bin/hermes
 
     # Optional extras:
     # - Add systemd services to restart if your host runs Hermes components as units.
@@ -136,6 +137,7 @@
           STACK_DIR="{{ hermes_stack_dir }}"
           MODE="{{ hermes_host_cli_mode }}"
           CONTAINER="{{ hermes_docker_container }}"
+          CONTAINER_USER="{{ hermes_docker_user }}"
           CONTAINER_CLI="{{ hermes_container_cli_path }}"
 
           run_local() {
@@ -164,9 +166,9 @@
             # Allocate a TTY only for interactive host terminal use; keep non-interactive
             # commands pipe-friendly for scripts, Ansible, and cron.
             if [ -t 0 ] && [ -t 1 ]; then
-              exec docker exec -it "$CONTAINER" "$CONTAINER_CLI" "$@"
+              exec docker exec -it --user "$CONTAINER_USER" "$CONTAINER" "$CONTAINER_CLI" "$@"
             else
-              exec docker exec -i "$CONTAINER" "$CONTAINER_CLI" "$@"
+              exec docker exec -i --user "$CONTAINER_USER" "$CONTAINER" "$CONTAINER_CLI" "$@"
             fi
           }
 

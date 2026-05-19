@@ -30,8 +30,9 @@ For Dockerized installs, set:
 
 ```bash
 -e hermes_host_cli_mode=docker \
--e hermes_docker_container=<container_name> \
--e hermes_container_cli_path=/opt/data/hermes-agent/venv/bin/hermes
+-e hermes_docker_container=hermes-agent \
+-e hermes_docker_user=hermes \
+-e hermes_container_cli_path=/opt/hermes/.venv/bin/hermes
 ```
 
 The local wrapper path search prefers:
@@ -51,15 +52,17 @@ Override these when you run the playbook:
 - `hermes_install_default_cli_symlink` — make `/usr/local/bin/hermes` point to the wrapper
 - `hermes_host_cli_mode` — `auto`, `local`, or `docker`
 - `hermes_docker_container` — container name for Docker CLI mode
+- `hermes_docker_user` — user for `docker exec` in Docker CLI mode; keep this as the Hermes runtime user to avoid root-owned config/auth files
 - `hermes_container_cli_path` — Hermes executable path inside the container
 
 ## Example
 
 ```bash
 ansible-playbook -i inventory.ini host/dell.yml \
-  -e hermes_stack_dir=/opt/data/hermes-agent \
-  -e hermes_restart_user=hermes \
-  -e hermes_install_host_cli_wrapper=true
+  -e hermes_stack_dir=/opt/hermes \
+  -e hermes_restart_user=gpap \
+  -e hermes_install_host_cli_wrapper=true \
+  -e hermes_host_cli_mode=docker
 ```
 
 ## Result

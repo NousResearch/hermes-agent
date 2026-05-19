@@ -5240,16 +5240,29 @@ def _gateway_command_inner(args):
 
         if restart_all:
             # --all: stop every gateway process across all profiles, then start fresh
+            if is_macos() and get_launchd_plist_path().exists():
+                # `launchd_stop` calls `launchctl bootout`, which unloads the
+                # service definition. If this CLI is interrupted before
+                # `launchd_start` re-bootstraps the plist, the gateway stays
+                # dead — KeepAlive cannot revive an unloaded service. Use
+                # `launchd_restart` (`launchctl kickstart -k`) instead: it
+                # cycles the running process atomically without unload.
+                try:
+                    from gateway.status import get_running_pid
+                    current_pid = get_running_pid(cleanup_stale=False)
+                except Exception:
+                    current_pid = None
+                exclude = {current_pid} if current_pid else set()
+                killed = kill_gateway_processes(exclude_pids=exclude, all_profiles=True)
+                if killed:
+                    print(f"✓ Stopped {killed} gateway process(es) from other profiles")
+                launchd_restart()
+                return
+
             service_stopped = False
             if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
                 try:
                     systemd_stop(system=system)
-                    service_stopped = True
-                except subprocess.CalledProcessError:
-                    pass
-            elif is_macos() and get_launchd_plist_path().exists():
-                try:
-                    launchd_stop()
                     service_stopped = True
                 except subprocess.CalledProcessError:
                     pass
@@ -5271,8 +5284,6 @@ def _gateway_command_inner(args):
             print("Starting gateway...")
             if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
                 systemd_start(system=system)
-            elif is_macos() and get_launchd_plist_path().exists():
-                launchd_start()
             elif is_windows():
                 from hermes_cli import gateway_windows
                 # On Windows, even without a registered Scheduled Task / Startup

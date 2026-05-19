@@ -24,9 +24,11 @@ Architecture:
 2. Aggregator model synthesizes responses into a high-quality output
 3. Multiple layers can be used for iterative refinement (future enhancement)
 
-Models Used (via OpenRouter):
-- Reference Models: claude-opus-4.6, gemini-3-pro-preview, gpt-5.4-pro, deepseek-v3.2
-- Aggregator Model: claude-opus-4.6 (highest capability for synthesis)
+Provider routing:
+- Routed through agent.auxiliary_client.resolve_provider_client(), so any
+  registered Hermes provider works. Defaults pick Vercel AI Gateway when
+  AI_GATEWAY_API_KEY is set, else OpenRouter. Override with `moa.provider`
+  in config.yaml or the MOA_PROVIDER env var.
 
 Configuration:
     To customize the MoA setup, modify the configuration constants at the top of this file:
@@ -51,8 +53,7 @@ import os
 import asyncio
 import datetime
 from typing import Dict, Any, List, Optional
-from tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
-from agent.auxiliary_client import extract_content_or_reasoning
+from agent.auxiliary_client import extract_content_or_reasoning, resolve_provider_client
 from tools.debug_helpers import DebugSession
 import sys
 
@@ -78,6 +79,66 @@ AGGREGATOR_TEMPERATURE = 0.4  # Focused synthesis for consistency
 
 # Failure handling configuration
 MIN_SUCCESSFUL_REFERENCES = 1  # Minimum successful reference models needed to proceed
+
+# Default reasoning effort for both layers; overridable via moa.reasoning_effort.
+DEFAULT_REASONING_EFFORT = "xhigh"
+
+
+def _load_hermes_config() -> Dict[str, Any]:
+    """Best-effort load of ~/.hermes/config.yaml — empty dict on any failure.
+
+    Imported lazily so module import never fails in stripped/test environments.
+    """
+    try:
+        from hermes_cli.config import load_config  # type: ignore
+        cfg = load_config() or {}
+        if isinstance(cfg, dict):
+            return cfg
+    except Exception:
+        pass
+    return {}
+
+
+def _moa_cfg(key: str, default: Any) -> Any:
+    """Read moa.<key> from config with env-var override MOA_<KEY_UPPER>."""
+    env_key = "MOA_" + key.upper()
+    env_val = os.getenv(env_key)
+    if env_val:
+        return env_val
+    cfg = _load_hermes_config()
+    moa_section = cfg.get("moa") if isinstance(cfg.get("moa"), dict) else {}
+    if key in moa_section:
+        return moa_section[key]
+    return default
+
+
+def _resolve_provider_name() -> str:
+    """Resolve which provider to route MoA traffic through.
+
+    Precedence: moa.provider config > MOA_PROVIDER env > AI Gateway if key
+    present > OpenRouter if key present > error.
+    """
+    explicit = _moa_cfg("provider", None)
+    if explicit:
+        return str(explicit)
+    if os.getenv("AI_GATEWAY_API_KEY"):
+        return "ai-gateway"
+    if os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
+    raise ValueError(
+        "No MoA provider configured. Set moa.provider in config.yaml, or "
+        "export AI_GATEWAY_API_KEY (Vercel AI Gateway) or OPENROUTER_API_KEY."
+    )
+
+
+def _get_moa_client():
+    """Return a shared async OpenAI-compatible client for the resolved MoA provider."""
+    provider = _resolve_provider_name()
+    client, _model = resolve_provider_client(provider, async_mode=True)
+    if client is None:
+        raise ValueError(f"MoA provider '{provider}' is not available (missing API key?)")
+    return client
+
 
 # System prompt for the aggregator model (from the research paper)
 AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
@@ -125,7 +186,8 @@ async def _run_reference_model_safe(
     for attempt in range(max_retries):
         try:
             logger.info("Querying %s (attempt %s/%s)", model, attempt + 1, max_retries)
-            
+
+            effort = _moa_cfg("reasoning_effort", DEFAULT_REASONING_EFFORT)
             # Build parameters for the API call
             api_params = {
                 "model": model,
@@ -134,7 +196,7 @@ async def _run_reference_model_safe(
                 "extra_body": {
                     "reasoning": {
                         "enabled": True,
-                        "effort": "xhigh"
+                        "effort": effort,
                     }
                 }
             }
@@ -144,7 +206,7 @@ async def _run_reference_model_safe(
             if not model.lower().startswith('gpt-'):
                 api_params["temperature"] = temperature
             
-            response = await _get_openrouter_client().chat.completions.create(**api_params)
+            response = await _get_moa_client().chat.completions.create(**api_params)
             
             content = extract_content_or_reasoning(response)
             if not content:
@@ -196,11 +258,13 @@ async def _run_aggregator_model(
     Returns:
         str: Synthesized final response
     """
-    logger.info("Running aggregator model: %s", AGGREGATOR_MODEL)
+    agg_model = _moa_cfg("aggregator_model", AGGREGATOR_MODEL)
+    effort = _moa_cfg("reasoning_effort", DEFAULT_REASONING_EFFORT)
+    logger.info("Running aggregator model: %s", agg_model)
 
     # Build parameters for the API call
     api_params = {
-        "model": AGGREGATOR_MODEL,
+        "model": agg_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
@@ -209,24 +273,25 @@ async def _run_aggregator_model(
         "extra_body": {
             "reasoning": {
                 "enabled": True,
-                "effort": "xhigh"
+                "effort": effort,
             }
         }
     }
 
     # GPT models (especially gpt-4o-mini) don't support custom temperature values
     # Only include temperature for non-GPT models
-    if not AGGREGATOR_MODEL.lower().startswith('gpt-'):
+    if not str(agg_model).lower().startswith('gpt-'):
         api_params["temperature"] = temperature
 
-    response = await _get_openrouter_client().chat.completions.create(**api_params)
+    client = _get_moa_client()
+    response = await client.chat.completions.create(**api_params)
 
     content = extract_content_or_reasoning(response)
 
     # Retry once on empty content (reasoning-only response)
     if not content:
         logger.warning("Aggregator returned empty content, retrying once")
-        response = await _get_openrouter_client().chat.completions.create(**api_params)
+        response = await client.chat.completions.create(**api_params)
         content = extract_content_or_reasoning(response)
 
     logger.info("Aggregation complete (%s characters)", len(content))
@@ -275,12 +340,17 @@ async def mixture_of_agents_tool(
         Exception: If MoA processing fails or API key is not set
     """
     start_time = datetime.datetime.now()
-    
+
+    # Resolve config-driven defaults up front so debug data and error paths
+    # reflect what would actually have run.
+    ref_models_default = _moa_cfg("reference_models", REFERENCE_MODELS)
+    agg_model_default = _moa_cfg("aggregator_model", AGGREGATOR_MODEL)
+
     debug_call_data = {
         "parameters": {
             "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
-            "reference_models": reference_models or REFERENCE_MODELS,
-            "aggregator_model": aggregator_model or AGGREGATOR_MODEL,
+            "reference_models": reference_models or ref_models_default,
+            "aggregator_model": aggregator_model or agg_model_default,
             "reference_temperature": REFERENCE_TEMPERATURE,
             "aggregator_temperature": AGGREGATOR_TEMPERATURE,
             "min_successful_references": MIN_SUCCESSFUL_REFERENCES
@@ -299,13 +369,13 @@ async def mixture_of_agents_tool(
         logger.info("Starting Mixture-of-Agents processing...")
         logger.info("Query: %s", user_prompt[:100])
         
-        # Validate API key availability
-        if not os.getenv("OPENROUTER_API_KEY"):
-            raise ValueError("OPENROUTER_API_KEY environment variable not set")
+        # Validate provider availability (raises with a clear message)
+        provider = _resolve_provider_name()
+        logger.info("MoA routing through provider: %s", provider)
         
         # Use provided models or defaults
-        ref_models = reference_models or REFERENCE_MODELS
-        agg_model = aggregator_model or AGGREGATOR_MODEL
+        ref_models = reference_models or ref_models_default
+        agg_model = aggregator_model or agg_model_default
         
         logger.info("Using %s reference models in 2-layer MoA architecture", len(ref_models))
         
@@ -395,8 +465,8 @@ async def mixture_of_agents_tool(
             "success": False,
             "response": "MoA processing failed. Please try again or use a single model for this query.",
             "models_used": {
-                "reference_models": reference_models or REFERENCE_MODELS,
-                "aggregator_model": aggregator_model or AGGREGATOR_MODEL
+                "reference_models": reference_models or ref_models_default,
+                "aggregator_model": aggregator_model or agg_model_default
             },
             "error": error_msg
         }
@@ -410,13 +480,14 @@ async def mixture_of_agents_tool(
 
 
 def check_moa_requirements() -> bool:
-    """
-    Check if all requirements for MoA tools are met.
-    
-    Returns:
-        bool: True if requirements are met, False otherwise
-    """
-    return check_openrouter_api_key()
+    """Tool is available if any supported MoA provider key is present."""
+    if os.getenv("AI_GATEWAY_API_KEY"):
+        return True
+    if os.getenv("OPENROUTER_API_KEY"):
+        return True
+    # Honor explicit override even without standard env keys (custom providers
+    # may resolve credentials internally).
+    return bool(os.getenv("MOA_PROVIDER"))
 
 
 
@@ -428,13 +499,13 @@ def get_moa_configuration() -> Dict[str, Any]:
         Dict[str, Any]: Dictionary containing all configuration parameters
     """
     return {
-        "reference_models": REFERENCE_MODELS,
-        "aggregator_model": AGGREGATOR_MODEL,
+        "provider": os.getenv("MOA_PROVIDER") or _moa_cfg("provider", "auto"),
+        "reference_models": _moa_cfg("reference_models", REFERENCE_MODELS),
+        "aggregator_model": _moa_cfg("aggregator_model", AGGREGATOR_MODEL),
         "reference_temperature": REFERENCE_TEMPERATURE,
         "aggregator_temperature": AGGREGATOR_TEMPERATURE,
         "min_successful_references": MIN_SUCCESSFUL_REFERENCES,
-        "total_reference_models": len(REFERENCE_MODELS),
-        "failure_tolerance": f"{len(REFERENCE_MODELS) - MIN_SUCCESSFUL_REFERENCES}/{len(REFERENCE_MODELS)} models can fail"
+        "reasoning_effort": _moa_cfg("reasoning_effort", DEFAULT_REASONING_EFFORT),
     }
 
 
@@ -445,16 +516,19 @@ if __name__ == "__main__":
     print("🤖 Mixture-of-Agents Tool Module")
     print("=" * 50)
     
-    # Check if API key is available
-    api_available = check_openrouter_api_key()
-    
-    if not api_available:
-        print("❌ OPENROUTER_API_KEY environment variable not set")
-        print("Please set your API key: export OPENROUTER_API_KEY='your-key-here'")
-        print("Get API key at: https://openrouter.ai/")
+
+    if not check_moa_requirements():
+        print("❌ No MoA provider key found.")
+        print("Set one of:")
+        print("  export AI_GATEWAY_API_KEY=...    # Vercel AI Gateway (recommended)")
+        print("  export OPENROUTER_API_KEY=...    # OpenRouter")
         sys.exit(1)
     else:
-        print("✅ OpenRouter API key found")
+        try:
+            print(f"✅ MoA provider resolved: {_resolve_provider_name()}")
+        except Exception as exc:
+            print(f"❌ Could not resolve MoA provider: {exc}")
+            sys.exit(1)
     
     print("🛠️  MoA tools ready for use!")
     
@@ -536,7 +610,7 @@ registry.register(
     schema=MOA_SCHEMA,
     handler=lambda args, **kw: mixture_of_agents_tool(user_prompt=args.get("user_prompt", "")),
     check_fn=check_moa_requirements,
-    requires_env=["OPENROUTER_API_KEY"],
+    requires_env=[],  # provider-agnostic; check_moa_requirements covers it
     is_async=True,
     emoji="🧠",
 )

@@ -14,7 +14,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # that would otherwise accumulate when hermes runs as PID 1. See #15012.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
+    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini xvfb xauth && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
@@ -78,7 +78,10 @@ RUN npm install --prefer-offline --no-audit && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging
+RUN uv sync --frozen --no-install-project --extra all --extra messaging && \
+    uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir playwright && \
+    .venv/bin/python -m playwright install chromium && \
+    ln -sf "$(find /opt/hermes/.playwright -name chrome -path '*/chrome-linux/chrome' | head -1)" /usr/local/bin/chromium-hermes
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.

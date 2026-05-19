@@ -2237,24 +2237,25 @@ def _make_task(**overrides) -> "kb.Task":
 
 def test_safe_int_accepts_int_and_int_string():
     """Sanity: well-typed values pass through."""
-    assert kb._safe_int(0) == 0
-    assert kb._safe_int(1700000000) == 1700000000
-    assert kb._safe_int("1700000000") == 1700000000
+    # PR d8ad431de renamed _safe_int → _to_epoch (now also handles ISO-8601).
+    assert kb._to_epoch(0) == 0
+    assert kb._to_epoch(1700000000) == 1700000000
+    assert kb._to_epoch("1700000000") == 1700000000
 
 
 def test_safe_int_returns_none_on_corrupt_inputs():
     """All the failure modes that used to crash task_age."""
     # None — common when the column was never written
-    assert kb._safe_int(None) is None
+    assert kb._to_epoch(None) is None
     # Unsubstituted format string — the literal case the PR title cites
-    assert kb._safe_int("%s") is None
+    assert kb._to_epoch("%s") is None
     # Arbitrary non-numeric strings
-    assert kb._safe_int("abc") is None
-    assert kb._safe_int("") is None
+    assert kb._to_epoch("abc") is None
+    assert kb._to_epoch("") is None
     # Float-ish strings: int("1.5") raises ValueError too — caller wants None.
-    assert kb._safe_int("1.5") is None
+    assert kb._to_epoch("1.5") is None
     # Random object — covered by TypeError branch
-    assert kb._safe_int(object()) is None
+    assert kb._to_epoch(object()) is None
 
 
 def test_task_age_handles_corrupt_created_at():

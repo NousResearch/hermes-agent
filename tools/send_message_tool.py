@@ -359,7 +359,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return match.group(1), match.group(2), True
         match = _SLACK_TARGET_RE.fullmatch(target_ref)
         if match:
-            return match.group(1), None, True
+            chat_id = match.group(1)
+            # Slack user IDs (U...) and workspace IDs (W...) are NOT valid
+            # explicit send targets — chat.postMessage rejects them. A DM
+            # must be opened first via conversations.open to get a D...
+            # conversation ID. Caller still gets the chat_id so the U→D
+            # resolution path in send_message() can run.
+            is_explicit = chat_id[0] not in {"U", "W"}
+            return chat_id, None, is_explicit
     if platform_name == "matrix":
         trimmed = target_ref.strip()
         split_idx = trimmed.rfind(":$")

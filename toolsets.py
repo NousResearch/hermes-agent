@@ -31,6 +31,8 @@ from typing import List, Dict, Any, Set, Optional
 _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
+    # Jira issue loading
+    "jira_get_issue",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -81,6 +83,12 @@ TOOLSETS = {
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],
+        "includes": []
+    },
+
+    "jira": {
+        "description": "Read Jira issue content by URL or issue key for ticket-driven implementation work",
+        "tools": ["jira_get_issue"],
         "includes": []
     },
     

@@ -96,6 +96,11 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `HERMES_KANBAN_BOARD` | Pin the active kanban board for this process. Takes precedence over `~/.hermes/kanban/current`; the dispatcher injects this into worker subprocess env so workers physically cannot see tasks on other boards. Defaults to `default`. Slug validation: lowercase alphanumerics + hyphens + underscores, 1-64 chars |
 | `HERMES_KANBAN_DB` | Pin the kanban database file path directly (highest precedence; beats `HERMES_KANBAN_BOARD` and `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env so profile workers converge on the dispatcher's board |
 | `HERMES_KANBAN_WORKSPACES_ROOT` | Pin the kanban workspaces root directly (highest precedence for workspaces; beats `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env |
+| `JIRA_SITE_URL` | Default Jira site base URL for bare issue keys passed to `jira_get_issue` (for example `https://example.atlassian.net`). Full issue URLs can provide the site without this variable. |
+| `ATLASSIAN_SITE_URL` | Alias for `JIRA_SITE_URL`. |
+| `JIRA_EMAIL` | Jira/Atlassian account email for API-token Basic auth. Store only in `~/.hermes/.env` or a secret manager. |
+| `JIRA_API_TOKEN` | Jira/Atlassian API token for read-only issue loading. Prefer least-privilege project scopes where available. |
+| `JIRA_BEARER_TOKEN` | Alternative Jira bearer token. When set, Hermes uses it instead of `JIRA_EMAIL` + `JIRA_API_TOKEN`. |
 
 ## Provider Auth (OAuth)
 

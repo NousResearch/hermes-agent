@@ -109,6 +109,12 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 |------|-------------|----------------------|
 | `image_generate` | Generate high-quality images from text prompts using FAL.ai. The underlying model is user-configured (default: FLUX 2 Klein 9B, sub-1s generation) and is not selectable by the agent. Returns a single image URL. Display it using… | FAL_KEY |
 
+## `jira` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `jira_get_issue` | Read a Jira issue by URL or key before implementing ticket-driven work. Returns normalized summary, description, labels, components, links, subtasks, attachments, and acceptance-criteria-like custom fields. | `JIRA_EMAIL` + `JIRA_API_TOKEN`, or `JIRA_BEARER_TOKEN` |
+
 ## `memory` toolset
 
 | Tool | Description | Requires environment |

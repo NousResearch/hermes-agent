@@ -219,9 +219,6 @@ if [[ -f "$TARGET" ]]; then
   fi
   sz=$(wc -c < "$TARGET" | tr -d ' ')
   ct=$(guess_content_type "$TARGET")
-  sz=$(wc -c < "$TARGET" | tr -d ' ')
-  ct=$(guess_content_type "$TARGET")
-  bn=$(basename "$TARGET")
   h=$(compute_sha256 "$TARGET")
   FILES_JSON=$("$JQ_BIN" -n --arg p "$bn" --argjson s "$sz" --arg c "$ct" --arg h "$h" \
     '[{"path":$p,"size":$s,"contentType":$c,"hash":$h}]')

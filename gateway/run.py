@@ -3633,12 +3633,69 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("cleanup_all_browsers (%s) error: %s", phase, _e)
 
+            def _mark_active_sessions_resume_pending_before_drain(reason: str) -> set[str]:
+                """Durably mark currently running sessions before waiting.
+
+                On service restarts systemd can terminate the gateway while it
+                is still inside the drain wait.  If we only set
+                ``resume_pending`` after that wait times out, long-running
+                sessions whose ``updated_at`` is older than the startup
+                fallback window are lost.  Mark first, then clear the marks if
+                the drain completes gracefully.
+                """
+                marked: set[str] = set()
+                snapshot_running_agents = getattr(self, "_snapshot_running_agents", None)
+                if callable(snapshot_running_agents):
+                    active = snapshot_running_agents()
+                else:
+                    active = {
+                        session_key: agent
+                        for session_key, agent in getattr(self, "_running_agents", {}).items()
+                        if agent is not _AGENT_PENDING_SENTINEL
+                    }
+                if not active or getattr(self, "session_store", None) is None:
+                    return marked
+                try:
+                    with self.session_store._lock:  # noqa: SLF001 - durable shutdown bookkeeping
+                        self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                        changed = False
+                        now = datetime.now()
+                        for session_key in active:
+                            entry = self.session_store._entries.get(session_key)  # noqa: SLF001
+                            if entry is None or entry.suspended or entry.resume_pending:
+                                continue
+                            entry.resume_pending = True
+                            entry.resume_reason = reason
+                            entry.last_resume_marked_at = now
+                            marked.add(session_key)
+                            changed = True
+                        if changed:
+                            self.session_store._save()  # noqa: SLF001
+                except Exception as _e:
+                    logger.debug(
+                        "Failed to pre-mark active sessions as resume_pending: %s",
+                        _e,
+                    )
+                if marked:
+                    logger.info(
+                        "Pre-marked %d active session(s) as resumable before gateway drain",
+                        len(marked),
+                    )
+                return marked
+
             logger.info(
                 "Stopping gateway%s...",
                 " for restart" if self._restart_requested else "",
             )
             self._running = False
             self._draining = True
+
+            _resume_reason = (
+                "restart_timeout" if self._restart_requested else "shutdown_timeout"
+            )
+            _pre_drain_resume_marks = _mark_active_sessions_resume_pending_before_drain(
+                _resume_reason
+            )
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
@@ -3652,30 +3709,17 @@ class GatewayRunner:
                     timeout,
                     self._running_agent_count(),
                 )
-                # Mark forcibly-interrupted sessions as resume_pending BEFORE
-                # interrupting the agents.  This preserves each session's
-                # session_id + transcript so the next message on the same
-                # session_key auto-resumes from the existing conversation
-                # instead of getting routed through suspend_recently_active()
-                # and converted into a fresh session.  Terminal escalation
-                # for genuinely stuck sessions still flows through the
-                # existing ``.restart_failure_counts`` stuck-loop counter
-                # (incremented below, threshold 3), which sets
-                # ``suspended=True`` and overrides resume_pending.
+                # Active sessions were already marked resume_pending before
+                # the drain wait, so the marker survives even if systemd kills
+                # us right at the timeout boundary.  Refresh the marker for
+                # sessions that are still running now; sessions that completed
+                # during drain will have their early marker cleared below on
+                # the graceful path.
                 #
-                # Iterate self._running_agents (current) rather than the
-                # drain-start ``active_agents`` snapshot — the snapshot
-                # may include sessions that finished gracefully during
-                # the drain window, and marking those falsely would give
-                # them a stray restart-interruption system note on their
-                # next turn even though their previous turn completed
-                # cleanly.  Skip pending sentinels for the same reason
-                # _interrupt_running_agents() does: their agent hasn't
-                # started yet, there's nothing to interrupt, and the
-                # session shouldn't carry a misleading resume flag.
-                _resume_reason = (
-                    "restart_timeout" if self._restart_requested else "shutdown_timeout"
-                )
+                # Terminal escalation for genuinely stuck sessions still flows
+                # through the existing ``.restart_failure_counts`` stuck-loop
+                # counter (incremented below, threshold 3), which sets
+                # ``suspended=True`` and overrides resume_pending.
                 for _sk, _agent in list(self._running_agents.items()):
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
@@ -3703,6 +3747,27 @@ class GatewayRunner:
                 # killed by systemd instead of us (issue #8202).  The final
                 # catch-all cleanup below still runs for the graceful path.
                 _kill_tool_subprocesses("post-interrupt")
+            elif _pre_drain_resume_marks:
+                # Drain completed cleanly: the active turns finished and the
+                # early crash-safety resume markers would be misleading on the
+                # next message.  Clear only the markers this stop() call added;
+                # pre-existing resume_pending entries were intentionally left
+                # untouched by the pre-mark helper.
+                cleared = 0
+                for _sk in _pre_drain_resume_marks:
+                    try:
+                        if self.session_store.clear_resume_pending(_sk):
+                            cleared += 1
+                    except Exception as _e:
+                        logger.debug(
+                            "clear pre-drain resume_pending failed for %s: %s",
+                            _sk, _e,
+                        )
+                if cleared:
+                    logger.info(
+                        "Cleared %d pre-drain resume marker(s) after graceful drain",
+                        cleared,
+                    )
 
             if self._restart_requested and self._restart_detached:
                 try:

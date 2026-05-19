@@ -4085,6 +4085,10 @@ class GatewayRunner:
         # simply don't use kanban; this loop becomes a no-op.
         asyncio.create_task(self._kanban_dispatcher_watcher())
 
+        # Start optional Nubbi Linear automation: mirrors actionable Linear
+        # project issues into Kanban and syncs lifecycle states back.
+        asyncio.create_task(self._nubbi_linear_watcher())
+
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
             logger.info(
@@ -5398,6 +5402,20 @@ class GatewayRunner:
             while slept < interval and self._running:
                 await asyncio.sleep(min(1.0, interval - slept))
                 slept += 1.0
+
+    async def _nubbi_linear_watcher(self) -> None:
+        """Optional Linear project poller for Nubbi Command Center automation."""
+        try:
+            from hermes_cli.config import load_config as _load_config
+            from hermes_cli.nubbi_linear_automation import watch_from_config
+        except Exception as exc:
+            logger.warning("Nubbi Linear automation unavailable: %s", exc)
+            return
+
+        await watch_from_config(
+            load_config_fn=_load_config,
+            running_fn=lambda: self._running,
+        )
 
     async def _platform_reconnect_watcher(self) -> None:
         """Background task that periodically retries connecting failed platforms.

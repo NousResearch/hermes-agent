@@ -1562,6 +1562,27 @@ DEFAULT_CONFIG = {
         "dispatch_stale_timeout_seconds": 14400,
     },
 
+    # Nubbi automation: optional Linear-to-Kanban bridge. When enabled,
+    # the gateway polls the configured Linear project using LINEAR_API_KEY,
+    # mirrors actionable Todo/Backlog issues into Kanban, and syncs Kanban
+    # lifecycle states back to Linear.
+    "nubbi": {
+        "linear": {
+            "enabled": False,
+            "poll_interval_seconds": 300,
+            "project_name": "Nubbi Command Center",
+            "source_states": ["Todo", "Backlog"],
+            "active_states": ["In Progress", "In Review"],
+            "start_state": "In Progress",
+            "review_state": "In Review",
+            "done_state": "Done",
+            "kanban_board": "default",
+            "assignee": "default",
+            "workspace_kind": "scratch",
+            "workspace_path": "",
+        },
+    },
+
     # execute_code settings — controls the tool used for programmatic tool calls.
     "code_execution": {
         # Execution mode:

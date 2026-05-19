@@ -57,6 +57,10 @@ _PROVIDER_ENV_HINTS = (
 from hermes_constants import is_termux as _is_termux
 
 
+
+from agent.ssl_guard import verify_ca_bundle_with_fallback
+from agent.errors import SSLConfigurationError
+
 def _python_install_cmd() -> str:
     return "python -m pip install" if _is_termux() else "uv pip install"
 
@@ -2103,3 +2107,14 @@ def run_doctor(args):
         print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
     
     print()
+
+
+def check_certificates() -> tuple[bool, str]:
+    """Check SSL certificate bundle health."""
+    try:
+        verify_ca_bundle_with_fallback()
+        return True, "SSL certificate bundle is valid"
+    except SSLConfigurationError as e:
+        return False, str(e)
+    except Exception as e:
+        return False, f"Unexpected error checking certificates: {e}"

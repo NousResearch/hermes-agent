@@ -31,6 +31,14 @@ except ModuleNotFoundError:
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
 
+# Early SSL certificate guard (after hermes_bootstrap for safety)
+try:
+    from agent.ssl_guard import verify_ca_bundle_with_fallback
+    verify_ca_bundle_with_fallback()
+except Exception as e:
+    # Fail loudly but gracefully if guard itself is broken
+    logger.warning(f"SSL guard failed to initialize: {e}")
+
 import asyncio
 import base64
 import copy

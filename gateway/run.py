@@ -24,6 +24,14 @@ except ModuleNotFoundError:
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
 
+# Early SSL certificate guard (after hermes_bootstrap)
+try:
+    from agent.ssl_guard import verify_ca_bundle_with_fallback
+    verify_ca_bundle_with_fallback()
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning(f"SSL guard failed: {e}")
+
 import asyncio
 import dataclasses
 import inspect
@@ -1724,6 +1732,9 @@ class GatewayRunner:
         self._restart_detached = False
         self._restart_via_service = False
         self._stop_task: Optional[asyncio.Task] = None
+        
+        # Voice chat subsystem (lazy, completely optional)
+        self._voicechat_manager = None
         
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
@@ -4398,6 +4409,21 @@ class GatewayRunner:
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
 
+        # ── Voice chat subsystem (lazy init, zero impact when disabled) ──
+        _voicechat_cfg = self.config.__dict__.get("voicechat") or {}
+        if _voicechat_cfg.get("enabled"):
+            try:
+                from gateway.voicechat.manager import VoiceChatManager
+                self._voicechat_manager = VoiceChatManager(_voicechat_cfg)
+                _vc_ok = await self._voicechat_manager.initialize()
+                if _vc_ok:
+                    logger.info("Voice chat ready")
+                else:
+                    logger.warning("Voice chat initialization returned False")
+            except Exception as e:
+                logger.warning("Voice chat failed to initialize: %s", e)
+                self._voicechat_manager = None
+
         self._running = True
         self._update_runtime_status("running")
         
@@ -6274,6 +6300,16 @@ class GatewayRunner:
                 "Shutdown phase: all adapters disconnected at +%.2fs",
                 _phase_elapsed(),
             )
+
+            # Voicechat cleanup (standalone auxiliary service)
+            if getattr(self, "_voicechat_manager", None):
+                try:
+                    await self._voicechat_manager.shutdown()
+                    logger.info("Voice chat subsystem stopped")
+                except Exception as e:
+                    logger.debug("Voice chat shutdown error: %s", e)
+                finally:
+                    self._voicechat_manager = None
 
             for _task in list(self._background_tasks):
                 if _task is self._stop_task:

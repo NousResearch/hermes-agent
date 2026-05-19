@@ -125,6 +125,7 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     """
     db_path = tmp_path / "legacy-kanban.db"
     conn = sqlite3.connect(str(db_path))
+    # Pre-#16081 ``tasks`` shape: missing tenant, idempotency_key, session_id.
     conn.execute("""
         CREATE TABLE tasks (
             id TEXT PRIMARY KEY,

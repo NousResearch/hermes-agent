@@ -1278,6 +1278,14 @@ def _launch_tui(
     if "--expose-gc" not in _tokens:
         _tokens.append("--expose-gc")
     env["NODE_OPTIONS"] = " ".join(_tokens)
+    # HERMES_TUI_RESUME is an internal hand-off from the Python wrapper to the
+    # Ink app.  Because we start from os.environ.copy(), an exported/stale value
+    # in the user's shell would otherwise make a plain `hermes --tui` try to
+    # resume a non-existent session and leave the UI at "error: session not
+    # found" with no live session.  Only forward a resume id that argparse
+    # resolved for this invocation; direct `node ui-tui/dist/entry.js` users can
+    # still set HERMES_TUI_RESUME themselves.
+    env.pop("HERMES_TUI_RESUME", None)
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 

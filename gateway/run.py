@@ -66,6 +66,144 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+_TELEGRAM_NOISY_STATUS_RE = re.compile(
+    r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
+    r"auxiliary\s+.+\s+failed"
+    r"|compression\s+summary\s+failed"
+    r"|fallback\s+context\s+marker"
+    r"|configured\s+compression\s+model\s+.+\s+failed"
+    r"|no\s+auxiliary\s+llm\s+provider\s+configured"
+    r"|auto-lowered\s+compression\s+threshold"
+    r"|preflight\s+compression"
+    r"|rate\s+limited\.\s+waiting\s+\d"
+    r"|retrying\s+in\s+\d"
+    r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
+    r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
+    r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_GATEWAY_PROVIDER_ERROR_RE = re.compile(
+    r"("  # infrastructure/provider error preambles, not ordinary assistant prose
+    r"api\s+(?:call\s+)?failed"
+    r"|provider\s+authentication\s+failed"
+    r"|non-retryable\s+error"
+    r"|rate\s+limited\s+after\s+\d+\s+retries"
+    r"|error\s+code\s*:"
+    r"|\bhttp\s*\d{3}\b"
+    r"|incorrect\s+api\s+key"
+    r"|invalid\s+api\s+key"
+    r")",
+    re.IGNORECASE,
+)
+
+_GATEWAY_PROVIDER_POLICY_RE = re.compile(
+    r"("  # raw provider policy/safety bodies are noisy and may be sensitive
+    r"cybersecurity\s+risk"
+    r"|security\s+policy"
+    r"|safety\s+policy"
+    r"|policy\s+violation"
+    r"|violat(?:e|es|ed|ion)"
+    r"|blocked\s+(?:because|by|under)"
+    r"|request\s+(?:was\s+)?(?:blocked|rejected)"
+    r"|disallowed"
+    r"|moderation"
+    r")",
+    re.IGNORECASE,
+)
+
+_GATEWAY_AUTH_ERROR_RE = re.compile(
+    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
+    re.IGNORECASE,
+)
+
+_GATEWAY_RATE_LIMIT_RE = re.compile(
+    r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
+    re.IGNORECASE,
+)
+
+_GATEWAY_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"),
+    re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
+)
+
+
+def _gateway_platform_value(platform: Any) -> str:
+    """Return a normalized gateway platform value for enums or raw strings."""
+    return str(getattr(platform, "value", platform) or "").strip().lower()
+
+
+def _redact_gateway_user_facing_secrets(text: str) -> str:
+    """Best-effort secret redaction before text can leave the gateway."""
+    redacted = str(text or "")
+    for pattern in _GATEWAY_SECRET_PATTERNS:
+        redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
+    return redacted
+
+
+def _gateway_provider_error_reply(text: str) -> str:
+    """Map raw provider/API errors to a short user-safe Telegram reply."""
+    if _GATEWAY_AUTH_ERROR_RE.search(text):
+        return (
+            "⚠️ Provider authentication failed. Check the configured credentials; "
+            "raw provider details are in the gateway logs."
+        )
+    if _GATEWAY_PROVIDER_POLICY_RE.search(text):
+        return (
+            "⚠️ The model provider rejected the request. I kept the raw provider "
+            "error out of chat; check gateway logs for details or try rephrasing."
+        )
+    if _GATEWAY_RATE_LIMIT_RE.search(text):
+        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+    return (
+        "⚠️ The model provider failed after retries. I kept raw provider details "
+        "out of chat; check gateway logs for diagnostics."
+    )
+
+
+def _looks_like_gateway_provider_error(text: str) -> bool:
+    """True when text is infrastructure/provider failure, not normal content."""
+    return bool(_GATEWAY_PROVIDER_ERROR_RE.search(text))
+
+
+def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+    """Sanitize final gateway replies before sending them to high-noise chats.
+
+    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
+    failure categories instead of raw HTTP bodies, request IDs, or policy text.
+    Other platforms keep the existing behaviour for now.
+    """
+    if not text:
+        return text
+    if _gateway_platform_value(platform) != "telegram":
+        return text
+
+    redacted = _redact_gateway_user_facing_secrets(str(text))
+    if _looks_like_gateway_provider_error(redacted):
+        return _gateway_provider_error_reply(redacted)
+    return redacted
+
+
+def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+    """Filter/sanitize agent status callbacks before platform delivery."""
+    text = str(message or "").strip()
+    if not text:
+        return None
+    if _gateway_platform_value(platform) != "telegram":
+        return text
+
+    text = _redact_gateway_user_facing_secrets(text)
+    if _TELEGRAM_NOISY_STATUS_RE.search(text):
+        return None
+    if _looks_like_gateway_provider_error(text):
+        return _gateway_provider_error_reply(text)
+    return text
+
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
@@ -778,6 +916,59 @@ def _build_media_placeholder(event) -> str:
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
+
+
+def _format_duration(seconds: float) -> str:
+    total = int(round(seconds))
+    if total < 0:
+        total = 0
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+async def _probe_audio_duration(path: str) -> Optional[str]:
+    """Best-effort duration probe. Returns formatted MM:SS / HH:MM:SS, or None on failure."""
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext == ".wav":
+        try:
+            def _wav_duration() -> float:
+                import wave
+                with wave.open(path, "rb") as wf:
+                    frames = wf.getnframes()
+                    rate = wf.getframerate() or 1
+                    return frames / float(rate)
+            secs = await asyncio.to_thread(_wav_duration)
+            return _format_duration(secs)
+        except Exception:
+            pass
+
+    if ext in (".ogg", ".opus", ".oga"):
+        try:
+            def _ogg_duration() -> float:
+                from mutagen.oggopus import OggOpus
+                return float(OggOpus(path).info.length)
+            secs = await asyncio.to_thread(_ogg_duration)
+            return _format_duration(secs)
+        except Exception:
+            pass
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        if proc.returncode == 0:
+            return _format_duration(float(stdout.decode().strip()))
+    except Exception:
+        pass
+
+    return None
 
 
 def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
@@ -5383,6 +5574,24 @@ class GatewayRunner:
             )
 
             timeout = self._restart_drain_timeout
+
+            # Pre-mark sessions as resume_pending BEFORE the drain wait.
+            # If the process is killed by the service manager during the
+            # drain, the durable marker is already written so the next
+            # gateway boot can recover in-flight sessions (#27856).
+            _pre_drain_keys: list[str] = []
+            for _sk, _agent in list(self._running_agents.items()):
+                if _agent is _AGENT_PENDING_SENTINEL:
+                    continue
+                try:
+                    self.session_store.mark_resume_pending(
+                        _sk,
+                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
+                    )
+                    _pre_drain_keys.append(_sk)
+                except Exception as _e:
+                    logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
+
             _drain_started_at = time.monotonic()
             active_agents, timed_out = await self._drain_active_agents(timeout)
             logger.info(
@@ -5394,6 +5603,21 @@ class GatewayRunner:
                 len(active_agents),
                 self._running_agent_count(),
             )
+
+            if not timed_out:
+                # Drain completed gracefully — all running sessions finished.
+                # Clear the pre-drain resume_pending markers so sessions that
+                # completed during the drain window don't carry a stale flag.
+                for _sk in _pre_drain_keys:
+                    if _sk not in self._running_agents:
+                        try:
+                            self.session_store.clear_resume_pending(_sk)
+                        except Exception as _e:
+                            logger.debug(
+                                "clear_resume_pending after drain failed for %s: %s",
+                                _sk, _e,
+                            )
+
             if timed_out:
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
@@ -5851,6 +6075,33 @@ class GatewayRunner:
             return True
 
         user_id = source.user_id
+
+        # Telegram (and similar) authorize entire group/forum chats by
+        # chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
+        # That allowlist is chat-scoped, so it must work even when
+        # source.user_id is None — Telegram emits anonymous-admin posts
+        # and sender_chat traffic in groups with no `from_user`, and an
+        # operator who explicitly listed the chat expects those to be
+        # honored. Run this check before the no-user-id guard below so
+        # documented behavior matches reality
+        # (website/docs/reference/environment-variables.md,
+        # website/docs/user-guide/messaging/telegram.md).
+        if source.chat_type in {"group", "forum"} and source.chat_id:
+            chat_allowlist_env = {
+                Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+                Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+            }.get(source.platform, "")
+            if chat_allowlist_env:
+                raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
+                if raw_chat_allowlist:
+                    allowed_group_ids = {
+                        cid.strip()
+                        for cid in raw_chat_allowlist.split(",")
+                        if cid.strip()
+                    }
+                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                        return True
+
         if not user_id:
             return False
 
@@ -6197,11 +6448,14 @@ class GatewayRunner:
             pass
         elif source.user_id is None:
             # Messages with no user identity (Telegram service messages,
-            # channel forwards, anonymous admin actions) cannot be
-            # authorized — drop silently instead of triggering the pairing
-            # flow with a None user_id.
-            logger.debug("Ignoring message with no user_id from %s", source.platform.value)
-            return None
+            # channel forwards, anonymous admin posts, sender_chat) can't
+            # be paired, but they can still be authorized via a
+            # chat-scoped allowlist (e.g. TELEGRAM_GROUP_ALLOWED_CHATS
+            # authorizes every member of the listed chat regardless of
+            # sender). Defer to _is_user_authorized so that path runs.
+            if not self._is_user_authorized(source):
+                logger.debug("Ignoring message with no user_id from %s", source.platform.value)
+                return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
@@ -8218,6 +8472,7 @@ class GatewayRunner:
             response = _normalize_empty_agent_response(
                 agent_result, response, history_len=len(history),
             )
+            response = _sanitize_gateway_final_response(source.platform, response)
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
@@ -13982,16 +14237,25 @@ class GatewayRunner:
             The enriched message string with transcriptions prepended.
         """
         if not getattr(self.config, "stt_enabled", True):
-            disabled_note = "[The user sent voice message(s), but transcription is disabled in config."
-            if self._has_setup_skill():
-                disabled_note += (
-                    " You have a skill called hermes-agent-setup that can help "
-                    "users configure Hermes features including voice, tools, and more."
-                )
-            disabled_note += "]"
+            notes = []
+            for path in audio_paths:
+                abs_path = os.path.abspath(path)
+                duration_str = await _probe_audio_duration(abs_path)
+                if duration_str:
+                    notes.append(
+                        f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
+                    )
+                else:
+                    notes.append(f"[The user sent a voice message: {abs_path}]")
+            if not notes:
+                return user_text
+            prefix = "\n\n".join(notes)
+            _placeholder = "(The user sent a message with no text content)"
+            if user_text and user_text.strip() == _placeholder:
+                return prefix
             if user_text:
-                return f"{disabled_note}\n\n{user_text}"
-            return disabled_note
+                return f"{prefix}\n\n{user_text}"
+            return prefix
 
         from tools.transcription_tools import transcribe_audio
 
@@ -15752,10 +16016,23 @@ class GatewayRunner:
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
+            prepared_message = _prepare_gateway_status_message(
+                source.platform,
+                event_type,
+                message,
+            )
+            if prepared_message is None:
+                logger.debug(
+                    "status_callback suppressed for %s/%s: %s",
+                    source.platform.value if source.platform else "unknown",
+                    event_type,
+                    _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+                )
+                return
             _fut = safe_schedule_threadsafe(
                 _status_adapter.send(
                     _status_chat_id,
-                    message,
+                    prepared_message,
                     metadata=_status_thread_metadata,
                 ),
                 _loop_for_step,
@@ -16543,6 +16820,37 @@ class GatewayRunner:
                 if entry:
                     entry.session_id = agent.session_id
                     self.session_store._save()
+
+                # If this is a Telegram DM and source.thread_id was lost during
+                # the session split (synthetic / recovered event), restore it
+                # from the binding so _thread_metadata_for_source produces the
+                # correct message_thread_id instead of routing to the General
+                # thread.  Failure here is non-fatal — we log and continue;
+                # worst case the message lands in General, which is the
+                # pre-fix behaviour.
+                if (
+                    getattr(source, "platform", None) == Platform.TELEGRAM
+                    and getattr(source, "chat_type", None) == "dm"
+                    and getattr(source, "thread_id", None) is None
+                    and self._session_db is not None
+                ):
+                    try:
+                        _binding = self._session_db.get_telegram_topic_binding_by_session(
+                            session_id=agent.session_id,
+                        )
+                        if _binding and _binding.get("thread_id"):
+                            source.thread_id = str(_binding["thread_id"])
+                            logger.debug(
+                                "Restored source.thread_id=%s from binding after session split %s → %s",
+                                source.thread_id,
+                                session_id,
+                                agent.session_id,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "Failed to restore thread_id from binding after session split",
+                            exc_info=True,
+                        )
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.vault_guard import create_vault_backup
 
 def log_info(msg: str):
     print(f"{color('→', Colors.CYAN)} {msg}")
@@ -23,6 +24,19 @@ def log_success(msg: str):
 
 def log_warn(msg: str):
     print(f"{color('⚠', Colors.YELLOW)} {msg}")
+
+def _create_uninstall_vault_backup(hermes_home: Path) -> str:
+    """Create a mandatory protected-data backup before full uninstall."""
+    manifest = create_vault_backup(
+        hermes_home,
+        reason="pre-full-uninstall",
+        keep=60,
+        raise_on_error=True,
+    )
+    manifest_path = str(manifest.get("manifest_path") or "")
+    log_success(f"Protected Hermes data backup created: {manifest_path}")
+    return manifest_path
+
 
 def get_project_root() -> Path:
     """Get the project installation directory."""
@@ -534,14 +548,20 @@ def run_uninstall(args):
         print("This will remove the Hermes code but keep your configuration and data.")
     
     print()
+    if full_uninstall:
+        prompt = f"Type the full path '{color(str(hermes_home), Colors.YELLOW)}' to confirm: "
+    else:
+        prompt = f"Type '{color('yes', Colors.YELLOW)}' to confirm: "
+
     try:
-        confirm = input(f"Type '{color('yes', Colors.YELLOW)}' to confirm: ").strip().lower()
+        confirm = input(prompt).strip()
     except (KeyboardInterrupt, EOFError):
         print()
         print("Cancelled.")
         return
     
-    if confirm != "yes":
+    expected_confirm = str(hermes_home) if full_uninstall else "yes"
+    if confirm != expected_confirm:
         print()
         print("Uninstall cancelled.")
         return
@@ -549,6 +569,16 @@ def run_uninstall(args):
     print()
     print(color("Uninstalling...", Colors.CYAN, Colors.BOLD))
     print()
+
+    vault_manifest_path = ""
+    if full_uninstall:
+        log_info("Creating mandatory protected-data backup before full uninstall...")
+        try:
+            vault_manifest_path = _create_uninstall_vault_backup(hermes_home)
+        except Exception as e:
+            log_warn(f"Full uninstall blocked: could not create protected-data backup: {e}")
+            log_info("Run again after fixing the backup issue, or choose Keep data.")
+            return
     
     # 1. Stop and uninstall gateway service + kill standalone processes
     log_info("Checking for running gateway...")
@@ -643,6 +673,8 @@ def run_uninstall(args):
         log_info("Removing configuration and data...")
         try:
             if hermes_home.exists():
+                if not vault_manifest_path:
+                    raise RuntimeError("missing protected-data backup manifest")
                 shutil.rmtree(hermes_home)
                 log_success(f"Removed {hermes_home}")
         except Exception as e:

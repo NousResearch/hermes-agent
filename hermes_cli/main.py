@@ -7683,6 +7683,20 @@ def _run_pre_update_backup(args) -> None:
     print()
 
 
+def _run_pre_update_vault_backup() -> None:
+    """Always snapshot protected Hermes identity/memory data before update."""
+    try:
+        from hermes_cli.vault_guard import create_vault_backup
+
+        manifest = create_vault_backup(reason="pre-update", keep=60, raise_on_error=False)
+        manifest_path = manifest.get("manifest_path")
+        print(f"鈼?Protected data snapshot: {manifest_path}")
+    except Exception as exc:
+        print(f"鈿?Protected data snapshot failed: {exc}")
+        print("  Continuing update, but identity/memory data was not snapshotted.")
+    print()
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -7750,6 +7764,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
+    _run_pre_update_vault_backup()
     _run_pre_update_backup(args)
 
     # Try git-based update first, fall back to ZIP download on Windows

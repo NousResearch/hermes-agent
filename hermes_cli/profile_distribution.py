@@ -70,6 +70,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.vault_guard import create_vault_backup
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -537,6 +539,13 @@ def _copy_dist_payload(
     shadowing a real ``.env``.
     """
     target.mkdir(parents=True, exist_ok=True)
+
+    try:
+        create_vault_backup(target, reason="pre-profile-distribution-copy", keep=60)
+    except Exception as exc:
+        raise DistributionError(
+            f"Could not create protected-data backup before profile distribution copy: {exc}"
+        ) from exc
 
     for entry in staged.iterdir():
         name = entry.name

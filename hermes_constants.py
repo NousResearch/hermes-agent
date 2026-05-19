@@ -5,10 +5,18 @@ without risk of circular imports.
 """
 
 import os
+import tempfile
 from pathlib import Path
 
 
 _profile_fallback_warned: bool = False
+
+
+def _user_home() -> Path:
+    try:
+        return Path.home()
+    except RuntimeError:
+        return Path(tempfile.gettempdir()) / "hermes-home-unavailable"
 
 
 def get_hermes_home() -> Path:
@@ -39,7 +47,7 @@ def get_hermes_home() -> Path:
             # Inline the default-root resolution from get_default_hermes_root()
             # to stay import-safe (this function is called from module scope
             # in 30+ files; we cannot afford to trigger logging setup here).
-            active_path = (Path.home() / ".hermes" / "active_profile")
+            active_path = (_user_home() / ".hermes" / "active_profile")
             active = active_path.read_text().strip() if active_path.exists() else ""
         except (UnicodeDecodeError, OSError):
             active = ""
@@ -65,7 +73,7 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return Path.home() / ".hermes"
+    return _user_home() / ".hermes"
 
 
 def get_default_hermes_root() -> Path:
@@ -84,7 +92,7 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = Path.home() / ".hermes"
+    native_home = _user_home() / ".hermes"
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home

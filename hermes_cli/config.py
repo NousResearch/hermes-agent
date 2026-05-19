@@ -150,6 +150,8 @@ import yaml
 from hermes_cli.colors import Colors, color
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
+_VAULT_INTEGRITY_CHECKED_HOMES: set[str] = set()
+
 
 # =============================================================================
 # Managed mode (NixOS declarative config)
@@ -411,8 +413,33 @@ def _ensure_default_soul_md(home: Path) -> None:
     soul_path = home / "SOUL.md"
     if soul_path.exists():
         return
+    logger.warning(
+        "SOUL.md is missing under %s; writing the bundled default identity. "
+        "If this was unexpected, inspect Hermes vault backups before continuing.",
+        home,
+    )
     soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
     _secure_file(soul_path)
+
+
+def _run_vault_integrity_check_once(home: Path) -> None:
+    """Restore obvious identity/memory loss from vault backups once per process."""
+    key = str(home.resolve(strict=False))
+    if key in _VAULT_INTEGRITY_CHECKED_HOMES:
+        return
+    _VAULT_INTEGRITY_CHECKED_HOMES.add(key)
+    try:
+        from hermes_cli.vault_guard import run_startup_integrity_check
+
+        result = run_startup_integrity_check(home, default_soul_text=DEFAULT_SOUL_MD)
+        restored = [r for r in result.get("results", []) if r.get("status") == "restored"]
+        if restored:
+            logger.warning(
+                "Hermes vault guard restored protected profile data: %s",
+                ", ".join(str(r.get("relative_path")) for r in restored),
+            )
+    except Exception as exc:
+        logger.warning("Hermes vault guard startup integrity check failed: %s", exc)
 
 
 def ensure_hermes_home():
@@ -439,6 +466,7 @@ def ensure_hermes_home():
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
+        _run_vault_integrity_check_once(home)
         _ensure_default_soul_md(home)
 
 
@@ -461,6 +489,7 @@ def _ensure_hermes_home_managed(home: Path):
     # so we mkdir it ourselves (it's inside an already-secured logs/ dir).
     (home / "logs" / "curator").mkdir(parents=True, exist_ok=True)
     # Inside umask(0o007) scope — SOUL.md will be created as 0660
+    _run_vault_integrity_check_once(home)
     _ensure_default_soul_md(home)
 
 

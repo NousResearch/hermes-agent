@@ -4,6 +4,7 @@ description: Migrate a user's OpenClaw customization footprint into Hermes Agent
 version: 1.0.0
 author: Hermes Agent (Nous Research)
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Migration, OpenClaw, Hermes, Memory, Persona, Import]

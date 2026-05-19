@@ -1,3 +1,4 @@
+.DS_Store
 /venv/
 /_pycache/
 *.pyc*
@@ -68,3 +69,7 @@ mini-swe-agent/
 .nix-stamps/
 result
 website/static/api/skills-index.json
+models-dev-upstream/
+hermes_cli/tui_dist/*
+hermes_cli/scripts/
+docs/superpowers/*

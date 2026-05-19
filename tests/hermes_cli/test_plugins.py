@@ -21,6 +21,7 @@ from hermes_cli.plugins import (
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
+    resolve_plugin_command_result,
     discover_plugins,
     invoke_hook,
 )
@@ -329,6 +330,34 @@ class TestPluginHooks:
         assert "post_api_request" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
+        assert "transform_llm_output" in VALID_HOOKS
+
+    def test_valid_hooks_include_pre_gateway_dispatch(self):
+        assert "pre_gateway_dispatch" in VALID_HOOKS
+
+    def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
+        """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "predispatch_plugin",
+            register_body=(
+                'ctx.register_hook("pre_gateway_dispatch", '
+                'lambda **kw: {"action": "skip", "reason": "test"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_gateway_dispatch",
+            event=object(),
+            gateway=object(),
+            session_store=object(),
+        )
+        assert len(results) == 1
+        assert results[0] == {"action": "skip", "reason": "test"}
 
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
@@ -509,6 +538,95 @@ class TestPreToolCallBlocking:
         assert get_pre_tool_call_block_message("terminal", {}) == "first blocker"
 
 
+class TestThreadToolWhitelist:
+    """Tests for the thread-local tool whitelist used by background review forks."""
+
+    def test_allowed_tool_passes_through_to_hooks(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist({"memory", "skill_manage"})
+        try:
+            assert get_pre_tool_call_block_message("memory", {}) is None
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_disallowed_tool_blocked_with_message(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist(
+            {"memory"}, deny_msg_fmt="denied: {tool_name}"
+        )
+        try:
+            msg = get_pre_tool_call_block_message("terminal", {})
+            assert msg == "denied: terminal"
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_clear_restores_unrestricted_behavior(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist({"memory"})
+        clear_thread_tool_whitelist()
+        # After clearing, any tool should pass through to plugin hooks (which
+        # return [] here, so result is None).
+        assert get_pre_tool_call_block_message("terminal", {}) is None
+
+    def test_whitelist_is_thread_local(self, monkeypatch):
+        """Setting a whitelist in one thread must NOT leak into another."""
+        import threading
+
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+
+        # Main thread: install a restrictive whitelist.
+        set_thread_tool_whitelist({"memory"})
+        try:
+            assert get_pre_tool_call_block_message("terminal", {}) is not None
+
+            # Worker thread: should NOT inherit main thread's whitelist.
+            result = {}
+
+            def worker():
+                result["msg"] = get_pre_tool_call_block_message("terminal", {})
+
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+            assert result["msg"] is None, (
+                "thread-local whitelist leaked across threads"
+            )
+        finally:
+            clear_thread_tool_whitelist()
+
+
 # ── TestPluginContext ──────────────────────────────────────────────────────
 
 
@@ -543,6 +661,129 @@ class TestPluginContext:
 
         from tools.registry import registry
         assert "plugin_echo" in registry._tools
+
+    def test_register_tool_rejects_shadow_without_override(self, tmp_path, monkeypatch, caplog):
+        """Without override=True, registering a tool name claimed by a different toolset is rejected."""
+        from tools.registry import registry
+
+        # Seed an existing entry from a non-plugin toolset.
+        registry.register(
+            name="shadow_target",
+            toolset="terminal",
+            schema={"name": "shadow_target", "description": "Built-in", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "built-in",
+        )
+        original_handler = registry._tools["shadow_target"].handler
+        try:
+            plugins_dir = tmp_path / "hermes_test" / "plugins"
+            plugin_dir = plugins_dir / "shadow_plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "shadow_plugin"}))
+            (plugin_dir / "__init__.py").write_text(
+                'def register(ctx):\n'
+                '    ctx.register_tool(\n'
+                '        name="shadow_target",\n'
+                '        toolset="plugin_shadow_plugin",\n'
+                '        schema={"name": "shadow_target", "description": "Plugin", "parameters": {"type": "object", "properties": {}}},\n'
+                '        handler=lambda args, **kw: "plugin",\n'
+                '    )\n'
+            )
+            hermes_home = tmp_path / "hermes_test"
+            (hermes_home / "config.yaml").write_text(
+                yaml.safe_dump({"plugins": {"enabled": ["shadow_plugin"]}})
+            )
+            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+            with caplog.at_level(logging.ERROR, logger="tools.registry"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+
+            # Original handler must still be in place — registration was rejected.
+            assert registry._tools["shadow_target"].handler is original_handler
+            assert registry._tools["shadow_target"].toolset == "terminal"
+            # And an ERROR was logged explaining why and how to opt in.
+            assert any("override=True" in r.message for r in caplog.records)
+        finally:
+            registry.deregister("shadow_target")
+
+    def test_register_tool_override_replaces_existing(self, tmp_path, monkeypatch, caplog):
+        """override=True lets a plugin replace an existing built-in tool."""
+        from tools.registry import registry
+
+        registry.register(
+            name="override_target",
+            toolset="terminal",
+            schema={"name": "override_target", "description": "Built-in", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "built-in",
+        )
+        try:
+            plugins_dir = tmp_path / "hermes_test" / "plugins"
+            plugin_dir = plugins_dir / "override_plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "override_plugin"}))
+            (plugin_dir / "__init__.py").write_text(
+                'def register(ctx):\n'
+                '    ctx.register_tool(\n'
+                '        name="override_target",\n'
+                '        toolset="plugin_override_plugin",\n'
+                '        schema={"name": "override_target", "description": "Plugin", "parameters": {"type": "object", "properties": {}}},\n'
+                '        handler=lambda args, **kw: "plugin",\n'
+                '        override=True,\n'
+                '    )\n'
+            )
+            hermes_home = tmp_path / "hermes_test"
+            (hermes_home / "config.yaml").write_text(
+                yaml.safe_dump({"plugins": {"enabled": ["override_plugin"]}})
+            )
+            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+            with caplog.at_level(logging.INFO, logger="tools.registry"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+
+            # Plugin handler replaced the built-in one.
+            assert registry._tools["override_target"].toolset == "plugin_override_plugin"
+            assert registry._tools["override_target"].handler({}, ) == "plugin"
+            # Override is audit-logged at INFO.
+            assert any(
+                "overriding existing" in r.message and "override_target" in r.message
+                for r in caplog.records
+            )
+            # Plugin tracks it.
+            assert "override_target" in mgr._plugin_tool_names
+        finally:
+            registry.deregister("override_target")
+
+    def test_register_tool_override_on_new_name_is_noop_path(self, tmp_path, monkeypatch):
+        """override=True on a brand-new name still registers cleanly (no existing entry to replace)."""
+        from tools.registry import registry
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "new_override_plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "new_override_plugin"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_tool(\n'
+            '        name="brand_new_override_tool",\n'
+            '        toolset="plugin_new_override_plugin",\n'
+            '        schema={"name": "brand_new_override_tool", "description": "New", "parameters": {"type": "object", "properties": {}}},\n'
+            '        handler=lambda args, **kw: "ok",\n'
+            '        override=True,\n'
+            '    )\n'
+        )
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["new_override_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            assert "brand_new_override_tool" in registry._tools
+        finally:
+            registry.deregister("brand_new_override_tool")
 
 
 # ── TestPluginToolVisibility ───────────────────────────────────────────────
@@ -608,7 +849,7 @@ class TestPluginManagerList:
         assert mgr.list_plugins() == []
 
     def test_list_returns_sorted(self, tmp_path, monkeypatch):
-        """list_plugins() returns results sorted by name."""
+        """list_plugins() returns results sorted by key."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(plugins_dir, "zulu")
         _make_plugin_dir(plugins_dir, "alpha")
@@ -618,8 +859,10 @@ class TestPluginManagerList:
         mgr.discover_and_load()
 
         listing = mgr.list_plugins()
-        names = [p["name"] for p in listing]
-        assert names == sorted(names)
+        # list_plugins sorts by key (path-derived, e.g. ``image_gen/openai``),
+        # not by display name, so that category plugins group together.
+        keys = [p["key"] for p in listing]
+        assert keys == sorted(keys)
 
     def test_list_with_plugins(self, tmp_path, monkeypatch):
         """list_plugins() returns info dicts for each discovered plugin."""
@@ -1032,6 +1275,45 @@ class TestPluginCommands:
         assert mgr._plugin_commands["cmd-b"]["plugin"] == "plugin-b"
 
 
+class TestPluginCommandResultResolution:
+    def test_returns_sync_values_unchanged(self):
+        assert resolve_plugin_command_result("ok") == "ok"
+
+    def test_awaits_async_result_without_running_loop(self):
+        async def _handler():
+            return "async-ok"
+
+        assert resolve_plugin_command_result(_handler()) == "async-ok"
+
+    def test_awaits_async_result_with_running_loop(self, monkeypatch):
+        class _Loop:
+            pass
+
+        async def _handler():
+            return "threaded-ok"
+
+        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        assert resolve_plugin_command_result(_handler()) == "threaded-ok"
+
+    def test_running_loop_timeout_does_not_hang_forever(self, monkeypatch):
+        """Threaded path must abort a hung async handler instead of blocking the caller."""
+        import asyncio as _asyncio
+
+        class _Loop:
+            pass
+
+        async def _slow_handler():
+            await _asyncio.sleep(10)
+            return "should-not-reach"
+
+        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
+
+        import pytest
+        with pytest.raises(TimeoutError):
+            resolve_plugin_command_result(_slow_handler())
+
+
 # ── TestPluginDispatchTool ────────────────────────────────────────────────
 
 
@@ -1162,3 +1444,77 @@ class TestPluginDispatchTool:
             result = ctx.dispatch_tool("fake", {})
 
         assert '"error"' in result
+
+
+class TestPluginDebugLogging:
+    """HERMES_PLUGINS_DEBUG opt-in stderr handler for plugin developers."""
+
+    def test_debug_handler_not_installed_when_env_var_absent(self, monkeypatch):
+        """Without the env var, no stderr handler is attached."""
+        monkeypatch.delenv("HERMES_PLUGINS_DEBUG", raising=False)
+        from hermes_cli import plugins as plugins_mod
+
+        # Snapshot, then force a re-evaluation.
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            assert plugins_mod._PLUGINS_DEBUG is False
+            assert plugins_mod._DEBUG_HANDLER_INSTALLED is False
+            # No new stderr handler was attached.
+            assert plugins_mod.logger.handlers == original_handlers
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.handlers = original_handlers
+
+    def test_debug_handler_installed_when_env_var_set(self, monkeypatch):
+        """With HERMES_PLUGINS_DEBUG=1, a DEBUG-level stderr handler is attached."""
+        monkeypatch.setenv("HERMES_PLUGINS_DEBUG", "1")
+        from hermes_cli import plugins as plugins_mod
+
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_level = plugins_mod.logger.level
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            assert plugins_mod._PLUGINS_DEBUG is True
+            assert plugins_mod._DEBUG_HANDLER_INSTALLED is True
+            assert plugins_mod.logger.level == logging.DEBUG
+            new_handlers = [
+                h for h in plugins_mod.logger.handlers if h not in original_handlers
+            ]
+            assert len(new_handlers) == 1
+            assert isinstance(new_handlers[0], logging.StreamHandler)
+            assert new_handlers[0].level == logging.DEBUG
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.setLevel(original_level)
+            plugins_mod.logger.handlers = original_handlers
+
+    def test_debug_handler_idempotent(self, monkeypatch):
+        """Calling install twice (without force) does not double-attach."""
+        monkeypatch.setenv("HERMES_PLUGINS_DEBUG", "1")
+        from hermes_cli import plugins as plugins_mod
+
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_level = plugins_mod.logger.level
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            count_after_first = len(plugins_mod.logger.handlers)
+            plugins_mod._install_plugin_debug_handler()  # no force
+            count_after_second = len(plugins_mod.logger.handlers)
+            assert count_after_first == count_after_second
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.setLevel(original_level)
+            plugins_mod.logger.handlers = original_handlers

@@ -10,9 +10,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Ensure sibling modules (_hermes_home) are importable when run standalone.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
-def get_hermes_home() -> Path:
-    return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+from _hermes_home import get_hermes_home
 
 
 def get_token_path() -> Path:
@@ -48,12 +51,15 @@ def refresh_token(token_data: dict) -> dict:
 
     req = urllib.request.Request(token_data["token_uri"], data=params)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         print(f"ERROR: Token refresh failed (HTTP {e.code}): {body}", file=sys.stderr)
         print("Re-run setup.py to re-authenticate.", file=sys.stderr)
+        sys.exit(1)
+    except (urllib.error.URLError, TimeoutError) as e:
+        print(f"ERROR: Token refresh failed (network): {e}", file=sys.stderr)
         sys.exit(1)
 
     token_data["token"] = result["access_token"]

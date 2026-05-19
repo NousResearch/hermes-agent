@@ -9,6 +9,7 @@ from gateway.config import (
     Platform,
     PlatformConfig,
     SessionResetPolicy,
+    StreamingConfig,
     _apply_env_overrides,
     load_gateway_config,
 )
@@ -51,6 +52,23 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict(d)
         assert restored.enabled is False
         assert restored.token is None
+
+    def test_from_dict_coerces_quoted_false_enabled(self):
+        restored = PlatformConfig.from_dict({"enabled": "false"})
+        assert restored.enabled is False
+
+    def test_gateway_restart_notification_defaults_true(self):
+        assert PlatformConfig().gateway_restart_notification is True
+        assert PlatformConfig.from_dict({}).gateway_restart_notification is True
+
+    def test_gateway_restart_notification_roundtrip_false(self):
+        pc = PlatformConfig(enabled=True, gateway_restart_notification=False)
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.gateway_restart_notification is False
+
+    def test_gateway_restart_notification_coerces_quoted_false(self):
+        restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
+        assert restored.gateway_restart_notification is False
 
 
 class TestGetConnectedPlatforms:
@@ -140,6 +158,32 @@ class TestSessionResetPolicy:
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
 
+    def test_from_dict_coerces_quoted_false_notify(self):
+        restored = SessionResetPolicy.from_dict({"notify": "false"})
+        assert restored.notify is False
+
+
+class TestStreamingConfig:
+    def test_defaults_to_edit_transport(self):
+        restored = StreamingConfig.from_dict({"enabled": "true"})
+        assert restored.transport == "edit"
+
+    def test_from_dict_coerces_quoted_false_enabled(self):
+        restored = StreamingConfig.from_dict({"enabled": "false"})
+        assert restored.enabled is False
+
+    def test_from_dict_malformed_numeric_values_fall_back_to_defaults(self):
+        restored = StreamingConfig.from_dict(
+            {
+                "edit_interval": "oops",
+                "buffer_threshold": "oops",
+                "fresh_final_after_seconds": "oops",
+            }
+        )
+        assert restored.edit_interval == 0.8
+        assert restored.buffer_threshold == 24
+        assert restored.fresh_final_after_seconds == 60.0
+
 
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):
@@ -181,6 +225,30 @@ class TestGatewayConfigRoundtrip:
 
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+    def test_from_dict_coerces_quoted_false_always_log_local(self):
+        restored = GatewayConfig.from_dict({"always_log_local": "false"})
+        assert restored.always_log_local is False
+
+    def test_get_notice_delivery_defaults_to_public(self):
+        config = GatewayConfig(
+            platforms={Platform.SLACK: PlatformConfig(enabled=True, token="***")}
+        )
+
+        assert config.get_notice_delivery(Platform.SLACK) == "public"
+
+    def test_get_notice_delivery_honors_platform_override(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=True,
+                    token="***",
+                    extra={"notice_delivery": "private"},
+                ),
+            }
+        )
+
+        assert config.get_notice_delivery(Platform.SLACK) == "private"
 
 
 class TestLoadGatewayConfig:
@@ -238,6 +306,92 @@ class TestLoadGatewayConfig:
 
         assert config.thread_sessions_per_user is False
 
+    def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
+        """discord.thread_require_mention in config.yaml should reach the runtime env var."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  thread_require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
+
+    def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        """Explicit env var should win over config.yaml (env > yaml precedence)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  thread_require_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")  # user override
+
+        load_gateway_config()
+
+        # Env value preserved, not clobbered by yaml.
+        assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
+
+    def test_bridges_quoted_false_platform_enabled_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  api_server:\n"
+            "    enabled: \"false\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.API_SERVER].enabled is False
+        assert Platform.API_SERVER not in config.get_connected_platforms()
+
+    def test_bridges_quoted_false_session_notify_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset:\n"
+            "  notify: \"false\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.notify is False
+
+    def test_bridges_quoted_false_always_log_local_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "always_log_local: \"false\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.always_log_local is False
+
     def test_bridges_discord_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -258,6 +412,26 @@ class TestLoadGatewayConfig:
             "123": "Research mode",
             "456": "Therapist mode",
         }
+
+    def test_bridges_discord_history_backfill_settings_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  history_backfill: true\n"
+            "  history_backfill_limit: 17\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_HISTORY_BACKFILL", raising=False)
+        monkeypatch.delenv("DISCORD_HISTORY_BACKFILL_LIMIT", raising=False)
+
+        load_gateway_config()
+
+        assert os.getenv("DISCORD_HISTORY_BACKFILL") == "true"
+        assert os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT") == "17"
 
     def test_bridges_telegram_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -298,6 +472,38 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.SLACK].extra["channel_prompts"] == {
             "C01ABC": "Code review mode",
         }
+
+    def test_bridges_feishu_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n  allow_bots: mentions\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("FEISHU_ALLOW_BOTS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("FEISHU_ALLOW_BOTS") == "mentions"
+
+    def test_feishu_allow_bots_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n  allow_bots: all\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_ALLOW_BOTS", "none")
+
+        load_gateway_config()
+
+        assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
 
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -344,6 +550,42 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.platforms[Platform.TELEGRAM].extra["disable_link_previews"] is True
+
+    def test_bridges_telegram_extra_base_url_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  extra:\n"
+            "    base_url: https://custom-proxy.example.com/bot\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.TELEGRAM].extra["base_url"]
+            == "https://custom-proxy.example.com/bot"
+        )
+
+    def test_bridges_notice_delivery_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "slack:\n"
+            "  notice_delivery: private\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.get_notice_delivery(Platform.SLACK) == "private"
 
     def test_bridges_telegram_proxy_url_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -393,6 +635,15 @@ class TestHomeChannelEnvOverrides:
                 PlatformConfig(enabled=True, token="xoxb-from-config"),
                 {"SLACK_HOME_CHANNEL": "C123", "SLACK_HOME_CHANNEL_NAME": "Ops"},
                 ("C123", "Ops"),
+            ),
+            (
+                Platform.WHATSAPP,
+                PlatformConfig(enabled=True),
+                {
+                    "WHATSAPP_HOME_CHANNEL": "1234567890@lid",
+                    "WHATSAPP_HOME_CHANNEL_NAME": "Owner DM",
+                },
+                ("1234567890@lid", "Owner DM"),
             ),
             (
                 Platform.SIGNAL,

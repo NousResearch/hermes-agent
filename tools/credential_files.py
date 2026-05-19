@@ -25,6 +25,7 @@ import os
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Dict, List
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ def _load_config_files() -> List[Dict[str, str]]:
         from hermes_cli.config import read_raw_config
         hermes_home = _resolve_hermes_home()
         cfg = read_raw_config()
-        cred_files = cfg.get("terminal", {}).get("credential_files")
+        cred_files = cfg_get(cfg, "terminal", "credential_files")
         if isinstance(cred_files, list):
             from tools.path_security import validate_within_dir
 
@@ -371,6 +372,34 @@ def get_cache_directory_mounts(
                 "container_path": container_path,
             })
     return mounts
+
+
+def to_agent_visible_cache_path(
+    host_path: str,
+    container_base: str = "/root/.hermes",
+) -> str:
+    """Translate a host cache path to its mounted path inside the sandbox.
+
+    Returns the input unchanged if it is not under any auto-mounted cache
+    directory, or if the active terminal backend does not require path
+    translation (only Docker for now).
+    """
+    # Only Docker backend requires translation at this time.  Other backends
+    # (Modal, Daytona, Vercel) use different mount semantics and will be
+    # addressed separately if needed.  Backend is identified by TERMINAL_ENV
+    # (same env var tools/terminal_tool.py reads in _get_environment_config).
+    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+        return host_path
+
+    path = Path(host_path)
+    for mount in get_cache_directory_mounts(container_base=container_base):
+        host_dir = Path(mount["host_path"])
+        try:
+            rel = path.relative_to(host_dir)
+            return str(Path(mount["container_path"]) / rel)
+        except ValueError:
+            continue
+    return host_path
 
 
 def iter_cache_files(

@@ -234,6 +234,19 @@ def test_native_client_accepts_injected_http_client():
     assert client._http is injected
 
 
+def test_native_client_rejects_empty_api_key_with_actionable_message():
+    """Empty/whitespace api_key must raise at construction, not produce a cryptic
+    Google GFE 'Error 400 (Bad Request)!!1' HTML page on the first request."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    for bad in ("", "   ", None):
+        with pytest.raises(RuntimeError) as excinfo:
+            GeminiNativeClient(api_key=bad)  # type: ignore[arg-type]
+        msg = str(excinfo.value)
+        assert "GOOGLE_API_KEY" in msg and "GEMINI_API_KEY" in msg
+        assert "aistudio.google.com" in msg
+
+
 @pytest.mark.asyncio
 async def test_async_native_client_streams_without_requiring_async_iterator_from_sync_client():
     from agent.gemini_native_adapter import AsyncGeminiNativeClient

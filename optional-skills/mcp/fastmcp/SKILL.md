@@ -4,6 +4,7 @@ description: Build, test, inspect, install, and deploy MCP servers with FastMCP 
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [MCP, FastMCP, Python, Tools, Resources, Prompts, Deployment]

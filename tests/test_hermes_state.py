@@ -35,6 +35,7 @@ class TestSessionLifecycle:
         assert session["model"] == "test-model"
         assert session["ended_at"] is None
 
+
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
@@ -212,6 +213,82 @@ class TestMessageStorage:
         messages = db.get_messages("s1")
         assert messages[0]["tool_calls"] == tool_calls
 
+    def test_multimodal_list_content_round_trip(self, db):
+        """Multimodal ``content`` (list of parts) must survive the SQLite
+        round-trip.  sqlite3 cannot bind Python lists directly, so the DB
+        layer JSON-encodes structured content on write and decodes on read.
+
+        Regression test for the "Error binding parameter 3: type 'list' is
+        not supported" crash users hit when pasting screenshots into the
+        TUI (issue #17522).
+        """
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "describe this screenshot"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,iVBORw0KG..."},
+            },
+        ]
+
+        # Write must not raise
+        db.append_message("s1", role="user", content=content)
+
+        # get_messages decodes back to the original list
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == content
+
+        # get_messages_as_conversation decodes back to the original list
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert conv[0] == {"role": "user", "content": content}
+
+    def test_dict_content_round_trip(self, db):
+        """Dict-shaped content (e.g. provider wrappers) also round-trips."""
+        db.create_session(session_id="s1", source="cli")
+        content = {"parts": [{"text": "hi"}]}
+
+        db.append_message("s1", role="user", content=content)
+        msgs = db.get_messages("s1")
+        assert msgs[0]["content"] == content
+
+    def test_string_content_unchanged_by_encoding(self, db):
+        """Plain strings must not be wrapped — FTS search and legacy
+        consumers depend on raw-string storage for text content.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="plain text")
+
+        # Peek at the raw column to confirm no encoding was applied
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT content FROM messages WHERE session_id = ?", ("s1",)
+            ).fetchone()
+        assert row["content"] == "plain text"
+
+    def test_replace_messages_handles_multimodal_content(self, db):
+        """`replace_messages` (used by /retry, /undo, /compress) must also
+        handle list content without crashing."""
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        ]
+
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": content},
+                {"role": "assistant", "content": "I see a screenshot."},
+            ],
+        )
+
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 2
+        assert msgs[0]["content"] == content
+        assert msgs[1]["content"] == "I see a screenshot."
+
     def test_get_messages_as_conversation(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")
@@ -222,12 +299,59 @@ class TestMessageStorage:
         assert conv[0] == {"role": "user", "content": "Hello"}
         assert conv[1] == {"role": "assistant", "content": "Hi!"}
 
+    def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="first prompt")
+        db.append_message("root", role="assistant", content="first answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="second prompt")
+        db.append_message("child", role="assistant", content="second answer")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv] == [
+            "first prompt",
+            "first answer",
+            "second prompt",
+            "second answer",
+        ]
+
+    def test_get_messages_as_conversation_avoids_repeated_resume_prompts_from_ancestors(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="assistant", content="answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="next prompt")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
+
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="assistant", content="Done", finish_reason="stop")
 
         messages = db.get_messages("s1")
         assert messages[0]["finish_reason"] == "stop"
+
+    def test_get_messages_as_conversation_strips_leaked_memory_context(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content=(
+                "<memory-context>\n"
+                "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+                "## Honcho Context\n"
+                "stale memory\n"
+                "</memory-context>\n\n"
+                "Visible answer"
+            ),
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv == [{"role": "assistant", "content": "Visible answer"}]
 
     def test_reasoning_persisted_and_restored(self, db):
         """Reasoning text is stored for assistant messages and restored by
@@ -276,6 +400,27 @@ class TestMessageStorage:
         assert msg["reasoning"] == "Thinking about what to say"
         assert msg["reasoning_details"] == details
 
+    def test_finish_reason_restored_by_get_messages_as_conversation(self, db):
+        """finish_reason on assistant messages must survive conversation replay.
+
+        Without this, /branch copies and other transcript round-trips silently
+        drop the provider's stop signal.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Done",
+            finish_reason="tool_calls",
+        )
+        db.append_message("s1", role="user", content="next")
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv[0]["role"] == "assistant"
+        assert conv[0]["finish_reason"] == "tool_calls"
+        # Non-assistant rows should not have a finish_reason key added.
+        assert "finish_reason" not in conv[1]
+
     def test_reasoning_content_persisted_and_restored(self, db):
         """reasoning_content must survive session replay as its own field."""
         db.create_session(session_id="s1", source="cli")
@@ -307,6 +452,33 @@ class TestMessageStorage:
         assert len(conv) == 1
         assert "reasoning_content" in conv[0]
         assert conv[0]["reasoning_content"] == ""
+
+    def test_codex_message_items_persisted_and_restored(self, db):
+        """codex_message_items must round-trip through JSON serialization."""
+        db.create_session(session_id="s1", source="cli")
+        items = [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "id": "msg_123",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "Thinking..."}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "id": "msg_456",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "Done!"}],
+            },
+        ]
+        db.append_message("s1", role="assistant", content="Done!", codex_message_items=items)
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert conv[0].get("codex_message_items") == items
 
     def test_reasoning_not_set_for_non_assistant(self, db):
         """reasoning is never leaked onto user or tool messages."""
@@ -581,6 +753,30 @@ class TestFTS5Search:
         assert s('my-app.config') == '"my-app.config"'
         assert s('my-app.config.ts') == '"my-app.config.ts"'
 
+    def test_sanitize_fts5_quotes_underscored_terms(self):
+        """Underscored terms should be wrapped in quotes for exact matching.
+
+        FTS5 default tokenizer splits 'sp_new1' into tokens 'sp' and 'new1'.
+        Without quoting, a search for 'sp_new' becomes an AND query
+        ('sp AND new') that fails to match rows indexed as 'sp_new1'.
+        """
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        # Simple underscored term
+        assert s('sp_new') == '"sp_new"'
+        # Multiple underscores
+        assert s('a_b_c') == '"a_b_c"'
+        # Mixed underscores and hyphens/dots — single pass avoids double-quoting
+        assert s('sp_new1') == '"sp_new1"'
+        assert s('docker-compose_up') == '"docker-compose_up"'
+        assert s('my.app_config.ts') == '"my.app_config.ts"'
+        # Already-quoted — no double quoting
+        assert s('"sp_new"') == '"sp_new"'
+        # Mixed with other words
+        result = s('sp_new and 血管瘤')
+        assert '"sp_new"' in result
+        assert '血管瘤' in result
+
 
 # =========================================================================
 # CJK (Chinese/Japanese/Korean) LIKE fallback
@@ -715,6 +911,84 @@ class TestCJKSearchFallback:
         # fallback handles the substring correctly.
         results = db.search_messages("Agent通信")
         assert len(results) == 1
+
+    def test_cjk_partial_fts5_results_supplemented_by_like(self, db):
+        """When FTS5 returns *some* CJK results, LIKE must still find all matches.
+
+        Regression test for #15500 / #14829: FTS5 unicode61 tokenizer drops
+        certain CJK characters, so multi-character queries may return partial
+        results.  The LIKE path must always run for CJK queries.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.append_message("s1", role="user", content="昨晚讨论了记忆系统")
+        db.append_message("s2", role="user", content="昨晚的会议纪要已发送")
+        results = db.search_messages("昨晚")
+        assert len(results) == 2
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1", "s2"}
+
+    def test_cjk_like_dedup_no_duplicates(self, db):
+        """When FTS5 and LIKE both find the same message, no duplicates."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="测试去重逻辑")
+        results = db.search_messages("测试")
+        assert len(results) == 1
+
+    def test_cjk_like_escapes_wildcards(self, db):
+        """Special characters (%, _) in CJK queries are treated as literals."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.append_message("s1", role="user", content="达成100%完成率")
+        db.append_message("s2", role="user", content="达成100完成率是目标")
+        # The % in the query must be literal — should only match s1
+        results = db.search_messages("100%完成")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_cjk_trigram_preserves_boolean_operators(self, db):
+        """Boolean operators (OR, AND, NOT) work in CJK trigram queries."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.append_message("s1", role="user", content="记忆系统很好用")
+        db.append_message("s2", role="user", content="断裂连接需要修复")
+        results = db.search_messages("记忆系统 OR 断裂连接")
+        assert len(results) == 2
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1", "s2"}
+
+    def test_cjk_or_combined_short_tokens_returns_results(self, db):
+        """Regression test for #20494.
+
+        OR-combined 2-char CJK tokens (e.g. "广西 OR 桂林 OR 漓江 OR 旅游")
+        previously returned 0 results because _count_cjk of the whole query
+        was >=3 (8 chars here), selecting the trigram path, but each individual
+        token is only 2 CJK chars and trigram requires >=3 chars per token.
+        The per-token check must route such queries to the LIKE fallback.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.create_session(session_id="s3", source="cli")
+        db.append_message("s1", role="user", content="广西是个好地方，去过桂林")
+        db.append_message("s2", role="user", content="漓江风景很美，值得旅游")
+        db.append_message("s3", role="user", content="unrelated English content")
+
+        results = db.search_messages("广西 OR 桂林 OR 漓江 OR 旅游")
+        session_ids = {r["session_id"] for r in results}
+        assert "s1" in session_ids, "广西/桂林 terms not matched"
+        assert "s2" in session_ids, "漓江/旅游 terms not matched"
+        assert "s3" not in session_ids, "unrelated message must not match"
+
+    def test_cjk_short_token_or_query_preserves_filters(self, db):
+        """Source filter applies correctly in the short-token LIKE path (#20494)."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.append_message("s1", role="user", content="广西旅游攻略cli")
+        db.append_message("s2", role="user", content="广西旅游攻略telegram")
+
+        results = db.search_messages("广西 OR 旅游", source_filter=["telegram"])
+        assert len(results) == 1
+        assert results[0]["source"] == "telegram"
 
 
 # =========================================================================
@@ -1173,13 +1447,249 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 8
+        assert version == 11
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "title" in columns
+
+    def test_topic_mode_schema_is_not_auto_migrated_on_open(self, tmp_path):
+        """Opening an old DB should not add topic-mode columns until /topic opts in.
+
+        The gateway must remain rollback-safe: simply upgrading Hermes and starting
+        the old bot should not eagerly mutate the state DB for this feature.
+        """
+        old_db = tmp_path / "old.db"
+        import sqlite3
+
+        conn = sqlite3.connect(old_db)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (11);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+            """
+        )
+        conn.close()
+
+        db = SessionDB(db_path=old_db)
+        cursor = db._conn.execute("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
+        db.close()
+
+    def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
+        """The /topic opt-in path owns the DB migration for Telegram topic mode."""
+        old_db = tmp_path / "old.db"
+        import sqlite3
+
+        conn = sqlite3.connect(old_db)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (11);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+            """
+        )
+        conn.close()
+
+        db = SessionDB(db_path=old_db)
+        db.apply_telegram_topic_migration()
+
+        tables = {
+            row[0]
+            for row in db._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "telegram_dm_topic_mode" in tables
+        assert "telegram_dm_topic_bindings" in tables
+        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        db.close()
+
+    def test_telegram_topic_binding_roundtrip_requires_explicit_schema(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="topic-session",
+            source="telegram",
+            user_id="208214988",
+        )
+
+        assert db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585") is None
+
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="telegram:dm:208214988:thread:17585",
+            session_id="topic-session",
+        )
+
+        binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+        assert binding is not None
+        assert binding["chat_id"] == "208214988"
+        assert binding["thread_id"] == "17585"
+        assert binding["user_id"] == "208214988"
+        assert binding["session_key"] == "telegram:dm:208214988:thread:17585"
+        assert binding["session_id"] == "topic-session"
+        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        db.close()
+
+    def test_telegram_topic_binding_refuses_to_relink_session_to_another_topic(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="topic-session",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="key-17585",
+            session_id="topic-session",
+        )
+
+        with pytest.raises(ValueError, match="already linked"):
+            db.bind_telegram_topic(
+                chat_id="208214988",
+                thread_id="99999",
+                user_id="208214988",
+                session_key="key-99999",
+                session_id="topic-session",
+            )
+        db.close()
+
+    def test_list_unlinked_telegram_sessions_for_user_excludes_bound_and_other_users(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="old-unlinked",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.set_session_title("old-unlinked", "Old research")
+        db.append_message("old-unlinked", "user", "first prompt")
+        db.create_session(
+            session_id="already-linked",
+            source="telegram",
+            user_id="208214988",
+        )
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id="17585",
+            user_id="208214988",
+            session_key="key-17585",
+            session_id="already-linked",
+        )
+        db.create_session(
+            session_id="other-user",
+            source="telegram",
+            user_id="someone-else",
+        )
+
+        sessions = db.list_unlinked_telegram_sessions_for_user(
+            chat_id="208214988",
+            user_id="208214988",
+        )
+
+        assert [s["id"] for s in sessions] == ["old-unlinked"]
+        assert sessions[0]["title"] == "Old research"
+        assert sessions[0]["preview"] == "first prompt"
+        db.close()
 
     def test_migration_from_v2(self, tmp_path):
         """Simulate a v2 database and verify migration adds title column."""
@@ -1229,12 +1739,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v8
+        # Open with SessionDB — should migrate to v9
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 8
+        assert cursor.fetchone()[0] == 11
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1253,6 +1763,144 @@ class TestSchemaInit:
         assert session["title"] == "Migrated Title"
 
         migrated_db.close()
+
+    def test_reconciliation_adds_missing_columns(self, tmp_path):
+        """Columns present in SCHEMA_SQL but missing from the live table
+        are added by _reconcile_columns regardless of schema_version.
+
+        Regression test: commit a7d78d3b inserted a new v7 migration
+        (reasoning_content) and renumbered the old v7 (api_call_count)
+        to v8.  Users already at the old v7 had schema_version >= 7,
+        so the new v7 block was skipped and reasoning_content was never
+        created — causing 'no such column' on /continue.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "gap_test.db"
+        conn = sqlite3.connect(str(db_path))
+        # Simulate the old v7 state: api_call_count exists, reasoning_content does NOT
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (7);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("s1", "cli", 1000.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES (?, ?, ?, ?)",
+            ("s1", "assistant", "hello", 1001.0),
+        )
+        conn.commit()
+        # Verify reasoning_content is absent
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        assert "reasoning_content" not in cols
+        conn.close()
+
+        # Open with SessionDB — reconciliation should add the missing column
+        migrated_db = SessionDB(db_path=db_path)
+
+        msg_cols = {
+            r[1]
+            for r in migrated_db._conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        assert "reasoning_content" in msg_cols
+
+        # The query that used to crash must now work
+        cursor = migrated_db._conn.execute(
+            "SELECT role, content, reasoning, reasoning_content, "
+            "reasoning_details, codex_reasoning_items "
+            "FROM messages WHERE session_id = ?",
+            ("s1",),
+        )
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == "assistant"
+        assert row[3] is None  # reasoning_content NULL for old rows
+
+        migrated_db.close()
+
+    def test_reconciliation_is_idempotent(self, tmp_path):
+        """Opening the same database twice doesn't error or duplicate columns."""
+        db_path = tmp_path / "idempotent.db"
+        db1 = SessionDB(db_path=db_path)
+        cols1 = {r[1] for r in db1._conn.execute("PRAGMA table_info(messages)").fetchall()}
+        db1.close()
+
+        db2 = SessionDB(db_path=db_path)
+        cols2 = {r[1] for r in db2._conn.execute("PRAGMA table_info(messages)").fetchall()}
+        db2.close()
+
+        assert cols1 == cols2
+
+    def test_schema_sql_is_source_of_truth(self, db):
+        """Every column in SCHEMA_SQL exists in the live database.
+
+        This is the architectural invariant: SCHEMA_SQL declares the
+        desired schema, _reconcile_columns ensures it matches reality.
+        """
+        from hermes_state import SCHEMA_SQL
+
+        expected = SessionDB._parse_schema_columns(SCHEMA_SQL)
+        for table_name, declared_cols in expected.items():
+            live_cols = {
+                r[1]
+                for r in db._conn.execute(
+                    f'PRAGMA table_info("{table_name}")'
+                ).fetchall()
+            }
+            for col_name in declared_cols:
+                assert col_name in live_cols, (
+                    f"Column {col_name} declared in SCHEMA_SQL for {table_name} "
+                    f"but missing from live DB. Live columns: {live_cols}"
+                )
 
 
 class TestTitleUniqueness:
@@ -1438,6 +2086,97 @@ class TestListSessionsRich:
         # No messages, so last_active falls back to started_at
         assert sessions[0]["last_active"] == sessions[0]["started_at"]
 
+    def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
+        t0 = 1709500000.0
+        db.create_session("old", "cli")
+        db.create_session("new", "cli")
+
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "old"))
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 10, "new"))
+
+        db.append_message("old", "user", "old first")
+        db.append_message("new", "user", "new first")
+        db.append_message("old", "assistant", "old touched later")
+
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=? AND content=?",
+                (t0 + 1, "old", "user", "old first"),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=? AND content=?",
+                (t0 + 11, "new", "user", "new first"),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=? AND content=?",
+                (t0 + 20, "old", "assistant", "old touched later"),
+            )
+            db._conn.commit()
+
+        assert [s["id"] for s in db.list_sessions_rich(limit=5)] == ["new", "old"]
+        assert [
+            s["id"] for s in db.list_sessions_rich(limit=5, order_by_last_active=True)
+        ] == ["old", "new"]
+
+    def test_order_by_last_active_uses_compression_tip_activity(self, db):
+        """A compression root whose tip was touched recently must rank above
+        a newer uncompressed session, even when that tip activity lives in a
+        different row and the outer LIMIT could otherwise cut it.
+
+        This is the case that forced SQL-level chain walking: a naive "cap
+        the SQL fetch at limit*K" optimization would drop the old root off
+        the SQL page before post-projection could promote it.
+        """
+        t0 = 1709500000.0
+        db.create_session("root1", "cli")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
+            db._conn.execute(
+                "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+                (t0 + 100, "compression", "root1"),
+            )
+        db.append_message("root1", "user", "old ask")
+
+        # Continuation tip created after root ended; last activity much later.
+        db.create_session("tip1", "cli", parent_session_id="root1")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 101, "tip1"))
+        db.append_message("tip1", "user", "latest message")
+
+        # Bunch of newer, uncompressed sessions — fresher start_at but older
+        # last activity than the tip. Explicitly pin message timestamps so
+        # they don't pick up wall-clock from append_message.
+        for i in range(5):
+            sid = f"newer{i}"
+            db.create_session(sid, "cli")
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=? WHERE id=?",
+                    (t0 + 500 + i, sid),
+                )
+            db.append_message(sid, "user", f"msg {i}")
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE messages SET timestamp=? WHERE session_id=? AND content=?",
+                    (t0 + 500 + i, sid, f"msg {i}"),
+                )
+
+        # Tip activity timestamp is the latest thing in the DB.
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND content=?",
+                (t0 + 10_000, "tip1", "latest message"),
+            )
+            db._conn.commit()
+
+        # limit=1 is the stress test: the old root must win the single slot.
+        top = db.list_sessions_rich(limit=1, order_by_last_active=True)
+        assert len(top) == 1
+        # Projection surfaces the tip's id in the root's slot.
+        assert top[0]["id"] == "tip1"
+        assert top[0]["_lineage_root_id"] == "root1"
+
     def test_rich_list_includes_title(self, db):
         db.create_session("s1", "cli")
         db.set_session_title("s1", "refactoring auth")
@@ -1457,6 +2196,48 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         assert "\n" not in sessions[0]["preview"]
         assert "Line one Line two" in sessions[0]["preview"]
+
+    def test_branch_session_visible_in_list(self, db):
+        """Branch sessions (parent ended with 'branched') must appear in list_sessions_rich."""
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session("branch", "cli", parent_session_id="parent")
+        db.append_message("branch", "user", "Exploring the alternative approach")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "branch" in ids, "Branch session should be visible in default list"
+
+    def test_subagent_session_still_hidden(self, db):
+        """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
+        db.create_session("root", "cli")
+        db.create_session("delegate", "cli", parent_session_id="root")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "delegate" not in ids, "Delegate sub-agent should not appear in default list"
+        assert "root" in ids
+
+    def test_compression_child_still_hidden(self, db):
+        """Compression continuation sessions remain hidden (parent ended with 'compression')."""
+        import time as _time
+        t0 = _time.time()
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 1800, "root"),
+        )
+        db._conn.commit()
+        db.create_session("continuation", "cli", parent_session_id="root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 1801, "continuation")
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(project_compression_tips=False)
+        ids = [s["id"] for s in sessions]
+        assert "continuation" not in ids, "Compression continuation should stay hidden"
 
 
 class TestCompressionChainProjection:
@@ -1911,4 +2692,254 @@ class TestAutoMaintenance:
         assert marker is not None
         # Should parse as a float timestamp close to now.
         assert abs(float(marker) - time.time()) < 60
+
+    def test_auto_prune_deletes_transcript_files(self, db, tmp_path):
+        """Issue #3015: auto-prune must also delete on-disk transcript files."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        self._make_old_ended(db, "old1", days_old=100)
+        self._make_old_ended(db, "old2", days_old=100)
+        db.create_session(session_id="new", source="cli")  # active
+
+        # Transcript files mimicking real gateway/CLI layout
+        (sessions_dir / "old1.json").write_text("{}")
+        (sessions_dir / "old1.jsonl").write_text("{}\n")
+        (sessions_dir / "old2.jsonl").write_text("{}\n")
+        (sessions_dir / "request_dump_old1_001.json").write_text("{}")
+        (sessions_dir / "new.jsonl").write_text("{}\n")  # active, must survive
+
+        result = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, sessions_dir=sessions_dir
+        )
+        assert result["pruned"] == 2
+
+        # Pruned transcript files are gone
+        assert not (sessions_dir / "old1.json").exists()
+        assert not (sessions_dir / "old1.jsonl").exists()
+        assert not (sessions_dir / "old2.jsonl").exists()
+        assert not (sessions_dir / "request_dump_old1_001.json").exists()
+        # Active session's transcript is untouched
+        assert (sessions_dir / "new.jsonl").exists()
+
+    def test_auto_prune_without_sessions_dir_preserves_files(self, db, tmp_path):
+        """Backward-compat: no sessions_dir = DB-only cleanup (legacy behavior)."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+        (sessions_dir / "old.jsonl").write_text("{}\n")
+
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["pruned"] == 1
+        # File stays — caller didn't opt in
+        assert (sessions_dir / "old.jsonl").exists()
+
+    def test_prune_sessions_deletes_files_for_pruned_only(self, db, tmp_path):
+        """Active-session transcripts must never be deleted by prune."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+        db.create_session(session_id="active", source="cli")  # not ended
+        (sessions_dir / "old.jsonl").write_text("{}\n")
+        (sessions_dir / "active.jsonl").write_text("{}\n")
+
+        count = db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
+        assert count == 1
+        assert not (sessions_dir / "old.jsonl").exists()
+        assert (sessions_dir / "active.jsonl").exists()
+
+
+# =========================================================================
+# FTS5 indexing of tool_calls / tool_name (#16751)
+# =========================================================================
+
+class TestFTS5ToolCallIndexing:
+    """Regression tests: search_messages must see tool_name and tool_calls.
+
+    Before #16751's fix, `messages_fts` only indexed `messages.content`, so
+    tokens that only appeared in `tool_name` or the serialized `tool_calls`
+    JSON were invisible to session_search even though the row was in the DB.
+    """
+
+    def test_tool_name_is_searchable(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="assistant", content="",
+            tool_name="UNIQUETOOLNAME",
+        )
+        results = db.search_messages("UNIQUETOOLNAME")
+        assert len(results) == 1
+
+    def test_tool_calls_args_are_searchable(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="assistant", content="",
+            tool_calls=[{
+                "id": "c1",
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "arguments": '{"query": "UNIQUESEARCHTOKEN"}',
+                },
+            }],
+        )
+        results = db.search_messages("UNIQUESEARCHTOKEN")
+        assert len(results) == 1
+
+    def test_tool_function_name_in_tool_calls_is_searchable(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="assistant", content="",
+            tool_calls=[{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "UNIQUEFUNCNAME", "arguments": "{}"},
+            }],
+        )
+        results = db.search_messages("UNIQUEFUNCNAME")
+        assert len(results) == 1
+
+    def test_delete_message_row_does_not_crash(self, db):
+        """DELETE on messages must not raise when FTS rows reference tool fields.
+
+        Previously the messages_fts_delete trigger passed old.content to the
+        FTS5 delete-command but the inserted row was the concatenation of
+        content || tool_name || tool_calls, so FTS5 rejected the delete with
+        'SQL logic error' and every session delete path broke.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="assistant", content="hello",
+            tool_name="web_search",
+            tool_calls=[{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": '{"q": "x"}'},
+            }],
+        )
+        # end_session + end-time prune path would exercise DELETE; hit the
+        # row directly through the write helper to keep the regression focused.
+        def _delete(conn):
+            conn.execute("DELETE FROM messages WHERE session_id = ?", ("s1",))
+        db._execute_write(_delete)  # must not raise
+
+        assert db.search_messages("hello") == []
+        assert db.search_messages("web_search") == []
+
+    def test_update_message_reindexes_tool_fields(self, db):
+        """UPDATE must refresh the FTS row so old tokens drop out and new tokens appear."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="assistant", content="",
+            tool_name="ORIGINALTOOL",
+        )
+        assert len(db.search_messages("ORIGINALTOOL")) == 1
+
+        def _update(conn):
+            conn.execute(
+                "UPDATE messages SET tool_name = ? WHERE session_id = ?",
+                ("RENAMEDTOOL", "s1"),
+            )
+        db._execute_write(_update)
+
+        assert db.search_messages("ORIGINALTOOL") == []
+        assert len(db.search_messages("RENAMEDTOOL")) == 1
+
+
+class TestFTS5ToolCallMigration:
+    """v11 migration: pre-existing state.db with old external-content FTS tables
+    must be re-indexed so tool_name / tool_calls become searchable after upgrade."""
+
+    def test_v10_to_v11_upgrade_backfills_tool_fields(self, tmp_path):
+        """Simulate an existing user: build a v10-shaped DB by hand, insert a
+        row with tool_calls, then open via SessionDB (which runs migrations).
+        After upgrade, the tool_calls token must be searchable."""
+        import sqlite3
+
+        db_path = tmp_path / "legacy.db"
+
+        # Build the pre-v11 schema by hand: external-content FTS tables +
+        # old triggers that only reference new.content.
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (10);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                started_at REAL,
+                ended_at REAL,
+                title TEXT,
+                parent_session_id TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                api_call_count INTEGER DEFAULT 0
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_name TEXT,
+                tool_calls TEXT,
+                tool_call_id TEXT,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                content, content=messages, content_rowid=id
+            );
+            CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+
+            CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(
+                content, content=messages, content_rowid=id, tokenize='trigram'
+            );
+            CREATE TRIGGER messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts_trigram(rowid, content) VALUES (new.id, new.content);
+            END;
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("s1", "cli", time.time()),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, timestamp, role, content, tool_name, tool_calls) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("s1", time.time(), "assistant", "", "LEGACYTOOL",
+             '{"function":{"name":"web_search","arguments":"{\\"q\\":\\"LEGACYARG\\"}"}}'),
+        )
+        conn.commit()
+
+        # Verify the legacy FTS rows don't contain the tool tokens yet.
+        legacy_hits = conn.execute(
+            "SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'LEGACYTOOL'"
+        ).fetchall()
+        assert legacy_hits == [], "sanity: legacy FTS must NOT contain tool_name"
+        conn.close()
+
+        # Now open via SessionDB — migration runs.
+        session_db = SessionDB(db_path=db_path)
+        try:
+            assert len(session_db.search_messages("LEGACYTOOL")) == 1, \
+                "v11 migration must backfill tool_name into FTS"
+            assert len(session_db.search_messages("LEGACYARG")) == 1, \
+                "v11 migration must backfill tool_calls JSON into FTS"
+            # schema_version bumped
+            row = session_db._conn.execute(
+                "SELECT version FROM schema_version LIMIT 1"
+            ).fetchone()
+            version = row["version"] if hasattr(row, "keys") else row[0]
+            assert version == 11
+        finally:
+            session_db.close()
 

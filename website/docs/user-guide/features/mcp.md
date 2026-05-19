@@ -105,6 +105,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
+| `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example
@@ -125,6 +126,30 @@ mcp_servers:
     headers:
       Authorization: "Bearer ***"
 ```
+
+## Built-in presets
+
+For well-known MCP servers, `hermes mcp add` accepts a `--preset` flag that fills in the transport details so you don't have to look up the command and args. The preset only supplies defaults — anything else (env vars, headers, filtering) you pass on the same command line still wins.
+
+| Preset | What it wires up |
+|---|---|
+| `codex` | The Codex CLI's MCP server (`codex mcp-server` over stdio). Requires the `codex` CLI on PATH. |
+
+```bash
+# Add Codex CLI as an MCP server in one line
+hermes mcp add codex --preset codex
+```
+
+That writes the equivalent of:
+
+```yaml
+mcp_servers:
+  codex:
+    command: "codex"
+    args: ["mcp-server"]
+```
+
+You can pick any local name (`hermes mcp add my-codex --preset codex` is fine); the preset only provides the `command`/`args` defaults.
 
 ## How Hermes registers MCP tools
 
@@ -409,6 +434,23 @@ Because Hermes now only registers those wrappers when both are true:
 
 This is intentional and keeps the tool list honest.
 
+## Parallel Tool Calls
+
+By default, MCP tools run sequentially — one at a time. If your MCP server exposes tools that are safe to run concurrently (e.g. read-only queries, independent API calls), you can opt-in to parallel execution:
+
+```yaml
+mcp_servers:
+  docs:
+    command: "docs-server"
+    supports_parallel_tool_calls: true
+```
+
+When `supports_parallel_tool_calls` is `true`, Hermes may execute multiple tools from that server at the same time within a single tool-call batch, just like it does for built-in read-only tools (web_search, read_file, etc.).
+
+:::caution
+Only enable parallel calls for MCP servers whose tools are safe to run at the same time. If tools read and write shared state, files, databases, or external resources, review the read/write race conditions before enabling this setting.
+:::
+
 ## MCP Sampling Support
 
 MCP servers can request LLM inference from Hermes via the `sampling/createMessage` protocol. This allows an MCP server to ask Hermes to generate text on its behalf — useful for servers that need LLM capabilities but don't have their own model access.
@@ -536,7 +578,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 
 ### Current limits
 
-- Stdio transport only (no HTTP MCP transport yet)
+- The embedded `hermes mcp serve` exposes a **stdio-only** MCP server today. If you need an HTTP MCP server, run a separate adapter — or, much more commonly, use the MCP **client** side of Hermes, which already speaks both stdio and HTTP (`url` + `headers` in `mcp_servers.yaml` / `config.yaml`; see [HTTP servers](#http-servers) above).
 - Event polling at ~200ms intervals via mtime-optimized DB polling (skips work when files are unchanged)
 - No `claude/channel` push notification protocol yet
 - Text-only sends (no media/attachment sending through `messages_send`)

@@ -31,6 +31,41 @@ def _make_cli_stub():
     return cli
 
 
+def _make_background_cli_stub():
+    cli = _make_cli_stub()
+    cli._background_task_counter = 0
+    cli._background_tasks = {}
+    cli._ensure_runtime_credentials = MagicMock(return_value=True)
+    cli._resolve_turn_agent_config = MagicMock(return_value={
+        "model": "test-model",
+        "runtime": {
+            "api_key": "test-key",
+            "base_url": "https://example.test/v1",
+            "provider": "test",
+            "api_mode": "chat_completions",
+        },
+        "request_overrides": None,
+    })
+    cli.max_turns = 90
+    cli.enabled_toolsets = []
+    cli._session_db = None
+    cli.reasoning_config = {}
+    cli.service_tier = None
+    cli._providers_only = None
+    cli._providers_ignore = None
+    cli._providers_order = None
+    cli._provider_sort = None
+    cli._provider_require_params = None
+    cli._provider_data_collection = None
+    cli._openrouter_min_coding_score = None
+    cli._fallback_model = None
+    cli._agent_running = False
+    cli._spinner_text = ""
+    cli.bell_on_complete = False
+    cli.final_response_markdown = "strip"
+    return cli
+
+
 class TestCliApprovalUi:
     def test_sudo_prompt_restores_existing_draft_after_response(self):
         cli = _make_cli_stub()
@@ -254,6 +289,54 @@ class TestCliApprovalUi:
 
         # Command got truncated with a marker.
         assert "(command truncated" in rendered
+
+    def test_background_task_registers_thread_local_approval_callbacks(self):
+        """Background /btw tasks must use the prompt_toolkit approval UI.
+
+        The foreground chat path registers dangerous-command callbacks inside
+        its worker thread because tools.terminal_tool stores them in
+        threading.local(). /background used to skip that, so dangerous commands
+        fell back to raw input() in a background thread and timed out under
+        prompt_toolkit.
+        """
+        cli = _make_background_cli_stub()
+        seen = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                self._print_fn = None
+                self.thinking_callback = None
+
+            def run_conversation(self, **kwargs):
+                from tools.terminal_tool import (
+                    _get_approval_callback,
+                    _get_sudo_password_callback,
+                )
+
+                seen["approval"] = _get_approval_callback()
+                seen["sudo"] = _get_sudo_password_callback()
+                return {
+                    "final_response": "done",
+                    "messages": [],
+                    "completed": True,
+                    "failed": False,
+                }
+
+        with patch.object(cli_module, "AIAgent", FakeAgent), \
+             patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "ChatConsole") as chat_console:
+            chat_console.return_value.print = MagicMock()
+            cli._handle_background_command("/btw check weather")
+
+            deadline = time.time() + 2
+            while cli._background_tasks and time.time() < deadline:
+                time.sleep(0.01)
+
+        assert seen["approval"].__self__ is cli
+        assert seen["approval"].__func__ is HermesCLI._approval_callback
+        assert seen["sudo"].__self__ is cli
+        assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback
+        assert not cli._background_tasks
 
 
 class TestApprovalCallbackThreadLocalWiring:

@@ -36,13 +36,17 @@ from typing import List, Tuple
 # Hardcoded trust configuration
 # ---------------------------------------------------------------------------
 
-TRUSTED_REPOS = {"openai/skills", "anthropics/skills"}
+TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills"}
 
 INSTALL_POLICY = {
     #                  safe      caution    dangerous
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
+    # Agent-created: "ask" on dangerous surfaces as an error to the agent,
+    # which can retry without the flagged content. This gate only runs when
+    # skills.guard_agent_created is enabled (off by default) — see
+    # tools/skill_manager_tool.py::_guard_agent_created_enabled.
     "agent-created": ("allow",  "allow",   "ask"),
 }
 
@@ -810,7 +814,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
             ))
 
         # Executable permission on non-script files
-        if ext not in ('.sh', '.bash', '.py', '.rb', '.pl') and f.stat().st_mode & 0o111:
+        if ext not in {'.sh', '.bash', '.py', '.rb', '.pl'} and f.stat().st_mode & 0o111:
             findings.append(Finding(
                 pattern_id="unexpected_executable",
                 severity="medium",
@@ -924,5 +928,5 @@ def _build_summary(name: str, source: str, trust: str, verdict: str, findings: L
     if not findings:
         return f"{name}: clean scan, no threats detected"
 
-    categories = set(f.category for f in findings)
+    categories = {f.category for f in findings}
     return f"{name}: {verdict} — {len(findings)} finding(s) in {', '.join(sorted(categories))}"

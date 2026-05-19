@@ -540,13 +540,46 @@ from gateway.config import Platform, PlatformConfig  # noqa: E402
 
 
 def _make_slack_adapter():
-    config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+    config = PlatformConfig(enabled=True, token="***")
     adapter = SlackAdapter(config)
     adapter._app = MagicMock()
     adapter._app.client = AsyncMock()
     adapter._bot_user_id = "U_BOT"
     adapter._running = True
     return adapter
+
+
+# ---------------------------------------------------------------------------
+# SlackAdapter diagnostics helpers
+# ---------------------------------------------------------------------------
+
+class TestSlackAttachmentDiagnostics:
+    def test_missing_scope_error_returns_actionable_notice(self):
+        """_describe_slack_api_error translates a missing_scope response into
+        a user-facing notice mentioning the needed scope and the reinstall
+        step. This is the helper used by every files.info call site (Slack
+        Connect stubs + post-download failures) to surface scope problems
+        without making an extra probe call per attachment.
+        """
+        adapter = _make_slack_adapter()
+
+        response = {
+            "error": "missing_scope",
+            "needed": "files:read",
+            "provided": "chat:write,files:write",
+        }
+        detail = adapter._describe_slack_api_error(response, file_obj={"id": "F123", "name": "photo.jpg"})
+        assert detail is not None
+        assert "files:read" in detail
+        assert "reinstall" in detail.lower()
+        assert "chat:write,files:write" in detail
+
+    def test_download_failure_403_returns_permission_notice(self):
+        adapter = _make_slack_adapter()
+        exc = _make_http_status_error(403)
+        detail = adapter._describe_slack_download_failure(exc, file_obj={"name": "report.pdf"})
+        assert "403" in detail
+        assert "permission or scope" in detail
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +735,7 @@ class TestSlackDownloadSlackFileBytes:
         fake_response = MagicMock()
         fake_response.content = b"raw bytes here"
         fake_response.raise_for_status = MagicMock()
+        fake_response.headers = {"content-type": "application/pdf"}
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=fake_response)
@@ -717,6 +751,29 @@ class TestSlackDownloadSlackFileBytes:
         result = asyncio.run(run())
         assert result == b"raw bytes here"
 
+    def test_rejects_html_response(self):
+        """Slack HTML sign-in pages should not be accepted as file bytes."""
+        adapter = _make_slack_adapter()
+
+        fake_response = MagicMock()
+        fake_response.content = b"<!DOCTYPE html><html><title>Slack</title></html>"
+        fake_response.raise_for_status = MagicMock()
+        fake_response.headers = {"content-type": "text/html; charset=utf-8"}
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=fake_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                await adapter._download_slack_file_bytes(
+                    "https://files.slack.com/file.bin"
+                )
+
+        with pytest.raises(ValueError, match="HTML instead of file bytes"):
+            asyncio.run(run())
+
     def test_retries_on_429_then_succeeds(self):
         """429 on first attempt is retried; raw bytes returned on second."""
         adapter = _make_slack_adapter()
@@ -724,6 +781,7 @@ class TestSlackDownloadSlackFileBytes:
         ok_response = MagicMock()
         ok_response.content = b"final bytes"
         ok_response.raise_for_status = MagicMock()
+        ok_response.headers = {"content-type": "application/pdf"}
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(

@@ -54,6 +54,7 @@ from typing import Dict, Any, List, Optional
 from tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
 from agent.auxiliary_client import extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ logger = logging.getLogger(__name__)
 # Keep this list aligned with current top-tier OpenRouter frontier options.
 REFERENCE_MODELS = [
     "anthropic/claude-opus-4.6",
-    "google/gemini-3-pro-preview",
+    "google/gemini-2.5-pro",
     "openai/gpt-5.4-pro",
     "deepseek/deepseek-v3.2",
 ]
@@ -129,6 +130,7 @@ async def _run_reference_model_safe(
             api_params = {
                 "model": model,
                 "messages": [{"role": "user", "content": user_prompt}],
+                "max_tokens": max_tokens,
                 "extra_body": {
                     "reasoning": {
                         "enabled": True,
@@ -203,6 +205,7 @@ async def _run_aggregator_model(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
+        "max_tokens": max_tokens,
         "extra_body": {
             "reasoning": {
                 "enabled": True,
@@ -449,7 +452,7 @@ if __name__ == "__main__":
         print("❌ OPENROUTER_API_KEY environment variable not set")
         print("Please set your API key: export OPENROUTER_API_KEY='your-key-here'")
         print("Get API key at: https://openrouter.ai/")
-        exit(1)
+        sys.exit(1)
     else:
         print("✅ OpenRouter API key found")
     

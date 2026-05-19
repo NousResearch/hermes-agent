@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_constants import get_hermes_dir
+from utils import atomic_replace
 
 
 # Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion
@@ -59,7 +60,7 @@ def _secure_write(path: Path, data: str) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, str(path))
+        atomic_replace(tmp_path, path)
         try:
             os.chmod(path, 0o600)
         except OSError:
@@ -194,11 +195,22 @@ class PairingStore:
         """
         Approve a pairing code. Adds the user to the approved list.
 
-        Returns {user_id, user_name} on success, None if code is invalid/expired.
+        Returns {user_id, user_name} on success, None if code is
+        invalid/expired OR the platform is currently locked out after
+        ``MAX_FAILED_ATTEMPTS`` failed approvals (#10195). Callers can
+        disambiguate with ``_is_locked_out(platform)``.
         """
         with self._lock:
             self._cleanup_expired(platform)
             code = code.upper().strip()
+
+            # Lockout check — must run before the pending lookup so a
+            # valid code (e.g. one already sitting in pending) cannot be
+            # accepted once the lockout fires. Without this, the lockout
+            # only blocks `generate_code`, not `approve_code` — nullifying
+            # the brute-force protection for any code already issued.
+            if self._is_locked_out(platform):
+                return None
 
             pending = self._load_json(self._pending_path(platform))
             if code not in pending:

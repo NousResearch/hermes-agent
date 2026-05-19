@@ -26,8 +26,9 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_bundled_skills_dir, get_hermes_home
 from typing import Dict, List, Tuple
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,10 @@ def _get_bundled_dir() -> Path:
     """Locate the bundled skills/ directory.
 
     Checks HERMES_BUNDLED_SKILLS env var first (set by Nix wrapper),
-    then falls back to the relative path from this source file.
+    then a wheel-installed data dir, then falls back to the relative
+    path from this source file.
     """
-    env_override = os.getenv("HERMES_BUNDLED_SKILLS")
-    if env_override:
-        return Path(env_override)
-    return Path(__file__).parent.parent / "skills"
+    return get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
 
 
 def _read_manifest() -> Dict[str, str]:
@@ -98,7 +97,7 @@ def _write_manifest(entries: Dict[str, str]):
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, MANIFEST_FILE)
+            atomic_replace(tmp_path, MANIFEST_FILE)
         except BaseException:
             try:
                 os.unlink(tmp_path)
@@ -206,9 +205,25 @@ def sync_skills(quiet: bool = False) -> dict:
             # ── New skill — never offered before ──
             try:
                 if dest.exists():
-                    # User already has a skill with the same name — don't overwrite
+                    # User already has a skill with the same name — don't overwrite.
+                    # Only baseline in the manifest when the on-disk copy is
+                    # byte-identical to bundled (e.g. a reset that re-syncs, or
+                    # a coincidentally identical install); that case is harmless
+                    # to track. If the copy differs (custom skill, hub-installed,
+                    # or user-edited) skip the manifest write: recording
+                    # bundled_hash there would poison update detection by making
+                    # user_hash != origin_hash read as "user-modified" on every
+                    # subsequent sync, permanently blocking bundled updates.
                     skipped += 1
-                    manifest[skill_name] = bundled_hash
+                    if _dir_hash(dest) == bundled_hash:
+                        manifest[skill_name] = bundled_hash
+                    elif not quiet:
+                        print(
+                            f"  ⚠ {skill_name}: bundled version shipped but you "
+                            f"already have a local skill by this name — yours "
+                            f"was kept. Run `hermes skills reset {skill_name}` "
+                            f"to replace it with the bundled version."
+                        )
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copytree(skill_src, dest)
@@ -328,7 +343,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     manifest = _read_manifest()
     bundled_dir = _get_bundled_dir()
     bundled_skills = _discover_bundled_skills(bundled_dir)
-    bundled_by_name = {skill_name: skill_dir for skill_name, skill_dir in bundled_skills}
+    bundled_by_name = dict(bundled_skills)
 
     in_manifest = name in manifest
     is_bundled = name in bundled_by_name

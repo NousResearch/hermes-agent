@@ -4,13 +4,15 @@
 
 import { Buffer } from 'buffer'
 
-import { env } from '../../utils/env.js'
+import { env as envModule, supportsOsc52Clipboard } from '../../utils/env.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 
 import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
 import type { Action, Color, TabStatusAction } from './types.js'
 
 export const OSC_PREFIX = ESC + String.fromCharCode(ESC_TYPE.OSC)
+const ENV_ON_RE = /^(?:1|true|yes|on)$/i
+const ENV_OFF_RE = /^(?:0|false|no|off)$/i
 
 /** String Terminator (ESC \) - alternative to BEL for terminating OSC */
 export const ST = ESC + '\\'
@@ -18,7 +20,7 @@ export const ST = ESC + '\\'
 /** Generate an OSC sequence: ESC ] p1;p2;...;pN <terminator>
  * Uses ST terminator for Kitty (avoids beeps), BEL for others */
 export function osc(...parts: (string | number)[]): string {
-  const terminator = env.terminal === 'kitty' ? ST : BEL
+  const terminator = envModule.terminal === 'kitty' ? ST : BEL
 
   return `${OSC_PREFIX}${parts.join(SEP)}${terminator}`
 }
@@ -79,6 +81,96 @@ export function getClipboardPath(): ClipboardPath {
   }
 
   return 'osc52'
+}
+
+export function shouldEmitClipboardSequence(env: NodeJS.ProcessEnv = process.env): boolean {
+  const override = (
+    env.HERMES_TUI_FORCE_OSC52 ??
+    env.HERMES_TUI_CLIPBOARD_OSC52 ??
+    env.HERMES_TUI_COPY_OSC52 ??
+    ''
+  ).trim()
+
+  if (ENV_ON_RE.test(override)) {
+    return true
+  }
+
+  if (ENV_OFF_RE.test(override)) {
+    return false
+  }
+
+  return !!env['SSH_CONNECTION'] || (!env['TMUX'] && !env['STY'])
+}
+
+/**
+ * Decide whether setClipboard() should also fire the native clipboard tool
+ * (pbcopy / wl-copy / xclip / xsel / clip.exe) as a safety net alongside
+ * OSC 52 / tmux load-buffer.
+ *
+ * The default is "yes, native fires" — it's the historical safety net for
+ * terminals where OSC 52 may not work (iTerm2 disables OSC 52 by default,
+ * Apple_Terminal / GNOME Terminal / xterm coverage is patchy). The two
+ * cases where we suppress it:
+ *
+ *  1. SSH session: native tools would write to the *remote* machine's
+ *     clipboard. OSC 52 (which travels back over the pty to the user's
+ *     local terminal) is the right path. Existing behaviour.
+ *
+ *  2. Allowlisted OSC-52-capable terminal AND we're actually going to
+ *     emit an OSC 52 sequence AND we're not inside tmux/screen. On these
+ *     terminals (Ghostty / kitty / WezTerm / Windows Terminal / VS Code)
+ *     the OSC 52 write is reliable on its own, and racing it with a
+ *     native tool is destructive — wl-copy on Wayland in particular
+ *     wipes the clipboard during its existence-probe and forks a daemon
+ *     that races the terminal's own write (~30% empty-clipboard rate
+ *     reported on Ghostty + Wayland; symptom: ctrl+shift+c works on the
+ *     3rd attempt).
+ *
+ *     The TMUX/STY guard is important: detectTerminal() in utils/env.ts
+ *     prefers TERM_PROGRAM over TMUX, so a tmux session inside Ghostty
+ *     reports terminal='ghostty'. But inside tmux setClipboard() doesn't
+ *     emit raw OSC 52 — it goes through tmux load-buffer (which loads
+ *     the tmux paste buffer and, with -w, asks tmux to forward an OSC 52
+ *     to the OUTER terminal via its own emission path). The native
+ *     safety net is still useful there because tmux load-buffer's
+ *     outer-terminal forwarding depends on `set -g set-clipboard` and
+ *     `allow-passthrough`, which many users don't have configured.
+ *
+ *     The OSC-52-will-emit guard matters too: if the user has set
+ *     HERMES_TUI_FORCE_OSC52=0, no OSC 52 sequence will be written. If
+ *     we ALSO skip native, the clipboard write becomes a no-op. So skip
+ *     native only when OSC 52 will actually carry the data.
+ */
+export function shouldUseNativeClipboard(
+  env: NodeJS.ProcessEnv = process.env,
+  terminal: string | null = envModule.terminal
+): boolean {
+  // Over SSH the native tools would write to the wrong machine's clipboard.
+  if (env.SSH_CONNECTION) {
+    return false
+  }
+
+  // Inside tmux/screen, OSC 52 is normally suppressed and we rely on
+  // tmux load-buffer instead — so the wl-copy/OSC-52 race usually doesn't
+  // apply. Even when HERMES_TUI_FORCE_OSC52=1 forces a tmux-passthrough
+  // OSC 52 emission, we keep native enabled as a safety net: tmux's
+  // outer-terminal forwarding depends on `allow-passthrough` in the
+  // user's tmux config, so a forced OSC 52 may silently never reach the
+  // host terminal. Native (pbcopy/wl-copy/xclip) covers that gap.
+  if (env.TMUX || env.STY) {
+    return true
+  }
+
+  // If OSC 52 won't actually emit (user override or env state), the
+  // native tool is the only path left — keep it on.
+  if (!shouldEmitClipboardSequence(env)) {
+    return true
+  }
+
+  // OSC 52 is going to emit AND the terminal is in the allowlist of
+  // terminals where OSC 52 alone is reliable: skip native to avoid the
+  // wl-copy race documented above.
+  return !supportsOsc52Clipboard(terminal)
 }
 
 /**
@@ -146,34 +238,69 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
  * utilities (pbcopy/wl-copy/xclip/xsel/clip.exe) always work locally. Over
  * SSH these would write to the remote clipboard — OSC 52 is the right path there.
  *
- * Returns the sequence for the caller to write to stdout (raw OSC 52
- * outside tmux, DCS-wrapped inside).
+ * Returns { sequence, success }:
+ *   - `sequence` is the bytes to write to stdout (raw OSC 52 outside tmux,
+ *     DCS-wrapped inside; empty string when we shouldn't emit).
+ *   - `success` is true when we believe SOME path reached the clipboard:
+ *     native tool fired (local), tmux buffer loaded, or an OSC 52 sequence
+ *     was emitted to the terminal. False only when no path was taken at
+ *     all (headless Linux with no tmux + osc52 suppressed, effectively).
+ *     This is best-effort — pbcopy/xclip are fire-and-forget, and OSC 52
+ *     depends on the outer terminal honoring the sequence — but it lets
+ *     callers distinguish "nothing attempted" from "attempted".
  */
-export async function setClipboard(text: string): Promise<string> {
+export type ClipboardResult = {
+  sequence: string
+  success: boolean
+}
+
+export async function setClipboard(text: string): Promise<ClipboardResult> {
   const b64 = Buffer.from(text, 'utf8').toString('base64')
   const raw = osc(OSC.CLIPBOARD, 'c', b64)
+  const emitSequence = shouldEmitClipboardSequence(process.env)
 
   // Native safety net — fire FIRST, before the tmux await, so a quick
   // focus-switch after selecting doesn't race pbcopy. Previously this ran
   // AFTER awaiting tmux load-buffer, adding ~50-100ms of subprocess latency
   // before pbcopy even started — fast cmd+tab → paste would beat it
   // (https://anthropic.slack.com/archives/C07VBSHV7EV/p1773943921788829).
-  // Gated on SSH_CONNECTION (not SSH_TTY) since tmux panes inherit SSH_TTY
-  // forever but SSH_CONNECTION is in tmux's default update-environment and
-  // clears on local attach. Fire-and-forget.
-  if (!process.env['SSH_CONNECTION']) {
-    copyNative(text)
-  }
+  // Skipped entirely on terminals with first-class OSC 52 support (see
+  // `shouldUseNativeClipboard()` above): running wl-copy/xclip/pbcopy in
+  // parallel with OSC 52 on those terminals can corrupt the clipboard.
+  // wl-copy on Wayland is the worst offender — `probeLinuxCopy()` runs it
+  // with empty stdin to check if the binary exists (which destructively
+  // wipes the clipboard), and the subsequent real invocation forks a
+  // background daemon that races the terminal's own OSC 52 write plus its
+  // own prior daemon's SIGTERM. On Ghostty + Wayland this produced a ~30%
+  // clipboard-empty rate (symptom: user had to press ctrl+shift+c three
+  // times before the selection landed). Native still fires inside
+  // tmux/screen — we primarily rely on tmux load-buffer there rather
+  // than raw OSC 52, so the wl-copy race usually doesn't apply, and
+  // native is kept as a safety net because tmux passthrough forwarding
+  // depends on the user's `allow-passthrough` config (note: when
+  // HERMES_TUI_FORCE_OSC52=1 we DO additionally emit a tmux-passthrough
+  // OSC 52, but it can be silently dropped without that setting).
+  // Native also fires when the user has disabled OSC 52 emission via
+  // HERMES_TUI_FORCE_OSC52=0 (otherwise the clipboard write becomes a
+  // complete no-op). Fire-and-forget, but `nativeAttempted` tells us
+  // whether ANY native path will be tried.
+  const nativeAttempted = shouldUseNativeClipboard(process.env, envModule.terminal) && copyNative(text)
 
   const tmuxBufferLoaded = await tmuxLoadBuffer(text)
 
   // Inner OSC uses BEL directly (not osc()) — ST's ESC would need doubling
   // too, and BEL works everywhere for OSC 52.
-  if (tmuxBufferLoaded) {
-    return tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`)
-  }
+  const sequence = emitSequence ? (tmuxBufferLoaded ? tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`) : raw) : ''
 
-  return raw
+  // Success if any path was taken. Native and tmux are fire-and-forget,
+  // so we can't truly confirm the clipboard was written — but if native
+  // was attempted OR tmux buffer loaded OR we emitted OSC 52, the user's
+  // paste is likely to work. The only false case is "we did literally
+  // nothing" (e.g. local-in-tmux with osc52 suppressed and tmux buffer
+  // load failed), in which case reporting failure to the user is honest.
+  const success = nativeAttempted || tmuxBufferLoaded || sequence.length > 0
+
+  return { sequence, success }
 }
 
 // Linux clipboard tool: undefined = not yet probed, null = none available.
@@ -181,65 +308,95 @@ export async function setClipboard(text: string): Promise<string> {
 // Cached after first attempt so repeated mouse-ups skip the probe chain.
 let linuxCopy: 'wl-copy' | 'xclip' | 'xsel' | null | undefined
 
+/** Internal: probe once and cache — wl-copy first, then xclip, then xsel. */
+async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
+  const opts = { useCwd: false, timeout: 500 }
+
+  const r = await execFileNoThrow('wl-copy', [], opts)
+
+  if (r.code === 0) {
+    return 'wl-copy'
+  }
+
+  const r2 = await execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
+
+  if (r2.code === 0) {
+    return 'xclip'
+  }
+
+  const r3 = await execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
+
+  return r3.code === 0 ? 'xsel' : null
+}
+
 /**
  * Shell out to a native clipboard utility as a safety net for OSC 52.
  * Only called when not in an SSH session (over SSH, these would write to
  * the remote machine's clipboard — OSC 52 is the right path there).
  * Fire-and-forget: failures are silent since OSC 52 may have succeeded.
+ *
+ * Returns true when a native copy path was (or will be) attempted — i.e.
+ * we'll spawn pbcopy on macOS, clip on Windows, or a known-working Linux
+ * tool. Returns false only when we know no native tool is viable (Linux
+ * without DISPLAY/WAYLAND_DISPLAY, or previously-probed-to-null). The
+ * return value is used to decide whether to tell the user the copy
+ * succeeded — spawning is best-effort but good enough to claim success.
+ *
+ * Linux behaviour: if DISPLAY and WAYLAND_DISPLAY are both unset, native
+ * clipboard tools cannot work (they need a display server). In that case
+ * we skip probing entirely and treat linuxCopy as permanently null.
  */
-function copyNative(text: string): void {
+function copyNative(text: string): boolean {
   const opts = { input: text, useCwd: false, timeout: 2000 }
 
   switch (process.platform) {
     case 'darwin':
       void execFileNoThrow('pbcopy', [], opts)
 
-      return
+      return true
     case 'linux': {
-      if (linuxCopy === null) {
-        return
-      }
-
-      if (linuxCopy === 'wl-copy') {
-        void execFileNoThrow('wl-copy', [], opts)
-
-        return
-      }
-
-      if (linuxCopy === 'xclip') {
-        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
-
-        return
-      }
-
-      if (linuxCopy === 'xsel') {
-        void execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
-
-        return
-      }
-
-      // First call: probe wl-copy (Wayland) then xclip/xsel (X11), cache winner.
-      void execFileNoThrow('wl-copy', [], opts).then(r => {
-        if (r.code === 0) {
-          linuxCopy = 'wl-copy'
-
-          return
+      // If we already probed (success or hard-fail), short-circuit.
+      if (linuxCopy !== undefined) {
+        if (linuxCopy === null) {
+          // No working native tool — skip silently.
+          return false
         }
 
-        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts).then(r2 => {
-          if (r2.code === 0) {
-            linuxCopy = 'xclip'
+        // linuxCopy is a known-working tool; fire-and-forget.
+        void execFileNoThrow(linuxCopy, linuxCopy === 'wl-copy' ? [] : ['-selection', 'clipboard'], opts)
 
-            return
-          }
+        return true
+      }
 
-          void execFileNoThrow('xsel', ['--clipboard', '--input'], opts).then(r3 => {
-            linuxCopy = r3.code === 0 ? 'xsel' : null
-          })
-        })
-      })
+      // No display server → native tools will fail immediately. Cache null.
+      if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error('[clipboard] [native] Linux: no DISPLAY or WAYLAND_DISPLAY — native clipboard unavailable')
+        }
 
-      return
+        linuxCopy = null
+
+        return false
+      }
+      // First call: probe in the background and cache the result for future copies.
+      // We don't await — this is fire-and-forget. Treat as an attempt:
+      // the probe will discover a tool and spawn it. If probing finds
+      // nothing, the NEXT copy will short-circuit above.
+      void (async () => {
+        const winner = await probeLinuxCopy()
+        linuxCopy = winner
+
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error(`[clipboard] [native] Linux: clipboard probe complete → ${winner ?? 'no tool available'}`)
+        }
+
+        // Actually perform the copy with the discovered tool.
+        if (winner) {
+          void execFileNoThrow(winner, winner === 'wl-copy' ? [] : ['-selection', 'clipboard'], opts)
+        }
+      })()
+
+      return true
     }
 
     case 'win32':
@@ -247,8 +404,10 @@ function copyNative(text: string): void {
       // imperfect (system locale encoding) but good enough for a fallback.
       void execFileNoThrow('clip', [], opts)
 
-      return
+      return true
   }
+
+  return false
 }
 
 /** @internal test-only */

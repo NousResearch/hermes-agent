@@ -57,3 +57,24 @@ test('matchesAllowedUser treats * as allow-all wildcard', () => {
     rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () => {
+  // Regression guard: empty allowlist used to return true (allow-everyone),
+  // which let any stranger DM the bridge and trigger a Python-side
+  // pairing-code reply. Secure default is now "reject unless explicitly
+  // configured"; operators who want an open bot must set `*`.
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+
+  try {
+    const empty = parseAllowedUsers('');
+    assert.equal(empty.size, 0);
+    assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', empty, sessionDir), false);
+    assert.equal(matchesAllowedUser('267383306489914@lid', empty, sessionDir), false);
+
+    // Null/undefined allowlist (defensive) also rejects.
+    assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', null, sessionDir), false);
+    assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', undefined, sessionDir), false);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});

@@ -10,6 +10,18 @@ Receive events from external services (GitHub, GitLab, JIRA, Stripe, etc.) and t
 
 The agent processes the event and can respond by posting comments on PRs, sending messages to Telegram/Discord, or logging the result.
 
+## Video Tutorial
+
+<div style={{position: 'relative', width: '100%', aspectRatio: '16 / 9', marginBottom: '1.5rem'}}>
+  <iframe
+    src="https://www.youtube.com/embed/WNYe5mD4fY8"
+    title="Hermes Agent — Webhooks Tutorial"
+    style={{position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 0}}
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowFullScreen
+  />
+</div>
+
 ---
 
 ## Quick Start
@@ -382,6 +394,8 @@ If a secret is configured but no recognized signature header is present, the req
 ### Secret is required
 
 Every route must have a secret — either set directly on the route or inherited from the global `secret`. Routes without a secret cause the adapter to fail at startup with an error. For development/testing only, you can set the secret to `"INSECURE_NO_AUTH"` to skip validation entirely.
+
+`INSECURE_NO_AUTH` is only accepted when the gateway is bound to a loopback host (`127.0.0.1`, `localhost`, `::1`). If it is combined with a non-loopback bind such as `0.0.0.0` or a LAN IP, the adapter refuses to start — this prevents accidentally exposing an unauthenticated endpoint on a public interface.
 
 ### Rate limiting
 

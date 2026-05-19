@@ -20,10 +20,10 @@ def get_provider_request_timeout(
 
     try:
         from hermes_cli.config import load_config
-    except ImportError:
+        config = load_config()
+    except Exception:
         return None
 
-    config = load_config()
     providers = config.get("providers", {}) if isinstance(config, dict) else {}
     provider_config = (
         providers.get(provider_id, {}) if isinstance(providers, dict) else {}
@@ -49,10 +49,10 @@ def get_provider_stale_timeout(
 
     try:
         from hermes_cli.config import load_config
-    except ImportError:
+        config = load_config()
+    except Exception:
         return None
 
-    config = load_config()
     providers = config.get("providers", {}) if isinstance(config, dict) else {}
     provider_config = (
         providers.get(provider_id, {}) if isinstance(providers, dict) else {}

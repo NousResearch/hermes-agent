@@ -118,7 +118,7 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
 
     route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.3-codex", runtime_kwargs)
 
-    assert route["request_overrides"] is None
+    assert route["request_overrides"] == {}
 
 
 @pytest.mark.asyncio

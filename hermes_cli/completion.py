@@ -216,9 +216,9 @@ _hermes() {{
     typeset -A opt_args
 
     _arguments -C \\
-        '(-h --help){{-h,--help}}[Show help and exit]' \\
-        '(-V --version){{-V,--version}}[Show version and exit]' \\
-        '(-p --profile){{-p,--profile}}[Profile name]:profile:_hermes_profiles' \\
+        '(-)'{{-h,--help}}'[Show help and exit]' \\
+        '(-)'{{-V,--version}}'[Show version and exit]' \\
+        '(-)'{{-p,--profile}}'[Profile name]:profile:_hermes_profiles' \\
         '1:command:->commands' \\
         '*::arg:->args'
 
@@ -238,7 +238,7 @@ _hermes() {{
     esac
 }}
 
-_hermes "$@"
+compdef _hermes hermes
 """
 
 

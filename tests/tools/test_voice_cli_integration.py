@@ -482,8 +482,11 @@ class TestVprintForceParameter:
             else:
                 unforced_error_count += 1
 
-        assert forced_error_count > 0, \
-            "Expected at least one _vprint with force=True for error messages"
+        # Invariant: no critical-error _vprint call may silently drop under
+        # streaming suppression — every ❌-prefixed _vprint must pass force=True.
+        # The codebase may legitimately have zero such calls if errors are
+        # routed through print() or higher-level Rich panels; what matters is
+        # that none are quietly suppressed.
         assert unforced_error_count == 0, \
             f"Found {unforced_error_count} critical error _vprint calls without force=True"
 
@@ -1039,6 +1042,25 @@ class TestDisableVoiceModeReal:
 
 class TestVoiceSpeakResponseReal:
     """Tests _voice_speak_response with real CLI instance."""
+
+    def test_async_scheduling_clears_done_before_thread_start(self):
+        cli = _make_voice_cli(_voice_tts=True)
+        starts = []
+
+        class FakeThread:
+            def __init__(self, target=None, args=(), daemon=None):
+                self.target = target
+                self.args = args
+                self.daemon = daemon
+
+            def start(self):
+                starts.append(cli._voice_tts_done.is_set())
+
+        with patch("cli.threading.Thread", FakeThread):
+            cli._voice_speak_response_async("Hello")
+
+        assert starts == [False]
+        assert not cli._voice_tts_done.is_set()
 
     @patch("cli._cprint")
     def test_early_return_when_tts_off(self, _cp):

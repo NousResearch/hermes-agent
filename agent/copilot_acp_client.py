@@ -30,6 +30,28 @@ _DEFAULT_TIMEOUT_SECONDS = 900.0
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
+# Stderr fingerprint of the deprecated `gh copilot` CLI extension
+# (https://github.blog/changelog/2025-09-25-upcoming-deprecation-of-gh-copilot-cli-extension).
+# We require BOTH the literal product name ("gh-copilot") AND a deprecation
+# marker, so generic stderr from the NEW `@github/copilot` CLI — whose repo
+# is github.com/github/copilot-cli and which legitimately mentions "copilot-cli"
+# in its own banners and error messages — doesn't get misclassified as the
+# deprecated extension.
+_DEPRECATION_REQUIRED = ("gh-copilot",)
+_DEPRECATION_MARKERS = (
+    "has been deprecated",
+    "no commands will be executed",
+)
+
+
+def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
+    """True iff stderr looks like the deprecated gh-copilot extension's banner."""
+
+    lower = stderr_text.lower()
+    if not any(req in lower for req in _DEPRECATION_REQUIRED):
+        return False
+    return any(marker in lower for marker in _DEPRECATION_MARKERS)
+
 
 def _resolve_command() -> str:
     return (
@@ -44,6 +66,47 @@ def _resolve_args() -> list[str]:
     if not raw:
         return ["--acp", "--stdio"]
     return shlex.split(raw)
+
+
+def _resolve_home_dir() -> str:
+    """Return a stable HOME for child ACP processes."""
+
+    try:
+        from hermes_constants import get_subprocess_home
+
+        profile_home = get_subprocess_home()
+        if profile_home:
+            return profile_home
+    except Exception:
+        pass
+
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        return home
+
+    expanded = os.path.expanduser("~")
+    if expanded and expanded != "~":
+        return expanded
+
+    try:
+        import pwd
+
+        resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
+        if resolved:
+            return resolved
+    except Exception:
+        pass
+
+    # Last resort: /tmp (writable on any POSIX system). Avoids crashing the
+    # subprocess with no HOME; callers can set HERMES_HOME explicitly if they
+    # need a different writable dir.
+    return "/tmp"
+
+
+def _build_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["HOME"] = _resolve_home_dir()
+    return env
 
 
 def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -382,6 +445,7 @@ class CopilotACPClient:
                 text=True,
                 bufsize=1,
                 cwd=self._acp_cwd,
+                env=_build_subprocess_env(),
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
@@ -435,8 +499,8 @@ class CopilotACPClient:
             proc.stdin.write(json.dumps(payload) + "\n")
             proc.stdin.flush()
 
-            deadline = time.time() + timeout_seconds
-            while time.time() < deadline:
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
                 if proc.poll() is not None:
                     break
                 try:
@@ -464,6 +528,21 @@ class CopilotACPClient:
 
             stderr_text = "\n".join(stderr_tail).strip()
             if proc.poll() is not None and stderr_text:
+                if _is_gh_copilot_deprecation_message(stderr_text):
+                    raise RuntimeError(
+                        "Hermes ACP mode requires the NEW GitHub Copilot CLI "
+                        "(github.com/github/copilot-cli), but the binary it just "
+                        "spawned is the deprecated `gh copilot` extension.\n\n"
+                        "Install the new CLI:\n"
+                        "  npm install -g @github/copilot\n"
+                        "  # then verify with: copilot --help\n\n"
+                        "If `copilot` already resolves to the new CLI but you still see this,\n"
+                        "point Hermes at it explicitly:\n"
+                        "  export HERMES_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
+                        "Alternative: use the `copilot` provider (no ACP, hits the Copilot API\n"
+                        "directly with a Copilot subscription token) via `hermes setup`.\n\n"
+                        f"Original error:\n{stderr_text}"
+                    )
                 raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
             raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
 
@@ -557,7 +636,10 @@ class CopilotACPClient:
                 block_error = get_read_block_error(str(path))
                 if block_error:
                     raise PermissionError(block_error)
-                content = path.read_text() if path.exists() else ""
+                try:
+                    content = path.read_text()
+                except FileNotFoundError:
+                    content = ""
                 line = params.get("line")
                 limit = params.get("limit")
                 if isinstance(line, int) and line > 1:
@@ -566,7 +648,7 @@ class CopilotACPClient:
                     end = start + limit if isinstance(limit, int) and limit > 0 else None
                     content = "".join(lines[start:end])
                 if content:
-                    content = redact_sensitive_text(content)
+                    content = redact_sensitive_text(content, force=True)
                 response = {
                     "jsonrpc": "2.0",
                     "id": message_id,

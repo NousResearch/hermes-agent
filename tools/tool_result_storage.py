@@ -76,15 +76,21 @@ def _heredoc_marker(content: str) -> str:
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
-    """Write content into the sandbox via env.execute(). Returns True on success."""
-    marker = _heredoc_marker(content)
+    """Write content into the sandbox via env.execute(). Returns True on success.
+
+    Pushes ``content`` through stdin rather than embedding it in the command
+    string. Linux's ``MAX_ARG_STRLEN`` caps any single argv element at 128 KB
+    (32 * PAGE_SIZE), so the previous heredoc-in-the-command-string approach
+    silently failed with ``OSError: [Errno 7] Argument list too long`` for any
+    tool result over ~128 KB — exactly the case persistence exists to handle.
+    Routing through stdin removes that ceiling on local + ssh (``_stdin_mode
+    == "pipe"``); remote backends with ``_stdin_mode == "heredoc"`` keep their
+    existing API-body sized limit, which is orders of magnitude larger than
+    the exec-arg ceiling.
+    """
     storage_dir = os.path.dirname(remote_path)
-    cmd = (
-        f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)} << '{marker}'\n"
-        f"{content}\n"
-        f"{marker}"
-    )
-    result = env.execute(cmd, timeout=30)
+    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
+    result = env.execute(cmd, timeout=30, stdin_data=content)
     return result.get("returncode", 1) == 0
 
 

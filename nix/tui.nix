@@ -4,7 +4,7 @@ let
   src = ../ui-tui;
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
-    hash = "sha256-RU4qSHgJPMyfRSEJDzkG4+MReDZDc6QbTD2wisa5QE0=";
+    hash = "sha256-9r1EYQ600gNXOnNXwakorpEk7hS/FPxZVbB2JksrhYs=";
   };
 
   npm = hermesNpmLib.mkNpmPassthru { folder = "ui-tui"; attr = "tui"; pname = "hermes-tui"; };
@@ -17,22 +17,17 @@ pkgs.buildNpmPackage (npm // {
   inherit src npmDeps version;
 
   doCheck = false;
+  npmFlags = [ "--legacy-peer-deps" ];
 
   installPhase = ''
     runHook preInstall
 
     mkdir -p $out/lib/hermes-tui
 
+    # Single self-contained bundle built by scripts/build.mjs (esbuild).
     cp -r dist $out/lib/hermes-tui/dist
 
-    # runtime node_modules
-    cp -r node_modules $out/lib/hermes-tui/node_modules
-
-    # @hermes/ink is a file: dependency, we need to copy it in fr
-    rm -f $out/lib/hermes-tui/node_modules/@hermes/ink
-    cp -r packages/hermes-ink $out/lib/hermes-tui/node_modules/@hermes/ink
-
-    # package.json needed for "type": "module" resolution
+    # package.json kept for "type": "module" resolution on `node dist/entry.js`.
     cp package.json $out/lib/hermes-tui/
 
     runHook postInstall

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
+from hermes_cli.config import cfg_get
 
 
 def clone_honcho_for_profile(profile_name: str) -> bool:
@@ -106,7 +107,7 @@ def cmd_enable(args) -> None:
 
     # If this is a new profile host block with no settings, clone from default
     if not block.get("aiPeer"):
-        default_block = cfg.get("hosts", {}).get(HOST, {})
+        default_block = cfg_get(cfg, "hosts", HOST, default={})
         for key in ("recallMode", "writeFrequency", "sessionStrategy",
                     "contextTokens", "dialecticReasoningLevel", "dialecticDynamic",
                     "dialecticMaxChars", "messageMaxChars", "dialecticMaxInputChars",
@@ -139,7 +140,7 @@ def cmd_disable(args) -> None:
     cfg = _read_config()
     host = _host_key()
     label = f"[{host}] " if host != "hermes" else ""
-    block = cfg.get("hosts", {}).get(host, {})
+    block = cfg_get(cfg, "hosts", host, default={})
 
     if not block or block.get("enabled") is False:
         print(f"  {label}Honcho is already disabled.\n")
@@ -212,7 +213,7 @@ def sync_honcho_profiles_quiet() -> int:
     if not cfg:
         return 0
 
-    default_block = cfg.get("hosts", {}).get(HOST, {})
+    default_block = cfg_get(cfg, "hosts", HOST, default={})
     has_key = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
     if not default_block and not has_key:
         return 0
@@ -232,7 +233,7 @@ _profile_override: str | None = None
 def _host_key() -> str:
     """Return the active Honcho host key, derived from the current Hermes profile."""
     if _profile_override:
-        if _profile_override in ("default", "custom"):
+        if _profile_override in {"default", "custom"}:
             return HOST
         return f"{HOST}.{_profile_override}"
     return resolve_active_host()
@@ -273,9 +274,38 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
 
 
 def _resolve_api_key(cfg: dict) -> str:
-    """Resolve API key with host -> root -> env fallback."""
+    """Resolve API key with host -> root -> env fallback.
+
+    For self-hosted instances configured with ``baseUrl`` instead of an API
+    key, returns ``"local"`` so that credential guards throughout the CLI
+    don't reject a valid configuration.  The ``baseUrl`` is scheme-validated
+    (http/https only) so that a typo like ``baseUrl: true`` can't silently
+    pass the guard.  Schemeless strings that look like host:port (legacy
+    config shapes, e.g. ``localhost:8000``) still pass — the Honcho SDK
+    will reject them itself with a clearer error than ours.
+    """
     host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
-    return host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+    key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+    if not key:
+        base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
+        base_url = (base_url or "").strip()
+        if base_url:
+            from urllib.parse import urlparse
+            try:
+                parsed = urlparse(base_url)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed and parsed.scheme in {"http", "https"} and parsed.netloc:
+                return "local"
+            # Schemeless but looks like a host (contains '.' or ':' and isn't
+            # a boolean literal): let it through so legacy configs don't
+            # regress into "no API key configured" when they previously worked.
+            lowered = base_url.lower()
+            if lowered not in {"true", "false", "none", "null"} and any(
+                c in base_url for c in ".:"
+            ) and not base_url.isdigit():
+                return "local"
+    return key
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
@@ -304,7 +334,7 @@ def _ensure_sdk_installed() -> bool:
 
     print("  honcho-ai is not installed.")
     answer = _prompt("Install it now? (honcho-ai>=2.0.1)", default="y")
-    if answer.lower() not in ("y", "yes"):
+    if answer.lower() not in {"y", "yes"}:
         print("  Skipping install. Run: pip install 'honcho-ai>=2.0.1'\n")
         return False
 
@@ -352,7 +382,7 @@ def cmd_setup(args) -> None:
         for h in ("localhost", "127.0.0.1", "::1")
     ) else "cloud"
     deploy = _prompt("Cloud or local?", default=current_deploy)
-    is_local = deploy.lower() in ("local", "l")
+    is_local = deploy.lower() in {"local", "l"}
 
     # Clean up legacy snake_case key
     cfg.pop("base_url", None)
@@ -411,7 +441,7 @@ def cmd_setup(args) -> None:
     print("    directional  -- all observations on, each AI peer builds its own view (default)")
     print("    unified      -- shared pool, user observes self, AI observes others only")
     new_obs = _prompt("Observation mode", default=current_obs)
-    if new_obs in ("unified", "directional"):
+    if new_obs in {"unified", "directional"}:
         hermes_host["observationMode"] = new_obs
     else:
         hermes_host["observationMode"] = "directional"
@@ -427,17 +457,17 @@ def cmd_setup(args) -> None:
     try:
         hermes_host["writeFrequency"] = int(new_wf)
     except (ValueError, TypeError):
-        hermes_host["writeFrequency"] = new_wf if new_wf in ("async", "turn", "session") else "async"
+        hermes_host["writeFrequency"] = new_wf if new_wf in {"async", "turn", "session"} else "async"
 
     # --- 6. Recall mode ---
     _raw_recall = hermes_host.get("recallMode") or cfg.get("recallMode", "hybrid")
-    current_recall = "hybrid" if _raw_recall not in ("hybrid", "context", "tools") else _raw_recall
+    current_recall = "hybrid" if _raw_recall not in {"hybrid", "context", "tools"} else _raw_recall
     print("\n  Recall mode:")
     print("    hybrid  -- auto-injected context + Honcho tools available (default)")
     print("    context -- auto-injected context only, Honcho tools hidden")
     print("    tools   -- Honcho tools only, no auto-injected context")
     new_recall = _prompt("Recall mode", default=current_recall)
-    if new_recall in ("hybrid", "context", "tools"):
+    if new_recall in {"hybrid", "context", "tools"}:
         hermes_host["recallMode"] = new_recall
 
     # --- 7. Context token budget ---
@@ -447,7 +477,7 @@ def cmd_setup(args) -> None:
     print("    uncapped -- no limit (default)")
     print("    N        -- token limit per turn (e.g. 1200)")
     new_ctx_tokens = _prompt("Context tokens", default=current_display)
-    if new_ctx_tokens.strip().lower() in ("none", "uncapped", "no limit"):
+    if new_ctx_tokens.strip().lower() in {"none", "uncapped", "no limit"}:
         hermes_host.pop("contextTokens", None)
     elif new_ctx_tokens.strip() == "":
         pass  # keep current
@@ -487,7 +517,7 @@ def cmd_setup(args) -> None:
     print("    high     -- complex behavioral patterns")
     print("    max      -- thorough audit-level analysis")
     new_reasoning = _prompt("Reasoning level", default=current_reasoning)
-    if new_reasoning in ("minimal", "low", "medium", "high", "max"):
+    if new_reasoning in {"minimal", "low", "medium", "high", "max"}:
         hermes_host["dialecticReasoningLevel"] = new_reasoning
     else:
         hermes_host["dialecticReasoningLevel"] = "low"
@@ -500,7 +530,7 @@ def cmd_setup(args) -> None:
     print("    per-repo      -- one session per git repository")
     print("    global        -- single session across all directories")
     new_strat = _prompt("Session strategy", default=current_strat)
-    if new_strat in ("per-session", "per-repo", "per-directory", "global"):
+    if new_strat in {"per-session", "per-repo", "per-directory", "global"}:
         hermes_host["sessionStrategy"] = new_strat
 
     hermes_host["enabled"] = True
@@ -1100,7 +1130,7 @@ def cmd_migrate(args) -> None:
         print("     Paste the key when prompted.")
         print()
         answer = _prompt("  Run 'hermes honcho setup' now?", default="y")
-        if answer.lower() in ("y", "yes"):
+        if answer.lower() in {"y", "yes"}:
             cmd_setup(args)
             cfg = _read_config()
             has_key = bool(cfg.get("apiKey", ""))
@@ -1146,7 +1176,7 @@ def cmd_migrate(args) -> None:
             print("    hermes honcho migrate  — this step handles it interactively")
         if has_key:
             answer = _prompt("  Upload user memory files to Honcho now?", default="y")
-            if answer.lower() in ("y", "yes"):
+            if answer.lower() in {"y", "yes"}:
                 try:
                     from plugins.memory.honcho.client import (
                         HonchoClientConfig,
@@ -1196,7 +1226,7 @@ def cmd_migrate(args) -> None:
         print()
         if has_key:
             answer = _prompt("  Seed AI identity from all detected files now?", default="y")
-            if answer.lower() in ("y", "yes"):
+            if answer.lower() in {"y", "yes"}:
                 try:
                     from plugins.memory.honcho.client import (
                         HonchoClientConfig,

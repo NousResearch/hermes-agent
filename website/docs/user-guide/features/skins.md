@@ -67,6 +67,7 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `session_border` | Session ID dim border color | `#8B8682` |
 | `status_bar_bg` | Background color for the TUI status / usage bar | `#1a1a2e` |
 | `voice_status_bg` | Background color for the voice-mode status badge | `#1a1a2e` |
+| `selection_bg` | Background color for the TUI mouse-selection highlighter. Falls back to `completion_menu_current_bg` when unset. | `#333355` |
 | `completion_menu_bg` | Background color for the completion menu list | `#1a1a2e` |
 | `completion_menu_current_bg` | Background color for the active completion row | `#333355` |
 | `completion_menu_meta_bg` | Background color for the completion meta column | `#1a1a2e` |
@@ -95,7 +96,7 @@ Text strings used throughout the CLI interface.
 | `welcome` | Welcome message shown at CLI startup | `Welcome to Hermes Agent! Type your message or /help for commands.` |
 | `goodbye` | Message shown on exit | `Goodbye! ⚕` |
 | `response_label` | Label on the response box header | ` ⚕ Hermes ` |
-| `prompt_symbol` | Symbol before the user input prompt | `❯ ` |
+| `prompt_symbol` | Symbol before the user input prompt (bare token, renderers add a trailing space) | `❯` |
 | `help_header` | Header text for the `/help` command output | `(^_^)? Available Commands` |
 
 ### Other top-level keys
@@ -139,6 +140,7 @@ colors:
   session_border: "#8B8682"
   status_bar_bg: "#1a1a2e"
   voice_status_bg: "#1a1a2e"
+  selection_bg: "#333355"
   completion_menu_bg: "#1a1a2e"
   completion_menu_current_bg: "#333355"
   completion_menu_meta_bg: "#1a1a2e"
@@ -167,7 +169,7 @@ branding:
   welcome: "Welcome to My Agent! Type your message or /help for commands."
   goodbye: "See you later! ⚡"
   response_label: " ⚡ My Agent "
-  prompt_symbol: "⚡ ❯ "
+  prompt_symbol: "⚡"
   help_header: "(⚡) Available Commands"
 
 tool_prefix: "┊"

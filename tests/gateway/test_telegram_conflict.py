@@ -191,16 +191,16 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
 
     # Directly call _handle_polling_conflict to avoid event-loop scheduling
     # complexity.  Each call simulates one 409 from Telegram.
-    for i in range(4):
+    for i in range(6):
         await adapter._handle_polling_conflict(
             conflict("Conflict: terminated by other getUpdates request")
         )
 
-    # After 3 failed retries (count 1-3 each enter the retry branch but
-    # start_polling raises), the 4th conflict pushes count to 4 which
-    # exceeds MAX_CONFLICT_RETRIES (3), entering the fatal branch.
+    # After 5 failed retries (count 1-5 each enter the retry branch but
+    # start_polling raises), the 6th conflict pushes count to 6 which
+    # exceeds MAX_CONFLICT_RETRIES (5), entering the fatal branch.
     assert adapter.fatal_error_code == "telegram_polling_conflict", (
-        f"Expected fatal after 4 conflicts, got code={adapter.fatal_error_code}, "
+        f"Expected fatal after 6 conflicts, got code={adapter.fatal_error_code}, "
         f"count={adapter._polling_conflict_count}"
     )
     assert adapter.has_fatal_error is True

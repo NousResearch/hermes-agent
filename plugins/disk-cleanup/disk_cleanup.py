@@ -90,7 +90,7 @@ def _log(message: str) -> None:
         log_file = get_log_file()
         log_file.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        with open(log_file, "a") as f:
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {message}\n")
     except OSError:
         # Never let the audit log break the agent loop.

@@ -12,9 +12,11 @@ import pytest
 import yaml
 
 from hermes_cli.plugins_cmd import (
+    PluginOperationError,
     _copy_example_files,
     _read_manifest,
     _repo_name_from_url,
+    _resolve_git_executable,
     _resolve_git_url,
     _sanitize_plugin_name,
     plugins_command,
@@ -97,6 +99,69 @@ class TestResolveGitUrl:
     def test_invalid_three_parts_raises(self):
         with pytest.raises(ValueError, match="Invalid plugin identifier"):
             _resolve_git_url("a/b/c")
+
+
+# ── _resolve_git_executable ─────────────────────────────────────────────────
+
+
+class TestResolveGitExecutable:
+    """Fallback resolution when bare ``git`` is not discoverable via ``PATH``."""
+
+    def teardown_method(self):
+        _resolve_git_executable.cache_clear()
+
+    def test_prefers_shutil_which(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc.shutil, "which", return_value="/usr/local/bin/git"):
+            assert pc._resolve_git_executable() == "/usr/local/bin/git"
+
+    def test_fallback_posix_first_matching_path(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+
+        def _isfile(p: str) -> bool:
+            return p == "/usr/local/bin/git"
+
+        with patch.object(pc.shutil, "which", return_value=None):
+            with patch.object(pc.os, "name", "posix"):
+                with patch.object(pc.os.path, "isfile", side_effect=_isfile):
+                    assert pc._resolve_git_executable() == "/usr/local/bin/git"
+
+    def test_returns_none_when_unavailable(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc.shutil, "which", return_value=None):
+            with patch.object(pc.os, "name", "posix"):
+                with patch.object(pc.os.path, "isfile", return_value=False):
+                    assert pc._resolve_git_executable() is None
+
+    def test_git_pull_uses_resolved_executable(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(
+            pc,
+            "_resolve_git_executable",
+            return_value="/resolved/git",
+        ):
+            with patch.object(pc.subprocess, "run") as run:
+                run.return_value = MagicMock(returncode=0, stdout="Already up to date\n", stderr="")
+                ok, msg = pc._git_pull_plugin_dir(tmp_path)
+        assert ok is True
+        run.assert_called_once()
+        assert run.call_args[0][0][0] == "/resolved/git"
+
+    def test_install_core_raises_when_git_unresolved(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc, "_resolve_git_executable", return_value=None):
+            with pytest.raises(PluginOperationError, match="git is not installed"):
+                pc._install_plugin_core("owner/repo", force=True)
 
 
 # ── _repo_name_from_url ──────────────────────────────────────────────────
@@ -331,6 +396,117 @@ class TestCmdList:
         cmd_list()
 
 
+# ── _discover_all_plugins tests ───────────────────────────────────────────────
+
+
+class TestDiscoverAllPlugins:
+    """Exercise the recursive scan that powers ``hermes plugins list``.
+
+    Mirrors the layouts the runtime loader handles
+    (:meth:`PluginManager._scan_directory_level`): flat plugins at the root,
+    category-namespaced plugins one level deeper, and user-overrides-bundled
+    on key collision.
+    """
+
+    @staticmethod
+    def _write_plugin(root: Path, segments: list, manifest_name: str = None) -> None:
+        plugin_dir = root
+        for seg in segments:
+            plugin_dir = plugin_dir / seg
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "name": manifest_name or segments[-1],
+            "version": "0.1.0",
+            "description": f"Test plugin {'/'.join(segments)}",
+        }
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest))
+
+    def _entries_by_key(self, tmp_path, monkeypatch) -> dict:
+        from hermes_cli import plugins_cmd
+        bundled = tmp_path / "bundled"
+        user = tmp_path / "user"
+        bundled.mkdir()
+        user.mkdir()
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_bundled_plugins_dir", lambda: bundled
+        )
+        monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user)
+        return bundled, user, lambda: {
+            e[0]: e for e in plugins_cmd._discover_all_plugins()
+        }
+
+    def test_flat_plugin_uses_manifest_name_as_key(self, tmp_path, monkeypatch):
+        bundled, _, discover = self._entries_by_key(tmp_path, monkeypatch)
+        self._write_plugin(bundled, ["disk-cleanup"])
+
+        entries = discover()
+        assert "disk-cleanup" in entries
+        assert entries["disk-cleanup"][3] == "bundled"
+
+    def test_category_namespaced_plugin_uses_path_derived_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression test for the original bug — ``observability/langfuse``
+        and ``image_gen/openai`` must surface under their path-derived key,
+        not vanish because the category directory has no ``plugin.yaml``."""
+        bundled, _, discover = self._entries_by_key(tmp_path, monkeypatch)
+        # langfuse's real manifest declares ``name: langfuse`` (bare), but it
+        # lives under ``observability/`` — the key must reflect the path.
+        self._write_plugin(
+            bundled, ["observability", "langfuse"], manifest_name="langfuse"
+        )
+        self._write_plugin(bundled, ["image_gen", "openai"])
+
+        entries = discover()
+        assert "observability/langfuse" in entries
+        assert "image_gen/openai" in entries
+        # Bare manifest name must NOT leak through as a top-level key.
+        assert "langfuse" not in entries
+        assert "openai" not in entries
+
+    def test_user_overrides_bundled_on_key_collision(self, tmp_path, monkeypatch):
+        bundled, user, discover = self._entries_by_key(tmp_path, monkeypatch)
+        self._write_plugin(bundled, ["observability", "langfuse"])
+        self._write_plugin(user, ["observability", "langfuse"])
+
+        entries = discover()
+        assert entries["observability/langfuse"][3] == "user"
+
+    def test_depth_cap_skips_third_level(self, tmp_path, monkeypatch):
+        """Anything deeper than ``<root>/<category>/<plugin>/`` is ignored,
+        matching the loader's depth cap."""
+        bundled, _, discover = self._entries_by_key(tmp_path, monkeypatch)
+        # plugins/a/b/c/plugin.yaml — too deep, must NOT be discovered.
+        self._write_plugin(bundled, ["a", "b", "c"])
+
+        entries = discover()
+        assert not any(k.startswith("a/") for k in entries), entries
+
+    def test_bundled_memory_and_context_engine_skipped(self, tmp_path, monkeypatch):
+        """``plugins/memory/`` and ``plugins/context_engine/`` use their own
+        loaders; bundled entries inside them must not appear in the general
+        list (matches the pre-refactor skip set)."""
+        bundled, _, discover = self._entries_by_key(tmp_path, monkeypatch)
+        self._write_plugin(bundled, ["memory", "honcho"])
+        self._write_plugin(bundled, ["context_engine", "compressor"])
+        self._write_plugin(bundled, ["observability", "langfuse"])
+
+        entries = discover()
+        assert "memory/honcho" not in entries
+        assert "context_engine/compressor" not in entries
+        assert "observability/langfuse" in entries
+
+    def test_user_memory_subdir_is_still_scanned(self, tmp_path, monkeypatch):
+        """The memory/context_engine skip only applies to *bundled* — a user
+        plugin at ``~/.hermes/plugins/memory/<x>/`` should still be discovered
+        so the user can see what they installed."""
+        bundled, user, discover = self._entries_by_key(tmp_path, monkeypatch)
+        self._write_plugin(user, ["memory", "my-custom-store"])
+
+        entries = discover()
+        assert "memory/my-custom-store" in entries
+
+
 # ── _copy_example_files tests ─────────────────────────────────────────────────
 
 
@@ -508,7 +684,7 @@ class TestPromptPluginEnvVars:
 
 
 class TestCursesRadiolist:
-    """Test the curses_radiolist function (non-TTY fallback path)."""
+    """Test the curses_radiolist function."""
 
     def test_non_tty_returns_default(self):
         from hermes_cli.curses_ui import curses_radiolist
@@ -523,6 +699,14 @@ class TestCursesRadiolist:
             mock_stdin.isatty.return_value = False
             result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=1)
             assert result == 1
+
+    def test_keyboard_interrupt_returns_cancel_value(self):
+        from hermes_cli.curses_ui import curses_radiolist
+
+        with patch("sys.stdin") as mock_stdin, patch("curses.wrapper", side_effect=KeyboardInterrupt):
+            mock_stdin.isatty.return_value = True
+            result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=-1)
+            assert result == -1
 
 
 # ── Provider discovery helpers ───────────────────────────────────────────

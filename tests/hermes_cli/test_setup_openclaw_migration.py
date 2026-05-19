@@ -262,7 +262,6 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "setup_tools"),
             patch.object(setup_mod, "save_config"),
             patch.object(setup_mod, "_print_setup_summary"),
-            patch.object(setup_mod, "_offer_launch_chat"),
         ):
             setup_mod.run_setup_wizard(args)
 
@@ -294,7 +293,6 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "setup_tools"),
             patch.object(setup_mod, "save_config"),
             patch.object(setup_mod, "_print_setup_summary"),
-            patch.object(setup_mod, "_offer_launch_chat"),
         ):
             setup_mod.run_setup_wizard(args)
 
@@ -327,7 +325,6 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "setup_tools"),
             patch.object(setup_mod, "save_config"),
             patch.object(setup_mod, "_print_setup_summary"),
-            patch.object(setup_mod, "_offer_launch_chat"),
         ):
             setup_mod.run_setup_wizard(args)
 
@@ -407,7 +404,14 @@ class TestGetSectionConfigSummary:
         assert result == "max turns: 120"
 
     def test_gateway_returns_none_without_tokens(self):
-        with patch.object(setup_mod, "get_env_value", return_value=""):
+        # _platform_status reads via hermes_cli.gateway.get_env_value, not
+        # setup_mod.get_env_value, so patch BOTH. Without the second patch,
+        # any environment-variable token (or one leaked in by a sibling
+        # test on the same xdist worker) makes the gateway section report
+        # platforms-configured and the test sees a non-None summary.
+        import hermes_cli.gateway as gateway_mod
+        with patch.object(setup_mod, "get_env_value", return_value=""), \
+             patch.object(gateway_mod, "get_env_value", return_value=""):
             result = setup_mod._get_section_config_summary({}, "gateway")
         assert result is None
 
@@ -419,7 +423,12 @@ class TestGetSectionConfigSummary:
                 return "disc456"
             return ""
 
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+        # Also patch gateway module's binding since _platform_status()
+        # reads from hermes_cli.gateway.get_env_value after the setup
+        # flows were unified via platform_registry.
+        import hermes_cli.gateway as gateway_mod
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
+             patch.object(gateway_mod, "get_env_value", side_effect=env_side):
             result = setup_mod._get_section_config_summary({}, "gateway")
         assert "Telegram" in result
         assert "Discord" in result
@@ -471,7 +480,9 @@ class TestGetSectionConfigSummary:
         def env_side(key):
             return "true" if key == "WHATSAPP_ENABLED" else ""
 
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+        import hermes_cli.gateway as gateway_mod
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
+             patch.object(gateway_mod, "get_env_value", side_effect=env_side):
             result = setup_mod._get_section_config_summary({}, "gateway")
         assert result is not None
         assert "WhatsApp" in result
@@ -481,7 +492,9 @@ class TestGetSectionConfigSummary:
         def env_side(key):
             return "http://signal.local" if key == "SIGNAL_HTTP_URL" else ""
 
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+        import hermes_cli.gateway as gateway_mod
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
+             patch.object(gateway_mod, "get_env_value", side_effect=env_side):
             result = setup_mod._get_section_config_summary({}, "gateway")
         assert result is not None
         assert "Signal" in result
@@ -529,13 +542,28 @@ class TestGetSectionConfigSummary:
         assert result == "gpt-5"
 
     def test_gateway_matches_platform_registry(self):
-        """Every platform in _GATEWAY_PLATFORMS should be recognised by its
-        own env-var sentinel — i.e. the summary must not drift from the
+        """Every built-in platform should be recognised by its primary
+        env-var sentinel — i.e. the summary must not drift from the
         registry used by the setup checklist."""
-        for label, env_var, _fn in setup_mod._GATEWAY_PLATFORMS:
+        from hermes_cli.gateway import _PLATFORMS
+
+        for plat in _PLATFORMS:
+            label = plat["label"]
+            env_var = plat.get("token_var")
+            if not env_var:
+                continue
+            # Some platforms require a specific value shape (e.g. WhatsApp
+            # needs the literal "true"). Use a sentinel that satisfies every
+            # real validator _platform_status() currently checks.
             def env_side(key, _target=env_var):
-                return "x" if key == _target else ""
-            with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+                if key != _target:
+                    return ""
+                if _target == "WHATSAPP_ENABLED":
+                    return "true"
+                return "x"
+            import hermes_cli.gateway as gateway_mod
+            with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
+                 patch.object(gateway_mod, "get_env_value", side_effect=env_side):
                 result = setup_mod._get_section_config_summary({}, "gateway")
             expected = setup_mod._gateway_platform_short_label(label)
             assert result is not None, f"{label} ({env_var}) not recognised"
@@ -604,6 +632,13 @@ class TestSetupWizardSkipsConfiguredSections:
 
         reloaded_config = {"model": "openai/gpt-4"}
 
+        # _platform_status (called by the gateway summary path) reads env
+        # vars via hermes_cli.gateway.get_env_value, NOT setup_mod's. Patch
+        # both so xdist sibling tests can't leak a TELEGRAM_BOT_TOKEN /
+        # WHATSAPP_* / etc. through and trick the wizard into thinking the
+        # gateway section is already configured (which would skip it).
+        import hermes_cli.gateway as gateway_mod
+
         with (
             patch.object(setup_mod, "ensure_hermes_home"),
             patch.object(
@@ -612,6 +647,7 @@ class TestSetupWizardSkipsConfiguredSections:
             ),
             patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
             patch.object(setup_mod, "get_env_value", side_effect=env_side),
+            patch.object(gateway_mod, "get_env_value", side_effect=env_side),
             patch.object(setup_mod, "is_interactive_stdin", return_value=True),
             patch("hermes_cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),

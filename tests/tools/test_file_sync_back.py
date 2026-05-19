@@ -1,6 +1,5 @@
 """Tests for FileSyncManager.sync_back() — pull remote changes to host."""
 
-import fcntl
 import io
 import logging
 import os
@@ -11,6 +10,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+
+fcntl = pytest.importorskip("fcntl")
 
 from tools.environments.file_sync import (
     FileSyncManager,
@@ -216,7 +217,7 @@ class TestSyncBackConflict:
 class TestSyncBackRetries:
     """Retry behaviour with exponential backoff."""
 
-    @patch("tools.environments.file_sync.time.sleep")
+    @patch("tools.environments.file_sync._sleep")
     def test_sync_back_retries_on_failure(self, mock_sleep, tmp_path):
         call_count = 0
 
@@ -237,7 +238,7 @@ class TestSyncBackRetries:
         mock_sleep.assert_any_call(_SYNC_BACK_BACKOFF[0])
         mock_sleep.assert_any_call(_SYNC_BACK_BACKOFF[1])
 
-    @patch("tools.environments.file_sync.time.sleep")
+    @patch("tools.environments.file_sync._sleep")
     def test_sync_back_all_retries_exhausted(self, mock_sleep, tmp_path, caplog):
         def always_fail(dest: Path):
             raise RuntimeError("persistent failure")

@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from utils import is_truthy_value
+
 
 _DEFAULT_BROWSER_PROVIDER = "local"
 _DEFAULT_MODAL_MODE = "auto"
@@ -115,7 +117,7 @@ def prefers_gateway(config_section: str) -> bool:
         from hermes_cli.config import load_config
         section = (load_config() or {}).get(config_section)
         if isinstance(section, dict):
-            return bool(section.get("use_gateway"))
+            return is_truthy_value(section.get("use_gateway"), default=False)
     except Exception:
         pass
     return False

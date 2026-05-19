@@ -14,8 +14,15 @@ from gateway.run import GatewayRunner
 class StubAdapter(BasePlatformAdapter):
     """Adapter whose connect() result can be controlled."""
 
-    def __init__(self, *, succeed=True, fatal_error=None, fatal_retryable=True):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+    def __init__(
+        self,
+        *,
+        platform=Platform.TELEGRAM,
+        succeed=True,
+        fatal_error=None,
+        fatal_retryable=True,
+    ):
+        super().__init__(PlatformConfig(enabled=True, token="test"), platform)
         self._succeed = succeed
         self._fatal_error = fatal_error
         self._fatal_retryable = fatal_retryable
@@ -64,6 +71,85 @@ def _make_runner():
 
 
 # --- Startup queueing ---
+
+class TestStartupPlatformIsolation:
+    """Verify one blocked platform cannot prevent later platforms from starting."""
+
+    @pytest.mark.asyncio
+    async def test_start_continues_after_platform_connect_timeout(self, tmp_path):
+        """A timeout on Telegram should queue it and still connect Feishu."""
+        runner = _make_runner()
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="test"),
+                Platform.FEISHU: PlatformConfig(enabled=True, token="test"),
+            },
+            sessions_dir=tmp_path,
+        )
+        runner.hooks = MagicMock()
+        runner.hooks.loaded_hooks = []
+        runner.hooks.emit = AsyncMock()
+        runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
+        runner._update_runtime_status = MagicMock()
+        runner._update_platform_runtime_status = MagicMock()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._send_update_notification = AsyncMock(return_value=True)
+        runner._send_restart_notification = AsyncMock()
+
+        adapters = {
+            Platform.TELEGRAM: StubAdapter(platform=Platform.TELEGRAM),
+            Platform.FEISHU: StubAdapter(platform=Platform.FEISHU),
+        }
+        runner._create_adapter = MagicMock(
+            side_effect=lambda platform, _config: adapters[platform]
+        )
+        runner._connect_adapter_with_timeout = AsyncMock(
+            side_effect=[
+                TimeoutError("telegram connect timed out after 30s"),
+                True,
+            ]
+        )
+
+        def fake_create_task(coro):
+            coro.close()
+            return MagicMock()
+
+        with patch("gateway.status.write_runtime_status"):
+            with patch("hermes_cli.plugins.discover_plugins"):
+                with patch("hermes_cli.config.load_config", return_value={}):
+                    with patch("agent.shell_hooks.register_from_config"):
+                        with patch(
+                            "tools.process_registry.process_registry.recover_from_checkpoint",
+                            return_value=0,
+                        ):
+                            with patch(
+                                "gateway.channel_directory.build_channel_directory",
+                                new=AsyncMock(return_value={"platforms": {}}),
+                            ):
+                                with patch("gateway.run.asyncio.create_task", side_effect=fake_create_task):
+                                    assert await runner.start() is True
+
+        assert Platform.TELEGRAM in runner._failed_platforms
+        assert Platform.FEISHU in runner.adapters
+        assert Platform.TELEGRAM not in runner.adapters
+        assert runner._create_adapter.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_connect_adapter_timeout_raises_retryable_exception(self, monkeypatch):
+        """The timeout helper turns a hanging connect into a caught startup error."""
+        runner = _make_runner()
+        adapter = StubAdapter()
+
+        async def hang():
+            await asyncio.sleep(60)
+            return True
+
+        adapter.connect = hang
+        monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "0.001")
+
+        with pytest.raises(TimeoutError, match="telegram connect timed out"):
+            await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM)
+
 
 class TestStartupFailureQueuing:
     """Verify that failed platforms are queued during startup."""
@@ -208,15 +294,63 @@ class TestPlatformReconnectWatcher:
         assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 2
 
     @pytest.mark.asyncio
-    async def test_reconnect_gives_up_after_max_attempts(self):
-        """After max attempts, platform should be removed from retry queue."""
+    async def test_reconnect_pauses_after_circuit_breaker_threshold(self):
+        """After enough consecutive retryable failures, the watcher should
+        *pause* the platform (keep it in the queue but stop hammering it),
+        not drop it. The user resumes via /platform resume.
+        """
+        runner = _make_runner()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        # 9 prior attempts — the next failure will be the 10th and should
+        # trip the circuit breaker.
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 9,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        fail_adapter = StubAdapter(
+            succeed=False, fatal_error="DNS failure", fatal_retryable=True
+        )
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=fail_adapter):
+            async def run_one_iteration():
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+            await run_one_iteration()
+
+        # Platform stays in queue — paused, not dropped
+        assert Platform.TELEGRAM in runner._failed_platforms
+        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert info["paused"] is True
+        assert info["attempts"] == 10
+        assert "pause_reason" in info
+
+    @pytest.mark.asyncio
+    async def test_reconnect_skips_paused_platforms(self):
+        """A paused platform should not be retried by the watcher tick."""
         runner = _make_runner()
 
         platform_config = PlatformConfig(enabled=True, token="test")
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": platform_config,
-            "attempts": 20,  # At max
-            "next_retry": time.monotonic() - 1,
+            "attempts": 10,
+            "next_retry": time.monotonic() - 1,  # would normally retry now
+            "paused": True,
+            "pause_reason": "paused via /platform pause",
         }
 
         real_sleep = asyncio.sleep
@@ -238,8 +372,10 @@ class TestPlatformReconnectWatcher:
 
             await run_one_iteration()
 
-        assert Platform.TELEGRAM not in runner._failed_platforms
-        mock_create.assert_not_called()  # Should give up without trying
+        # Paused platform stays queued and was never touched
+        assert Platform.TELEGRAM in runner._failed_platforms
+        assert runner._failed_platforms[Platform.TELEGRAM]["paused"] is True
+        mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reconnect_skips_when_not_time_yet(self):
@@ -373,11 +509,12 @@ class TestRuntimeDisconnectQueuing:
         assert Platform.TELEGRAM not in runner._failed_platforms
 
     @pytest.mark.asyncio
-    async def test_retryable_error_exits_for_service_restart_when_all_down(self):
-        """Gateway should exit with failure when all platforms fail with retryable errors.
-
-        This lets systemd Restart=on-failure restart the process, which is more
-        reliable than in-process background reconnection after exhausted retries.
+    async def test_retryable_error_keeps_gateway_alive_when_all_down(self):
+        """When all adapters fail at runtime with retryable errors, the
+        gateway should stay alive and let the reconnect watcher recover them
+        in the background.  (Previously this exited-with-failure to trigger
+        a systemd restart — that converted transient outages into infinite
+        restart loops and killed in-process state.)
         """
         runner = _make_runner()
         runner.stop = AsyncMock()
@@ -388,9 +525,9 @@ class TestRuntimeDisconnectQueuing:
 
         await runner._handle_adapter_fatal_error(adapter)
 
-        # stop() SHOULD be called — gateway exits for systemd restart
-        runner.stop.assert_called_once()
-        assert runner._exit_with_failure is True
+        # stop() should NOT be called — gateway stays alive for the watcher
+        runner.stop.assert_not_called()
+        assert runner._exit_with_failure is False
         assert Platform.TELEGRAM in runner._failed_platforms
 
     @pytest.mark.asyncio
@@ -426,3 +563,154 @@ class TestRuntimeDisconnectQueuing:
         await runner._handle_adapter_fatal_error(adapter)
 
         runner.stop.assert_called_once()
+
+
+# --- Pause / resume circuit breaker ---
+
+
+class TestPauseResume:
+    """Test the per-platform pause/resume helpers and slash command."""
+
+    def test_pause_marks_platform_paused(self):
+        runner = _make_runner()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 3,
+            "next_retry": time.monotonic() + 30,
+        }
+        runner._pause_failed_platform(Platform.TELEGRAM, reason="manual")
+        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert info["paused"] is True
+        assert info["pause_reason"] == "manual"
+        assert info["next_retry"] == float("inf")
+
+    def test_pause_is_idempotent(self):
+        runner = _make_runner()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 3,
+            "next_retry": time.monotonic() + 30,
+            "paused": True,
+            "pause_reason": "first reason",
+        }
+        runner._pause_failed_platform(Platform.TELEGRAM, reason="second reason")
+        # Reason should not be overwritten on a second pause call.
+        assert (
+            runner._failed_platforms[Platform.TELEGRAM]["pause_reason"]
+            == "first reason"
+        )
+
+    def test_pause_no_op_when_platform_not_queued(self):
+        runner = _make_runner()
+        # No exception even when the platform isn't in _failed_platforms.
+        runner._pause_failed_platform(Platform.TELEGRAM, reason="x")
+        assert Platform.TELEGRAM not in runner._failed_platforms
+
+    def test_resume_clears_paused_and_resets_attempts(self):
+        runner = _make_runner()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 10,
+            "next_retry": float("inf"),
+            "paused": True,
+            "pause_reason": "auto-paused",
+        }
+        assert runner._resume_paused_platform(Platform.TELEGRAM) is True
+        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert info["paused"] is False
+        assert info["attempts"] == 0
+        assert info["next_retry"] != float("inf")
+        assert "pause_reason" not in info
+
+    def test_resume_returns_false_when_not_paused(self):
+        runner = _make_runner()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 1,
+            "next_retry": time.monotonic() + 30,
+        }
+        assert runner._resume_paused_platform(Platform.TELEGRAM) is False
+
+    def test_resume_returns_false_when_not_queued(self):
+        runner = _make_runner()
+        assert runner._resume_paused_platform(Platform.TELEGRAM) is False
+
+
+class TestPlatformSlashCommand:
+    """Test the /platform list|pause|resume slash command handler."""
+
+    def _make_event(self, content: str):
+        ev = MagicMock()
+        ev.content = content
+        return ev
+
+    @pytest.mark.asyncio
+    async def test_list_shows_connected_and_paused(self):
+        runner = _make_runner()
+        runner.adapters[Platform.DISCORD] = StubAdapter(platform=Platform.DISCORD)
+        runner._failed_platforms[Platform.WHATSAPP] = {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 10,
+            "next_retry": float("inf"),
+            "paused": True,
+            "pause_reason": "not paired",
+        }
+        out = await runner._handle_platform_command(self._make_event("/platform list"))
+        assert "discord" in out
+        assert "whatsapp" in out
+        assert "PAUSED" in out
+        assert "not paired" in out
+
+    @pytest.mark.asyncio
+    async def test_pause_command_pauses_queued_platform(self):
+        runner = _make_runner()
+        runner._failed_platforms[Platform.WHATSAPP] = {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 2,
+            "next_retry": time.monotonic() + 30,
+        }
+        out = await runner._handle_platform_command(
+            self._make_event("/platform pause whatsapp")
+        )
+        assert "paused" in out.lower()
+        assert runner._failed_platforms[Platform.WHATSAPP]["paused"] is True
+
+    @pytest.mark.asyncio
+    async def test_pause_rejects_unqueued_platform(self):
+        runner = _make_runner()
+        out = await runner._handle_platform_command(
+            self._make_event("/platform pause whatsapp")
+        )
+        assert "not in the retry queue" in out
+
+    @pytest.mark.asyncio
+    async def test_resume_command_resumes_paused_platform(self):
+        runner = _make_runner()
+        runner._failed_platforms[Platform.WHATSAPP] = {
+            "config": PlatformConfig(enabled=True, token="t"),
+            "attempts": 10,
+            "next_retry": float("inf"),
+            "paused": True,
+            "pause_reason": "x",
+        }
+        out = await runner._handle_platform_command(
+            self._make_event("/platform resume whatsapp")
+        )
+        assert "resumed" in out.lower()
+        assert runner._failed_platforms[Platform.WHATSAPP]["paused"] is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_platform_name(self):
+        runner = _make_runner()
+        out = await runner._handle_platform_command(
+            self._make_event("/platform pause notarealplatform")
+        )
+        assert "Unknown platform" in out
+
+    @pytest.mark.asyncio
+    async def test_bare_platform_shows_usage_with_list(self):
+        # An empty /platform call defaults to "list".
+        runner = _make_runner()
+        out = await runner._handle_platform_command(self._make_event("/platform"))
+        assert "Gateway platforms" in out
+

@@ -4,12 +4,10 @@
 # transitive deps like onnxruntime that lack compatible wheels on
 # aarch64-darwin. The package and devShell still work on macOS.
 { inputs, ... }: {
-  perSystem = { pkgs, system, lib, ... }:
+  perSystem = { pkgs, lib, self', ... }:
     let
-      hermes-agent = inputs.self.packages.${system}.default;
-      hermesVenv = pkgs.callPackage ./python.nix {
-        inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
-      };
+      hermes-agent = self'.packages.default;
+      hermesVenv = hermes-agent.hermesVenv;
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
 
@@ -53,7 +51,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
         in pkgs.runCommand "hermes-cross-eval" { } (
           if failures != [] then
-            builtins.throw "Package fails to evaluate on:\n${failMsg}"
+            throw "Package fails to evaluate on:\n${failMsg}"
           else ''
             echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
             mkdir -p $out
@@ -126,6 +124,26 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Verify bundled plugins (platforms, memory, context_engine) are present
+        bundled-plugins = pkgs.runCommand "hermes-bundled-plugins" { } ''
+          set -e
+          echo "=== Checking bundled plugins ==="
+          test -d ${hermes-agent}/share/hermes-agent/plugins || (echo "FAIL: plugins directory missing"; exit 1)
+          echo "PASS: plugins directory exists"
+
+          test -f ${hermes-agent}/share/hermes-agent/plugins/platforms/irc/plugin.yaml || \
+            (echo "FAIL: irc plugin manifest missing"; exit 1)
+          echo "PASS: irc plugin manifest present"
+
+          grep -q "HERMES_BUNDLED_PLUGINS" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_BUNDLED_PLUGINS not in wrapper"; exit 1)
+          echo "PASS: HERMES_BUNDLED_PLUGINS set in wrapper"
+
+          echo "=== All bundled plugins checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # Verify bundled TUI is present and compiled
         bundled-tui = pkgs.runCommand "hermes-bundled-tui" { } ''
           set -e
@@ -136,8 +154,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           test -f ${hermes-agent}/ui-tui/dist/entry.js || (echo "FAIL: compiled entry.js missing"; exit 1)
           echo "PASS: compiled entry.js present"
 
-          test -d ${hermes-agent}/ui-tui/node_modules || (echo "FAIL: node_modules missing"; exit 1)
-          echo "PASS: node_modules present"
+          # self-contained bundle; no runtime node_modules expected
 
           grep -q "HERMES_TUI_DIR" ${hermes-agent}/bin/hermes || \
             (echo "FAIL: HERMES_TUI_DIR not in wrapper"; exit 1)
@@ -189,6 +206,56 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           check_blocked "config edit" ${hermes-agent}/bin/hermes config edit
 
           echo "=== All guard checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify extraPythonPackages PYTHONPATH injection
+        extra-python-packages = let
+          testPkg = pkgs.python312Packages.pyfiglet;
+          hermesWithExtra = hermes-agent.override {
+            extraPythonPackages = [ testPkg ];
+          };
+        in pkgs.runCommand "hermes-extra-python-packages" { } ''
+          set -e
+          echo "=== Checking extraPythonPackages PYTHONPATH injection ==="
+
+          grep -q "PYTHONPATH" ${hermesWithExtra}/bin/hermes || \
+            (echo "FAIL: PYTHONPATH not in wrapper"; exit 1)
+          echo "PASS: PYTHONPATH present in wrapper"
+
+          grep -q "${testPkg}" ${hermesWithExtra}/bin/hermes || \
+            (echo "FAIL: test package path not in PYTHONPATH"; exit 1)
+          echo "PASS: test package path found in wrapper"
+
+          echo "=== Checking base package has no PYTHONPATH ==="
+          if grep -q "PYTHONPATH" ${hermes-agent}/bin/hermes; then
+            echo "FAIL: base package should not have PYTHONPATH"; exit 1
+          fi
+          echo "PASS: base package clean"
+
+          echo "=== All extraPythonPackages checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify extraDependencyGroups passes through to python.nix
+        extra-dependency-groups = let
+          hermesWithGroups = hermes-agent.override {
+            extraDependencyGroups = [ "honcho" ];
+          };
+        in pkgs.runCommand "hermes-extra-dependency-groups" { } ''
+          set -e
+          echo "=== Checking extraDependencyGroups override evaluates ==="
+
+          # Eval-only: verify the override produces valid derivation paths
+          # without building the full venv (which is expensive and redundant
+          # since the mechanism is just list concatenation into python.nix).
+          echo "derivation: ${hermesWithGroups}"
+          echo "venv: ${hermesWithGroups.hermesVenv}"
+          echo "PASS: extraDependencyGroups override evaluates cleanly"
+
+          echo "=== All extraDependencyGroups checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';

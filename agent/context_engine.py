@@ -55,6 +55,11 @@ class ContextEngine(ABC):
     # These control the preflight compression check.  Subclasses may
     # override via __init__ or property; defaults are sensible for most
     # engines.
+    #
+    # protect_first_n semantics (since PR #13754): count of non-system head
+    # messages always preserved verbatim, IN ADDITION to the system prompt
+    # which is always implicitly protected.  Default 3 keeps the
+    # historical "system + first 3 non-system messages" head shape.
 
     threshold_percent: float = 0.75
     protect_first_n: int = 3
@@ -78,6 +83,7 @@ class ContextEngine(ABC):
         self,
         messages: List[Dict[str, Any]],
         current_tokens: int = None,
+        focus_topic: str = None,
     ) -> List[Dict[str, Any]]:
         """Compact the message list and return the new message list.
 
@@ -86,6 +92,12 @@ class ContextEngine(ABC):
         context budget. The implementation is free to summarize, build a
         DAG, or do anything else — as long as the returned list is a valid
         OpenAI-format message sequence.
+
+        Args:
+            focus_topic: Optional topic string from manual ``/compress <focus>``.
+                Engines that support guided compression should prioritise
+                preserving information related to this topic.  Engines that
+                don't support it may simply ignore this argument.
         """
 
     # -- Optional: pre-flight check ----------------------------------------
@@ -97,6 +109,21 @@ class ContextEngine(ABC):
         can do a cheap estimate.
         """
         return False
+
+    # -- Optional: manual /compress preflight ------------------------------
+
+    def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
+        """Quick check: is there anything in ``messages`` that can be compacted?
+
+        Used by the gateway ``/compress`` command as a preflight guard —
+        returning False lets the gateway report "nothing to compress yet"
+        without making an LLM call.
+
+        Default returns True (always attempt).  Engines with a cheap way
+        to introspect their own head/tail boundaries should override this
+        to return False when the transcript is still entirely protected.
+        """
+        return True
 
     # -- Optional: session lifecycle ---------------------------------------
 

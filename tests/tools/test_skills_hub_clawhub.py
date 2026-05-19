@@ -7,10 +7,11 @@ from tools.skills_hub import ClawHubSource, SkillMeta
 
 
 class _MockResponse:
-    def __init__(self, status_code=200, json_data=None, text=""):
+    def __init__(self, status_code=200, json_data=None, text="", headers=None):
         self.status_code = status_code
         self._json_data = json_data
         self.text = text
+        self.headers = headers or {}
 
     def json(self):
         return self._json_data
@@ -19,6 +20,14 @@ class _MockResponse:
 class TestClawHubSource(unittest.TestCase):
     def setUp(self):
         self.src = ClawHubSource()
+        self._safe_patcher = patch("tools.skills_hub.is_safe_url", return_value=True)
+        self._policy_patcher = patch("tools.skills_hub.check_website_access", return_value=None)
+        self._safe_patcher.start()
+        self._policy_patcher.start()
+
+    def tearDown(self):
+        self._policy_patcher.stop()
+        self._safe_patcher.stop()
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -254,6 +263,40 @@ class TestClawHubSource(unittest.TestCase):
         bundle = self.src.fetch("caldav-calendar")
         self.assertIsNotNone(bundle)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
+
+    @patch("tools.skills_hub.check_website_access", return_value=None)
+    @patch("tools.skills_hub.is_safe_url")
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_blocks_private_raw_url(self, mock_get, mock_safe, _mock_policy):
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills/caldav-calendar"):
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "slug": "caldav-calendar",
+                        "latestVersion": {"version": "1.0.1"},
+                    },
+                )
+            if url.endswith("/download"):
+                return _MockResponse(status_code=404)
+            if url.endswith("/skills/caldav-calendar/versions/1.0.1"):
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "files": [
+                            {"path": "SKILL.md", "rawUrl": "http://127.0.0.1/private-skill"},
+                        ]
+                    },
+                )
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+        mock_safe.side_effect = lambda url: not url.startswith("http://127.0.0.1/")
+
+        bundle = self.src.fetch("caldav-calendar")
+
+        self.assertIsNone(bundle)
+        self.assertEqual(mock_get.call_count, 3)
 
 
 if __name__ == "__main__":

@@ -105,3 +105,39 @@ class TestRepairToolCallArguments:
         result = _repair_tool_call_arguments(raw, "terminal")
         # Should at least be valid JSON, even if background is lost
         json.loads(result)
+
+    # -- Stage 0: strict=False (literal control chars in strings) --
+    # llama.cpp backends sometimes emit literal tabs/newlines inside JSON
+    # string values. strict=False accepts these; we re-serialise to the
+    # canonical wire form (#12068).
+
+    def test_literal_newline_inside_string_value(self):
+        raw = '{"summary": "line one\nline two"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        parsed = json.loads(result)
+        assert parsed == {"summary": "line one\nline two"}
+
+    def test_literal_tab_inside_string_value(self):
+        raw = '{"summary": "col1\tcol2"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        parsed = json.loads(result)
+        assert parsed == {"summary": "col1\tcol2"}
+
+    def test_literal_control_char_reserialised_to_wire_form(self):
+        """After repair, the output must parse under strict=True."""
+        raw = '{"msg": "has\tliteral\ttabs"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        # strict=True must now accept this
+        parsed = json.loads(result)
+        assert parsed["msg"] == "has\tliteral\ttabs"
+
+    # -- Stage 4: control-char escape fallback --
+
+    def test_control_chars_with_trailing_comma(self):
+        """strict=False fails due to trailing comma, but brace-count pass
+        + control-char escape rescues it."""
+        raw = '{"msg": "line\none",}'
+        result = _repair_tool_call_arguments(raw, "t")
+        parsed = json.loads(result)
+        assert "line" in parsed["msg"]
+

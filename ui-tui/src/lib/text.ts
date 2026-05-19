@@ -1,13 +1,48 @@
-import { THINKING_COT_MAX } from '../config/limits.js'
+import {
+  HISTORY_RENDER_MAX_CHARS,
+  HISTORY_RENDER_MAX_LINES,
+  LIVE_RENDER_MAX_CHARS,
+  LIVE_RENDER_MAX_LINES,
+  THINKING_COT_MAX
+} from '../config/limits.js'
+import { VERBS } from '../content/verbs.js'
 import type { ThinkingMode } from '../types.js'
 
 const ESC = String.fromCharCode(27)
-const ANSI_RE = new RegExp(`${ESC}\\[[0-9;]*m`, 'g')
+const BEL = String.fromCharCode(7)
+const ANSI_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
+const ANSI_CSI_WITH_CMD_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*([@-~])`, 'g')
+const ANSI_INCOMPLETE_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*(?=${ESC}|\\n|$)`, 'g')
+const ANSI_OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
+const ANSI_STRING_RE = new RegExp(`${ESC}[PX^_][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
+const ANSI_NON_CSI_ESC_SEQ_RE = new RegExp(`${ESC}(?!\\[|\\]|P|X|\\^|_)[ -/]*[0-~]`, 'g')
+const ANSI_STRAY_ESC_RE = new RegExp(`${ESC}(?!\\[)[\\s\\S]?`, 'g')
+const CONTROL_RE = /[\x00-\x08\x0B\x0C\x0D\x0E-\x1A\x1C-\x1F\x7F]/g
 const WS_RE = /\s+/g
 
-export const stripAnsi = (s: string) => s.replace(ANSI_RE, '')
+export const stripAnsi = (s: string) =>
+  s
+    .replace(ANSI_OSC_RE, '')
+    .replace(ANSI_STRING_RE, '')
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
+    .replace(ANSI_CSI_RE, '')
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
+    .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
+    .replace(ANSI_STRAY_ESC_RE, '')
+    .replace(CONTROL_RE, '')
 
-export const hasAnsi = (s: string) => s.includes(`${ESC}[`) || s.includes(`${ESC}]`)
+export const sanitizeAnsiForRender = (s: string) =>
+  s
+    .replace(ANSI_OSC_RE, '')
+    .replace(ANSI_STRING_RE, '')
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
+    .replace(ANSI_CSI_WITH_CMD_RE, (seq, cmd: string) => (cmd === 'm' ? seq : ''))
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
+    .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
+    .replace(ANSI_STRAY_ESC_RE, '')
+    .replace(CONTROL_RE, '')
+
+export const hasAnsi = (s: string) => s.includes(ESC)
 
 const renderEstimateLine = (line: string) => {
   const trimmed = line.trim()
@@ -70,10 +105,89 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
     : `[[ ${preview} [${fmtK(lineCount)} lines] ]]`
 }
 
+const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
+const THINKING_STATUS_CHUNK_RE = new RegExp(`[^A-Za-z\n]+\\s*(?:${VERBS.join('|')})\\.{0,3}\\s*`, 'giu')
+
+export const cleanThinkingText = (reasoning: string) =>
+  reasoning
+    .split('\n')
+    .map(line => line.replace(THINKING_STATUS_CHUNK_RE, '').trim())
+    .filter(line => line && !THINKING_STATUS_RE.test(line.replace(/\.\.\.$/, '').trim()))
+    .join('\n')
+    .replace(/([^\n])(?=\*\*[^*\n][^\n]*?\*\*)/g, '$1\n\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
 export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number = THINKING_COT_MAX) => {
-  const raw = reasoning.trim()
+  const raw = cleanThinkingText(reasoning)
 
   return !raw || mode === 'collapsed' ? '' : mode === 'full' ? raw : compactPreview(raw.replace(WS_RE, ' '), max)
+}
+
+export const boundedLiveRenderText = (
+  text: string,
+  { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
+) => boundedRenderText(text, 'showing live tail', { maxChars, maxLines })
+
+export const boundedHistoryRenderText = (
+  text: string,
+  { maxChars = HISTORY_RENDER_MAX_CHARS, maxLines = HISTORY_RENDER_MAX_LINES } = {}
+) => boundedRenderText(text, 'showing tail', { maxChars, maxLines })
+
+const boundedRenderText = (
+  text: string,
+  labelPrefix: string,
+  { maxChars, maxLines }: { maxChars: number; maxLines: number }
+) => {
+  if (text.length <= maxChars && text.split('\n', maxLines + 1).length <= maxLines) {
+    return text
+  }
+
+  let start = 0
+  let idx = text.length
+
+  for (let seen = 0; seen < maxLines && idx > 0; seen++) {
+    idx = text.lastIndexOf('\n', idx - 1)
+    start = idx < 0 ? 0 : idx + 1
+
+    if (idx < 0) {
+      break
+    }
+  }
+
+  const lineStart = start
+  start = Math.max(lineStart, text.length - maxChars)
+
+  if (start > lineStart) {
+    const nextBreak = text.indexOf('\n', start)
+
+    if (nextBreak >= 0 && nextBreak < text.length - 1) {
+      start = nextBreak + 1
+    }
+  }
+
+  const tail = text.slice(start).trimStart()
+  const omittedLines = countNewlines(text, start)
+  const omittedChars = Math.max(0, text.length - tail.length)
+
+  const label =
+    omittedLines > 0
+      ? `[${labelPrefix}; omitted ${fmtK(omittedLines)} lines / ${fmtK(omittedChars)} chars]\n`
+      : `[${labelPrefix}; omitted ${fmtK(omittedChars)} chars]\n`
+
+  return `${label}${tail}`
+}
+
+const countNewlines = (text: string, end: number) => {
+  let count = 0
+
+  for (let i = 0; i < end; i++) {
+    if (text.charCodeAt(i) === 10) {
+      count++
+    }
+  }
+
+  return count
 }
 
 export const stripTrailingPasteNewlines = (text: string) => (/[^\n]/.test(text) ? text.replace(/\n+$/, '') : text)
@@ -92,10 +206,17 @@ export const formatToolCall = (name: string, context = '') => {
   return preview ? `${label}("${preview}")` : label
 }
 
-export const buildToolTrailLine = (name: string, context: string, error?: boolean, note?: string) => {
+export const buildToolTrailLine = (
+  name: string,
+  context: string,
+  error?: boolean,
+  note?: string,
+  duration?: number
+) => {
   const detail = compactPreview(note ?? '', 72)
+  const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${formatToolCall(name, context)}${detail ? ` :: ${detail}` : ''} ${error ? ' ✗' : ' ✓'}`
+  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
@@ -120,6 +241,12 @@ export const parseToolTrailResultLine = (line: string) => {
   }
 
   return { call: body, detail: '', mark }
+}
+
+export const splitToolDuration = (call: string) => {
+  const match = call.match(/^(.*?)( \(\d+(?:\.\d)?s\))$/)
+
+  return match ? { label: match[1]!, duration: match[2]! } : { label: call, duration: '' }
 }
 
 export const isTransientTrailLine = (line: string) => line.startsWith('drafting ') || line === 'analyzing tool output…'

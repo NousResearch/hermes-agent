@@ -8,7 +8,7 @@ streaming, or the _run_codex_stream() call path.
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from agent.transports.types import NormalizedResponse, ToolCall
 
 
 class ResponsesApiTransport(ProviderTransport):
@@ -24,7 +24,10 @@ class ResponsesApiTransport(ProviderTransport):
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
-        return _chat_messages_to_responses_input(messages)
+        return _chat_messages_to_responses_input(
+            messages,
+            is_xai_responses=bool(kwargs.get("is_xai_responses")),
+        )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Responses API function definitions."""
@@ -89,22 +92,45 @@ class ResponsesApiTransport(ProviderTransport):
         _effort_clamp = {"minimal": "low"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
+        response_tools = _responses_tools(tools)
         kwargs = {
             "model": model,
             "instructions": instructions,
-            "input": _chat_messages_to_responses_input(payload_messages),
-            "tools": _responses_tools(tools),
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
+            "input": _chat_messages_to_responses_input(
+                payload_messages,
+                is_xai_responses=is_xai_responses,
+            ),
+            "tools": response_tools,
             "store": False,
         }
+        if response_tools:
+            kwargs["tool_choice"] = "auto"
+            kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")
-        if not is_github_responses and session_id:
+        # xAI Responses takes prompt_cache_key in extra_body (set further
+        # down); GitHub Models opts out of cache-key routing entirely.
+        if not is_github_responses and not is_xai_responses and session_id:
             kwargs["prompt_cache_key"] = session_id
 
         if reasoning_enabled and is_xai_responses:
-            kwargs["include"] = ["reasoning.encrypted_content"]
+            from agent.model_metadata import grok_supports_reasoning_effort
+
+            # NOTE: Hermes does NOT ask xAI to return ``reasoning.encrypted_content``
+            # any more.  xAI's OAuth/SuperGrok ``/v1/responses`` surface rejects
+            # replayed encrypted reasoning items on turn 2+ — see
+            # _chat_messages_to_responses_input docstring.  Requesting the field
+            # back would just have us cache something we then must strip.  Grok
+            # still reasons natively each turn; coherence across turns rides on
+            # the visible message text alone.
+            kwargs["include"] = []
+            # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
+            # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
+            # those models reason natively. Only send the effort dial when
+            # the target model is on the allowlist; otherwise send no
+            # `reasoning` key at all and let the model reason on its own.
+            if grok_supports_reasoning_effort(model):
+                kwargs["reasoning"] = {"effort": reasoning_effort}
         elif reasoning_enabled:
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")
@@ -120,12 +146,52 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
 
+        if is_codex_backend:
+            prompt_cache_key = kwargs.get("prompt_cache_key")
+            cache_scope_id = str(prompt_cache_key or session_id or "").strip()
+            if cache_scope_id:
+                existing_extra_headers = kwargs.get("extra_headers")
+                merged_extra_headers: Dict[str, str] = {}
+                if isinstance(existing_extra_headers, dict):
+                    merged_extra_headers.update(
+                        {
+                            str(key): str(value)
+                            for key, value in existing_extra_headers.items()
+                            if key and value is not None
+                        }
+                    )
+                merged_extra_headers["session_id"] = cache_scope_id
+                merged_extra_headers["x-client-request-id"] = cache_scope_id
+                kwargs["extra_headers"] = merged_extra_headers
+
         max_tokens = params.get("max_tokens")
         if max_tokens is not None and not is_codex_backend:
             kwargs["max_output_tokens"] = max_tokens
 
         if is_xai_responses and session_id:
-            kwargs["extra_headers"] = {"x-grok-conv-id": session_id}
+            existing_extra_headers = kwargs.get("extra_headers")
+            merged_extra_headers: Dict[str, str] = {}
+            if isinstance(existing_extra_headers, dict):
+                merged_extra_headers.update(
+                    {
+                        str(key): str(value)
+                        for key, value in existing_extra_headers.items()
+                        if key and value is not None
+                    }
+                )
+            merged_extra_headers["x-grok-conv-id"] = session_id
+            kwargs["extra_headers"] = merged_extra_headers
+
+            # xAI Responses cache-routing — body-level field per
+            # https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits.
+            # Sent via extra_body (not the typed kwarg) so it survives openai
+            # SDK builds whose Responses.stream() signature has dropped the field.
+            existing_extra_body = kwargs.get("extra_body")
+            merged_extra_body: Dict[str, Any] = {}
+            if isinstance(existing_extra_body, dict):
+                merged_extra_body.update(existing_extra_body)
+            merged_extra_body.setdefault("prompt_cache_key", session_id)
+            kwargs["extra_body"] = merged_extra_body
 
         return kwargs
 
@@ -133,8 +199,6 @@ class ResponsesApiTransport(ProviderTransport):
         """Normalize Codex Responses API response to NormalizedResponse."""
         from agent.codex_responses_adapter import (
             _normalize_codex_response,
-            _extract_responses_message_text,
-            _extract_responses_reasoning_text,
         )
 
         # _normalize_codex_response returns (SimpleNamespace, finish_reason_str)
@@ -160,6 +224,8 @@ class ResponsesApiTransport(ProviderTransport):
         provider_data = {}
         if msg and hasattr(msg, "codex_reasoning_items") and msg.codex_reasoning_items:
             provider_data["codex_reasoning_items"] = msg.codex_reasoning_items
+        if msg and hasattr(msg, "codex_message_items") and msg.codex_message_items:
+            provider_data["codex_message_items"] = msg.codex_message_items
         if msg and hasattr(msg, "reasoning_details") and msg.reasoning_details:
             provider_data["reasoning_details"] = msg.reasoning_details
 

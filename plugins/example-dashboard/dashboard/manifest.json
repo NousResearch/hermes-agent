@@ -1,13 +1,14 @@
 {
   "name": "example",
   "label": "Example",
-  "description": "Example dashboard plugin — demonstrates the plugin SDK",
+  "description": "Example dashboard plugin — used by test suite for auth coverage",
   "icon": "Sparkles",
   "version": "1.0.0",
   "tab": {
     "path": "/example",
     "position": "after:skills"
   },
+  "slots": [],
   "entry": "dist/index.js",
   "api": "plugin_api.py"
 }

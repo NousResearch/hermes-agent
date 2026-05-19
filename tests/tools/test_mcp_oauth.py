@@ -2,11 +2,15 @@
 
 import json
 import os
+import stat
+import sys
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
+
+import asyncio
 
 from tools.mcp_oauth import (
     HermesTokenStorage,
@@ -18,6 +22,7 @@ from tools.mcp_oauth import (
     _is_interactive,
     _wait_for_callback,
     _make_callback_handler,
+    _redirect_handler,
 )
 
 
@@ -49,6 +54,37 @@ class TestHermesTokenStorage:
         assert token_path.exists()
         data = json.loads(token_path.read_text())
         assert data["access_token"] == "abc123"
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    def test_token_file_created_with_0o600(self, tmp_path, monkeypatch):
+        """Tokens must land on disk at 0o600 with no umask-default exposure window.
+
+        Regression for the TOCTOU race where ``write_text`` + post-write
+        ``chmod`` briefly left credentials at the process umask (commonly
+        0o644 = world-readable) before tightening to owner-only. Mirrors
+        the fix shipped for ``agent/google_oauth.py`` in #19673.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("perm-test-server")
+
+        import asyncio
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "secret-abc",
+            "token_type": "Bearer",
+            "refresh_token": "secret-ref",
+        }
+        asyncio.run(storage.set_tokens(mock_token))
+
+        token_path = tmp_path / "mcp-tokens" / "perm-test-server.json"
+        assert token_path.exists()
+        mode = stat.S_IMODE(token_path.stat().st_mode)
+        assert mode == 0o600, f"token file mode {oct(mode)} != 0o600 — TOCTOU race regressed"
+
+        parent_mode = stat.S_IMODE(token_path.parent.stat().st_mode)
+        assert parent_mode == 0o700, (
+            f"token parent dir mode {oct(parent_mode)} != 0o700 — siblings can traverse"
+        )
 
     def test_roundtrip_client_info(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -206,6 +242,64 @@ class TestUtilities:
         monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.setattr(os, "name", "posix")
         assert _can_open_browser() is True
+
+
+class TestRedirectHandlerSshHint:
+    """_redirect_handler must print an SSH tunnel hint on remote sessions."""
+
+    def _run(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_ssh_hint_shown_on_ssh_session(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49200)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_redirect_handler("https://example.com/auth?foo=bar"))
+
+        err = capsys.readouterr().err
+        assert "49200" in err
+        assert "ssh -N -L" in err
+        assert "Remote session detected" in err
+
+    def test_ssh_hint_shown_via_ssh_tty(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49201)
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.setenv("SSH_TTY", "/dev/pts/1")
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_redirect_handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "49201" in err
+        assert "ssh -N -L" in err
+
+    def test_no_ssh_hint_on_local_session(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49202)
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: True)
+        monkeypatch.setattr("webbrowser.open", lambda url, **kw: True)
+
+        self._run(_redirect_handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "ssh -N -L" not in err
+
+    def test_no_ssh_hint_when_port_not_set(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", None)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_redirect_handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "ssh -N -L" not in err
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +534,7 @@ class TestBuildOAuthAuthNonInteractive:
 
 def test_build_client_metadata_basic():
     """_build_client_metadata returns metadata with expected defaults."""
+    pytest.importorskip("mcp")
     from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {"client_name": "Test Client"}
@@ -453,6 +548,7 @@ def test_build_client_metadata_basic():
 
 def test_build_client_metadata_without_secret_is_public():
     """Without client_secret, token endpoint auth is 'none' (public client)."""
+    pytest.importorskip("mcp")
     from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {}
@@ -463,6 +559,7 @@ def test_build_client_metadata_without_secret_is_public():
 
 def test_build_client_metadata_with_secret_is_confidential():
     """With client_secret, token endpoint auth is 'client_secret_post'."""
+    pytest.importorskip("mcp")
     from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {"client_secret": "shh"}
@@ -491,11 +588,36 @@ def test_configure_callback_port_uses_explicit_port():
     assert cfg["_resolved_port"] == 54321
 
 
-def test_parse_base_url_strips_path():
-    """_parse_base_url drops path components for OAuth discovery."""
-    from tools.mcp_oauth import _parse_base_url
+def test_build_oauth_auth_preserves_server_url_path():
+    """server_url with path is forwarded to OAuthClientProvider unmodified.
 
-    assert _parse_base_url("https://example.com/mcp/v1") == "https://example.com"
-    assert _parse_base_url("https://example.com") == "https://example.com"
-    assert _parse_base_url("https://host.example.com:8080/api") == "https://host.example.com:8080"
+    Regression for #16015: previously ``_parse_base_url`` stripped the path,
+    collapsing ``https://mcp.notion.com/mcp`` to ``https://mcp.notion.com`` and
+    breaking RFC 9728 protected-resource validation against servers whose PRM
+    advertises a path-scoped resource (Notion). The MCP SDK strips the path
+    itself for authorization-server discovery via
+    ``OAuthContext.get_authorization_base_url``; Hermes must not pre-strip.
+    """
+    from tools import mcp_oauth
+
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
+         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "_is_interactive", return_value=True), \
+         patch.object(mcp_oauth, "_maybe_preregister_client"), \
+         patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
+        mock_storage_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+        build_oauth_auth(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            oauth_config={},
+        )
+
+    assert captured["server_url"] == "https://mcp.notion.com/mcp"
+
 

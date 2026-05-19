@@ -41,7 +41,7 @@ From the repo root, the normal path is:
 hermes --tui
 ```
 
-The CLI expects `ui-tui/node_modules` to exist. If the TUI deps are missing:
+The CLI expects `ui-tui/dist/entry.js` to exist, or the whole source code available in which to run `npm install` and `npm run dev`.
 
 ```bash
 cd ui-tui
@@ -110,7 +110,7 @@ Current input behavior is split across `app.tsx`, `components/textInput.tsx`, an
 | `\` + `Enter`                   | Append the line to the multiline buffer (fallback for terminals without modifier support)                                                               |
 | `Ctrl+C`                        | Interrupt active run, or clear the current draft, or exit if nothing is pending                                                                         |
 | `Ctrl+D`                        | Exit                                                                                                                                                    |
-| `Ctrl+G`                        | Open `$EDITOR` with the current draft                                                                                                                   |
+| `Cmd/Ctrl+G` / `Alt+G`          | Open `$EDITOR` with the current draft (use `Alt+G` in VSCode/Cursor — they bind the primary keystroke to Find Next)                                     |
 | `Ctrl+L`                        | New session (same as `/clear`)                                                                                                                          |
 | `Ctrl+V` / `Alt+V`              | Paste text first, then fall back to image/path attachment when applicable                                                                               |
 | `Tab`                           | Apply the active completion                                                                                                                             |
@@ -169,7 +169,7 @@ Notes:
 - If you load a queued item into the input and resubmit plain text, that queue item is replaced, removed from the queue preview, and promoted to send next. If the agent is still busy, the edited item is moved to the front of the queue and sent after the current run completes.
 - Completion requests are debounced by 60 ms. Input starting with `/` uses `complete.slash`. A trailing token that starts with `./`, `../`, `~/`, `/`, or `@` uses `complete.path`.
 - Text pastes are inserted inline directly into the draft. Nothing is newline-flattened.
-- `Ctrl+G` writes the current draft, including any multiline buffer, to a temp file, temporarily swaps screen buffers, launches `$EDITOR`, then restores the TUI and submits the saved text if the editor exits cleanly.
+- `Cmd/Ctrl+G` (or `Alt+G` in VSCode/Cursor, which intercept the primary keystroke for Find Next) writes the current draft, including any multiline buffer, to a temp file, suspends Ink, launches `$EDITOR`, then restores the TUI and submits the saved text if the editor exits cleanly.
 - Input history is stored in `~/.hermes/.hermes_history` or under `HERMES_HOME`.
 
 ## Rendering
@@ -252,7 +252,6 @@ Primary event types the client handles today:
 | `sudo.request`           | `{ request_id }`                                |
 | `secret.request`         | `{ prompt, env_var, request_id }`               |
 | `background.complete`    | `{ task_id, text }`                             |
-| `btw.complete`           | `{ text }`                                      |
 | `error`                  | `{ message }`                                   |
 | `gateway.stderr`         | synthesized from child stderr                   |
 | `gateway.protocol_error` | synthesized from malformed stdout               |

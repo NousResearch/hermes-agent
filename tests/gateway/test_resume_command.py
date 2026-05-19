@@ -4,7 +4,7 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -52,9 +52,6 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     mock_store.load_transcript.return_value = []
     mock_store.switch_session.return_value = mock_session_entry
     runner.session_store = mock_store
-
-    # Stub out memory flushing
-    runner._async_flush_memories = AsyncMock()
 
     return runner
 
@@ -180,6 +177,40 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_follows_compression_continuation(self, tmp_path):
+        """Gateway /resume should reopen the live descendant after compression."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("compressed_root", "telegram")
+        db.set_session_title("compressed_root", "Compressed Work")
+        db.end_session("compressed_root", "compression")
+        db.create_session("compressed_child", "telegram", parent_session_id="compressed_root")
+        db.append_message("compressed_child", "user", "hello from continuation")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Compressed Work")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        runner.session_store.load_transcript.side_effect = (
+            lambda session_id: [{"role": "user", "content": "hello from continuation"}]
+            if session_id == "compressed_child"
+            else []
+        )
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed session" in result
+        assert "(1 message)" in result
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "compressed_child"
+        runner.session_store.load_transcript.assert_called_with("compressed_child")
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_clears_running_agent(self, tmp_path):
         """Switching sessions clears any cached running agent."""
         from hermes_state import SessionDB
@@ -201,26 +232,28 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
-    async def test_resume_flushes_memories(self, tmp_path):
-        """Resume should flush memories from the current session before switching."""
+    async def test_resume_evicts_cached_agent(self, tmp_path):
+        """Gateway /resume evicts the cached AIAgent so the next message
+        rebuilds with the correct session_id end-to-end — mirrors /branch
+        and /reset. Without this, the cached agent's memory provider keeps
+        writing into the wrong session. See #6672.
+        """
+        import threading
         from hermes_state import SessionDB
-
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("old_session", "telegram")
         db.set_session_title("old_session", "Old Work")
         db.create_session("current_session_001", "telegram")
 
         event = _make_event(text="/resume Old Work")
-        runner = _make_runner(
-            session_db=db,
-            current_session_id="current_session_001",
-            event=event,
-        )
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        # Seed the cache with a fake agent
+        real_key = _session_key_for_event(event)
+        runner._agent_cache = {real_key: (MagicMock(), object())}
+        runner._agent_cache_lock = threading.RLock()
 
         await runner._handle_resume_command(event)
 
-        runner._async_flush_memories.assert_called_once_with(
-            "current_session_001",
-            "agent:main:telegram:dm:67890",
-        )
+        assert real_key not in runner._agent_cache
         db.close()

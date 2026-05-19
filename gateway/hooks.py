@@ -21,6 +21,7 @@ Errors in hooks are caught and logged but never block the main pipeline.
 
 import asyncio
 import importlib.util
+import sys
 from typing import Any, Callable, Dict, List, Optional
 
 import yaml
@@ -52,19 +53,13 @@ class HookRegistry:
         return list(self._loaded_hooks)
 
     def _register_builtin_hooks(self) -> None:
-        """Register built-in hooks that are always active."""
-        try:
-            from gateway.builtin_hooks.boot_md import handle as boot_md_handle
+        """Register built-in hooks that are always active.
 
-            self._handlers.setdefault("gateway:startup", []).append(boot_md_handle)
-            self._loaded_hooks.append({
-                "name": "boot-md",
-                "description": "Run ~/.hermes/BOOT.md on gateway startup",
-                "events": ["gateway:startup"],
-                "path": "(builtin)",
-            })
-        except Exception as e:
-            print(f"[hooks] Could not load built-in boot-md hook: {e}", flush=True)
+        Currently empty — no shipped built-in hooks. Kept as the extension
+        point for future always-on gateway hooks so they drop in without
+        re-plumbing discover_and_load().
+        """
+        return
 
     def discover_and_load(self) -> None:
         """
@@ -103,16 +98,28 @@ class HookRegistry:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
                     continue
 
-                # Dynamically load the handler module
+                # Dynamically load the handler module.
+                # Register in sys.modules BEFORE exec_module so Pydantic /
+                # dataclasses / typing introspection can resolve forward
+                # references (triggered by `from __future__ import annotations`
+                # in the handler). Without this, a handler that declares a
+                # Pydantic BaseModel for webhook/event payloads fails at first
+                # dispatch with "TypeAdapter ... is not fully defined".
+                module_name = f"hermes_hook_{hook_name}"
                 spec = importlib.util.spec_from_file_location(
-                    f"hermes_hook_{hook_name}", handler_path
+                    module_name, handler_path
                 )
                 if spec is None or spec.loader is None:
                     print(f"[hooks] Skipping {hook_name}: could not load handler.py", flush=True)
                     continue
 
                 module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
+                sys.modules[module_name] = module
+                try:
+                    spec.loader.exec_module(module)
+                except Exception:
+                    sys.modules.pop(module_name, None)
+                    raise
 
                 handle_fn = getattr(module, "handle", None)
                 if handle_fn is None:

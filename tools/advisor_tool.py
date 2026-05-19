@@ -298,7 +298,10 @@ def call_advisor(
 
     latency_ms = int((time.time() - start) * 1000)
     choice = resp.choices[0]
-    advice = choice.message.content or "(advisor returned empty response)"
+    advice = choice.message.content or ""
+    # GLM-5.1 / DeepSeek thinking mode: content may be empty, fallback to reasoning_content
+    if not advice.strip() and hasattr(choice.message, 'reasoning_content') and choice.message.reasoning_content:
+        advice = choice.message.reasoning_content
     usage = resp.usage
 
     return json.dumps({

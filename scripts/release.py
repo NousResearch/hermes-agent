@@ -174,6 +174,7 @@ AUTHOR_MAP = {
     "zyrixtrex@gmail.com": "Zyrixtrex",  # PR #26754 salvage (avoid duplicate text after auto-TTS)
     "264138787+nftpoetrist@users.noreply.github.com": "nftpoetrist",  # PR #25856 salvage (escape slash-confirm preview)
     "197455947+samahn0601@users.noreply.github.com": "samahn0601",  # PR #27887 salvage (retry wrapped connect timeouts)
+    "gonzes7@gmail.com": "aqilaziz",  # PR #26406 salvage (preserve native audio outside Telegram)
     "282919977+eliteworkstation94-ai@users.noreply.github.com": "eliteworkstation94-ai",  # PR #28157 salvage (group reply session splits)
     "androidhtml@yandex.com": "hllqkb",
     "25840394+Bongulielmi@users.noreply.github.com": "Bongulielmi",

@@ -1317,7 +1317,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     old_model = agent.model
     old_provider = agent.provider
-    switch_config_context_length = getattr(agent, "_config_context_length", None)
+
+    # Clear the per-config context_length override so the new model's
+    # actual context window is resolved via get_model_context_length()
+    # instead of inheriting the stale value from the previous model.
+    agent._config_context_length = None
 
     # ── Swap core runtime fields ──
     agent.model = new_model
@@ -1411,7 +1415,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             base_url=agent.base_url,
             api_key=_ctx_api_key,
             provider=agent.provider,
-            config_context_length=switch_config_context_length,
+            config_context_length=getattr(agent, "_config_context_length", None),
             custom_providers=_sm_custom_providers,
         )
         agent.context_compressor.update_model(

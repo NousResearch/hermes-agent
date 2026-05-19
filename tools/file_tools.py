@@ -906,13 +906,27 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
             if mode == "replace":
                 if not path:
-                    return tool_error("path required")
+                    return tool_error(
+                        "patch[replace] requires 'path'. If the file location is "
+                        "unknown, call search_files first; do not retry patch "
+                        "without a valid path."
+                    )
                 if old_string is None or new_string is None:
-                    return tool_error("old_string and new_string required")
+                    return tool_error(
+                        "patch[replace] requires both 'old_string' and 'new_string'. "
+                        "If you don't have the exact text to find, call read_file "
+                        "first to inspect the file. To create a new file use "
+                        "write_file. Do not retry patch without the actual target text."
+                    )
                 result = file_ops.patch_replace(path, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
-                    return tool_error("patch content required")
+                    return tool_error(
+                        "patch[patch] requires V4A 'patch' content. If you only "
+                        "need a single targeted edit, switch to mode='replace' "
+                        "with path/old_string/new_string. To create a new file "
+                        "use write_file."
+                    )
                 result = file_ops.patch_v4a(patch)
             else:
                 return tool_error(f"Unknown mode: {mode}")

@@ -211,6 +211,48 @@ class TestPatchHandler:
         assert "error" in result
         assert "Unknown mode" in result["error"]
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_missing_path_error_hints_recovery_path(self, mock_get):
+        """A bare 'path required' error invites the model to retry blindly.
+        The error must direct it to use search_files or read_file first.
+
+        Real incident: May 18 2026 — Grok looped 16+ times on patch with
+        bad args; concise errors didn't break the loop.
+        """
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(mode="replace", path=None, old_string="a", new_string="b"))
+        assert "error" in result
+        msg = result["error"].lower()
+        assert "path" in msg
+        assert "search_files" in msg or "read_file" in msg, (
+            "missing-path error must suggest a recovery tool"
+        )
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_missing_strings_error_hints_recovery_path(self, mock_get):
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(mode="replace", path="/tmp/f.py", old_string=None, new_string="b"))
+        assert "error" in result
+        msg = result["error"].lower()
+        assert "old_string" in msg
+        assert "read_file" in msg, (
+            "missing old_string error must suggest read_file as the recovery path"
+        )
+        assert "do not retry" in msg or "without" in msg, (
+            "error must discourage blind retry"
+        )
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_missing_patch_content_hints_alternatives(self, mock_get):
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(mode="patch", patch=None))
+        assert "error" in result
+        msg = result["error"].lower()
+        assert "patch" in msg
+        assert "write_file" in msg or "mode='replace'" in msg or 'mode="replace"' in msg, (
+            "missing patch-content error must point at the alternative tool"
+        )
+
 
 class TestSearchHandler:
     @patch("tools.file_tools._get_file_ops")

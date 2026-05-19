@@ -354,6 +354,12 @@ def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
     board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+    workflow_template_id: Optional[str] = Query(
+        None, description="Restrict to tasks using this workflow template id",
+    ),
+    current_step_key: Optional[str] = Query(
+        None, description="Restrict to tasks at this workflow step key",
+    ),
 ):
     """Return the full board grouped by status column.
 
@@ -368,7 +374,11 @@ def get_board(
     conn = _conn(board=board)
     try:
         tasks = kanban_db.list_tasks(
-            conn, tenant=tenant, include_archived=include_archived
+            conn,
+            tenant=tenant,
+            include_archived=include_archived,
+            workflow_template_id=workflow_template_id,
+            current_step_key=current_step_key,
         )
         # Pre-fetch link counts per task (cheap: one query).
         link_counts: dict[str, dict[str, int]] = {}
@@ -479,10 +489,29 @@ def get_board(
 # ---------------------------------------------------------------------------
 
 @router.get("/tasks/{task_id}")
-def get_task(task_id: str, board: Optional[str] = Query(None)):
+def get_task(
+    task_id: str,
+    board: Optional[str] = Query(None),
+    run_state_type: Optional[str] = Query(
+        None, description="With run_state_name: filter runs by column 'status' or 'outcome'",
+    ),
+    run_state_name: Optional[str] = Query(
+        None, description="With run_state_type: exact value for that run column",
+    ),
+):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        if (run_state_type is None) ^ (run_state_name is None):
+            raise HTTPException(
+                status_code=400,
+                detail="run_state_type and run_state_name must be passed together or omitted",
+            )
+        if run_state_type is not None and run_state_type not in ("status", "outcome"):
+            raise HTTPException(
+                status_code=400,
+                detail="run_state_type must be 'status' or 'outcome'",
+            )
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
@@ -503,7 +532,15 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "links": _links_for(conn, task_id),
-            "runs": [_run_dict(r) for r in kanban_db.list_runs(conn, task_id)],
+            "runs": [
+                _run_dict(r)
+                for r in kanban_db.list_runs(
+                    conn,
+                    task_id,
+                    state_type=run_state_type,
+                    state_name=run_state_name,
+                )
+            ],
         }
     finally:
         conn.close()

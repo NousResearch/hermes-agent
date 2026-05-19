@@ -71,6 +71,18 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
 
 # ── _build_api_kwargs tests ─────────────────────────────────────────────────
 
+def test_chat_completions_sorts_tools_at_transport_boundary(monkeypatch):
+    agent = _make_agent(monkeypatch, "custom", base_url="http://localhost:8080/v1", model="local-model")
+    agent.tools = _tool_defs("mcp_lean_ctx_ctx_call", "feishu_doc_read")
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+
+    assert [tool["function"]["name"] for tool in kwargs["tools"]] == [
+        "feishu_doc_read",
+        "mcp_lean_ctx_ctx_call",
+    ]
+
+
 class TestBuildApiKwargsOpenRouter:
     def test_uses_chat_completions_format(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")

@@ -17,6 +17,7 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from model_tools import sort_openai_tool_schemas
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -249,7 +250,7 @@ class ChatCompletionsTransport(ProviderTransport):
             # etc.) compatible, in addition to direct moonshot.ai endpoints.
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
-            api_kwargs["tools"] = tools
+            api_kwargs["tools"] = sort_openai_tool_schemas(tools)
 
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")
@@ -437,7 +438,7 @@ class ChatCompletionsTransport(ProviderTransport):
         if tools:
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
-            api_kwargs["tools"] = tools
+            api_kwargs["tools"] = sort_openai_tool_schemas(tools)
 
         # max_tokens resolution — priority: ephemeral > user > profile default
         max_tokens_fn = params.get("max_tokens_param_fn")

@@ -313,6 +313,35 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
+def test_build_api_kwargs_codex_sorts_responses_tools(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "mcp_lean_ctx_ctx_call",
+                "description": "Invoke any lean-ctx tool by name.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "feishu_doc_read",
+                "description": "Read the full content of a Feishu/Lark document as plain text.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+
+    assert [tool["name"] for tool in kwargs["tools"]] == [
+        "feishu_doc_read",
+        "mcp_lean_ctx_ctx_call",
+    ]
+
+
 def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     """'minimal' reasoning effort is clamped to 'low' on the Responses API.
 

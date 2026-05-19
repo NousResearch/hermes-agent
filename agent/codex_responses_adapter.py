@@ -23,6 +23,11 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+def _sort_responses_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return Responses-format function tools in stable name order."""
+    return sorted(tools, key=lambda tool: str(tool.get("name", "")))
+
+
 # Matches Codex/Harmony tool-call serialization that occasionally leaks into
 # assistant-message content when the model fails to emit a structured
 # ``function_call`` item.  Accepts the common forms:
@@ -738,6 +743,7 @@ def _preflight_codex_api_kwargs(
                     "parameters": parameters,
                 }
             )
+        normalized_tools = _sort_responses_tools(normalized_tools)
 
     store = api_kwargs.get("store", False)
     if store is not False:

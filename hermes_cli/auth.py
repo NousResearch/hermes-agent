@@ -6126,6 +6126,15 @@ def _login_openai_codex(
 ) -> None:
     """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
 
+    _OPENAI_CODEX_CONTEXT_NOTE = (
+        "  Note: ChatGPT OAuth runs through Codex backend limits. For the same GPT-5 "
+        "slug, the direct OpenAI API can expose a larger context window. Use provider "
+        "`openai` with an API key when you need maximum OpenAI context."
+    )
+
+    def _print_openai_codex_context_note() -> None:
+        print(_OPENAI_CODEX_CONTEXT_NOTE)
+
     del args, pconfig  # kept for parity with other provider login helpers
 
     # Check for existing Hermes-owned credentials
@@ -6148,6 +6157,7 @@ def _login_openai_codex(
                     print()
                     print("Login successful!")
                     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                    _print_openai_codex_context_note()
                     return
             else:
                 print("Existing Codex credentials are expired. Starting fresh login...")
@@ -6172,6 +6182,7 @@ def _login_openai_codex(
                 print("Credentials imported. Note: if Codex CLI refreshes its token,")
                 print("Hermes will keep working independently with its own session.")
                 print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                _print_openai_codex_context_note()
                 return
 
     # Run a fresh device code flow — Hermes gets its own OAuth session
@@ -6190,6 +6201,7 @@ def _login_openai_codex(
     from hermes_constants import display_hermes_home as _dhh
     print(f"  Auth state: {_dhh()}/auth.json")
     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+    _print_openai_codex_context_note()
 
 
 def _login_xai_oauth(

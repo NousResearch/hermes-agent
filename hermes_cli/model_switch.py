@@ -608,6 +608,23 @@ def resolve_display_context_length(
     return None
 
 
+def format_provider_context_note(
+    model: str,
+    provider: str,
+    context_length: int | None = None,
+) -> str:
+    """Return user-facing context note for providers with known caps."""
+    normalized = str(provider or "").strip().lower()
+    if normalized != "openai-codex":
+        return ""
+    _ = model, context_length  # reserved for future model-specific wording
+    return (
+        "ChatGPT OAuth uses Codex backend limits; the direct OpenAI API can expose "
+        "larger context windows for the same model. Use provider `openai` with an "
+        "API key when you need the maximum OpenAI context window."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------

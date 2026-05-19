@@ -6934,7 +6934,10 @@ class HermesCLI:
         # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
         mi = result.model_info
         try:
-            from hermes_cli.model_switch import resolve_display_context_length
+            from hermes_cli.model_switch import (
+                format_provider_context_note,
+                resolve_display_context_length,
+            )
             ctx = resolve_display_context_length(
                 result.new_model,
                 result.target_provider,
@@ -6945,6 +6948,13 @@ class HermesCLI:
             )
             if ctx:
                 _cprint(f"    Context: {ctx:,} tokens")
+            provider_context_note = format_provider_context_note(
+                result.new_model,
+                result.target_provider,
+                context_length=ctx,
+            )
+            if provider_context_note:
+                _cprint(f"    Note: {provider_context_note}")
         except Exception:
             pass
         if mi:
@@ -7168,7 +7178,10 @@ class HermesCLI:
         # Copilot, and Nous-enforced caps win over the raw models.dev entry
         # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
         mi = result.model_info
-        from hermes_cli.model_switch import resolve_display_context_length
+        from hermes_cli.model_switch import (
+            format_provider_context_note,
+            resolve_display_context_length,
+        )
         ctx = resolve_display_context_length(
             result.new_model,
             result.target_provider,
@@ -7179,6 +7192,13 @@ class HermesCLI:
         )
         if ctx:
             _cprint(f"    Context: {ctx:,} tokens")
+        provider_context_note = format_provider_context_note(
+            result.new_model,
+            result.target_provider,
+            context_length=ctx,
+        )
+        if provider_context_note:
+            _cprint(f"    Note: {provider_context_note}")
         if mi:
             if mi.max_output:
                 _cprint(f"    Max output: {mi.max_output:,} tokens")

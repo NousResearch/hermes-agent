@@ -351,3 +351,27 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
 
     assert called["device_login"] == 1
     assert called["tokens"]["access_token"] == "fresh-at"
+
+
+def test_login_prints_codex_context_note(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda: (_ for _ in ()).throw(AuthError("missing", provider="openai-codex")),
+    )
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {"access_token": "fresh-at", "refresh_token": "fresh-rt"},
+            "last_refresh": "2026-04-01T00:00:00Z",
+            "base_url": DEFAULT_CODEX_BASE_URL,
+        },
+    )
+    monkeypatch.setattr("hermes_cli.auth._save_codex_tokens", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda *args, **kwargs: "/tmp/config.yaml")
+
+    _login_openai_codex(SimpleNamespace(), PROVIDER_REGISTRY["openai-codex"], force_new_login=True)
+
+    out = capsys.readouterr().out
+    assert "ChatGPT OAuth runs through Codex backend limits" in out
+    assert "provider `openai` with an API key" in out

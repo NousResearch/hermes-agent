@@ -43,6 +43,29 @@ def run_codex_app_server_turn(
     """
     from agent.transports.codex_app_server_session import CodexAppServerSession
 
+    clarify_env: dict[str, str] = {}
+    clarify_callback = getattr(agent, "clarify_callback", None)
+    bridge = getattr(agent, "_clarify_bridge", None)
+    if clarify_callback is not None:
+        try:
+            from agent.transports.clarify_bridge import ClarifyBridgeServer
+
+            if bridge is None:
+                bridge = ClarifyBridgeServer(clarify_callback).start()
+                agent._clarify_bridge = bridge
+            else:
+                bridge.set_callback(clarify_callback)
+                if not getattr(bridge, "address", None):
+                    bridge.start()
+            clarify_env.update(bridge.env())
+        except Exception:
+            logger.debug("clarify bridge setup failed", exc_info=True)
+    elif bridge is not None:
+        try:
+            bridge.set_callback(None)
+        except Exception:
+            logger.debug("clarify bridge callback clear failed", exc_info=True)
+
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
@@ -59,6 +82,7 @@ def run_codex_app_server_turn(
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            extra_env=clarify_env or None,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

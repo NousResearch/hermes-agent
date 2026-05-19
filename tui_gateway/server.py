@@ -136,17 +136,19 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
-# to minutes (slash.exec, cli.exec, shell.exec, session.resume,
-# session.branch, session.compress, skills.manage).  While they're running, inbound RPCs —
-# notably approval.respond and session.interrupt — sit unread in the
-# stdin pipe.  We route only those slow handlers onto a small thread pool;
-# everything else stays on the main thread so ordering stays sane for the
-# fast path.  write_json is already _stdout_lock-guarded, so concurrent
-# response writes are safe.
+# to minutes (slash.exec, command.dispatch plugin/skill paths, cli.exec,
+# shell.exec, session.resume, session.branch, session.compress,
+# skills.manage).  While they're running, inbound RPCs — notably
+# approval.respond and session.interrupt — sit unread in the stdin pipe.  We
+# route only those slow handlers onto a small thread pool; everything else
+# stays on the main thread so ordering stays sane for the fast path.
+# write_json is already _stdout_lock-guarded, so concurrent response writes
+# are safe.
 _LONG_HANDLERS = frozenset(
     {
         "browser.manage",
         "cli.exec",
+        "command.dispatch",
         "session.branch",
         "session.compress",
         "session.resume",
@@ -3372,6 +3374,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             default_max_turns=goal_max_turns,
                         )
                         if goal_mgr.is_active():
+                            _emit(
+                                "status.update",
+                                sid,
+                                {
+                                    "kind": "goal_judging",
+                                    "text": "checking goal…",
+                                },
+                            )
                             decision = goal_mgr.evaluate_after_turn(
                                 raw,
                                 user_initiated=True,
@@ -4405,9 +4415,10 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/mouse", "Toggle mouse/wheel tracking [on|off|toggle]", "TUI"),
 ]
 
-# Commands that queue messages onto _pending_input in the CLI.
-# In the TUI the slash worker subprocess has no reader for that queue,
-# so slash.exec rejects them → TUI falls through to command.dispatch.
+# Commands that need live server handling instead of the slash worker.
+# Some queue messages onto _pending_input in the CLI; others, like harness,
+# need direct access to server/profile state. slash.exec rejects them so the
+# TUI falls through to command.dispatch.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
     {
         "retry",
@@ -4416,6 +4427,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "plan",
         "goal",
+        "harness",
     }
 )
 
@@ -4792,14 +4804,96 @@ def _(rid, params: dict) -> dict:
             "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
+        kickoff_message = state.goal
+        stripped_goal = state.goal.strip()
+        if stripped_goal.startswith("/"):
+            skill_token, _sep, skill_arg = stripped_goal.partition(" ")
+            skill_key = f"/{skill_token.lstrip('/').replace('_', '-')}"
+            try:
+                from agent.skill_commands import (
+                    scan_skill_commands,
+                    build_skill_invocation_message,
+                )
+
+                cmds = scan_skill_commands()
+                if skill_key in cmds:
+                    skill_msg = build_skill_invocation_message(
+                        skill_key,
+                        skill_arg,
+                        task_id=sid_key,
+                    )
+                    if skill_msg:
+                        kickoff_message = skill_msg
+            except Exception:
+                pass
         # Send the goal text as the kickoff prompt. The TUI client sees
         # {type: send, notice, message} → renders `notice` as a sys line,
         # then submits `message` as a user turn. The post-turn judge
         # wired in _run_prompt_submit takes over from there.
         return _ok(
             rid,
-            {"type": "send", "notice": notice, "message": state.goal},
+            {"type": "send", "notice": notice, "message": kickoff_message},
         )
+
+    if name == "harness":
+        try:
+            from agent.harness import HermesHarness
+
+            control_plane = HermesHarness().control_plane
+            core_name = control_plane.core_name
+        except Exception as exc:
+            return _err(rid, 5030, f"harness unavailable: {exc}")
+
+        tokens = arg.split()
+        subcommand = tokens[0].lower() if tokens else "status"
+        case_ids = tokens[1:] if subcommand == "run" else []
+
+        if subcommand in {"status", ""}:
+            status = control_plane.core_status()
+            lines = [
+                f"{core_name}: {status.get('status', 'defined')}",
+                f"Cases: {status.get('case_count', 0)}",
+                f"Last run: {status.get('last_run_at') or 'never'}",
+            ]
+            if status.get("last_result"):
+                lines.append(f"Result: {status['last_result']}")
+            lines.append("Run: /harness run")
+            return _ok(rid, {"type": "exec", "output": "\n".join(lines)})
+
+        if subcommand in {"cases", "list", "ls"}:
+            status = control_plane.core_status()
+            lines = [f"{core_name} cases:"]
+            for case in status.get("cases", []):
+                last = case.get("last_status") or "not-run"
+                lines.append(f"  {case.get('id')} [{last}]")
+                desc = case.get("description")
+                if desc:
+                    lines.append(f"    {desc}")
+            return _ok(rid, {"type": "exec", "output": "\n".join(lines)})
+
+        if subcommand == "run":
+            try:
+                result = control_plane.run_core(case_ids=case_ids or None)
+            except Exception as exc:
+                return _err(rid, 5030, f"harness failed to start: {exc}")
+            lines = [
+                (
+                    f"{result['status']}: "
+                    f"{result['passed']}/{result['case_count']} case(s) "
+                    f"passed in {result['duration_s']:.1f}s"
+                )
+            ]
+            for case in result.get("cases", []):
+                marker = "✓" if case.get("status") == "passed" else "✗"
+                lines.append(
+                    f"  {marker} {case.get('id')} "
+                    f"({case.get('duration_s', 0):.1f}s)"
+                )
+                if case.get("status") != "passed" and case.get("output_tail"):
+                    lines.append(f"    {case['output_tail'][:500]}")
+            return _ok(rid, {"type": "exec", "output": "\n".join(lines)})
+
+        return _err(rid, 4004, "usage: /harness [status|cases|run [case-id...]]")
 
     if name in {"snapshot", "snap"}:
         subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""

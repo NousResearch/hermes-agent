@@ -48,6 +48,16 @@ def test_session_search_no_longer_appears_in_auxiliary_model_config():
     assert "session_search" not in {key for key, _name, _desc in _AUX_TASKS}
 
 
+def test_goal_judge_present_in_default_config():
+    """`goal_judge` must be configurable because /goal calls it every turn."""
+    gj = DEFAULT_CONFIG["auxiliary"]["goal_judge"]
+    assert gj["provider"] == "auto"
+    assert gj["model"] == ""
+    assert gj["timeout"] >= 120
+    assert gj["max_tokens"] >= 4096
+    assert gj["extra_body"] == {}
+
+
 def test_aux_tasks_keys_all_exist_in_default_config():
     """Every task the menu offers must be defined in DEFAULT_CONFIG."""
     aux_keys = {k for k, _name, _desc in _AUX_TASKS}

@@ -951,6 +951,19 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        # Goal judge — evaluates /goal completion after each turn. Reasoning
+        # and local models can need more than 30s before emitting the required
+        # JSON verdict, so keep the default timeout aligned with the larger
+        # output budget in hermes_cli.goals.
+        "goal_judge": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 120,
+            "max_tokens": 4096,
+            "extra_body": {},
+        },
         # Triage specifier — flesh out a rough one-liner in the Kanban
         # Triage column into a concrete spec, then promote it to ``todo``.
         # Invoked by ``hermes kanban specify`` (single id or --all). Set a

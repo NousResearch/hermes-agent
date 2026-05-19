@@ -61,6 +61,155 @@ def _ra():
     return run_agent
 
 
+def _json_result_dict(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _summarize_tool_arg_value(value: Any) -> dict[str, Any]:
+    """Return structural metadata for a tool argument without persisting content."""
+    if value is None:
+        return {"type": "null"}
+    if isinstance(value, bool):
+        return {"type": "bool"}
+    if isinstance(value, (int, float)):
+        return {"type": "number"}
+    if isinstance(value, str):
+        return {"type": "str", "length": len(value)}
+    if isinstance(value, (list, tuple)):
+        return {
+            "type": "list",
+            "length": len(value),
+            "item_types": sorted({type(item).__name__ for item in list(value)[:12]}),
+        }
+    if isinstance(value, dict):
+        keys = [str(key) for key in list(value.keys())[:12]]
+        summary: dict[str, Any] = {"type": "dict", "key_count": len(value), "keys": keys}
+        if len(value) > 12:
+            summary["truncated_keys"] = len(value) - 12
+        return summary
+    return {"type": type(value).__name__}
+
+
+def _summarize_tool_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Return an allowlisted, content-free summary of tool arguments."""
+    if not isinstance(args, dict):
+        return {"arg_count": 0, "arg_keys": [], "arg_shapes": {}}
+    arg_keys = [str(key) for key in args.keys()]
+    return {
+        "arg_count": len(args),
+        "arg_keys": arg_keys,
+        "arg_shapes": {
+            str(key): _summarize_tool_arg_value(value)
+            for key, value in args.items()
+        },
+    }
+
+
+def _text_fingerprint_fields(prefix: str, value: Any) -> dict[str, Any]:
+    """Return content-free metadata for a free-text value."""
+    text = "" if value is None else str(value)
+    digest = None
+    if text:
+        import hashlib
+
+        digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+    return {
+        f"{prefix}_present": bool(text),
+        f"{prefix}_chars": len(text),
+        f"{prefix}_sha256": digest,
+    }
+
+
+def _record_harness_tool_start(agent, tool_name: str, args: dict[str, Any]) -> None:
+    try:
+        from agent.harness_control_plane import record_harness_event
+
+        record_harness_event(
+            "tool.start",
+            {"tool_name": tool_name, "arg_summary": _summarize_tool_args(args)},
+            session_id=getattr(agent, "session_id", None),
+            component="tool_executor",
+        )
+    except Exception:
+        logger.debug("harness tool.start record failed for %s", tool_name, exc_info=True)
+
+
+def _record_harness_tool_result(
+    agent,
+    tool_name: str,
+    args: dict[str, Any],
+    raw_result: Any,
+    *,
+    duration: float,
+    is_error: bool,
+    blocked: bool = False,
+) -> None:
+    result = _json_result_dict(raw_result)
+    try:
+        from agent.harness_control_plane import record_harness_event
+
+        record_harness_event(
+            "tool.error" if is_error else "tool.complete",
+            {
+                "tool_name": tool_name,
+                "duration_s": duration,
+                "blocked": blocked,
+                "error": is_error,
+                "result_success": result.get("success") if result else None,
+                **_text_fingerprint_fields(
+                    "result_error",
+                    result.get("error") if result else None,
+                ),
+            },
+            session_id=getattr(agent, "session_id", None),
+            component="tool_executor",
+        )
+    except Exception:
+        logger.debug("harness tool result record failed for %s", tool_name, exc_info=True)
+
+    if blocked:
+        return
+
+    if tool_name == "memory":
+        if result.get("admission_recorded"):
+            return
+        try:
+            from agent.harness_control_plane import record_memory_admission
+
+            record_memory_admission(
+                action=str(args.get("action") or ""),
+                target=str(args.get("target") or "memory"),
+                content=args.get("content"),
+                old_text=args.get("old_text"),
+                result=result,
+            )
+        except Exception:
+            logger.debug("harness memory admission record failed", exc_info=True)
+    elif tool_name == "skill_manage":
+        try:
+            from agent.harness_control_plane import record_skill_mutation
+            from tools.skill_provenance import get_current_write_origin
+
+            record_skill_mutation(
+                action=str(args.get("action") or ""),
+                name=str(args.get("name") or ""),
+                result=result,
+                category=args.get("category"),
+                file_path=args.get("file_path"),
+                origin=get_current_write_origin(),
+            )
+        except Exception:
+            logger.debug("harness skill mutation record failed", exc_info=True)
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -158,6 +307,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
         if block_result is not None:
             continue
+        _record_harness_tool_start(agent, name, args)
         if agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(name, args)
@@ -358,6 +508,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_duration = 0.0
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked = r
+
+            _record_harness_tool_result(
+                agent,
+                function_name,
+                function_args,
+                function_result,
+                duration=tool_duration,
+                is_error=is_error,
+                blocked=blocked,
+            )
 
             if not blocked:
                 function_result = agent._append_guardrail_observation(
@@ -560,6 +720,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
+        if not _execution_blocked:
+            _record_harness_tool_start(agent, function_name, function_args)
+
         if not _execution_blocked and agent.tool_start_callback:
             try:
                 agent.tool_start_callback(tool_call.id, function_name, function_args)
@@ -634,7 +797,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
             target = function_args.get("target", "memory")
-            from tools.memory_tool import memory_tool as _memory_tool
+            from tools.memory_tool import (
+                memory_tool as _memory_tool,
+                should_mirror_memory_write_result as _should_mirror_memory_write_result,
+            )
             function_result = _memory_tool(
                 action=function_args.get("action"),
                 target=target,
@@ -643,7 +809,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 store=agent._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
-            if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
+            if (
+                agent._memory_manager
+                and function_args.get("action") in {"add", "replace"}
+                and _should_mirror_memory_write_result(function_result)
+            ):
                 try:
                     agent._memory_manager.on_memory_write(
                         function_args.get("action", ""),
@@ -796,6 +966,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        _record_harness_tool_result(
+            agent,
+            function_name,
+            function_args,
+            function_result,
+            duration=tool_duration,
+            is_error=_is_error_result,
+            blocked=_execution_blocked,
+        )
         if not _execution_blocked:
             function_result = agent._append_guardrail_observation(
                 function_name,

@@ -27,9 +27,16 @@ class FakeClient:
     """Stand-in for CodexAppServerClient that records calls and lets the test
     drive the notification / server-request streams synchronously."""
 
-    def __init__(self, *, codex_bin: str = "codex", codex_home=None) -> None:
+    def __init__(
+        self,
+        *,
+        codex_bin: str = "codex",
+        codex_home=None,
+        env: Optional[dict[str, str]] = None,
+    ) -> None:
         self.codex_bin = codex_bin
         self.codex_home = codex_home
+        self.env = dict(env or {})
         self.requests: list[tuple[str, dict]] = []
         self.notifications_responses: list[dict] = []
         self.responses: list[tuple[Any, dict]] = []
@@ -160,6 +167,24 @@ class TestLifecycle:
         s.close()
         s.close()
         assert client._closed is True
+
+    def test_extra_env_passed_to_client_factory(self):
+        captured = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return FakeClient(**kwargs)
+
+        s = CodexAppServerSession(
+            cwd="/tmp",
+            extra_env={"HERMES_CLARIFY_BRIDGE_ADDR": "unix:/tmp/bridge.sock"},
+            client_factory=factory,
+        )
+        s.ensure_started()
+
+        assert captured["env"] == {
+            "HERMES_CLARIFY_BRIDGE_ADDR": "unix:/tmp/bridge.sock",
+        }
 
 
 # ---- turn loop ----

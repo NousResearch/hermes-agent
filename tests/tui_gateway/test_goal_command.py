@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -116,6 +117,39 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert mgr.state.status == "active"
 
 
+def test_goal_set_with_skill_command_sends_expanded_skill_payload(server, session):
+    sid, session_key, _ = session
+    fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
+    fake_msg = "Loaded skill content here"
+
+    with patch("agent.skill_commands.scan_skill_commands", return_value=fake_skills), \
+         patch("agent.skill_commands.build_skill_invocation_message", return_value=fake_msg) as build:
+        r = _call(
+            server,
+            "command.dispatch",
+            name="goal",
+            arg="/hermes-agent-dev fix goal handling",
+            session_id=sid,
+        )
+
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"] == fake_msg
+    assert "Goal set" in result["notice"]
+    build.assert_called_once_with(
+        "/hermes-agent-dev",
+        "fix goal handling",
+        task_id=session_key,
+    )
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_key)
+    assert mgr.state is not None
+    assert mgr.state.goal == "/hermes-agent-dev fix goal handling"
+    assert mgr.state.status == "active"
+
+
 def test_goal_pause_after_set(server, session):
     sid, session_key, _ = session
     _call(server, "command.dispatch", name="goal", arg="write a story", session_id=sid)
@@ -176,6 +210,46 @@ def test_goal_requires_session(server):
     assert r["error"]["code"] == 4001
 
 
+# ── command.dispatch /harness ─────────────────────────────────────────
+
+
+def test_harness_status_dispatch_uses_control_plane(server, session, monkeypatch):
+    sid, _, _ = session
+    import agent.harness as harness_module
+
+    class _ControlPlane:
+        core_name = "harness-core"
+
+        def core_status(self):
+            return {
+                "status": "defined",
+                "case_count": 7,
+                "last_run_at": None,
+                "last_result": None,
+            }
+
+    class _Harness:
+        @property
+        def control_plane(self):
+            return _ControlPlane()
+
+    monkeypatch.setattr(harness_module, "HermesHarness", _Harness)
+
+    r = _call(server, "command.dispatch", name="harness", arg="status", session_id=sid)
+
+    assert r["result"]["type"] == "exec"
+    assert "harness-core: defined" in r["result"]["output"]
+    assert "Cases: 7" in r["result"]["output"]
+
+
+def test_slash_exec_rejects_harness_routes_to_command_dispatch(server, session):
+    sid, _, _ = session
+    r = _call(server, "slash.exec", command="harness status", session_id=sid)
+    assert "error" in r
+    assert r["error"]["code"] == 4018
+    assert "command.dispatch" in r["error"]["message"]
+
+
 # ── slash.exec /goal routing ──────────────────────────────────────────
 
 
@@ -194,3 +268,74 @@ def test_pending_input_commands_includes_goal(server):
     """Guard: _PENDING_INPUT_COMMANDS must list 'goal' — removing it would
     silently re-break the TUI."""
     assert "goal" in server._PENDING_INPUT_COMMANDS
+
+
+def test_goal_continuation_emits_judging_status_and_chains_turn(server, session, monkeypatch):
+    """After a turn completes, the TUI must show that /goal is still busy
+    while the judge runs, then dispatch the continuation when the judge says
+    to continue."""
+    sid, session_key, s = session
+
+    from hermes_cli.goals import GoalManager
+
+    GoalManager(session_key, default_max_turns=3).set("ship the fix")
+
+    class FakeAgent:
+        model = "fake-model"
+
+        def __init__(self):
+            self.prompts: list[str] = []
+
+        def run_conversation(self, message, conversation_history=None, stream_callback=None):
+            self.prompts.append(str(message))
+            text = f"response {len(self.prompts)}"
+            return {
+                "final_response": text,
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": message},
+                    {"role": "assistant", "content": text},
+                ],
+            }
+
+    agent = FakeAgent()
+    s["agent"] = agent
+    s["running"] = True
+
+    events: list[dict] = []
+    monkeypatch.setattr(server, "write_json", lambda obj: events.append(obj) or True)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        side_effect=[
+            ("continue", "more work remains", False),
+            ("done", "done now", False),
+        ],
+    ):
+        server._run_prompt_submit("rid-goal", sid, s, "ship the fix")
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if len(agent.prompts) >= 2 and not s.get("running"):
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("goal continuation did not finish")
+
+    status_events = [
+        e["params"]["payload"]
+        for e in events
+        if e.get("method") == "event"
+        and (e.get("params") or {}).get("type") == "status.update"
+    ]
+    assert {"kind": "goal_judging", "text": "checking goal…"} in status_events
+    assert any(
+        p.get("kind") == "goal" and p.get("text", "").startswith("↻ Continuing toward goal")
+        for p in status_events
+    )
+    assert any(
+        p.get("kind") == "goal" and p.get("text", "").startswith("✓ Goal achieved")
+        for p in status_events
+    )
+    assert "Continuing toward your standing goal" in agent.prompts[1]

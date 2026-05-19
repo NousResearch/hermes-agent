@@ -114,6 +114,7 @@ describe('createSlashHandler', () => {
 
   it('applies /reasoning hide to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
@@ -136,6 +137,7 @@ describe('createSlashHandler', () => {
 
   it('applies /reasoning show to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'hidden' }, showReasoning: false, sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
@@ -227,11 +229,14 @@ describe('createSlashHandler', () => {
       if (method === 'skills.reload') {
         return Promise.resolve({ output: '42 skill(s) available' })
       }
+
       if (method === 'commands.catalog') {
         return Promise.resolve({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
       }
+
       return Promise.resolve({})
     })
+
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     createSlashHandler(ctx)('/reload-skills')
@@ -558,6 +563,80 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/stat')).toBe(true)
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ambiguous command: /status, /statusbar')
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('routes /goal directly to command.dispatch without waiting on slash.exec', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const request = vi.fn((method: string) => {
+      if (method === 'slash.exec') {
+        return Promise.reject(new Error('slash worker should not be used'))
+      }
+
+      if (method === 'command.dispatch') {
+        return Promise.resolve({ type: 'send', notice: 'Goal set', message: 'ship it' })
+      }
+
+      return Promise.resolve({})
+    })
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), gw: { getLogTail: vi.fn(() => ''), request } } })
+
+    expect(createSlashHandler(ctx)('/goal ship it')).toBe(true)
+
+    expect(request).toHaveBeenCalledWith('command.dispatch', {
+      arg: 'ship it',
+      name: 'goal',
+      session_id: 'sid-abc'
+    })
+    expect(request).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('Goal set')
+    })
+    expect(ctx.transcript.send).toHaveBeenCalledWith('ship it')
+  })
+
+  it('routes catalog-known skill commands directly to command.dispatch', async () => {
+    const skillMessage = 'Use this skill to do X.\n\n## Steps\n1. First step'
+
+    const request = vi.fn((method: string) => {
+      if (method === 'slash.exec') {
+        return Promise.reject(new Error('slash worker should not be used'))
+      }
+
+      if (method === 'command.dispatch') {
+        return Promise.resolve({ type: 'skill', message: skillMessage, name: 'hermes-agent-dev' })
+      }
+
+      return Promise.resolve({})
+    })
+
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), gw: { getLogTail: vi.fn(() => ''), request } },
+      local: {
+        ...buildLocal(),
+        catalog: {
+          canon: {},
+          categories: [],
+          pairs: [['/hermes-agent-dev', 'Dev workflow']],
+          skillCount: 1,
+          sub: {}
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/hermes-agent-dev')).toBe(true)
+
+    expect(request).toHaveBeenCalledWith('command.dispatch', {
+      arg: '',
+      name: 'hermes-agent-dev',
+      session_id: null
+    })
+    expect(request).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('⚡ loading skill: hermes-agent-dev')
+    })
+    expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
   })
 
   it('falls through to command.dispatch for skill commands and sends the message', async () => {

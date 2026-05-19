@@ -752,6 +752,27 @@ def test_dispatch_long_handler_does_not_block_fast_handler(server):
     released.set()
 
 
+def test_dispatch_command_dispatch_does_not_block_fast_handler(server):
+    """Slow command.dispatch plugin/skill paths must not block the RPC loop."""
+    released = threading.Event()
+    server._methods["command.dispatch"] = lambda rid, params: (
+        released.wait(timeout=5),
+        server._ok(rid, {"done": True}),
+    )[1]
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    t0 = time.monotonic()
+    assert server.dispatch({"id": "slow", "method": "command.dispatch", "params": {}}) is None
+
+    fast_resp = server.dispatch({"id": "fast", "method": "fast.ping", "params": {}})
+    fast_elapsed = time.monotonic() - t0
+
+    assert fast_resp["result"] == {"pong": True}
+    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind command.dispatch"
+
+    released.set()
+
+
 def test_dispatch_session_compress_does_not_block_fast_handler(server):
     """Manual TUI compaction can take minutes, so it must not block the RPC loop."""
     released = threading.Event()

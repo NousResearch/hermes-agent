@@ -7745,6 +7745,67 @@ class HermesCLI:
             print("       DISCORD_BOT_TOKEN=your_token")
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
+
+    def _handle_harness_command(self, command: str) -> None:
+        """Run or inspect the first-class Hermes core harness."""
+        parts = command.split()
+        subcommand = parts[1].lower() if len(parts) > 1 else "status"
+        case_ids = parts[2:] if subcommand == "run" else []
+
+        try:
+            from agent.harness import HermesHarness
+
+            control_plane = HermesHarness().control_plane
+            core_name = control_plane.core_name
+        except Exception as exc:
+            _cprint(f"  Harness unavailable: {exc}")
+            return
+
+        if subcommand in {"status", ""}:
+            status = control_plane.core_status()
+            _cprint(f"  {core_name}: {status.get('status', 'defined')}")
+            _cprint(f"  Cases: {status.get('case_count', 0)}")
+            _cprint(f"  Last run: {status.get('last_run_at') or 'never'}")
+            if status.get("last_result"):
+                _cprint(f"  Result: {status['last_result']}")
+            _cprint("  Run: /harness run")
+            return
+
+        if subcommand in {"cases", "list", "ls"}:
+            status = control_plane.core_status()
+            _cprint(f"  {core_name} cases:")
+            for case in status.get("cases", []):
+                last = case.get("last_status") or "not-run"
+                _cprint(f"    {case.get('id')} [{last}]")
+                desc = case.get("description")
+                if desc:
+                    _cprint(f"      {desc}")
+            return
+
+        if subcommand == "run":
+            label = f" ({', '.join(case_ids)})" if case_ids else ""
+            _cprint(f"  Running {core_name}{label}...")
+            try:
+                result = control_plane.run_core(case_ids=case_ids or None)
+            except Exception as exc:
+                _cprint(f"  Harness failed to start: {exc}")
+                return
+            _cprint(
+                f"  {result['status']}: "
+                f"{result['passed']}/{result['case_count']} case(s) passed "
+                f"in {result['duration_s']:.1f}s"
+            )
+            for case in result.get("cases", []):
+                marker = "✓" if case.get("status") == "passed" else "✗"
+                _cprint(
+                    f"    {marker} {case.get('id')} "
+                    f"({case.get('duration_s', 0):.1f}s)"
+                )
+                if case.get("status") != "passed" and case.get("output_tail"):
+                    _cprint(f"      {case['output_tail'][:500]}")
+            return
+
+        _cprint("  Usage: /harness [status|cases|run [case-id...]]")
     
     def process_command(self, command: str) -> bool:
         """
@@ -8045,6 +8106,8 @@ class HermesCLI:
                         print(f"  {status} {p['name']}{version}{detail}{error}")
             except Exception as e:
                 print(f"Plugin system error: {e}")
+        elif canonical == "harness":
+            self._handle_harness_command(cmd_original)
         elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
         elif canonical == "snapshot":
@@ -10622,6 +10685,17 @@ class HermesCLI:
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
             response_queue = queue.Queue()
 
+            def _record_decision(choice: str) -> None:
+                try:
+                    from agent.harness_control_plane import record_approval_decision
+
+                    record_approval_decision(
+                        session_id=getattr(self, "session_id", None),
+                        choice=choice,
+                    )
+                except Exception:
+                    logging.debug("harness approval decision record failed", exc_info=True)
+
             self._approval_state = {
                 "command": command,
                 "description": description,
@@ -10640,6 +10714,7 @@ class HermesCLI:
                     self._approval_state = None
                     self._approval_deadline = 0
                     self._invalidate()
+                    _record_decision(str(result))
                     return result
                 except queue.Empty:
                     remaining = self._approval_deadline - _time.monotonic()
@@ -10654,6 +10729,7 @@ class HermesCLI:
             self._approval_deadline = 0
             self._invalidate()
             _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
+            _record_decision("deny")
             return "deny"
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True) -> list[str]:

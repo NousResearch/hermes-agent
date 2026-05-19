@@ -18,7 +18,9 @@ Three tiers are joined with ``\\n\\n``:
 * ``volatile`` — memory snapshot, USER.md profile, external memory
   provider block, timestamp/session/model/provider line.
 
-Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
+Pure helpers that read the agent's state.  AIAgent keeps thin forwarders
+through ``agent.harness.HermesHarness`` so prompt assembly stays one side of
+the unified harness rather than a separate runtime concept.
 """
 
 from __future__ import annotations

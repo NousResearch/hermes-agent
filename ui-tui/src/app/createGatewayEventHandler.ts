@@ -338,6 +338,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
+        if (p.kind === 'goal_judging') {
+          patchUiState({ busy: true })
+          setStatus(p.text)
+          return
+        }
+
         if (p.kind === 'goal') {
           sys(p.text)
           const brief = p.text.startsWith('✓')
@@ -347,6 +353,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               : p.text.startsWith('⏸')
                 ? '⏸ goal paused'
                 : 'ready'
+          if (!p.text.startsWith('↻')) {
+            patchUiState({ busy: false })
+          }
           setStatus(brief)
           restoreStatusAfter(6000)
           return

@@ -175,6 +175,36 @@ class TestJudgeGoal:
         assert verdict == "continue"
         assert reason == "not yet"
 
+    def test_judge_uses_goal_judge_timeout_from_config(self):
+        from hermes_cli import goals
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = MagicMock(
+            choices=[
+                MagicMock(
+                    message=MagicMock(content='{"done": false, "reason": "not yet"}')
+                )
+            ]
+        )
+
+        cfg = {
+            "auxiliary": {
+                "goal_judge": {
+                    "timeout": 91,
+                    "max_tokens": 1234,
+                }
+            }
+        }
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(fake_client, "judge-model"),
+        ), patch("hermes_cli.config.load_config", return_value=cfg):
+            goals.judge_goal("goal", "agent response")
+
+        kwargs = fake_client.chat.completions.create.call_args.kwargs
+        assert kwargs["timeout"] == 91.0
+        assert kwargs["max_tokens"] == 1234
+
 
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence

@@ -3,8 +3,8 @@
 When the user runs `openai/*` turns through the codex app-server, codex
 owns the loop and builds its own tool list. By default, that means
 Hermes' richer tool surface — web search, browser automation,
-delegate_task subagents, vision analysis, persistent memory, skills,
-cross-session search, image generation, TTS — is unreachable.
+vision analysis, clarify prompts, skills, image generation, TTS — is
+unreachable.
 
 This module exposes a curated subset of those Hermes tools to the
 spawned codex subprocess via stdio MCP. Codex registers it as a normal
@@ -18,6 +18,7 @@ Scope (what we expose):
     _get_images / _console / _vision
   - vision_analyze                       — image inspection by vision model
   - image_generate                       — image generation
+  - clarify                              — bridged back to parent Hermes UI
   - skill_view, skills_list              — Hermes' skill library
   - text_to_speech                       — TTS
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
@@ -28,7 +29,6 @@ What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool
   - read_file / write_file / patch       — codex's apply_patch + shell
   - search_files / process               — codex's shell
-  - clarify                              — codex's own UX
   - delegate_task / memory /             — `_AGENT_LOOP_TOOLS` in Hermes
     session_search / todo                  (model_tools.py). They require
                                            the running AIAgent context to
@@ -80,6 +80,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "browser_vision",
     "vision_analyze",
     "image_generate",
+    "clarify",
     "skill_view",
     "skills_list",
     "text_to_speech",
@@ -105,6 +106,66 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
+def _dispatch_clarify_via_bridge(kwargs: dict[str, Any]) -> str:
+    question = str((kwargs or {}).get("question") or "").strip()
+    if not question:
+        return json.dumps({"error": "Question text is required."}, ensure_ascii=False)
+
+    raw_choices = (kwargs or {}).get("choices")
+    choices: Optional[list[str]]
+    if isinstance(raw_choices, list):
+        choices = [str(choice).strip() for choice in raw_choices if str(choice).strip()]
+        choices = choices[:4] or None
+    else:
+        choices = None
+
+    address = os.environ.get("HERMES_CLARIFY_BRIDGE_ADDR")
+    token = os.environ.get("HERMES_CLARIFY_BRIDGE_TOKEN")
+    if not address or not token:
+        return json.dumps(
+            {
+                "error": (
+                    "Clarify bridge is not available in this Codex MCP "
+                    "execution context."
+                )
+            },
+            ensure_ascii=False,
+        )
+
+    try:
+        from agent.transports.clarify_bridge import request_clarify_via_bridge
+
+        user_response = request_clarify_via_bridge(
+            address=address,
+            token=token,
+            question=question,
+            choices=choices,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {"error": f"Failed to get user input: {exc}"},
+            ensure_ascii=False,
+        )
+
+    return json.dumps(
+        {
+            "question": question,
+            "choices_offered": choices,
+            "user_response": str(user_response).strip(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _dispatch_hermes_tool(tool_name: str, kwargs: dict[str, Any]) -> str:
+    if tool_name == "clarify":
+        return _dispatch_clarify_via_bridge(kwargs or {})
+
+    from model_tools import handle_function_call
+
+    return handle_function_call(tool_name, kwargs or {})
+
+
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
@@ -117,10 +178,7 @@ def _build_server() -> Any:
         ) from exc
 
     # Discover Hermes tools so dispatch works.
-    from model_tools import (
-        get_tool_definitions,
-        handle_function_call,
-    )
+    from model_tools import get_tool_definitions
 
     mcp = FastMCP(
         "hermes-tools",
@@ -128,8 +186,7 @@ def _build_server() -> Any:
             "Hermes Agent's tool surface, exposed for use inside a Codex "
             "session. Use these for capabilities Codex's built-in toolset "
             "doesn't cover: web search/extract, browser automation, "
-            "subagent delegation, vision, image generation, persistent "
-            "memory, skills, and cross-session search."
+            "vision, image generation, clarify prompts, skills, and TTS."
         ),
     )
 
@@ -162,7 +219,7 @@ def _build_server() -> Any:
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
-                    return handle_function_call(tool_name, kwargs or {})
+                    return _dispatch_hermes_tool(tool_name, kwargs or {})
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})

@@ -47,9 +47,37 @@ class TestModuleSurface:
             "browser_navigate",
             "vision_analyze",
             "image_generate",
+            "clarify",
             "skill_view",
         ):
             assert required in EXPOSED_TOOLS, f"missing {required!r}"
+
+    def test_clarify_dispatch_uses_parent_bridge(self, monkeypatch):
+        import agent.transports.clarify_bridge as bridge
+        import agent.transports.hermes_tools_mcp_server as m
+
+        captured = {}
+
+        def fake_request(**kwargs):
+            captured.update(kwargs)
+            return "keep going"
+
+        monkeypatch.setenv("HERMES_CLARIFY_BRIDGE_ADDR", "unix:/tmp/bridge.sock")
+        monkeypatch.setenv("HERMES_CLARIFY_BRIDGE_TOKEN", "token")
+        monkeypatch.setattr(bridge, "request_clarify_via_bridge", fake_request)
+
+        result = m._dispatch_hermes_tool(
+            "clarify",
+            {"question": "Continue?", "choices": ["yes", "no"]},
+        )
+
+        assert captured == {
+            "address": "unix:/tmp/bridge.sock",
+            "token": "token",
+            "question": "Continue?",
+            "choices": ["yes", "no"],
+        }
+        assert "keep going" in result
 
     def test_agent_loop_tools_not_exposed(self):
         """delegate_task / memory / session_search / todo require the

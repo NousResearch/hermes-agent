@@ -457,6 +457,18 @@ def build_skill_invocation_message(
         bump_use(skill_name)
     except Exception:
         pass  # Non-critical — skill invocation proceeds regardless
+    try:
+        from agent.harness_control_plane import record_skill_load
+
+        record_skill_load(
+            session_id=task_id,
+            name=skill_name,
+            command=cmd_key,
+            arg=user_instruction,
+            source="slash",
+        )
+    except Exception:
+        pass
 
     activation_note = (
         f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
@@ -504,6 +516,16 @@ def build_preloaded_skills_prompt(
             bump_use(skill_name)
         except Exception:
             pass  # Non-critical
+        try:
+            from agent.harness_control_plane import record_skill_load
+
+            record_skill_load(
+                session_id=task_id,
+                name=skill_name,
+                source="preload",
+            )
+        except Exception:
+            pass
 
         activation_note = (
             f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '

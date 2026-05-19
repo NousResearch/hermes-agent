@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────
 
 DEFAULT_MAX_TURNS = 20
-DEFAULT_JUDGE_TIMEOUT = 30.0
+DEFAULT_JUDGE_TIMEOUT = 120.0
 # Judge output budget. The freeform judge returns a one-line JSON verdict, but
 # reasoning models (deepseek-v4, qwq, etc.) burn tokens on hidden reasoning
 # before emitting the visible JSON — and the first /goal turn's prompt is
@@ -279,6 +279,29 @@ def clear_goal(session_id: str) -> None:
     save_goal(session_id, state)
 
 
+def _record_goal_event(
+    session_id: str,
+    action: str,
+    state: Optional[GoalState],
+    *,
+    should_continue: Optional[bool] = None,
+    message: Optional[str] = None,
+) -> None:
+    try:
+        from agent.harness_control_plane import record_goal_decision
+
+        record_goal_decision(
+            session_id=session_id,
+            action=action,
+            goal=state.goal if state else None,
+            should_continue=should_continue,
+            message=message,
+            turn_count=state.turns_used if state else None,
+        )
+    except Exception:
+        logger.debug("harness goal event record failed", exc_info=True)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Judge
 # ──────────────────────────────────────────────────────────────────────
@@ -317,6 +340,30 @@ def _goal_judge_max_tokens() -> int:
     except Exception:
         pass
     return DEFAULT_JUDGE_MAX_TOKENS
+
+
+def _goal_judge_timeout() -> float:
+    """Resolve auxiliary.goal_judge.timeout, falling back to the default.
+
+    Goal judging is a small call, but routed reasoning/local models can exceed
+    tight defaults before they emit the required JSON verdict. Invalid or
+    non-positive values fall back rather than breaking the goal loop.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        value = (
+            (cfg.get("auxiliary") or {})
+            .get("goal_judge", {})
+            .get("timeout", DEFAULT_JUDGE_TIMEOUT)
+        )
+        value = float(value)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    return DEFAULT_JUDGE_TIMEOUT
 
 
 def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
@@ -372,7 +419,7 @@ def judge_goal(
     goal: str,
     last_response: str,
     *,
-    timeout: float = DEFAULT_JUDGE_TIMEOUT,
+    timeout: Optional[float] = None,
     subgoals: Optional[List[str]] = None,
 ) -> Tuple[str, str, bool]:
     """Ask the auxiliary model whether the goal is satisfied.
@@ -436,6 +483,14 @@ def judge_goal(
             current_time=current_time,
         )
 
+    effective_timeout = _goal_judge_timeout() if timeout is None else timeout
+    try:
+        effective_timeout = float(effective_timeout)
+        if effective_timeout <= 0:
+            effective_timeout = _goal_judge_timeout()
+    except (TypeError, ValueError):
+        effective_timeout = _goal_judge_timeout()
+
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -445,7 +500,7 @@ def judge_goal(
             ],
             temperature=0,
             max_tokens=_goal_judge_max_tokens(),
-            timeout=timeout,
+            timeout=effective_timeout,
             extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
@@ -533,6 +588,13 @@ class GoalManager:
         )
         self._state = state
         save_goal(self.session_id, state)
+        _record_goal_event(
+            self.session_id,
+            "set",
+            state,
+            should_continue=True,
+            message="goal set",
+        )
         return state
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
@@ -541,6 +603,13 @@ class GoalManager:
         self._state.status = "paused"
         self._state.paused_reason = reason
         save_goal(self.session_id, self._state)
+        _record_goal_event(
+            self.session_id,
+            "pause",
+            self._state,
+            should_continue=False,
+            message=reason,
+        )
         return self._state
 
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
@@ -551,14 +620,29 @@ class GoalManager:
         if reset_budget:
             self._state.turns_used = 0
         save_goal(self.session_id, self._state)
+        _record_goal_event(
+            self.session_id,
+            "resume",
+            self._state,
+            should_continue=True,
+            message="goal resumed",
+        )
         return self._state
 
     def clear(self) -> None:
         if self._state is None:
             return
+        state = self._state
         self._state.status = "cleared"
         save_goal(self.session_id, self._state)
         self._state = None
+        _record_goal_event(
+            self.session_id,
+            "clear",
+            state,
+            should_continue=False,
+            message="goal cleared",
+        )
 
     def mark_done(self, reason: str) -> None:
         if not self._state:
@@ -567,6 +651,13 @@ class GoalManager:
         self._state.last_verdict = "done"
         self._state.last_reason = reason
         save_goal(self.session_id, self._state)
+        _record_goal_event(
+            self.session_id,
+            "done",
+            self._state,
+            should_continue=False,
+            message=reason,
+        )
 
     # --- /subgoal user controls ---------------------------------------
 
@@ -669,6 +760,13 @@ class GoalManager:
         if verdict == "done":
             state.status = "done"
             save_goal(self.session_id, state)
+            _record_goal_event(
+                self.session_id,
+                "judge",
+                state,
+                should_continue=False,
+                message=reason,
+            )
             return {
                 "status": "done",
                 "should_continue": False,
@@ -690,6 +788,13 @@ class GoalManager:
                 f"judge model returned unparseable output {state.consecutive_parse_failures} turns in a row"
             )
             save_goal(self.session_id, state)
+            _record_goal_event(
+                self.session_id,
+                "judge",
+                state,
+                should_continue=False,
+                message=state.paused_reason,
+            )
             return {
                 "status": "paused",
                 "should_continue": False,
@@ -712,6 +817,13 @@ class GoalManager:
             state.status = "paused"
             state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
             save_goal(self.session_id, state)
+            _record_goal_event(
+                self.session_id,
+                "judge",
+                state,
+                should_continue=False,
+                message=state.paused_reason,
+            )
             return {
                 "status": "paused",
                 "should_continue": False,
@@ -725,6 +837,13 @@ class GoalManager:
             }
 
         save_goal(self.session_id, state)
+        _record_goal_event(
+            self.session_id,
+            "judge",
+            state,
+            should_continue=True,
+            message=reason,
+        )
         return {
             "status": "active",
             "should_continue": True,

@@ -147,6 +147,7 @@ describe('createGatewayEventHandler', () => {
 
       expect(ctx.system.sys).toHaveBeenCalledWith(verdict)
       expect(getUiState().status).toBe('✓ goal complete')
+      expect(getUiState().busy).toBe(false)
 
       vi.advanceTimersByTime(6001)
       expect(getUiState().status).toBe('ready')
@@ -155,21 +156,39 @@ describe('createGatewayEventHandler', () => {
     }
   })
 
+  it('shows goal judging as busy without adding transcript noise', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { kind: 'goal_judging', text: 'checking goal…' },
+      type: 'status.update'
+    } as any)
+
+    expect(ctx.system.sys).not.toHaveBeenCalled()
+    expect(getUiState().busy).toBe(true)
+    expect(getUiState().status).toBe('checking goal…')
+  })
+
   it('maps goal status.update prefixes to short status strings', () => {
     const ctx = buildCtx([])
     const onEvent = createGatewayEventHandler(ctx)
 
+    patchUiState({ busy: true })
     onEvent({
       payload: { kind: 'goal', text: '↻ Continuing toward goal (1/10): reason' },
       type: 'status.update'
     } as any)
     expect(getUiState().status).toBe('↻ goal continuing')
+    expect(getUiState().busy).toBe(true)
 
     onEvent({
       payload: { kind: 'goal', text: '⏸ Goal paused — budget exhausted.' },
       type: 'status.update'
     } as any)
     expect(getUiState().status).toBe('⏸ goal paused')
+    expect(getUiState().busy).toBe(false)
   })
 
   it('surfaces self-improvement review summaries as a persistent system line', () => {

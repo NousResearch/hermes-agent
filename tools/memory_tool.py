@@ -462,6 +462,75 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+def _classify_harness_memory_admission(
+    *,
+    action: str,
+    target: str,
+    content: Optional[str] = None,
+    old_text: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Classify a memory write with the harness policy when available."""
+    try:
+        from agent.harness_control_plane import classify_memory_admission
+
+        return classify_memory_admission(
+            action=action,
+            target=target,
+            content=content,
+            old_text=old_text,
+        )
+    except Exception:
+        logger.debug("harness memory admission classification unavailable", exc_info=True)
+        return None
+
+
+def _reject_harness_memory_write(
+    *,
+    action: str,
+    target: str,
+    content: Optional[str],
+    old_text: Optional[str],
+    admission: Dict[str, Any],
+) -> str:
+    """Return a controlled rejection before writing non-durable memory."""
+    result: Dict[str, Any] = {
+        "success": False,
+        "error": "Memory write rejected by harness admission policy; use session_search or skill_manage instead.",
+        "admission": admission,
+        "admission_recorded": False,
+    }
+    try:
+        from agent.harness_control_plane import record_memory_admission
+
+        record_memory_admission(
+            action=action,
+            target=target,
+            content=content,
+            old_text=old_text,
+            result=result,
+            admission=admission,
+        )
+        result["admission_recorded"] = True
+    except Exception:
+        logger.debug("harness memory admission rejection record failed", exc_info=True)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def should_mirror_memory_write_result(raw_result: Any) -> bool:
+    """Return true only when the built-in memory write landed durably."""
+    if isinstance(raw_result, dict):
+        result = raw_result
+    elif isinstance(raw_result, str):
+        try:
+            parsed = json.loads(raw_result)
+        except Exception:
+            return False
+        result = parsed if isinstance(parsed, dict) else {}
+    else:
+        return False
+    return result.get("success") is True
+
+
 def memory_tool(
     action: str,
     target: str = "memory",
@@ -483,6 +552,20 @@ def memory_tool(
     if action == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
+        admission = _classify_harness_memory_admission(
+            action=action,
+            target=target,
+            content=content,
+            old_text=old_text,
+        )
+        if admission and admission.get("decision") == "reject":
+            return _reject_harness_memory_write(
+                action=action,
+                target=target,
+                content=content,
+                old_text=old_text,
+                admission=admission,
+            )
         result = store.add(target, content)
 
     elif action == "replace":
@@ -490,6 +573,20 @@ def memory_tool(
             return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
             return tool_error("content is required for 'replace' action.", success=False)
+        admission = _classify_harness_memory_admission(
+            action=action,
+            target=target,
+            content=content,
+            old_text=old_text,
+        )
+        if admission and admission.get("decision") == "reject":
+            return _reject_harness_memory_write(
+                action=action,
+                target=target,
+                content=content,
+                old_text=old_text,
+                admission=admission,
+            )
         result = store.replace(target, old_text, content)
 
     elif action == "remove":

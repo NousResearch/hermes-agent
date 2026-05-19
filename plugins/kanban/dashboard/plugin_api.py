@@ -1207,6 +1207,15 @@ def _configured_home_channels() -> list[dict]:
     return result
 
 
+def _active_profile_name() -> str:
+    """Return the current Hermes profile name for notify-sub ownership."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
 def _home_sub_matches(sub: dict, home: dict) -> bool:
     """True if a notify_subs row corresponds to the given home channel."""
     return (
@@ -1278,6 +1287,7 @@ def subscribe_home(task_id: str, platform: str, board: Optional[str] = Query(Non
             platform=platform,
             chat_id=home["chat_id"],
             thread_id=home["thread_id"] or None,
+            notifier_profile=_active_profile_name(),
         )
         return {"ok": True, "task_id": task_id, "home_channel": home}
     finally:

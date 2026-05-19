@@ -287,6 +287,30 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _migrate_timestamps_to_utc(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One-time migration: convert legacy naive timestamps to UTC.
+
+    Prevents double-firing after timezone changes, DST, or config migrations.
+    This is a non-destructive, idempotent migration.
+    """
+    migrated = False
+    for job in jobs:
+        for field in ("last_run_at", "next_run_at"):
+            value = job.get(field)
+            if value and isinstance(value, str):
+                try:
+                    dt = datetime.fromisoformat(value)
+                    if dt.tzinfo is None:
+                        job[field] = dt.replace(tzinfo=timezone.utc).isoformat()
+                        migrated = True
+                except Exception:
+                    pass
+
+    if migrated:
+        logger.info("Cron: migrated legacy naive timestamps to UTC (issue #28934)")
+
+    return jobs
+
 def _recoverable_oneshot_run_at(
     schedule: Dict[str, Any],
     now: datetime,

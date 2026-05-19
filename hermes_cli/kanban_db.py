@@ -3025,7 +3025,11 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
-        return True
+    # ``archived`` parents no longer block children, same as ``done``.
+    # Promote newly-unblocked dependents immediately instead of waiting
+    # for a later dispatcher tick.
+    recompute_ready(conn)
+    return True
 
 
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:

@@ -202,6 +202,25 @@ def test_dashboard_client_side_filtering_includes_tenant_filter():
     assert "[boardData, tenantFilter, assigneeFilter, search]" in js
 
 
+def test_dashboard_initial_board_uses_backend_current_when_unpinned():
+    """Fresh browsers should open the backend current board, not default.
+
+    Explicit dashboard selections are stored in localStorage and should still
+    win, but an empty localStorage state must adopt the API's ``current`` board
+    so multi-board installs do not look empty on first load.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert 'useState(() => readSelectedBoard() || null)' in js
+    assert "const storedBoard = readSelectedBoard();" in js
+    assert "if (!storedBoard && !board && data && data.current)" in js
+    assert "setBoard(data.current);" in js
+    assert 'readSelectedBoard() || "default"' not in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------

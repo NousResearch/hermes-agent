@@ -6,7 +6,7 @@ author: Hermes Agent
 license: MIT
 metadata:
   hermes:
-    tags: [kanban, codex, worktrees, autonomous-agents, prediction-market-bot]
+    tags: [kanban, codex, worktrees, autonomous-agents]
     related_skills: [kanban-worker, codex, hermes-agent]
 ---
 
@@ -119,15 +119,15 @@ Example `/goal` objective text to paste into Codex:
 ```text
 /goal Work in this repository only: <WORKTREE>. Task: <TASK_ID> <TITLE>.
 Hermes owns the Kanban lifecycle; do not call Hermes kanban tools or messaging.
-Create small commits on branch <BRANCH>. Follow the PMB safety constraints in the prompt.
+Create small commits on branch <BRANCH>. Follow the repository safety constraints in the prompt.
 Run the requested verification commands and report exact outputs. Stop after producing a diff and summary.
 ```
 
-Do not use `--yolo` for prediction-market-bot or safety-sensitive repos. Prefer `--full-auto` inside the isolated worktree, then rely on Hermes reconciliation.
+Do not use `--yolo` for safety-sensitive repositories. Prefer `--full-auto` inside the isolated worktree, then rely on Hermes reconciliation.
 
 ## Prompt Construction
 
-Use the linked template at `templates/pmb-codex-lane-prompt.md` for prediction-market-bot work. For other repos, keep the same structure and replace the PMB-specific safety block with repo-specific invariants.
+Use the linked template at `templates/generic-codex-lane-prompt.md` for repository work. Keep the same structure and replace the generic safety block with concrete repo-specific invariants before launching Codex.
 
 Every Codex prompt must include:
 
@@ -138,16 +138,15 @@ Every Codex prompt must include:
 - Prohibited actions: secrets access, external messaging, board mutation, unrelated refactors, dependency upgrades unless required.
 - Verification commands Codex may run and commands Hermes will run afterward.
 
-For PMB, include these mandatory safety constraints verbatim:
+For safety-sensitive repositories, include concrete safety constraints in this shape and replace placeholders with repo-specific invariants:
 
 ```text
-PMB safety constraints:
-- live-SIM is paper-only; do not add or enable live REST order entry.
-- Never use market orders.
-- Do not add execution crossing or bypass price/risk checks.
-- Do not fake passive fills, fills, PnL, order states, or reconciliation evidence.
-- Do not weaken risk gates, limits, kill switches, or fail-closed behavior.
-- Keep research/selection outside the C++ hot path unless explicitly requested.
+Repository safety constraints:
+- Do not add or enable production-side effects unless the task explicitly requires them and the acceptance criteria define the guardrails.
+- Do not bypass validation, authorization, permission checks, or risk controls.
+- Do not fabricate state, metrics, test evidence, audit records, or reconciliation evidence.
+- Do not weaken fail-closed behavior, limits, kill switches, rollback paths, or observability.
+- Keep broad research, selection, or exploratory logic outside latency- or safety-critical paths unless explicitly requested.
 - Do not read, print, write, or require secrets/tokens/credentials.
 ```
 
@@ -199,7 +198,7 @@ Hermes must perform this checklist before accepting any Codex lane result:
 - [ ] `git -C <WORKTREE> status --short --branch` shows only expected files.
 - [ ] `git -C <WORKTREE> diff --stat` and `git diff` were reviewed by Hermes.
 - [ ] No secrets, credentials, generated caches, unrelated data, or local artifacts are included.
-- [ ] PMB safety constraints were preserved: no live REST order entry, no market orders, no execution crossing, no fake passive fills/PnL, no risk-gate weakening, no secrets.
+- [ ] Repository safety constraints were preserved: no unauthorized production side effects, no bypassed controls, no fabricated evidence, no weakened fail-closed behavior, no secrets.
 - [ ] Codex commits are small enough to cherry-pick or squash cleanly.
 - [ ] Hermes ran the canonical tests itself, using `scripts/run_tests.sh` for Hermes Agent or the repo's documented wrapper for other repos.
 - [ ] Any Codex-run tests are listed separately from Hermes-run tests.
@@ -261,7 +260,7 @@ For tasks that intentionally skip Codex:
 1. Treating Codex self-report as verification. Always inspect the diff and rerun tests from Hermes.
 2. Running Codex in the user's dirty main checkout. Always isolate in a worktree/branch.
 3. Letting Codex own Kanban. Codex may summarize progress, but Hermes writes board state.
-4. Forgetting PMB safety invariants in the prompt. Missing safety text is a lane setup failure.
+4. Forgetting repository safety invariants in the prompt. Missing safety text is a lane setup failure.
 5. Using `/goal` for quick edits. Prefer `codex exec` unless durable multi-step continuation is needed.
 6. Killing a stuck lane without recording why. `rejected_reason` must explain the decision.
 7. Accepting broad unrelated cleanup because tests pass. Reject or cherry-pick only the scoped changes.
@@ -270,7 +269,7 @@ For tasks that intentionally skip Codex:
 
 - [ ] Codex was skipped or started only after `command -v codex`, `codex --version`, and optional goals feature checks.
 - [ ] Codex ran only in an isolated worktree/branch.
-- [ ] Prompt included task scope, ownership rules, PMB safety constraints when applicable, and verification commands.
+- [ ] Prompt included task scope, ownership rules, repository safety constraints when applicable, and verification commands.
 - [ ] Hermes reviewed `git diff` and safety-sensitive files.
 - [ ] Hermes ran canonical tests independently.
 - [ ] `kanban_complete.metadata.codex_lane` follows the schema above.

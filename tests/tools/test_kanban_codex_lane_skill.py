@@ -10,7 +10,7 @@ from tools.skill_manager_tool import _validate_frontmatter
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_DIR = REPO_ROOT / "skills" / "autonomous-ai-agents" / "kanban-codex-lane"
 SKILL_MD = SKILL_DIR / "SKILL.md"
-TEMPLATE = SKILL_DIR / "templates" / "pmb-codex-lane-prompt.md"
+TEMPLATE = SKILL_DIR / "templates" / "generic-codex-lane-prompt.md"
 
 
 def _skill_text() -> str:
@@ -43,16 +43,16 @@ def test_kanban_codex_lane_skill_is_discoverable_with_template(monkeypatch, tmp_
     viewed = json.loads(skills_tool.skill_view("kanban-codex-lane"))
     assert viewed["success"] is True
     assert viewed["path"].endswith("kanban-codex-lane/SKILL.md")
-    assert viewed["linked_files"]["templates"] == ["templates/pmb-codex-lane-prompt.md"]
+    assert viewed["linked_files"]["templates"] == ["templates/generic-codex-lane-prompt.md"]
 
     template = json.loads(
         skills_tool.skill_view(
             "kanban-codex-lane",
-            file_path="templates/pmb-codex-lane-prompt.md",
+            file_path="templates/generic-codex-lane-prompt.md",
         )
     )
     assert template["success"] is True
-    assert "PMB safety constraints" in template["content"]
+    assert "Repository safety constraints" in template["content"]
 
 
 def test_kanban_codex_lane_documents_required_contracts():
@@ -86,13 +86,16 @@ def test_kanban_codex_lane_documents_required_contracts():
         assert phrase in content
 
     required_safety_phrases = [
-        "live-SIM is paper-only; do not add or enable live REST order entry",
-        "Never use market orders",
-        "Do not add execution crossing",
-        "Do not fake passive fills",
-        "Do not weaken risk gates",
+        "Repository safety constraints",
+        "Do not add or enable production-side effects",
+        "Do not bypass validation, authorization, permission checks, or risk controls",
+        "Do not fabricate state, metrics, test evidence, audit records, or reconciliation evidence",
+        "Do not weaken fail-closed behavior",
         "Do not read, print, write, or require secrets/tokens/credentials",
     ]
     for phrase in required_safety_phrases:
         assert phrase in content
         assert phrase in template
+
+    assert "generic-codex-lane-prompt.md" in content
+    assert "Repository safety constraints" in template

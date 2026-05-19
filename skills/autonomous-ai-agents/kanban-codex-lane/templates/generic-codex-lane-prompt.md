@@ -1,6 +1,6 @@
-# PMB Codex Lane Prompt Template
+# Generic Codex Lane Prompt Template
 
-Use this template when a Hermes Kanban worker chooses to run Codex as an implementation lane for prediction-market-bot. Fill every bracketed field before launching Codex. Do not include secrets.
+Use this template when a Hermes Kanban worker chooses to run Codex as an implementation lane for a repository task. Fill every bracketed field before launching Codex. Do not include secrets.
 
 ```text
 You are Codex CLI running as an input lane for a Hermes Kanban worker.
@@ -23,13 +23,11 @@ Repository and isolation:
 - allowed files/scope: [ALLOWED_FILES_OR_DIRECTORIES]
 - forbidden files/scope: [FORBIDDEN_FILES_OR_DIRECTORIES]
 
-PMB safety constraints:
-- live-SIM is paper-only; do not add or enable live REST order entry.
-- Never use market orders.
-- Do not add execution crossing or bypass price/risk checks.
-- Do not fake passive fills, fills, PnL, order states, or reconciliation evidence.
-- Do not weaken risk gates, limits, kill switches, or fail-closed behavior.
-- Keep research/selection outside the C++ hot path unless explicitly requested.
+Repository safety constraints:
+- Do not add or enable production-side effects unless explicitly requested and covered by the acceptance criteria.
+- Do not bypass validation, authorization, permission checks, or risk controls.
+- Do not fabricate state, metrics, test evidence, audit records, or reconciliation evidence.
+- Do not weaken fail-closed behavior, limits, kill switches, rollback paths, or observability.
 - Do not read, print, write, or require secrets/tokens/credentials.
 
 Implementation constraints:

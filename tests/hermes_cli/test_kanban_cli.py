@@ -96,9 +96,19 @@ def test_run_slash_show_includes_comments(kanban_home):
     out = kc.run_slash("create 'x'")
     import re
     tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
-    kc.run_slash(f"comment {tid} 'source is paywalled'")
+    kc.run_slash(f"comment {tid} 'remember to include performance section'")
     show = kc.run_slash(f"show {tid}")
-    assert "source is paywalled" in show
+    assert "performance section" in show
+
+
+def test_run_slash_comment_max_len_trims_long_body(kanban_home):
+    out = kc.run_slash("create 'x'")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"comment {tid} '{'x' * 30}' --max-len 20")
+    show = kc.run_slash(f"show {tid}")
+    assert "trimmed to 20 chars by --max-len" in show
+    assert "x" * 30 not in show
 
 
 def test_run_slash_block_unblock_cycle(kanban_home):

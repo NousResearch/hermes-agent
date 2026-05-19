@@ -403,6 +403,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_comment.add_argument("text", nargs="+", help="Comment body")
     p_comment.add_argument("--author", default=None,
                            help="Author name (default: $HERMES_PROFILE or 'user')")
+    p_comment.add_argument("--max-len", type=int, default=None,
+                           help="Trim the stored comment body to this many characters")
 
     p_complete = sub.add_parser("complete", help="Mark one or more tasks done")
     p_complete.add_argument("task_ids", nargs="+",
@@ -1616,6 +1618,13 @@ def _cmd_claim(args: argparse.Namespace) -> int:
 
 def _cmd_comment(args: argparse.Namespace) -> int:
     body = " ".join(args.text).strip()
+    if args.max_len is not None:
+        if args.max_len < 1:
+            print("kanban: --max-len must be positive", file=sys.stderr)
+            return 2
+        if len(body) > args.max_len:
+            suffix = f"\n\n[trimmed to {args.max_len} chars by --max-len]"
+            body = body[: max(0, args.max_len - len(suffix))].rstrip() + suffix
     author = args.author or _profile_author()
     with kb.connect() as conn:
         kb.add_comment(conn, args.task_id, author, body)

@@ -312,7 +312,10 @@ def _detect_claude_code_version() -> str:
 
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
-_MCP_TOOL_PREFIX = "mcp_"
+
+# _MCP_TOOL_PREFIX removed — was used to prefix all tool names on the OAuth
+# path, which triggered Anthropic's overage gate for Pro/Max subscribers.
+# See issue #28849.
 
 
 def _get_claude_code_version() -> str:
@@ -2097,23 +2100,14 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
-        if anthropic_tools:
-            for tool in anthropic_tools:
-                if "name" in tool:
-                    tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
-
-        # 4. Prefix tool names in message history (tool_use and tool_result blocks)
-        for msg in anthropic_messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "tool_use" and "name" in block:
-                            if not block["name"].startswith(_MCP_TOOL_PREFIX):
-                                block["name"] = _MCP_TOOL_PREFIX + block["name"]
-                        elif block.get("type") == "tool_result" and "tool_use_id" in block:
-                            pass  # tool_result uses ID, not name
+        # 3. (removed) Previously prefixed all tool names with mcp_ under the
+        #    assumption that the Anthropic API expected it for OAuth sessions.
+        #    In practice, the mcp_ prefix triggers Anthropic's overage gate
+        #    for Pro/Max subscribers (who have usage-based billing disabled by
+        #    default), causing every tool-bearing request to fail with HTTP 400
+        #    "out of extra usage" — even when 95%+ of the included quota remains.
+        #    The real Claude Code CLI only prefixes tools from user-installed
+        #    MCP servers, not its built-in tools.  See issue #28849.
 
     kwargs: Dict[str, Any] = {
         "model": model,

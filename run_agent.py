@@ -2162,9 +2162,15 @@ class AIAgent:
                     )
         self._session_init_model_config["max_tokens"] = self.max_tokens
 
-        # Read explicit context_length override from model config
+        # Read explicit context_length override from model config.
+        # Accept both "context_length" and the common alias "context_window"
+        # (#8015 — context_window was silently ignored, causing premature
+        # compression and 64K boot failures on 1M+ models).
         if isinstance(_model_cfg, dict):
-            _config_context_length = _model_cfg.get("context_length")
+            _config_context_length = (
+                _model_cfg.get("context_length")
+                or _model_cfg.get("context_window")
+            )
         else:
             _config_context_length = None
         if _config_context_length is not None:
@@ -2330,9 +2336,15 @@ class AIAgent:
 
         # Reject models whose context window is below the minimum required
         # for reliable tool-calling workflows (64K tokens).
+        # Skip this guard when the user has explicitly set model.context_length
+        # (or model.context_window) in config.yaml — the escape hatch documented
+        # in the error message was cosmetic before this fix (#11096): the guard
+        # fired unconditionally even when config_context_length was set, so
+        # small-context models like Qwen 3.5 35B-A3B (32K native) could never
+        # be used even with an explicit override.
         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
         _ctx = getattr(self.context_compressor, "context_length", 0)
-        if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
+        if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and _config_context_length is None:
             raise ValueError(
                 f"Model {self.model} has a context window of {_ctx:,} tokens, "
                 f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "

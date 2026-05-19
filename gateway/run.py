@@ -6924,7 +6924,11 @@ class GatewayRunner:
                     _msg_cfg = _load_gateway_config()
                     _msg_model_cfg = _msg_cfg.get("model", {})
                     if isinstance(_msg_model_cfg, dict):
-                        _msg_raw_ctx = _msg_model_cfg.get("context_length")
+                        # Accept both "context_length" and alias "context_window" (#8015)
+                        _msg_raw_ctx = (
+                            _msg_model_cfg.get("context_length")
+                            or _msg_model_cfg.get("context_window")
+                        )
                         if _msg_raw_ctx is not None:
                             _msg_config_ctx = int(_msg_raw_ctx)
                 except Exception:
@@ -7233,8 +7237,12 @@ class GatewayRunner:
                     elif isinstance(_model_cfg, dict):
                         _hyg_model = _model_cfg.get("default") or _model_cfg.get("model") or _hyg_model
                         # Read explicit context_length override from model config
-                        # (same as run_agent.py lines 995-1005)
-                        _raw_ctx = _model_cfg.get("context_length")
+                        # (same as run_agent.py lines 995-1005). Accept both
+                        # "context_length" and alias "context_window" (#8015).
+                        _raw_ctx = (
+                            _model_cfg.get("context_length")
+                            or _model_cfg.get("context_window")
+                        )
                         if _raw_ctx is not None:
                             try:
                                 _hyg_config_context_length = int(_raw_ctx)

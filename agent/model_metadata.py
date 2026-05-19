@@ -1068,15 +1068,42 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
 
 
 def _model_name_suggests_kimi(model: str) -> bool:
-    """Return True if the model name looks like a Kimi-family model.
+    """Return True if the model name belongs to a family known to have >32K context
+    but is frequently misreported as 32,768 tokens by OpenRouter's community catalog.
 
-    Catches ``kimi-k2.6``, ``kimi-k2.5``, ``kimi-k2-thinking``,
-    ``moonshotai/Kimi-K2.6``, and similar variants.  Used as a guard
-    against stale OpenRouter metadata that underreports these models
-    as 32K context when they actually support 262K+.
+    Originally covered only Kimi/Moonshot models (#24268).  Extended to MiniMax-M2.x
+    (#24140) and other model families where OpenRouter consistently returns the wrong
+    32K cap, blocking Hermes boot with a spurious minimum-context error.
+
+    Catches:
+      - ``kimi-k2.6``, ``kimi-k2.5``, ``kimi-k2-thinking``, ``moonshotai/Kimi-K2.6``
+      - ``MiniMax-M2.7``, ``MiniMax-M2.7-4bit-mxfp4``, ``minimax/MiniMax-Text-01``
     """
     lower = model.lower()
-    return lower.startswith("kimi") or "moonshot" in lower
+    return (
+        lower.startswith("kimi")
+        or "moonshot" in lower
+        # MiniMax M2.x family: 256K+ context, OR reports 32K (#24140)
+        or ("minimax" in lower and ("m2" in lower or "text-01" in lower))
+    )
+
+
+def _or_ctx_is_plausibly_wrong(ctx: int, model: str) -> bool:
+    """Return True when an OpenRouter context value looks like a catalog error.
+
+    OpenRouter's community-maintained catalog occasionally carries the training
+    max-sequence-length (commonly 32,768) instead of the model's actual supported
+    context window.  This guard rejects values that are suspiciously low for a
+    model family known to support much larger contexts, so the resolution order
+    can fall through to hardcoded defaults or a live probe.
+
+    Currently guards:
+      - Any value == 32,768 for Kimi / MiniMax family models
+        (the two most frequently misreported families, issues #24268 and #24140)
+    """
+    if _or_ctx_is_plausibly_wrong(ctx, model):
+        return True
+    return False
 
 
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
@@ -1367,7 +1394,7 @@ def _resolve_nous_context_length(
         ctx = entry.get("context_length")
         if ctx is None:
             return None
-        if ctx <= 32768 and _model_name_suggests_kimi(or_id):
+        if _or_ctx_is_plausibly_wrong(ctx, or_id):
             logger.info(
                 "Rejecting OpenRouter metadata context=%s for %r "
                 "(Kimi-family underreport, Nous path); falling through to hardcoded defaults",
@@ -1483,7 +1510,7 @@ def get_model_context_length(
                 )
                 _invalidate_cached_context_length(model, base_url)
             # Invalidate stale 32k cache entries for Kimi-family models.
-            elif cached <= 32768 and _model_name_suggests_kimi(model):
+            elif _or_ctx_is_plausibly_wrong(cached, model):
                 logger.info(
                     "Dropping stale Kimi cache entry %s@%s -> %s (OpenRouter underreport); "
                     "re-resolving via hardcoded defaults",
@@ -1652,7 +1679,7 @@ def get_model_context_length(
         if model in metadata:
             or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
             # Guard against stale OpenRouter metadata for Kimi-family models.
-            if or_ctx == 32768 and _model_name_suggests_kimi(model):
+            if _or_ctx_is_plausibly_wrong(or_ctx, model):
                 logger.info(
                     "Rejecting OpenRouter metadata context=%s for %r "
                     "(Kimi-family underreport); falling through to hardcoded defaults",

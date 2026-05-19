@@ -557,7 +557,14 @@ class GatewayStreamConsumer:
                     # here instead of letting the base gateway path send the
                     # full response again.
                     if self._accumulated:
-                        if self._fallback_final_send:
+                        if (
+                            self._fallback_final_send
+                            or (
+                                self._message_id
+                                and self._already_sent
+                                and not current_update_visible
+                            )
+                        ):
                             await self._send_fallback_final(self._accumulated)
                         elif (
                             current_update_visible

@@ -18,13 +18,13 @@ Write entries via `#diary-start` / `#diary-end`, store as ISO-week-organised mar
 
 ## Installation
 
-```bash
-# Via Hermes Skills Hub (recommended)
-hermes skills install daily-diary
+| Method | Command | Status |
+|---|---|---|
+| **PR merged → Official source** | `hermes skills install daily-diary` | ⏳ Awaiting [PR #28363](https://github.com/NousResearch/hermes-agent/pull/28363) merge |
+| **From GitHub (current)** | `hermes skills install https://github.com/liubao210/hermes-skill-daily-diary` | ✅ Works now |
+| **Manual clone** | `cd ~/.hermes/skills/productivity && git clone https://github.com/liubao210/hermes-skill-daily-diary.git daily-diary` | ✅ Works now |
 
-# Or manual — copy to ~/.hermes/skills/productivity/
-cp -r daily-diary ~/.hermes/skills/productivity/
-```
+Once [PR #28363](https://github.com/NousResearch/hermes-agent/pull/28363) is merged into the main Hermes Agent repo, users can also run `hermes skills install --source official daily-diary` or simply `hermes skills install daily-diary`.
 
 ## First Run
 

@@ -16,8 +16,9 @@ def _make_test_adapter():
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="***", extra={})
-    adapter.name = "test-telegram"
-    adapter._bot = AsyncMock(spec=["set_my_commands"])
+    # ``name`` is a property derived from platform.value.title()
+    adapter._bot = MagicMock()
+    adapter._bot.set_my_commands = AsyncMock()
     adapter._forum_command_registered = set()
     adapter._forum_lock = asyncio.Lock()
     return adapter
@@ -51,7 +52,7 @@ async def test_ensure_forum_commands_registers_once():
     adapter = _make_test_adapter()
     msg = _forum_message(chat_id=-123, is_forum=True)
 
-    with patch("gateway.platforms.telegram.telegram_menu_commands") as mock_menu:
+    with patch("hermes_cli.commands.telegram_menu_commands") as mock_menu:
         mock_menu.return_value = ([("new", "Start new session"), ("help", "Show help")], 0)
         with patch("telegram.BotCommand") as MockBotCommand:
             instances = []
@@ -65,6 +66,13 @@ async def test_ensure_forum_commands_registers_once():
 
             MockBotCommand.side_effect = _make_cmd
             with patch("telegram.BotCommandScopeChat") as MockScope:
+                # Track the chat_id passed to the BotCommandScopeChat constructor
+                # so the assertions below see an int instead of a bare MagicMock.
+                def _make_scope(chat_id):
+                    s = MagicMock()
+                    s.chat_id = chat_id
+                    return s
+                MockScope.side_effect = _make_scope
                 await adapter._ensure_forum_commands(msg)
 
     assert -123 in adapter._forum_command_registered
@@ -82,7 +90,7 @@ async def test_ensure_forum_commands_handles_set_failure():
     msg = _forum_message(chat_id=-456, is_forum=True)
     adapter._bot.set_my_commands.side_effect = Exception("Telegram API error")
 
-    with patch("gateway.platforms.telegram.telegram_menu_commands") as mock_menu:
+    with patch("hermes_cli.commands.telegram_menu_commands") as mock_menu:
         mock_menu.return_value = ([("new", "Start new session")], 0)
         # Should NOT raise despite the API error
         await adapter._ensure_forum_commands(msg)
@@ -98,7 +106,7 @@ async def test_ensure_forum_commands_race_safety():
     adapter = _make_test_adapter()
     msg = _forum_message(chat_id=-789, is_forum=True)
 
-    with patch("gateway.platforms.telegram.telegram_menu_commands") as mock_menu:
+    with patch("hermes_cli.commands.telegram_menu_commands") as mock_menu:
         mock_menu.return_value = ([("new", "Start new session")], 0)
         with patch("telegram.BotCommand"):
             with patch("telegram.BotCommandScopeChat"):

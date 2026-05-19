@@ -1234,6 +1234,60 @@ class SessionStore:
 
         return new_entry
 
+    def advance_session_after_compression(
+        self,
+        session_key: str,
+        old_session_id: str,
+        new_session_id: str,
+    ) -> Optional[SessionEntry]:
+        """Advance a route to a compression continuation session.
+
+        This is intentionally narrower than ``switch_session()``. Compression
+        has already ended ``old_session_id`` with ``end_reason='compression'``
+        and created ``new_session_id`` as its child continuation. Publishing
+        that continuation through the gateway route must not re-end the parent
+        as a user-visible ``session_switch`` or reopen the compressed child.
+        """
+        if not session_key or not new_session_id:
+            return None
+
+        with self._lock:
+            self._ensure_loaded_locked()
+
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            if old_session_id and entry.session_id != old_session_id:
+                logger.debug(
+                    "Compression route advance for %s expected %s but found %s; advancing to %s anyway",
+                    session_key,
+                    old_session_id,
+                    entry.session_id,
+                    new_session_id,
+                )
+            if entry.session_id == new_session_id:
+                return entry
+
+            now = _now()
+            advanced = SessionEntry(
+                session_key=session_key,
+                session_id=new_session_id,
+                created_at=entry.created_at,
+                updated_at=now,
+                origin=entry.origin,
+                display_name=entry.display_name,
+                platform=entry.platform,
+                chat_type=entry.chat_type,
+                last_prompt_tokens=0,
+                suspended=entry.suspended,
+                resume_pending=entry.resume_pending,
+                resume_reason=entry.resume_reason,
+                last_resume_marked_at=entry.last_resume_marked_at,
+            )
+            self._entries[session_key] = advanced
+            self._save()
+            return advanced
+
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
         """List all sessions, optionally filtered by activity."""
         with self._lock:

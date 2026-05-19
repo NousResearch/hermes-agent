@@ -605,7 +605,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "message_thread_id": None,
                         "direct_messages_topic_id": int(direct_topic_id),
                     }
-                return {}
+                return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
             return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
         direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
         if direct_topic_id is not None:
@@ -702,7 +702,7 @@ class TelegramAdapter(BasePlatformAdapter):
         media_label: str,
         reset_media: Optional[Any] = None,
     ) -> Any:
-        """Retry stale private-topic media replies once without the topic anchor."""
+        """Retry stale private-topic media replies once without only the reply anchor."""
         try:
             return await send_fn(**send_kwargs)
         except Exception as send_err:
@@ -714,7 +714,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 raise
             logger.warning(
                 "[%s] Reply target deleted for Telegram %s, "
-                "retrying without reply/topic anchor: %s",
+                "retrying without reply anchor while preserving topic routing: %s",
                 self.name,
                 media_label,
                 send_err,
@@ -723,8 +723,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 reset_media()
             retry_kwargs = dict(send_kwargs)
             retry_kwargs["reply_to_message_id"] = None
-            retry_kwargs.pop("message_thread_id", None)
-            retry_kwargs.pop("direct_messages_topic_id", None)
             return await send_fn(**retry_kwargs)
 
     def _fallback_ips(self) -> list[str]:
@@ -1808,27 +1806,24 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
-                                # Original message was deleted before we
-                                # could reply. For private-topic fallback
-                                # sends, message_thread_id is only valid with
-                                # the reply anchor, so drop both together.
+                                # Original message was deleted before we could
+                                # reply. Preserve private-topic routing and
+                                # retry without only the stale reply anchor; if
+                                # Telegram rejects the topic itself later, the
+                                # thread-not-found/topic fallback path handles it.
                                 logger.warning(
-                                    "[%s] Reply target deleted, retrying without reply_to: %s",
+                                    "[%s] Reply target deleted, retrying without reply_to while preserving topic routing: %s",
                                     self.name, send_err,
                                 )
                                 reply_to_id = None
-                                if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
-                                    thread_kwargs = {}
-                                    effective_thread_id = None
-                                else:
-                                    thread_kwargs = self._thread_kwargs_for_send(
-                                        chat_id,
-                                        thread_id,
-                                        metadata,
-                                        reply_to_message_id=reply_to_id,
-                                        reply_to_mode=self._reply_to_mode,
-                                    )
-                                    effective_thread_id = thread_kwargs.get("message_thread_id")
+                                thread_kwargs = self._thread_kwargs_for_send(
+                                    chat_id,
+                                    thread_id,
+                                    metadata,
+                                    reply_to_message_id=reply_to_id,
+                                    reply_to_mode=self._reply_to_mode,
+                                )
+                                effective_thread_id = thread_kwargs.get("message_thread_id")
                                 continue
                             # Other BadRequest errors are permanent — don't retry
                             raise
@@ -2145,15 +2140,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
                 except Exception as send_err:
                     if "reply message not found" in str(send_err).lower():
-                        # Drop the reply anchor and try again.  Private DM
-                        # topic fallback needs the anchor and topic id together;
-                        # forum topics can still safely keep message_thread_id.
-                        retry_thread_kwargs = (
-                            {}
-                            if metadata and metadata.get("telegram_dm_topic_reply_fallback")
-                            else self._thread_kwargs_for_send(
-                                chat_id, thread_id, metadata, reply_to_message_id=None
-                            )
+                        # Drop only the stale reply anchor and try again while
+                        # preserving topic routing when possible.
+                        retry_thread_kwargs = self._thread_kwargs_for_send(
+                            chat_id,
+                            thread_id,
+                            metadata,
+                            reply_to_message_id=None,
+                            reply_to_mode=self._reply_to_mode,
                         )
                         try:
                             sent_msg = await self._bot.send_message(

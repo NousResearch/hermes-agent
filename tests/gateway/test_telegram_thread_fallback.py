@@ -715,8 +715,8 @@ async def test_send_dm_topic_fallback_without_anchor_does_not_crash():
 
 
 @pytest.mark.asyncio
-async def test_send_dm_topic_reply_not_found_retry_drops_thread_id():
-    """If Telegram deletes the reply anchor, private-topic retry must drop thread id too."""
+async def test_send_dm_topic_reply_not_found_retry_preserves_thread_id():
+    """If Telegram deletes the reply anchor, private-topic retry must preserve thread routing."""
     adapter = _make_adapter()
     call_log = []
 
@@ -742,7 +742,7 @@ async def test_send_dm_topic_reply_not_found_retry_drops_thread_id():
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
     assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
+    assert call_log[1]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[1]
 
 
@@ -757,7 +757,7 @@ async def test_send_dm_topic_reply_not_found_retry_drops_thread_id():
         ("send_voice", "send_audio", "audio_path", "clip.mp3", b"mp3-data"),
     ],
 )
-async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
+async def test_native_media_dm_topic_reply_not_found_retry_preserves_thread_id(
     tmp_path,
     method_name,
     bot_method_name,
@@ -792,12 +792,12 @@ async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
     assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
+    assert call_log[1]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[1]
 
 
 @pytest.mark.asyncio
-async def test_animation_dm_topic_reply_not_found_retry_drops_thread_id():
+async def test_animation_dm_topic_reply_not_found_retry_preserves_thread_id():
     adapter = _make_adapter()
     call_log = []
 
@@ -823,12 +823,12 @@ async def test_animation_dm_topic_reply_not_found_retry_drops_thread_id():
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
     assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
+    assert call_log[1]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[1]
 
 
 @pytest.mark.asyncio
-async def test_media_group_dm_topic_reply_not_found_retry_drops_thread_id(tmp_path):
+async def test_media_group_dm_topic_reply_not_found_retry_preserves_thread_id(tmp_path):
     adapter = _make_adapter()
     image_path = tmp_path / "photo.png"
     image_path.write_bytes(b"png-data")
@@ -855,12 +855,12 @@ async def test_media_group_dm_topic_reply_not_found_retry_drops_thread_id(tmp_pa
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
     assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
+    assert call_log[1]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[1]
 
 
 @pytest.mark.asyncio
-async def test_send_image_url_dm_topic_reply_not_found_retry_drops_thread_id(monkeypatch):
+async def test_send_image_url_dm_topic_reply_not_found_retry_preserves_thread_id(monkeypatch):
     adapter = _make_adapter()
     call_log = []
 
@@ -889,12 +889,12 @@ async def test_send_image_url_dm_topic_reply_not_found_retry_drops_thread_id(mon
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
     assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
+    assert call_log[1]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[1]
 
 
 @pytest.mark.asyncio
-async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(monkeypatch):
+async def test_send_image_upload_dm_topic_reply_not_found_retry_preserves_thread_id(monkeypatch):
     adapter = _make_adapter()
     call_log = []
 
@@ -951,7 +951,7 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(
     assert call_log[1]["reply_to_message_id"] == 462
     assert call_log[1]["message_thread_id"] == 20197
     assert call_log[2]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[2]
+    assert call_log[2]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[2]
 
 

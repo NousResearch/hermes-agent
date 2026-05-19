@@ -2038,6 +2038,77 @@ class GatewayRunner:
             session_id=session_entry.session_id,
         )
 
+    def _compression_tip_for_session(self, session_id: str) -> str:
+        """Return the latest compression continuation for ``session_id``."""
+        if not session_id or self._session_db is None:
+            return session_id
+        try:
+            tip = self._session_db.get_compression_tip(str(session_id))
+        except Exception:
+            logger.debug("Failed to resolve compression tip for %s", session_id, exc_info=True)
+            return session_id
+        return str(tip or session_id)
+
+    def _refresh_telegram_topic_binding_after_session_switch(
+        self,
+        source: SessionSource,
+        session_entry,
+        *,
+        old_session_id: Optional[str] = None,
+        reason: str,
+    ) -> None:
+        """Keep Telegram DM-topic bindings aligned after a session_id rollover."""
+        if not self._is_telegram_topic_lane(source) or self._session_db is None:
+            return
+        try:
+            if not getattr(source, "thread_id", None) and old_session_id:
+                old_binding = self._session_db.get_telegram_topic_binding_by_session(
+                    session_id=str(old_session_id),
+                )
+                if old_binding and old_binding.get("thread_id"):
+                    source.thread_id = str(old_binding["thread_id"])
+                    logger.debug(
+                        "Restored Telegram source.thread_id=%s from old binding after %s",
+                        source.thread_id,
+                        reason,
+                    )
+            self._record_telegram_topic_binding(source, session_entry)
+        except Exception:
+            logger.debug(
+                "Failed to refresh Telegram DM topic binding after %s",
+                reason,
+                exc_info=True,
+            )
+
+    def _evict_cached_agent_on_session_mismatch(
+        self,
+        session_key: str,
+        canonical_session_id: str,
+    ) -> None:
+        """Evict a cached agent whose loaded session disagrees with the route."""
+        if not session_key or not canonical_session_id:
+            return
+        cache = getattr(self, "_agent_cache", None)
+        lock = getattr(self, "_agent_cache_lock", None)
+        if cache is None or lock is None:
+            return
+        with lock:
+            cached = cache.get(session_key)
+            agent = cached[0] if isinstance(cached, tuple) and cached else cached
+            cached_session_id = getattr(agent, "session_id", None) if agent is not None else None
+            if (
+                isinstance(cached_session_id, str)
+                and cached_session_id
+                and cached_session_id != canonical_session_id
+            ):
+                logger.warning(
+                    "Evicting cached agent for %s after session mismatch: agent=%s canonical=%s",
+                    session_key,
+                    cached_session_id,
+                    canonical_session_id,
+                )
+                cache.pop(session_key, None)
+
     def _recover_telegram_topic_thread_id(
         self,
         source: SessionSource,
@@ -7862,7 +7933,40 @@ class GatewayRunner:
                 binding = None
             if binding:
                 bound_session_id = str(binding.get("session_id") or "")
-                if bound_session_id and bound_session_id != session_entry.session_id:
+                compression_tip = self._compression_tip_for_session(bound_session_id)
+                followed_compression_tip = False
+                if compression_tip and compression_tip != bound_session_id:
+                    followed_compression_tip = True
+                    source.thread_id = str(binding.get("thread_id") or source.thread_id or "")
+                    if compression_tip != session_entry.session_id:
+                        advanced = self.session_store.advance_session_after_compression(
+                            session_key,
+                            session_entry.session_id,
+                            compression_tip,
+                        )
+                        if advanced is not None:
+                            session_entry = advanced
+                    self._refresh_telegram_topic_binding_after_session_switch(
+                        source,
+                        session_entry,
+                        old_session_id=bound_session_id,
+                        reason="compression tip resolution",
+                    )
+                    self._evict_cached_agent_on_session_mismatch(
+                        session_key,
+                        session_entry.session_id,
+                    )
+                    bound_session_id = compression_tip
+                    logger.info(
+                        "Telegram topic binding followed compression tip: %s → %s",
+                        binding.get("session_id"),
+                        compression_tip,
+                    )
+                if (
+                    bound_session_id
+                    and bound_session_id != session_entry.session_id
+                    and not followed_compression_tip
+                ):
                     # Route the override through SessionStore so the session_key
                     # → session_id mapping is persisted to disk and the previous
                     # lane session is ended cleanly. Mutating session_entry in
@@ -7871,6 +7975,10 @@ class GatewayRunner:
                     switched = self.session_store.switch_session(session_key, bound_session_id)
                     if switched is not None:
                         session_entry = switched
+                        self._evict_cached_agent_on_session_mismatch(
+                            session_key,
+                            session_entry.session_id,
+                        )
             else:
                 try:
                     self._record_telegram_topic_binding(source, session_entry)
@@ -8243,10 +8351,36 @@ class GatewayRunner:
                                     # a new session_id.  Write compressed messages into
                                     # the NEW session so the old transcript stays intact
                                     # and searchable via session_search.
+                                    _hyg_old_sid = session_entry.session_id
                                     _hyg_new_sid = _hyg_agent.session_id
-                                    if _hyg_new_sid != session_entry.session_id:
-                                        session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
+                                    if _hyg_new_sid != _hyg_old_sid:
+                                        advanced_entry = self.session_store.advance_session_after_compression(
+                                            session_key,
+                                            _hyg_old_sid,
+                                            _hyg_new_sid,
+                                        )
+                                        if advanced_entry is not None:
+                                            session_entry = advanced_entry
+
+                                        # Carry Telegram DM-topic bindings across
+                                        # hygiene compression splits too. This
+                                        # pre-agent compressor rotates the
+                                        # session_id before the normal
+                                        # _run_agent() split handler can run, so
+                                        # without rebinding here the topic binding
+                                        # table keeps pointing at the old session
+                                        # and the next inbound message can switch
+                                        # the lane back to stale history.
+                                        self._refresh_telegram_topic_binding_after_session_switch(
+                                            source,
+                                            session_entry,
+                                            old_session_id=_hyg_old_sid,
+                                            reason="hygiene compression",
+                                        )
+                                        self._evict_cached_agent_on_session_mismatch(
+                                            session_key,
+                                            session_entry.session_id,
+                                        )
 
                                     self.session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
@@ -16267,16 +16401,31 @@ class GatewayRunner:
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
-                        agent = cached[0]
-                        # Refresh LRU order so the cap enforcement evicts
-                        # truly-oldest entries, not the one we just used.
-                        if hasattr(_cache, "move_to_end"):
-                            try:
-                                _cache.move_to_end(session_key)
-                            except KeyError:
-                                pass
-                        self._init_cached_agent_for_turn(agent, _interrupt_depth)
-                        logger.debug("Reusing cached agent for session %s", session_key)
+                        cached_agent = cached[0]
+                        cached_session_id = getattr(cached_agent, "session_id", None)
+                        if (
+                            isinstance(cached_session_id, str)
+                            and cached_session_id
+                            and cached_session_id != session_id
+                        ):
+                            logger.warning(
+                                "Evicting cached agent for %s before turn: agent=%s canonical=%s",
+                                session_key,
+                                cached_session_id,
+                                session_id,
+                            )
+                            _cache.pop(session_key, None)
+                        else:
+                            agent = cached_agent
+                            # Refresh LRU order so the cap enforcement evicts
+                            # truly-oldest entries, not the one we just used.
+                            if hasattr(_cache, "move_to_end"):
+                                try:
+                                    _cache.move_to_end(session_key)
+                                except KeyError:
+                                    pass
+                            self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                            logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
                 # Config changed or first message — create fresh agent
@@ -16845,45 +16994,33 @@ class GatewayRunner:
             _session_was_split = False
             if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
                 _session_was_split = True
+                new_agent_session_id = str(getattr(agent, 'session_id'))
                 logger.info(
                     "Session split detected: %s → %s (compression)",
-                    session_id, agent.session_id,
+                    session_id, new_agent_session_id,
                 )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent.session_id
-                    self.session_store._save()
+                entry = self.session_store.advance_session_after_compression(
+                    session_key,
+                    session_id,
+                    new_agent_session_id,
+                )
+                if entry is None:
+                    entry = self.session_store._entries.get(session_key)
+                    if entry:
+                        entry.session_id = new_agent_session_id
+                        self.session_store._save()
 
-                # If this is a Telegram DM and source.thread_id was lost during
-                # the session split (synthetic / recovered event), restore it
-                # from the binding so _thread_metadata_for_source produces the
-                # correct message_thread_id instead of routing to the General
-                # thread.  Failure here is non-fatal — we log and continue;
-                # worst case the message lands in General, which is the
-                # pre-fix behaviour.
-                if (
-                    getattr(source, "platform", None) == Platform.TELEGRAM
-                    and getattr(source, "chat_type", None) == "dm"
-                    and getattr(source, "thread_id", None) is None
-                    and self._session_db is not None
-                ):
-                    try:
-                        _binding = self._session_db.get_telegram_topic_binding_by_session(
-                            session_id=agent.session_id,
-                        )
-                        if _binding and _binding.get("thread_id"):
-                            source.thread_id = str(_binding["thread_id"])
-                            logger.debug(
-                                "Restored source.thread_id=%s from binding after session split %s → %s",
-                                source.thread_id,
-                                session_id,
-                                agent.session_id,
-                            )
-                    except Exception:
-                        logger.debug(
-                            "Failed to restore thread_id from binding after session split",
-                            exc_info=True,
-                        )
+                if entry:
+                    self._refresh_telegram_topic_binding_after_session_switch(
+                        source,
+                        entry,
+                        old_session_id=session_id,
+                        reason="run-time compression split",
+                    )
+                    self._evict_cached_agent_on_session_mismatch(
+                        session_key,
+                        entry.session_id,
+                    )
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 

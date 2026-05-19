@@ -1326,3 +1326,177 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
     meta = GatewayRunner._thread_metadata_for_source(runner, source)
     assert meta is not None
     assert meta["thread_id"] == "17585"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for compression split topic-binding carry-forward
+# ---------------------------------------------------------------------------
+
+def test_compression_split_rebinds_topic_binding_from_old_to_new_session(tmp_path):
+    """A compression-created session split must move the topic binding forward.
+
+    Regression for the Telegram topic split-brain bug: the JSON session index can
+    point a topic lane at the new compressed session while
+    telegram_dm_topic_bindings still points at the old session. The next inbound
+    message then switches the topic back to stale history.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    old_sid = "sess-before-compression"
+    new_sid = "sess-after-compression"
+    thread_id = "17585"
+    session_key = "agent:main:telegram:dm:208214988:17585"
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id=old_sid, source="telegram", user_id="208214988")
+    db.create_session(
+        session_id=new_sid,
+        source="telegram",
+        user_id="208214988",
+        parent_session_id=old_sid,
+    )
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id=thread_id,
+        user_id="208214988",
+        session_key=session_key,
+        session_id=old_sid,
+    )
+
+    # This mirrors the gateway compression split carry-forward logic: when the
+    # source still has its thread_id, rebind the same Telegram topic to the new
+    # compressed session id.
+    source = _make_source(thread_id=thread_id)
+    db.bind_telegram_topic(
+        chat_id=source.chat_id,
+        thread_id=source.thread_id,
+        user_id=source.user_id,
+        session_key=session_key,
+        session_id=new_sid,
+    )
+
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id=thread_id)
+    assert binding is not None
+    assert binding["session_id"] == new_sid
+    assert db.get_telegram_topic_binding_by_session(session_id=old_sid) is None
+    assert db.get_telegram_topic_binding_by_session(session_id=new_sid)["thread_id"] == thread_id
+
+
+def test_compression_split_recovers_thread_from_old_binding_before_rebind(tmp_path):
+    """If source.thread_id was stripped/lost, recover it from the old binding first."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    old_sid = "sess-before-compression"
+    new_sid = "sess-after-compression"
+    thread_id = "17585"
+    session_key = "agent:main:telegram:dm:208214988:17585"
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id=old_sid, source="telegram", user_id="208214988")
+    db.create_session(
+        session_id=new_sid,
+        source="telegram",
+        user_id="208214988",
+        parent_session_id=old_sid,
+    )
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id=thread_id,
+        user_id="208214988",
+        session_key=session_key,
+        session_id=old_sid,
+    )
+
+    source = _make_source(thread_id=None)
+    old_binding = db.get_telegram_topic_binding_by_session(session_id=old_sid)
+    recovered_thread_id = str(old_binding["thread_id"])
+    source.thread_id = recovered_thread_id
+    db.bind_telegram_topic(
+        chat_id=source.chat_id,
+        thread_id=recovered_thread_id,
+        user_id=source.user_id,
+        session_key=session_key,
+        session_id=new_sid,
+    )
+
+    assert source.thread_id == thread_id
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id=thread_id)
+    assert binding is not None
+    assert binding["session_id"] == new_sid
+    assert db.get_telegram_topic_binding_by_session(session_id=old_sid) is None
+    assert db.get_telegram_topic_binding_by_session(session_id=new_sid)["thread_id"] == thread_id
+
+def test_session_store_advance_after_compression_does_not_mark_session_switch(tmp_path):
+    """Publishing a compression child must not rewrite DB end_reason as session_switch."""
+    from gateway.session import SessionStore
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig(),)
+    store._db = db
+    source = _make_source(thread_id="17585")
+    entry = store.get_or_create_session(source)
+    old_sid = entry.session_id
+    new_sid = "sess-after-compression"
+    db.end_session(old_sid, "compression")
+    db.create_session(
+        session_id=new_sid,
+        source="telegram",
+        user_id=source.user_id,
+        parent_session_id=old_sid,
+    )
+
+    advanced = store.advance_session_after_compression(entry.session_key, old_sid, new_sid)
+
+    assert advanced is not None
+    assert advanced.session_id == new_sid
+    assert store.get_or_create_session(source).session_id == new_sid
+    old_row = db.get_session(old_sid)
+    assert old_row is not None
+    assert old_row["end_reason"] == "compression"
+
+
+def test_telegram_binding_resolution_follows_compression_tip_without_session_switch(tmp_path):
+    """Stale bindings should be advanced to compression tips before history loads."""
+    from gateway.session import SessionStore
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig(),)
+    store._db = db
+    source = _make_source(thread_id="17585")
+    entry = store.get_or_create_session(source)
+    old_sid = entry.session_id
+    new_sid = "sess-after-compression"
+    db.enable_telegram_topic_mode(chat_id=source.chat_id, user_id=source.user_id)
+    db.bind_telegram_topic(
+        chat_id=source.chat_id,
+        thread_id=source.thread_id,
+        user_id=source.user_id,
+        session_key=entry.session_key,
+        session_id=old_sid,
+    )
+    db.end_session(old_sid, "compression")
+    db.create_session(
+        session_id=new_sid,
+        source="telegram",
+        user_id=source.user_id,
+        parent_session_id=old_sid,
+    )
+
+    runner = _make_runner(session_db=db)
+    runner.session_store = store
+    session_entry = store.get_or_create_session(source)
+    binding = db.get_telegram_topic_binding(chat_id=source.chat_id, thread_id=source.thread_id)
+    tip = runner._compression_tip_for_session(binding["session_id"])
+    advanced = store.advance_session_after_compression(
+        entry.session_key,
+        session_entry.session_id,
+        tip,
+    )
+    runner._refresh_telegram_topic_binding_after_session_switch(
+        source,
+        advanced,
+        old_session_id=binding["session_id"],
+        reason="test",
+    )
+
+    assert tip == new_sid
+    assert store.get_or_create_session(source).session_id == new_sid
+    rebound = db.get_telegram_topic_binding(chat_id=source.chat_id, thread_id=source.thread_id)
+    assert rebound["session_id"] == new_sid
+    assert db.get_session(old_sid)["end_reason"] == "compression"

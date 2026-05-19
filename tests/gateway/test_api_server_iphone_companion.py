@@ -24,6 +24,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app["api_server_adapter"] = adapter
     app.router.add_post("/api/iphone/register", adapter._handle_iphone_register)
     app.router.add_post("/api/iphone/events", adapter._handle_iphone_events)
+    app.router.add_get("/api/iphone/recommendations/latest", adapter._handle_iphone_recommendation_latest)
     app.router.add_post("/api/iphone/location-requests", adapter._handle_iphone_location_request_create)
     app.router.add_get("/api/iphone/location-requests/next", adapter._handle_iphone_location_request_next)
     app.router.add_post(
@@ -65,6 +66,50 @@ def _events_payload(client_id: str = "11111111-2222-3333-4444-555555555555") -> 
                         "senderLabel": "Alice",
                         "matchedText": "到了",
                         "occurredAt": ISO_TIME,
+                    },
+                },
+            }
+        ],
+    }
+
+
+def _personal_context_events_payload(
+    client_id: str = "11111111-2222-3333-4444-555555555555",
+    *,
+    notification_authorization: str = "denied",
+    battery_level: int = 18,
+    charging_state: str = "unplugged",
+    due_today_count: int = 3,
+    due_soon_count: int = 1,
+) -> dict:
+    return {
+        "clientID": client_id,
+        "deviceName": "屙屎屙唔出",
+        "submittedAt": ISO_TIME,
+        "events": [
+            {
+                "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                "createdAt": ISO_TIME,
+                "payload": {
+                    "kind": "personal_context_snapshot",
+                    "personalContextSnapshot": {
+                        "capturedAt": ISO_TIME,
+                        "notificationAuthorization": notification_authorization,
+                        "battery": {
+                            "levelPercent": battery_level,
+                            "chargingState": charging_state,
+                        },
+                        "calendar": {
+                            "access": "fullAccess",
+                            "upcomingEventCount": 2,
+                            "nextEventStartAt": "2026-04-21T08:00:00Z",
+                            "nextEventEndAt": "2026-04-21T09:00:00Z",
+                        },
+                        "reminders": {
+                            "access": "fullAccess",
+                            "dueTodayCount": due_today_count,
+                            "dueSoonCount": due_soon_count,
+                        },
                     },
                 },
             }
@@ -186,6 +231,55 @@ async def test_iphone_events_reject_client_id_mismatch(auth_adapter):
         assert response.status == 403
         body = await response.json()
         assert body["error"] == "Device token does not match clientID"
+
+
+@pytest.mark.asyncio
+async def test_iphone_recommendation_returns_card_for_latest_snapshot(auth_adapter):
+    app = _create_app(auth_adapter)
+    async with TestClient(TestServer(app)) as cli:
+        register = await cli.post(
+            "/api/iphone/register",
+            json=_registration_payload(),
+            headers={"Authorization": "Bearer dragon-api-key"},
+        )
+        receipt = await register.json()
+
+        uploaded = await cli.post(
+            "/api/iphone/events",
+            json=_personal_context_events_payload(),
+            headers={"Authorization": f"Bearer {receipt['deviceToken']}"},
+        )
+        assert uploaded.status == 202
+
+        response = await cli.get(
+            "/api/iphone/recommendations/latest",
+            headers={"Authorization": f"Bearer {receipt['deviceToken']}"},
+        )
+
+        assert response.status == 200
+        body = await response.json()
+        assert body["kind"] == "enable_notifications"
+        assert body["title"] == "Enable notifications for nudges"
+        assert "notification" in body["body"].lower()
+
+
+@pytest.mark.asyncio
+async def test_iphone_recommendation_returns_204_without_snapshot(auth_adapter):
+    app = _create_app(auth_adapter)
+    async with TestClient(TestServer(app)) as cli:
+        register = await cli.post(
+            "/api/iphone/register",
+            json=_registration_payload(),
+            headers={"Authorization": "Bearer dragon-api-key"},
+        )
+        receipt = await register.json()
+
+        response = await cli.get(
+            "/api/iphone/recommendations/latest",
+            headers={"Authorization": f"Bearer {receipt['deviceToken']}"},
+        )
+
+        assert response.status == 204
 
 
 @pytest.mark.asyncio

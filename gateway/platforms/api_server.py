@@ -725,6 +725,35 @@ class IPhoneCompanionStore:
         )
         self._conn.commit()
 
+    def get_latest_personal_context_snapshot_for_client(self, client_id: str) -> Optional[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """SELECT payload_json
+               FROM iphone_event_uploads
+               WHERE client_id = ?
+               ORDER BY submitted_at DESC, received_at DESC, upload_id DESC""",
+            (client_id,),
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except Exception:
+                continue
+            events = payload.get("events") if isinstance(payload, dict) else None
+            if not isinstance(events, list):
+                continue
+            for event in reversed(events):
+                if not isinstance(event, dict):
+                    continue
+                event_payload = event.get("payload")
+                if not isinstance(event_payload, dict):
+                    continue
+                if event_payload.get("kind") != "personal_context_snapshot":
+                    continue
+                snapshot = event_payload.get("personalContextSnapshot")
+                if isinstance(snapshot, dict):
+                    return snapshot
+        return None
+
     def close(self) -> None:
         try:
             self._conn.close()
@@ -1136,6 +1165,75 @@ class APIServerAdapter(BasePlatformAdapter):
                     return record, None
         return None, web.json_response({"error": "Invalid device token"}, status=401)
 
+    @staticmethod
+    def _parse_iso8601_datetime(value: Any) -> Optional[datetime]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    def _build_iphone_recommendation(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        generated_at = IPhoneCompanionStore._iso_now()
+        notification_status = str(snapshot.get("notificationAuthorization") or "").strip()
+        battery = snapshot.get("battery") if isinstance(snapshot.get("battery"), dict) else {}
+        reminders = snapshot.get("reminders") if isinstance(snapshot.get("reminders"), dict) else {}
+        calendar = snapshot.get("calendar") if isinstance(snapshot.get("calendar"), dict) else {}
+
+        if notification_status in {"notDetermined", "denied", "provisional"}:
+            return {
+                "id": "recommendation-enable-notifications",
+                "kind": "enable_notifications",
+                "title": "Enable notifications for nudges",
+                "body": "Companion Node can capture context, but Hermes needs notification permission to deliver timely nudges on the phone.",
+                "generatedAt": generated_at,
+            }
+
+        battery_level = battery.get("levelPercent")
+        charging_state = str(battery.get("chargingState") or "").strip()
+        if isinstance(battery_level, int) and battery_level <= 25 and charging_state not in {"charging", "full"}:
+            return {
+                "id": "recommendation-charge-soon",
+                "kind": "charge_soon",
+                "title": "Charge before you head out",
+                "body": f"Battery is at {battery_level}% and the phone is not charging.",
+                "generatedAt": generated_at,
+            }
+
+        due_soon_count = reminders.get("dueSoonCount")
+        if isinstance(due_soon_count, int) and due_soon_count > 0:
+            return {
+                "id": "recommendation-review-reminders",
+                "kind": "review_reminders",
+                "title": "Review near-term reminders",
+                "body": f"You have {due_soon_count} reminder(s) due soon.",
+                "generatedAt": generated_at,
+            }
+
+        upcoming_event_count = calendar.get("upcomingEventCount")
+        next_event_start = self._parse_iso8601_datetime(calendar.get("nextEventStartAt"))
+        if isinstance(upcoming_event_count, int) and upcoming_event_count > 0 and next_event_start is not None:
+            now = datetime.now(timezone.utc)
+            time_until_event = next_event_start - now
+            if time_until_event.total_seconds() <= 2 * 60 * 60:
+                return {
+                    "id": "recommendation-prepare-calendar",
+                    "kind": "prepare_for_calendar",
+                    "title": "Prep for your next event",
+                    "body": "Hermes sees an upcoming calendar event within the next two hours.",
+                    "generatedAt": generated_at,
+                }
+
+        return {
+            "id": "recommendation-keep-momentum",
+            "kind": "keep_momentum",
+            "title": "Context synced successfully",
+            "body": "Hermes has your latest battery, calendar, reminder, and notification context.",
+            "generatedAt": generated_at,
+        }
+
     # ------------------------------------------------------------------
     # Session header helpers
     # ------------------------------------------------------------------
@@ -1404,6 +1502,19 @@ class APIServerAdapter(BasePlatformAdapter):
             },
             status=202,
         )
+
+    async def _handle_iphone_recommendation_latest(self, request: "web.Request") -> "web.Response":
+        """GET /api/iphone/recommendations/latest — evaluate the latest personal-context snapshot."""
+        device_record, auth_error = self._check_iphone_device_auth(request)
+        if auth_error is not None:
+            return auth_error
+
+        snapshot = self._iphone_companion_store.get_latest_personal_context_snapshot_for_client(
+            device_record["client_id"]
+        )
+        if snapshot is None:
+            return web.Response(status=204)
+        return web.json_response(self._build_iphone_recommendation(snapshot))
 
     async def _handle_iphone_location_request_create(self, request: "web.Request") -> "web.Response":
         """POST /api/iphone/location-requests — enqueue a location approval request."""
@@ -4723,6 +4834,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # iPhone companion bridge API
             self._app.router.add_post("/api/iphone/register", self._handle_iphone_register)
             self._app.router.add_post("/api/iphone/events", self._handle_iphone_events)
+            self._app.router.add_get("/api/iphone/recommendations/latest", self._handle_iphone_recommendation_latest)
             self._app.router.add_post("/api/iphone/location-requests", self._handle_iphone_location_request_create)
             self._app.router.add_get("/api/iphone/location-requests/next", self._handle_iphone_location_request_next)
             self._app.router.add_post(

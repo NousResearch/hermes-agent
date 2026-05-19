@@ -4590,22 +4590,16 @@ class GatewayRunner:
                             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
                             continue
                         try:
-                            # `connect()` runs the schema + idempotent migration
-                            # on first open per process, so an explicit
-                            # `init_db()` here would be redundant. Worse:
-                            # `init_db()` deliberately busts the per-process
-                            # cache and re-runs the migration on a *second*
-                            # connection, which races the first and used to
-                            # log a benign but noisy `duplicate column name`
-                            # traceback (and intermittent "database is locked"
-                            # — issue #21378) on every gateway start against
-                            # a legacy DB. `_add_column_if_missing` now
-                            # tolerates that race, but we still skip the
-                            # redundant call to avoid the wasted work.
                             subs = _kb.list_notify_subs(conn)
                             if not subs:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
-                            for sub in subs:
+
+                            # Split into regular (per-task) and board-level subs.
+                            regular_subs = [s for s in subs if s.get("task_id") != _kb.BOARD_SUB_TASK_ID]
+                            board_subs = [s for s in subs if s.get("task_id") == _kb.BOARD_SUB_TASK_ID]
+
+                            # --- Process regular (per-task) subs first ---
+                            for sub in regular_subs:
                                 owner_profile = sub.get("notifier_profile") or None
                                 if owner_profile and owner_profile != notifier_profile:
                                     logger.debug(
@@ -4643,11 +4637,63 @@ class GatewayRunner:
                                     "task": task,
                                     "board": slug,
                                 })
+
+                            # --- Process board-level subs ---
+                            for sub in board_subs:
+                                owner_profile = sub.get("notifier_profile") or None
+                                if owner_profile and owner_profile != notifier_profile:
+                                    continue
+                                platform = (sub.get("platform") or "").lower()
+                                if platform not in active_platforms:
+                                    continue
+                                # Parse the per-sub kinds filter (comma-separated
+                                # string stored in the DB). Falls back to
+                                # TERMINAL_KINDS when NULL/empty.
+                                sub_kinds_raw = sub.get("kinds") or None
+                                if sub_kinds_raw:
+                                    sub_kinds: tuple[str, ...] = tuple(
+                                        k.strip() for k in sub_kinds_raw.split(",") if k.strip()
+                                    )
+                                else:
+                                    sub_kinds = TERMINAL_KINDS
+                                old_cursor, cursor, events = _kb.claim_unseen_board_events(
+                                    conn,
+                                    platform=sub["platform"],
+                                    chat_id=sub["chat_id"],
+                                    thread_id=sub.get("thread_id") or "",
+                                    kinds=sub_kinds,
+                                )
+                                if not events:
+                                    continue
+                                # Board subs produce one delivery dict per event
+                                # so each gets its own task context for message
+                                # formatting. We mark them as board subs for the
+                                # delivery loop.
+                                for ev in events:
+                                    ev_task = _kb.get_task(conn, ev.task_id)
+                                    deliveries.append({
+                                        "sub": sub,
+                                        "old_cursor": old_cursor,
+                                        "cursor": cursor,
+                                        "events": [ev],
+                                        "task": ev_task,
+                                        "board": slug,
+                                        "_board_sub": True,
+                                    })
+                                logger.debug(
+                                    "kanban notifier: claimed %d board event(s) on board %s cursor %s→%s",
+                                    len(events), slug, old_cursor, cursor,
+                                )
                         finally:
                             conn.close()
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)
+
+                # Track event keys delivered via per-task subs so board subs
+                # don't duplicate them to the same destination.
+                delivered_event_keys: set[tuple] = set()
+
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]
@@ -4677,8 +4723,18 @@ class GatewayRunner:
                         )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
+                    is_board_sub = d.get("_board_sub", False)
                     for ev in d["events"]:
                         kind = ev.kind
+                        # Dedup: if this is a board-level sub, skip events
+                        # already delivered by a per-task sub to the same
+                        # destination.
+                        event_dest_key = (
+                            ev.id, sub["platform"],
+                            sub["chat_id"], sub.get("thread_id") or "",
+                        )
+                        if is_board_sub and event_dest_key in delivered_event_keys:
+                            continue
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
@@ -4772,6 +4828,8 @@ class GatewayRunner:
                                     )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
+                            # Track delivered events for board-sub dedup.
+                            delivered_event_keys.add(event_dest_key)
                         except Exception as exc:
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails
@@ -4815,8 +4873,10 @@ class GatewayRunner:
                         # dispatcher respawns the task and it cycles into the
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
+                        # Board-level subs never auto-unsubscribe — they
+                        # are permanent until explicitly removed.
                         task_terminal = task and task.status in {"done", "archived"}
-                        if task_terminal:
+                        if task_terminal and not is_board_sub:
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )

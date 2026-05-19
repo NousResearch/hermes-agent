@@ -149,6 +149,7 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # ---------------------------------------------------------------------------
 
 DEFAULT_BOARD = "default"
+BOARD_SUB_TASK_ID = "__board__"
 
 # Slug validator: lowercase alphanumerics, digits, hyphens; 1–64 chars.
 # Strict enough to stop traversal (`..`) and embedded path separators, loose
@@ -1199,6 +1200,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         if "notifier_profile" not in notify_cols:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
+            )
+        if "kinds" not in notify_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "kinds", "kinds TEXT"
             )
 
     # One-shot backfill: any task that is 'running' before runs existed
@@ -5680,18 +5685,26 @@ def add_notify_sub(
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    kinds: Optional[str] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
+    for ``task_id``. Idempotent on (task, platform, chat, thread).
+
+    For board-level subscriptions, caller passes
+    ``task_id=BOARD_SUB_TASK_ID`` (``"__board__"``).
+
+    ``kinds`` is a comma-separated string of event kinds to filter on
+    (e.g. ``"completed,blocked"``). ``None`` means all terminal kinds.
+    """
     now = int(time.time())
     with write_txn(conn):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, kinds, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, kinds, now),
         )
         if notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by
@@ -5709,8 +5722,13 @@ def add_notify_sub(
 
 def list_notify_subs(
     conn: sqlite3.Connection, task_id: Optional[str] = None,
+    *, board_only: bool = False,
 ) -> list[dict]:
-    if task_id is not None:
+    if board_only:
+        rows = conn.execute(
+            "SELECT * FROM kanban_notify_subs WHERE task_id = ?", (BOARD_SUB_TASK_ID,),
+        ).fetchall()
+    elif task_id is not None:
         rows = conn.execute(
             "SELECT * FROM kanban_notify_subs WHERE task_id = ?", (task_id,),
         ).fetchall()
@@ -5834,6 +5852,74 @@ def claim_unseen_events_for_sub(
             (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
         )
         return old_cursor, new_cursor, events
+
+
+def claim_unseen_board_events(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, int, list[Event]]:
+    """Atomically claim unseen events across ALL tasks for a board-level sub.
+
+    Same CAS pattern as :func:`claim_unseen_events_for_sub` but queries the
+    global ``task_events`` table without a ``task_id`` filter, and uses
+    ``task_id=BOARD_SUB_TASK_ID`` (``"__board__"``) for the subscription row.
+
+    ``kinds`` filters events by ``kind IN (...)``. When ``None``, all event
+    kinds are returned. Results are capped at 200 rows per call to prevent
+    backfill runaway on first subscribe.
+
+    Returns ``(old_cursor, new_cursor, events)``.
+    """
+    task_id = BOARD_SUB_TASK_ID
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT last_event_id FROM kanban_notify_subs "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (task_id, platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is None:
+            return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+
+        kind_list = list(kinds) if kinds else None
+        q = (
+            "SELECT * FROM task_events WHERE id > ? "
+            + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
+            + "ORDER BY id ASC LIMIT 200"
+        )
+        params: list[Any] = [old_cursor]
+        if kind_list:
+            params.extend(kind_list)
+        rows = conn.execute(q, params).fetchall()
+
+        out: list[Event] = []
+        max_id = old_cursor
+        for r in rows:
+            try:
+                payload = json.loads(r["payload"]) if r["payload"] else None
+            except Exception:
+                payload = None
+            out.append(Event(
+                id=r["id"], task_id=r["task_id"], kind=r["kind"],
+                payload=payload, created_at=r["created_at"],
+                run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+            ))
+            max_id = max(max_id, int(r["id"]))
+
+        if not out:
+            return old_cursor, old_cursor, []
+
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ?",
+            (int(max_id), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
+        )
+        return old_cursor, max_id, out
 
 
 def advance_notify_cursor(

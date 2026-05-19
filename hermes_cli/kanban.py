@@ -629,7 +629,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Subscribe a gateway source to a task's terminal events "
              "(used by /kanban subscribe in the gateway adapter)",
     )
-    p_nsub.add_argument("task_id")
+    p_nsub.add_argument("task_id", nargs="?", default=None,
+                        help="Task ID to subscribe to (omit when using --board)")
+    p_nsub.add_argument(
+        "--board", action="store_true", default=False,
+        help="Subscribe to ALL tasks on the board (board-level subscription)",
+    )
     p_nsub.add_argument("--platform", required=True)
     p_nsub.add_argument("--chat-id", required=True)
     p_nsub.add_argument("--thread-id", default=None)
@@ -638,19 +643,29 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
     )
+    p_nsub.add_argument(
+        "--kinds", default=None,
+        help="Comma-separated event kinds to filter on (e.g. 'completed,blocked'). "
+             "Default: all terminal kinds.",
+    )
 
     p_nlist = sub.add_parser(
         "notify-list",
         help="List notification subscriptions (optionally for a single task)",
     )
     p_nlist.add_argument("task_id", nargs="?", default=None)
+    p_nlist.add_argument("--board", action="store_true", default=False,
+                         help="List only board-level subscriptions")
     p_nlist.add_argument("--json", action="store_true")
 
     p_nrm = sub.add_parser(
         "notify-unsubscribe",
         help="Remove a gateway subscription from a task",
     )
-    p_nrm.add_argument("task_id")
+    p_nrm.add_argument("task_id", nargs="?", default=None,
+                        help="Task ID to unsubscribe from (omit when using --board)")
+    p_nrm.add_argument("--board", action="store_true", default=False,
+                        help="Unsubscribe from board-level subscription")
     p_nrm.add_argument("--platform", required=True)
     p_nrm.add_argument("--chat-id", required=True)
     p_nrm.add_argument("--thread-id", default=None)
@@ -2264,25 +2279,42 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
+    board_flag = getattr(args, "board", False)
+    task_id = getattr(args, "task_id", None)
+    if not board_flag and not task_id:
+        print("error: either task_id or --board is required", file=sys.stderr)
+        return 2
+    if board_flag and task_id:
+        print("error: --board and task_id are mutually exclusive", file=sys.stderr)
+        return 2
+    kinds_str = getattr(args, "kinds", None) or None
     with kb.connect() as conn:
-        if kb.get_task(conn, args.task_id) is None:
-            print(f"no such task: {args.task_id}", file=sys.stderr)
-            return 1
+        if board_flag:
+            effective_task_id = kb.BOARD_SUB_TASK_ID
+        else:
+            if kb.get_task(conn, task_id) is None:
+                print(f"no such task: {task_id}", file=sys.stderr)
+                return 1
+            effective_task_id = task_id
         kb.add_notify_sub(
-            conn, task_id=args.task_id,
+            conn, task_id=effective_task_id,
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
             notifier_profile=args.notifier_profile or _profile_author(),
+            kinds=kinds_str,
         )
+    target = "[BOARD]" if board_flag else effective_task_id
+    kinds_display = f" (kinds={kinds_str})" if kinds_str else ""
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
-          + f" to {args.task_id}")
+          + f" to {target}{kinds_display}")
     return 0
 
 
 def _cmd_notify_list(args: argparse.Namespace) -> int:
+    board_flag = getattr(args, "board", False)
     with kb.connect() as conn:
-        subs = kb.list_notify_subs(conn, args.task_id)
+        subs = kb.list_notify_subs(conn, args.task_id, board_only=board_flag)
     if getattr(args, "json", False):
         print(json.dumps(subs, indent=2, ensure_ascii=False))
         return 0
@@ -2292,22 +2324,35 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
         owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
-        print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
-              f"  (since event {s['last_event_id']}){owner}")
+        kinds_info = f"  kinds={s['kinds']}" if s.get("kinds") else ""
+        is_board = s.get("task_id") == kb.BOARD_SUB_TASK_ID
+        task_label = "[BOARD]   " if is_board else f"{s['task_id']:10s}"
+        print(f"  {task_label}  {s['platform']}:{s['chat_id']}{thr}"
+              f"  (since event {s['last_event_id']}){owner}{kinds_info}")
     return 0
 
 
 def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
+    board_flag = getattr(args, "board", False)
+    task_id = getattr(args, "task_id", None)
+    if not board_flag and not task_id:
+        print("error: either task_id or --board is required", file=sys.stderr)
+        return 2
+    if board_flag and task_id:
+        print("error: --board and task_id are mutually exclusive", file=sys.stderr)
+        return 2
+    effective_task_id = kb.BOARD_SUB_TASK_ID if board_flag else task_id
     with kb.connect() as conn:
         ok = kb.remove_notify_sub(
-            conn, task_id=args.task_id,
+            conn, task_id=effective_task_id,
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id,
         )
+    target = "[BOARD]" if board_flag else effective_task_id
     if not ok:
-        print("(no such subscription)", file=sys.stderr)
+        print(f"(no such subscription for {target})", file=sys.stderr)
         return 1
-    print(f"Unsubscribed from {args.task_id}")
+    print(f"Unsubscribed from {target}")
     return 0
 
 

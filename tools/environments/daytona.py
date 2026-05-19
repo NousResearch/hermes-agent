@@ -47,6 +47,9 @@ class DaytonaEnvironment(BaseEnvironment):
         disk: int = 10240,
         persistent_filesystem: bool = True,
         task_id: str = "default",
+        auto_stop_interval: int = 0,
+        auto_archive_interval: int | None = None,
+        auto_delete_interval: int | None = None,
     ):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
@@ -117,14 +120,22 @@ class DaytonaEnvironment(BaseEnvironment):
                     self._sandbox = None
 
         if self._sandbox is None:
+            create_params = {
+                "image": image,
+                "name": sandbox_name,
+                "labels": labels,
+                "auto_stop_interval": auto_stop_interval,
+                "resources": resources,
+            }
+            # Only pass auto_archive/auto_delete when explicitly configured so
+            # callers that leave them at None get the Daytona SDK defaults
+            # rather than overriding to a literal 0.
+            if auto_archive_interval is not None:
+                create_params["auto_archive_interval"] = auto_archive_interval
+            if auto_delete_interval is not None:
+                create_params["auto_delete_interval"] = auto_delete_interval
             self._sandbox = self._daytona.create(
-                CreateSandboxFromImageParams(
-                    image=image,
-                    name=sandbox_name,
-                    labels=labels,
-                    auto_stop_interval=0,
-                    resources=resources,
-                )
+                CreateSandboxFromImageParams(**create_params)
             )
             logger.info("Daytona: created sandbox %s for task %s",
                         self._sandbox.id, task_id)

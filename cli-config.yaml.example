@@ -256,6 +256,13 @@ terminal:
 #   lifetime_seconds: 300
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
+#   # Lifecycle reaping (minutes) — let Daytona stop/archive/delete orphaned
+#   # sandboxes when a worker crashes before cleanup() runs.
+#   # 0 disables that timer; leave auto_archive/auto_delete unset to use the
+#   # Daytona SDK / account defaults.
+#   daytona_auto_stop_interval: 15
+#   daytona_auto_archive_interval: 60
+#   daytona_auto_delete_interval: 1440
 
 #
 # --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---

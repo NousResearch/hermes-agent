@@ -712,6 +712,13 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # Daytona sandbox lifecycle intervals (minutes). 0 = disabled for
+        # auto_stop; null/unset = use Daytona SDK default for auto_archive /
+        # auto_delete so account-level reaping policy is preserved unless
+        # explicitly overridden.
+        "daytona_auto_stop_interval": 0,
+        "daytona_auto_archive_interval": None,
+        "daytona_auto_delete_interval": None,
         "vercel_runtime": "node24",
         # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
         "container_cpu": 1,
@@ -5426,6 +5433,9 @@ def set_config_value(key: str, value: str):
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "terminal.daytona_auto_stop_interval": "TERMINAL_DAYTONA_AUTO_STOP_INTERVAL",
+        "terminal.daytona_auto_archive_interval": "TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL",
+        "terminal.daytona_auto_delete_interval": "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL",
         "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",

@@ -1006,6 +1006,21 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
         )
 
 
+def _parse_optional_int_env(name: str) -> int | None:
+    """Parse an int env var that may be unset/empty — returning None lets the
+    backend keep the SDK default rather than override it to 0."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(
+            f"Invalid value for {name}: {raw!r} (expected integer or empty). "
+            f"Check ~/.hermes/.env or environment variables."
+        )
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -1087,6 +1102,12 @@ def _get_env_config() -> Dict[str, Any]:
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
+        # Daytona sandbox lifecycle intervals (minutes). 0 disables that timer.
+        # auto_archive/auto_delete left None means "use the Daytona SDK default"
+        # so we don't override account-level reaping policy unless explicitly set.
+        "daytona_auto_stop_interval": _parse_env_var("TERMINAL_DAYTONA_AUTO_STOP_INTERVAL", "0"),
+        "daytona_auto_archive_interval": _parse_optional_int_env("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL"),
+        "daytona_auto_delete_interval": _parse_optional_int_env("TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
         "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
@@ -1218,6 +1239,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             image=image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
+            auto_stop_interval=cc.get("daytona_auto_stop_interval", 0),
+            auto_archive_interval=cc.get("daytona_auto_archive_interval"),
+            auto_delete_interval=cc.get("daytona_auto_delete_interval"),
         )
 
     elif env_type == "vercel_sandbox":

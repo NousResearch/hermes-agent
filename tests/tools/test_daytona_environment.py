@@ -413,3 +413,62 @@ class TestEnsureSandboxReady:
         env._sandbox.state = "started"
         env._ensure_sandbox_ready()
         env._sandbox.start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Sandbox lifecycle reaping (#28804)
+# ---------------------------------------------------------------------------
+
+
+class _CapturedParams:
+    """Replacement for the daytona SDK's CreateSandboxFromImageParams that
+    records the kwargs it was constructed with so tests can assert on the
+    fields actually forwarded to ``sandbox.create``."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+class TestAutoStopConfig:
+    def test_default_auto_stop_interval_is_zero(self, make_env, daytona_sdk):
+        daytona_sdk.CreateSandboxFromImageParams = _CapturedParams
+        env = make_env(persistent=False)
+        params = env._mock_client.create.call_args.args[0]
+        assert params.kwargs["auto_stop_interval"] == 0
+        # auto_archive/auto_delete must be absent (None means "use SDK default")
+        assert "auto_archive_interval" not in params.kwargs
+        assert "auto_delete_interval" not in params.kwargs
+
+    def test_explicit_auto_stop_interval_forwarded(self, make_env, daytona_sdk):
+        daytona_sdk.CreateSandboxFromImageParams = _CapturedParams
+        env = make_env(persistent=False, auto_stop_interval=15)
+        params = env._mock_client.create.call_args.args[0]
+        assert params.kwargs["auto_stop_interval"] == 15
+
+    def test_explicit_auto_archive_and_delete_forwarded(
+        self, make_env, daytona_sdk
+    ):
+        daytona_sdk.CreateSandboxFromImageParams = _CapturedParams
+        env = make_env(
+            persistent=False,
+            auto_stop_interval=15,
+            auto_archive_interval=60,
+            auto_delete_interval=1440,
+        )
+        params = env._mock_client.create.call_args.args[0]
+        assert params.kwargs["auto_archive_interval"] == 60
+        assert params.kwargs["auto_delete_interval"] == 1440
+
+    def test_archive_and_delete_omitted_when_none(self, make_env, daytona_sdk):
+        """None for archive/delete must not override the Daytona account
+        default — the kwargs must be absent from the create call."""
+        daytona_sdk.CreateSandboxFromImageParams = _CapturedParams
+        env = make_env(
+            persistent=False,
+            auto_stop_interval=15,
+            auto_archive_interval=None,
+            auto_delete_interval=None,
+        )
+        params = env._mock_client.create.call_args.args[0]
+        assert "auto_archive_interval" not in params.kwargs
+        assert "auto_delete_interval" not in params.kwargs

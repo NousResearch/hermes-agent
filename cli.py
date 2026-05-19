@@ -562,6 +562,9 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "daytona_auto_stop_interval": "TERMINAL_DAYTONA_AUTO_STOP_INTERVAL",
+        "daytona_auto_archive_interval": "TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL",
+        "daytona_auto_delete_interval": "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL",
         "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",

@@ -452,6 +452,137 @@ def _matrix_event_timestamp_seconds(event: Any) -> float:
     return ts
 
 
+_MATRIX_REPLY_SENDER_PREFIX_RE = re.compile(r"^<@[^>]+>\s*")
+
+
+class _MatrixReplyHTMLParser(HTMLParser):
+    """Extract text from Element's ``<mx-reply>`` HTML fallback block."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._depth = 0
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag == "mx-reply":
+            self._depth += 1
+            return
+        if self._depth and tag in {"br", "div", "p"}:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self._depth and tag in {"blockquote", "div", "p"}:
+            self._parts.append("\n")
+        if tag == "mx-reply" and self._depth:
+            self._depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._depth and data:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        return "".join(self._parts)
+
+
+def _clean_matrix_reply_quote_text(text: str) -> Optional[str]:
+    """Normalize Matrix reply fallback text to just the quoted message."""
+    lines = str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    lines = [line.strip() for line in lines]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    if not lines:
+        return None
+
+    # Formatted Element replies render the metadata as the first line:
+    # "In reply to Alice".  The quoted body starts after the following <br>.
+    if lines and lines[0].lower().startswith("in reply to"):
+        lines = lines[1:]
+        while lines and not lines[0]:
+            lines.pop(0)
+        if not lines:
+            return None
+
+    # Plain Matrix fallbacks start with "> <@sender:server> quoted text".
+    lines[0] = _MATRIX_REPLY_SENDER_PREFIX_RE.sub("", lines[0]).strip()
+    while lines and not lines[0]:
+        lines.pop(0)
+    quote = "\n".join(lines).strip()
+    return quote or None
+
+
+def _extract_plain_matrix_reply_fallback(body: str) -> tuple[str, Optional[str]]:
+    """Return ``(body_without_reply_fallback, quoted_text)`` for Matrix replies.
+
+    Matrix reply events include a plain-text fallback that starts with quoted
+    ``>`` lines, followed by a blank separator and then the user's real message.
+    The adapter must strip the fallback from the trigger text while preserving
+    the quoted text as ``MessageEvent.reply_to_text`` for gateway context
+    injection.
+    """
+    body = str(body or "")
+    if not body.startswith(">"):
+        return body, None
+
+    lines = body.split("\n")
+    quote_lines: list[str] = []
+    body_start_index: Optional[int] = None
+    for idx, line in enumerate(lines):
+        if line.startswith("> "):
+            quote_lines.append(line[2:])
+            continue
+        if line == ">":
+            quote_lines.append("")
+            continue
+        if line == "":
+            body_start_index = idx + 1
+            break
+        # A user can legitimately start a Matrix reply with a Markdown
+        # blockquote.  Only strip when the standard blank separator exists.
+        return body, None
+
+    if body_start_index is None:
+        return body, None
+
+    stripped_body = "\n".join(lines[body_start_index:])
+    if not stripped_body:
+        return body, None
+    quote_text = _clean_matrix_reply_quote_text("\n".join(quote_lines))
+    return stripped_body, quote_text
+
+
+def _extract_html_matrix_reply_fallback(formatted_body: Any) -> Optional[str]:
+    """Extract quote text from Element's rich ``<mx-reply>`` fallback."""
+    if not isinstance(formatted_body, str) or "<mx-reply" not in formatted_body.lower():
+        return None
+    parser = _MatrixReplyHTMLParser()
+    try:
+        parser.feed(formatted_body)
+        parser.close()
+    except Exception:
+        return None
+    return _clean_matrix_reply_quote_text(parser.text())
+
+
+def _extract_matrix_reply_context(
+    body: str,
+    formatted_body: Any = None,
+) -> tuple[str, Optional[str]]:
+    """Strip Matrix reply fallback from ``body`` and return quoted text.
+
+    Prefer the plain fallback because it is what Element shows as text and it
+    preserves line breaks exactly.  Fall back to the rich ``<mx-reply>`` block
+    when a client sends only the HTML fallback.
+    """
+    stripped_body, quote_text = _extract_plain_matrix_reply_fallback(body)
+    if quote_text:
+        return stripped_body, quote_text
+    return stripped_body, _extract_html_matrix_reply_fallback(formatted_body)
+
+
 def _create_matrix_session(proxy_url: str | None):
     """Create an ``aiohttp.ClientSession`` whose proxy applies to *all* requests.
 
@@ -2624,25 +2755,16 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Reply-to detection.
         reply_to = None
+        reply_to_text = None
         in_reply_to = relates_to.get("m.in_reply_to", {})
         if in_reply_to:
             reply_to = in_reply_to.get("event_id")
 
-        # Strip reply fallback from body.
-        if reply_to and body.startswith("> "):
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
+        if reply_to:
+            formatted_body = source_content.get("formatted_body")
+            raw_body = source_content.get("body", "") or ""
+            _, reply_to_text = _extract_matrix_reply_context(raw_body, formatted_body)
+            body, _ = _extract_matrix_reply_context(body, formatted_body)
 
         # Re-run bang normalization after reply-fallback stripping so a quoted
         # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
@@ -2660,6 +2782,7 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=reply_to,
+            reply_to_text=reply_to_text,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -2848,6 +2971,17 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
 
+        reply_to = None
+        reply_to_text = None
+        in_reply_to = relates_to.get("m.in_reply_to", {})
+        if in_reply_to:
+            reply_to = in_reply_to.get("event_id")
+        if reply_to:
+            formatted_body = source_content.get("formatted_body")
+            raw_body = source_content.get("body", "") or ""
+            _, reply_to_text = _extract_matrix_reply_context(raw_body, formatted_body)
+            body, _ = _extract_matrix_reply_context(body, formatted_body)
+
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
 
@@ -2867,6 +3001,8 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event_id,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_to,
+            reply_to_text=reply_to_text,
         )
 
         await self.handle_message(msg_event)
@@ -3277,6 +3413,14 @@ class MatrixAdapter(BasePlatformAdapter):
                     f"{existing.text}\n{event.text}" if existing.text else event.text
                 )
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            if event.reply_to_message_id:
+                # Preserve quote context from a later message in the batch.
+                # Matrix reply fallbacks have already been stripped from
+                # event.text, so dropping these fields would make the
+                # gateway's generic reply-to injection impossible.
+                existing.reply_to_message_id = event.reply_to_message_id
+            if event.reply_to_text:
+                existing.reply_to_text = event.reply_to_text
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)

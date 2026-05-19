@@ -1,5 +1,6 @@
 """Tests for Matrix require-mention gating and auto-thread features."""
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
@@ -47,6 +48,8 @@ def _make_event(
     formatted_body=None,
     thread_id=None,
     mention_user_ids=None,
+    reply_to_event_id=None,
+    msgtype="m.text",
 ):
     """Create a fake room message event.
 
@@ -54,7 +57,7 @@ def _make_event(
     ``event.event_id``, ``event.timestamp``, and ``event.content``
     (a dict with ``msgtype``, ``body``, etc.).
     """
-    content = {"body": body, "msgtype": "m.text"}
+    content = {"body": body, "msgtype": msgtype}
     if formatted_body:
         content["formatted_body"] = formatted_body
         content["format"] = "org.matrix.custom.html"
@@ -66,6 +69,8 @@ def _make_event(
     if thread_id:
         relates_to["rel_type"] = "m.thread"
         relates_to["event_id"] = thread_id
+    if reply_to_event_id:
+        relates_to["m.in_reply_to"] = {"event_id": reply_to_event_id}
     if relates_to:
         content["m.relates_to"] = relates_to
 
@@ -257,6 +262,151 @@ class TestOutboundMentions:
         content = self._sent_content(self.mock_client)
         assert content["msgtype"] == "m.notice"
         assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
+
+
+# ---------------------------------------------------------------------------
+# Matrix reply quote context
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reply_fallback_sets_reply_to_text_and_strips_trigger_body(monkeypatch):
+    """Element reply fallbacks must populate reply_to_text for context injection."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    _set_dm(adapter)
+    event = _make_event(
+        "> <@alice:example.org> first quoted line\n"
+        "> second quoted line\n"
+        "\n"
+        "what should I do with this?",
+        reply_to_event_id="$quoted1",
+    )
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "what should I do with this?"
+    assert msg.reply_to_message_id == "$quoted1"
+    assert msg.reply_to_text == "first quoted line\nsecond quoted line"
+
+
+@pytest.mark.asyncio
+async def test_html_mx_reply_sets_reply_to_text_when_plain_body_has_no_fallback(monkeypatch):
+    """Formatted Element mx-reply blocks are a fallback source for quote text."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    _set_dm(adapter)
+    formatted = (
+        '<mx-reply><blockquote>'
+        '<a href="https://matrix.to/#/!room:example.org/$quoted2">In reply to</a> '
+        '<a href="https://matrix.to/#/@alice:example.org">Alice</a><br>'
+        'quoted <b>HTML</b> text'
+        '</blockquote></mx-reply>'
+        'follow up'
+    )
+    event = _make_event(
+        "follow up",
+        formatted_body=formatted,
+        reply_to_event_id="$quoted2",
+    )
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "follow up"
+    assert msg.reply_to_message_id == "$quoted2"
+    assert msg.reply_to_text == "quoted HTML text"
+
+
+@pytest.mark.asyncio
+async def test_reply_fallback_without_new_body_keeps_raw_body(monkeypatch):
+    """Fallback-only bodies have no user reply text, so do not inject quote context."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    _set_dm(adapter)
+    body = "> <@alice:example.org> quoted only\n\n"
+    event = _make_event(body, reply_to_event_id="$quoted-empty")
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == body
+    assert msg.reply_to_message_id == "$quoted-empty"
+    assert msg.reply_to_text is None
+
+
+@pytest.mark.asyncio
+async def test_media_reply_fallback_sets_reply_to_text(monkeypatch):
+    """Media replies should also carry quoted Matrix text into reply_to_text."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    _set_dm(adapter)
+    event = _make_event(
+        "> <@alice:example.org> inspect this screenshot\n"
+        "\n"
+        "screenshot.png",
+        reply_to_event_id="$quoted-media",
+        msgtype="m.image",
+    )
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == ""
+    assert msg.reply_to_message_id == "$quoted-media"
+    assert msg.reply_to_text == "inspect this screenshot"
+
+
+@pytest.mark.asyncio
+async def test_batched_text_reply_preserves_reply_to_text(monkeypatch):
+    """Matrix text batching must not drop reply_to_text from a later reply."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    _set_dm(adapter)
+    adapter._text_batch_delay_seconds = 60.0
+
+    first = _make_event("first message", event_id="$first")
+    reply = _make_event(
+        "> <@alice:example.org> quoted message\n\nsecond message",
+        event_id="$second",
+        reply_to_event_id="$quoted-batch",
+    )
+
+    try:
+        await adapter._on_room_message(first)
+        await adapter._on_room_message(reply)
+
+        assert len(adapter._pending_text_batches) == 1
+        pending = next(iter(adapter._pending_text_batches.values()))
+        assert pending.text == "first message\nsecond message"
+        assert pending.reply_to_message_id == "$quoted-batch"
+        assert pending.reply_to_text == "quoted message"
+    finally:
+        tasks = list(adapter._pending_text_batch_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

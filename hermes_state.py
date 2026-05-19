@@ -1050,62 +1050,34 @@ class SessionDB:
             row = cursor.fetchone()
         return row["title"] if row else None
 
-    def get_session_by_title(
-        self,
-        title: str,
-        source: str = None,
-        user_id: str = None,
-    ) -> Optional[Dict[str, Any]]:
+    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
-        where_clauses = ["title = ?"]
-        params = [title]
-        if source is not None:
-            where_clauses.append("source = ?")
-            params.append(source)
-        if user_id is not None:
-            where_clauses.append("user_id = ?")
-            params.append(user_id)
-        where_sql = " AND ".join(where_clauses)
         with self._lock:
             cursor = self._conn.execute(
-                f"SELECT * FROM sessions WHERE {where_sql}", params
+                "SELECT * FROM sessions WHERE title = ?", (title,)
             )
             row = cursor.fetchone()
         return dict(row) if row else None
 
-    def resolve_session_by_title(
-        self,
-        title: str,
-        source: str = None,
-        user_id: str = None,
-    ) -> Optional[str]:
+    def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 
         If the exact title exists, returns that session's ID.
         If not, searches for "title #N" variants and returns the latest one.
         If the exact title exists AND numbered variants exist, returns the
-        latest numbered variant (the most recent continuation). Optional
-        source/user_id filters constrain lookup to the session owner.
+        latest numbered variant (the most recent continuation).
         """
-        exact = self.get_session_by_title(title, source=source, user_id=user_id)
+        # First try exact match
+        exact = self.get_session_by_title(title)
 
         # Also search for numbered variants: "title #2", "title #3", etc.
         # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
         escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        where_clauses = ["title LIKE ? ESCAPE '\\'"]
-        params = [f"{escaped} #%"]
-        if source is not None:
-            where_clauses.append("source = ?")
-            params.append(source)
-        if user_id is not None:
-            where_clauses.append("user_id = ?")
-            params.append(user_id)
-        where_sql = " AND ".join(where_clauses)
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, title, started_at FROM sessions "
-                f"WHERE {where_sql} ORDER BY started_at DESC",
-                params,
+                "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
+                (f"{escaped} #%",),
             )
             numbered = cursor.fetchall()
 
@@ -1196,7 +1168,6 @@ class SessionDB:
         include_children: bool = False,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
-        user_id: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1216,9 +1187,6 @@ class SessionDB:
         compressed continuations from being invisible to users while keeping
         delegate subagents and branches hidden. Pass ``False`` to return the
         raw root rows (useful for admin/debug UIs).
-
-        Pass ``user_id`` to scope results to sessions owned by a specific
-        gateway user.
 
         Pass ``order_by_last_active=True`` to sort by most-recent activity
         instead of original conversation start time. For compression chains,
@@ -1248,9 +1216,6 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
-        if user_id is not None:
-            where_clauses.append("s.user_id = ?")
-            params.append(user_id)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")

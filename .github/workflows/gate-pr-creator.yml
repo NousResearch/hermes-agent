@@ -1,0 +1,26 @@
+name: Gate PR Creator
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+jobs:
+  check-creator:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Check if creator is authorized
+        env:
+          AUTHORIZED_USERS: |
+            badMade
+          PR_CREATOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if echo "$AUTHORIZED_USERS" | grep -q "^$PR_CREATOR$"; then
+            echo "✓ PR from authorized user: $PR_CREATOR"
+          else
+            echo "✗ PR from unauthorized user: $PR_CREATOR — closing"
+            gh pr close $PR_NUMBER --repo $GITHUB_REPOSITORY --comment "PRs are only accepted from @badMade. Please contact the maintainer."
+          fi

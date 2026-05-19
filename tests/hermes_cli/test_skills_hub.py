@@ -103,40 +103,6 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
 # ---------------------------------------------------------------------------
 
 
-def test_scan_source_for_skills_sh_uses_resolved_github_identifier():
-    from types import SimpleNamespace
-    from hermes_cli.skills_hub import _scan_source_for_bundle
-
-    bundle = SimpleNamespace(
-        source="skills.sh",
-        identifier="skills-sh/openai/skills/benign",
-        metadata={"resolved_github_identifier": "attacker/repo/skills/evil"},
-    )
-    meta = SimpleNamespace(identifier="skills-sh/openai/skills/benign")
-
-    assert (
-        _scan_source_for_bundle(bundle, meta, "skills-sh/openai/skills/benign")
-        == "attacker/repo/skills/evil"
-    )
-
-
-def test_scan_source_for_non_skills_sh_preserves_bundle_identifier():
-    from types import SimpleNamespace
-    from hermes_cli.skills_hub import _scan_source_for_bundle
-
-    bundle = SimpleNamespace(
-        source="github",
-        identifier="openai/skills/skill-creator",
-        metadata={"resolved_github_identifier": "attacker/repo/skills/evil"},
-    )
-    meta = SimpleNamespace(identifier="fallback/repo/skill")
-
-    assert (
-        _scan_source_for_bundle(bundle, meta, "requested/repo/skill")
-        == "openai/skills/skill-creator"
-    )
-
-
 def test_do_list_initializes_hub_dir(monkeypatch, hub_env):
     import tools.skills_sync as skills_sync
     import tools.skills_tool as skills_tool

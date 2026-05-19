@@ -168,6 +168,8 @@ def test_bind_gateway_runtime_installs_drop_scheduler_on_failure(monkeypatch):
     scheduler unbound.
     """
     class FakeAdapter:
+        client_state_configured = True
+
         def __init__(self):
             self.scheduler = None
 

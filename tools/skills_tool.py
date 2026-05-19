@@ -107,6 +107,20 @@ _REMOTE_ENV_BACKENDS = frozenset(
 _secret_capture_callback = None
 
 
+def _safe_skill_lookup_path(search_dir: Path, relative_name: str) -> Optional[Path]:
+    """Return a candidate skill path only if it stays within ``search_dir``."""
+    candidate_part = Path(relative_name)
+    if candidate_part.is_absolute() or ".." in candidate_part.parts:
+        return None
+
+    candidate = search_dir / candidate_part
+    try:
+        candidate.resolve().relative_to(search_dir.resolve())
+    except (ValueError, OSError):
+        return None
+    return candidate
+
+
 def load_env() -> Dict[str, str]:
     """Load profile-scoped environment variables from HERMES_HOME/.env."""
     env_path = get_hermes_home() / ".env"
@@ -934,6 +948,19 @@ def skill_view(
             # gateway prompts, so preserve that form and translate it to the
             # on-disk `category/skill` path during the local scan below.
             if bare:
+                bare_path = Path(bare)
+                if bare_path.is_absolute() or ".." in bare_path.parts:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                "Path traversal or absolute paths are not "
+                                "allowed in skill names."
+                            ),
+                            "hint": "Use a skill name within the requested category",
+                        },
+                        ensure_ascii=False,
+                    )
                 local_category_name = f"{namespace}/{bare}"
 
         from agent.skill_utils import get_external_skills_dirs
@@ -959,21 +986,26 @@ def skill_view(
         # Search all dirs: local first, then external (first match wins)
         for search_dir in all_dirs:
             # Try direct path first (e.g., "mlops/axolotl")
-            direct_path = search_dir / name
-            if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
-                skill_dir = direct_path
-                skill_md = direct_path / "SKILL.md"
-                break
-            elif direct_path.with_suffix(".md").exists():
-                skill_md = direct_path.with_suffix(".md")
-                break
+            direct_path = _safe_skill_lookup_path(search_dir, name)
+            if direct_path:
+                if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+                    skill_dir = direct_path
+                    skill_md = direct_path / "SKILL.md"
+                    break
+                elif direct_path.with_suffix(".md").exists():
+                    skill_md = direct_path.with_suffix(".md")
+                    break
             if local_category_name:
-                categorized_path = search_dir / local_category_name
-                if categorized_path.is_dir() and (categorized_path / "SKILL.md").exists():
+                categorized_path = _safe_skill_lookup_path(search_dir, local_category_name)
+                if (
+                    categorized_path
+                    and categorized_path.is_dir()
+                    and (categorized_path / "SKILL.md").exists()
+                ):
                     skill_dir = categorized_path
                     skill_md = categorized_path / "SKILL.md"
                     break
-                elif categorized_path.with_suffix(".md").exists():
+                elif categorized_path and categorized_path.with_suffix(".md").exists():
                     skill_md = categorized_path.with_suffix(".md")
                     break
 

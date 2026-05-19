@@ -33,10 +33,6 @@ const resolveSidecarUrl = () => {
   return raw ? raw : null
 }
 
-// Keep `python -m tui_gateway.entry` rooted at the trusted Hermes tree.
-// The caller's project cwd is carried separately via HERMES_CWD/TERMINAL_CWD.
-export const resolveGatewayCwd = (root: string) => root
-
 const resolvePython = (root: string) => {
   const configured = process.env.HERMES_PYTHON?.trim() || process.env.PYTHON?.trim()
 
@@ -89,7 +85,7 @@ const asWireText = (raw: unknown): string | null => {
 // otherwise-malformed URLs that the WHATWG `URL` parser can't accept.
 // Used by the `redactUrl` fallback so embedded credentials are
 // scrubbed from log lines even when the URL is unparseable.
-const _USERINFO_FALLBACK_RE = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#@]*@/i
+const _USERINFO_FALLBACK_RE = /^([a-z][a-z0-9+.\-]*:\/\/)[^/?#@]*@/i
 
 // Connection URLs (gateway, sidecar) often carry bearer tokens in the query
 // string. We surface them in user-facing log lines and the
@@ -321,7 +317,7 @@ export class GatewayClient extends EventEmitter {
 
   private startSpawnedGateway(root: string) {
     const python = resolvePython(root)
-    const cwd = resolveGatewayCwd(root)
+    const cwd = process.env.HERMES_CWD || root
     const env = { ...process.env }
     const pyPath = env.PYTHONPATH?.trim()
 

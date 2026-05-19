@@ -77,7 +77,6 @@ from gateway.platforms.base import (
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
     utf16_len,
-    _same_message_sender,
 )
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
@@ -3815,13 +3814,18 @@ class TelegramAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """Return a pre-auth text batching key scoped to one Telegram sender."""
         from gateway.session import build_session_key
-        return build_session_key(
+
+        session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
+        sender_id = event.source.user_id_alt or event.source.user_id
+        if sender_id:
+            return f"{session_key}:sender:{sender_id}"
+        return session_key
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
@@ -3904,18 +3908,17 @@ class TelegramAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _photo_batch_key(self, event: MessageEvent, msg: Message) -> str:
-        """Return a sender-scoped batching key for Telegram photos/albums."""
+        """Return a batching key for Telegram photos/albums."""
         from gateway.session import build_session_key
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
-        sender_id = getattr(event.source, "user_id_alt", None) or getattr(event.source, "user_id", None) or "unknown"
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
-            return f"{session_key}:sender:{sender_id}:album:{media_group_id}"
-        return f"{session_key}:sender:{sender_id}:photo-burst"
+            return f"{session_key}:album:{media_group_id}"
+        return f"{session_key}:photo-burst"
 
     async def _flush_photo_batch(self, batch_key: str) -> None:
         """Send a buffered photo burst/album as a single MessageEvent."""
@@ -3937,13 +3940,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             self._pending_photo_batches[batch_key] = event
         else:
-            if not _same_message_sender(existing, event):
-                self._pending_photo_batches[batch_key] = event
-            else:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-                if event.text:
-                    existing.text = self._merge_caption(existing.text, event.text)
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = self._merge_caption(existing.text, event.text)
 
         prior_task = self._pending_photo_batch_tasks.get(batch_key)
         if prior_task and not prior_task.done():

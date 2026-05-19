@@ -296,35 +296,48 @@ def setup_verbose_logging() -> None:
 # ---------------------------------------------------------------------------
 
 class _ManagedRotatingFileHandler(RotatingFileHandler):
-    """RotatingFileHandler that ensures group-writable perms in managed mode.
+    """RotatingFileHandler that safely sets managed log permissions.
 
-    In managed mode (NixOS), the stateDir uses setgid (2770) so new files
-    inherit the hermes group. However, both _open() (initial creation) and
-    doRollover() create files via open(), which uses the process umask —
-    typically 0022, producing 0644. This subclass applies chmod 0660 after
-    both operations so the gateway and interactive users can share log files.
+    In managed mode (NixOS), log files must be group-readable/writable for
+    the shared gateway/CLI state model.  The log directory is also
+    group-writable, so managed opens must not follow symlinks planted by
+    another group member.
     """
+
+    _LOG_MODE = 0o660
 
     def __init__(self, *args, **kwargs):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
         super().__init__(*args, **kwargs)
 
-    def _chmod_if_managed(self):
-        if self._managed:
+    def _secure_managed_open(self):
+        flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        flags |= nofollow
+
+        for attempt in range(2):
             try:
-                os.chmod(self.baseFilename, 0o660)
+                fd = os.open(self.baseFilename, flags, self._LOG_MODE)
+                try:
+                    os.fchmod(fd, self._LOG_MODE)
+                    return open(fd, self.mode, encoding=self.encoding, errors=self.errors)
+                except Exception:
+                    os.close(fd)
+                    raise
             except OSError:
-                pass
+                if attempt == 0 and nofollow and os.path.islink(self.baseFilename):
+                    try:
+                        os.unlink(self.baseFilename)
+                    except OSError:
+                        pass
+                    continue
+                raise
 
     def _open(self):
-        stream = super()._open()
-        self._chmod_if_managed()
-        return stream
-
-    def doRollover(self):
-        super().doRollover()
-        self._chmod_if_managed()
+        if self._managed:
+            return self._secure_managed_open()
+        return super()._open()
 
 
 def _add_rotating_handler(

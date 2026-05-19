@@ -20,9 +20,13 @@ def _mock_subprocess_run(monkeypatch):
         calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
         if isinstance(cmd, list) and len(cmd) >= 2:
             if cmd[1] == "version":
-                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="Docker version", stderr=""
+                )
             if cmd[1] == "run":
-                return subprocess.CompletedProcess(cmd, 0, stdout="fake-container-id\n", stderr="")
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="fake-container-id\n", stderr=""
+                )
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
@@ -56,14 +60,18 @@ def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, cap
     monkeypatch.setattr(
         docker_env.subprocess,
         "run",
-        lambda *args, **kwargs: pytest.fail("subprocess.run should not be called when docker is missing"),
+        lambda *args, **kwargs: pytest.fail(
+            "subprocess.run should not be called when docker is missing"
+        ),
     )
 
     with caplog.at_level(logging.ERROR):
         with pytest.raises(RuntimeError) as excinfo:
             _make_dummy_env()
 
-    assert "Docker executable not found in PATH or known install locations" in str(excinfo.value)
+    assert "Docker executable not found in PATH or known install locations" in str(
+        excinfo.value
+    )
     assert any(
         "no docker executable was found in PATH or known install locations"
         in record.getMessage()
@@ -106,11 +114,14 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
     docker_env._ensure_docker_available()
 
     assert calls == [
-        (["/opt/homebrew/bin/docker", "version"], {
-            "capture_output": True,
-            "text": True,
-            "timeout": 5,
-        })
+        (
+            ["/opt/homebrew/bin/docker", "version"],
+            {
+                "capture_output": True,
+                "text": True,
+                "timeout": 5,
+            },
+        )
     ]
 
 
@@ -129,7 +140,11 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     )
 
     # Find the docker run call and check its args
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_calls = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" in run_args_str
@@ -149,7 +164,11 @@ def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
         auto_mount_cwd=False,
     )
 
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_calls = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" not in run_args_str
@@ -172,7 +191,11 @@ def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path
         volumes=[f"{other_dir}:/workspace"],
     )
 
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_calls = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert f"{other_dir}:/workspace" in run_args_str
@@ -195,11 +218,18 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
         task_id="test-persistent-auto-mount",
     )
 
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_calls = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" in run_args_str
-    assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
+    assert (
+        "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace"
+        not in run_args_str
+    )
 
 
 def test_non_persistent_cleanup_removes_container(monkeypatch):
@@ -209,8 +239,22 @@ def test_non_persistent_cleanup_removes_container(monkeypatch):
 
     popen_cmds = []
     monkeypatch.setattr(
-        docker_env.subprocess, "Popen",
-        lambda cmd, **kw: (popen_cmds.append(cmd), type("P", (), {"poll": lambda s: 0, "wait": lambda s, **k: None, "returncode": 0, "stdout": iter([]), "stdin": None})())[1],
+        docker_env.subprocess,
+        "Popen",
+        lambda cmd, **kw: (
+            popen_cmds.append(cmd),
+            type(
+                "P",
+                (),
+                {
+                    "poll": lambda s: 0,
+                    "wait": lambda s, **k: None,
+                    "returncode": 0,
+                    "stdout": iter([]),
+                    "stdin": None,
+                },
+            )(),
+        )[1],
     )
 
     env = _make_dummy_env(persistent_filesystem=False, task_id="ephemeral-task")
@@ -221,7 +265,9 @@ def test_non_persistent_cleanup_removes_container(monkeypatch):
 
     # Should have stop and rm calls via Popen
     stop_cmds = [c for c in popen_cmds if container_id in str(c) and "stop" in str(c)]
-    assert len(stop_cmds) >= 1, f"cleanup() should schedule docker stop for {container_id}"
+    assert len(stop_cmds) >= 1, (
+        f"cleanup() should schedule docker stop for {container_id}"
+    )
 
 
 class _FakePopen:
@@ -243,7 +289,10 @@ def _make_execute_only_env(forward_env=None):
     env._forward_env = forward_env or []
     env._env = {}
     env._prepare_command = lambda command: (command, None)
-    env._timeout_result = lambda timeout: {"output": f"timed out after {timeout}", "returncode": 124}
+    env._timeout_result = lambda timeout: {
+        "output": f"timed out after {timeout}",
+        "returncode": 124,
+    }
     env._container_id = "test-container"
     env._docker_exe = "/usr/bin/docker"
     # Base class attributes needed by unified execute()
@@ -264,7 +313,11 @@ def test_init_env_args_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
     env = _make_execute_only_env(["DATABASE_URL"])
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
+    monkeypatch.setattr(
+        docker_env,
+        "_load_hermes_env_vars",
+        lambda: {"DATABASE_URL": "value_from_dotenv"},
+    )
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
@@ -277,7 +330,11 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     env = _make_execute_only_env(["DATABASE_URL"])
 
     monkeypatch.setenv("DATABASE_URL", "value_from_shell")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
+    monkeypatch.setattr(
+        docker_env,
+        "_load_hermes_env_vars",
+        lambda: {"DATABASE_URL": "value_from_dotenv"},
+    )
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
@@ -294,9 +351,18 @@ def test_docker_env_appears_in_run_command(monkeypatch):
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
 
-    _make_dummy_env(env={"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock", "GNUPGHOME": "/root/.gnupg"})
+    _make_dummy_env(
+        env={
+            "SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock",
+            "GNUPGHOME": "/root/.gnupg",
+        }
+    )
 
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_calls = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
     assert run_calls, "docker run should have been called"
     run_args = run_calls[0][0]
     run_args_str = " ".join(run_args)
@@ -343,7 +409,6 @@ def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
 
     assert "SSH_AUTH_SOCK=/run/user/1000/agent.sock" in args_str
     assert "TOKEN=secret123" in args_str
-
 
 
 def test_normalize_env_dict_filters_invalid_keys():
@@ -403,14 +468,16 @@ def test_security_args_include_setuid_setgid_for_gosu_drop(monkeypatch):
 
     _make_dummy_env()
 
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_calls = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
     assert run_calls, "docker run should have been called"
     run_args = run_calls[0][0]
 
     added = {
-        run_args[i + 1]
-        for i, flag in enumerate(run_args[:-1])
-        if flag == "--cap-add"
+        run_args[i + 1] for i, flag in enumerate(run_args[:-1]) if flag == "--cap-add"
     }
     assert "SETUID" in added, "SETUID cap missing — gosu drop in entrypoint will fail"
     assert "SETGID" in added, "SETGID cap missing — gosu drop in entrypoint will fail"
@@ -428,7 +495,11 @@ def test_run_as_host_user_passes_uid_gid(monkeypatch):
 
     _make_dummy_env(run_as_host_user=True)
 
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_calls = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
     assert run_calls, "docker run should have been called"
     run_args = run_calls[0][0]
 
@@ -450,13 +521,15 @@ def test_run_as_host_user_drops_setuid_setgid_caps(monkeypatch):
 
     _make_dummy_env(run_as_host_user=True)
 
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_calls = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
     run_args = run_calls[0][0]
 
     added = {
-        run_args[i + 1]
-        for i, flag in enumerate(run_args[:-1])
-        if flag == "--cap-add"
+        run_args[i + 1] for i, flag in enumerate(run_args[:-1]) if flag == "--cap-add"
     }
     assert "SETUID" not in added, (
         "SETUID cap should be dropped when running as host user — no gosu drop is needed"
@@ -477,7 +550,11 @@ def test_run_as_host_user_default_off(monkeypatch):
 
     _make_dummy_env()  # run_as_host_user defaults to False
 
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_calls = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
     run_args = run_calls[0][0]
     assert "--user" not in run_args, (
         f"--user should not be in docker run args when opt-in is off: {run_args}"
@@ -496,19 +573,94 @@ def test_run_as_host_user_warns_and_skips_when_no_posix_ids(monkeypatch, caplog)
     with caplog.at_level(logging.WARNING):
         _make_dummy_env(run_as_host_user=True)
 
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_calls = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
     run_args = run_calls[0][0]
 
     assert "--user" not in run_args
     # Fall back to the full cap set since the container still starts as root.
     added = {
-        run_args[i + 1]
-        for i, flag in enumerate(run_args[:-1])
-        if flag == "--cap-add"
+        run_args[i + 1] for i, flag in enumerate(run_args[:-1]) if flag == "--cap-add"
     }
     assert "SETUID" in added
     assert "SETGID" in added
     assert any(
-        "does not expose POSIX uid/gid" in rec.getMessage()
-        for rec in caplog.records
+        "does not expose POSIX uid/gid" in rec.getMessage() for rec in caplog.records
     ), "expected a warning when POSIX ids are unavailable"
+
+
+def test_docker_environment_cleanup_command_injection(monkeypatch, caplog) -> None:
+    """Test that cleanup doesn't evaluate shell features in the container ID."""
+    calls = _mock_subprocess_run(monkeypatch)
+
+    popen_calls = []
+
+    class MockPopen:
+        def __init__(self, cmd, **kwargs):
+            popen_calls.append((cmd, kwargs))
+
+        def wait(self):
+            pass
+
+        @property
+        def stdout(self):
+            class DummyIO:
+                def fileno(self):
+                    return -1
+
+                def readline(self):
+                    return b""
+
+            return DummyIO()
+
+        @property
+        def stderr(self):
+            class DummyIO:
+                def fileno(self):
+                    return -1
+
+                def readline(self):
+                    return b""
+
+            return DummyIO()
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(docker_env.subprocess, "Popen", MockPopen)
+
+    env = _make_dummy_env(image="python:3.11", persistent=False)
+    popen_calls.clear()
+
+    # We manually set the container ID to a malicious payload that could execute `touch /tmp/pwned`
+    malicious_id = "test-container; touch /tmp/pwned"
+    env._container_id = malicious_id
+
+    # Call cleanup
+    env.cleanup()
+
+    # Assert that subprocess.Popen was called with expected arguments that avoid command injection
+    assert len(popen_calls) == 2
+
+    # First call is the stop/rm command
+    stop_cmd, stop_kwargs = popen_calls[0]
+    assert stop_kwargs.get("start_new_session") is True
+    assert stop_kwargs.get("shell") is not True
+    assert isinstance(stop_cmd, list)
+    assert stop_cmd[0] == "sh"
+    assert stop_cmd[1] == "-c"
+    # Malicious ID should just be an argument
+    assert stop_cmd[-1] == malicious_id
+
+    # Second call is the delayed rm command
+    rm_cmd, rm_kwargs = popen_calls[1]
+    assert rm_kwargs.get("start_new_session") is True
+    assert rm_kwargs.get("shell") is not True
+    assert isinstance(rm_cmd, list)
+    assert rm_cmd[0] == "sh"
+    assert rm_cmd[1] == "-c"
+    # Malicious ID should just be an argument
+    assert rm_cmd[-1] == malicious_id

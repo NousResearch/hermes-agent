@@ -18,7 +18,6 @@ import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
-import { hasInterpolation } from '../protocol/interpolation.js'
 
 import type { MaybePromise, PasteSnippet, UseComposerStateOptions, UseComposerStateResult } from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
@@ -97,10 +96,6 @@ export function looksLikeDroppedPath(text: string): boolean {
   }
 
   return false
-}
-
-export function shouldTokenizePaste(text: string, lineCount: number): boolean {
-  return hasInterpolation(text) || text.length >= LARGE_PASTE.chars || lineCount >= LARGE_PASTE.lines
 }
 
 export function useComposerState({
@@ -196,7 +191,7 @@ export function useComposerState({
 
       const lineCount = cleanedText.split('\n').length
 
-      if (!shouldTokenizePaste(cleanedText, lineCount)) {
+      if (cleanedText.length < LARGE_PASTE.chars && lineCount < LARGE_PASTE.lines) {
         return {
           cursor: cursor + cleanedText.length,
           value: value.slice(0, cursor) + cleanedText + value.slice(cursor)

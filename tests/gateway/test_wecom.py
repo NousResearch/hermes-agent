@@ -403,6 +403,55 @@ class TestMediaUpload:
         assert calls[3][1]["chunk_index"] == 2
 
     @pytest.mark.asyncio
+    async def test_download_remote_bytes_blocks_unsafe_redirect(self, monkeypatch):
+        import gateway.platforms.wecom as wecom_module
+        from gateway.platforms.wecom import WeComAdapter
+
+        class FakeStreamResponse:
+            headers = {}
+
+            async def __aenter__(self):
+                for hook in FakeAsyncClient.kwargs["event_hooks"]["response"]:
+                    await hook(
+                        SimpleNamespace(
+                            is_redirect=True,
+                            next_request=SimpleNamespace(url="http://127.0.0.1/internal"),
+                        )
+                    )
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"internal data must not be read"
+
+        class FakeAsyncClient:
+            kwargs = {}
+
+            def __init__(self, **kwargs):
+                FakeAsyncClient.kwargs = kwargs
+
+            def stream(self, method, url, headers=None):
+                return FakeStreamResponse()
+
+            async def aclose(self):
+                return None
+
+        monkeypatch.setattr(wecom_module, "HTTPX_AVAILABLE", True)
+        monkeypatch.setattr(wecom_module, "httpx", SimpleNamespace(AsyncClient=FakeAsyncClient))
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        with pytest.raises(ValueError, match="Blocked redirect to private/internal address"):
+            await adapter._download_remote_bytes("https://example.com/file.bin", max_bytes=1024)
+
+        assert FakeAsyncClient.kwargs["follow_redirects"] is True
+        assert FakeAsyncClient.kwargs["event_hooks"]["response"]
+
+    @pytest.mark.asyncio
     @patch("tools.url_safety.is_safe_url", return_value=True)
     async def test_download_remote_bytes_rejects_large_content_length(self, _mock_safe):
         from gateway.platforms.wecom import WeComAdapter

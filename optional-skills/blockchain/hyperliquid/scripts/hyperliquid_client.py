@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import errno
 import json
 import os
 import sys
@@ -794,9 +795,129 @@ def _default_export_path(coin: str, interval: str, hours: float) -> Path:
     return Path.cwd() / filename
 
 
-def _write_json_file(path: Path, payload: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def _export_root() -> Path:
+    safe_root = os.environ.get("HERMES_WRITE_SAFE_ROOT")
+    return Path(safe_root).expanduser() if safe_root else Path.cwd()
+
+
+def _validate_export_path(path: Path) -> Path:
+    if ".." in path.parts:
+        raise SystemExit(f"Export output must not contain parent traversal: {path}")
+
+    root = _export_root().resolve()
+    candidate = path.expanduser() if path.is_absolute() else Path.cwd() / path
+    if candidate.is_symlink():
+        raise SystemExit(f"Refusing to write export through symlink: {path}")
+
+    resolved = candidate.resolve(strict=False)
+
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise SystemExit(f"Export output must stay under {root}: {path}") from exc
+
+    return resolved
+
+
+def _write_json_file(path: Path, payload: Dict[str, Any]) -> Path:
+    """Write *payload* as JSON to *path*, enforcing the export-root sandbox.
+
+    Uses an ``openat``-based directory walk (O_NOFOLLOW | O_DIRECTORY on every
+    segment) so that a symlink cannot be swapped into any parent directory
+    between validation and the actual write (TOCTOU).  On platforms without
+    ``dir_fd`` support (Windows) a simpler fallback is used.
+    """
+    output_path = _validate_export_path(path)
+    content = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+    root = _export_root().resolve()
+    rel_parts = output_path.relative_to(root).parts  # at least the filename
+
+    # Check whether the platform supports openat-style dir_fd calls.
+    _supports_dir_fd = (
+        hasattr(os, "O_NOFOLLOW")
+        and os.open in os.supports_dir_fd
+        and os.mkdir in os.supports_dir_fd
+    )
+
+    if not _supports_dir_fd:
+        # Fallback for Windows / platforms without dir_fd.
+        # Still apply O_NOFOLLOW on the final component where available.
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(str(output_path), flags, 0o666)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise SystemExit(
+                    f"Refusing to write export through symlink: {path}"
+                ) from exc
+            raise
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+        return output_path
+
+    # Walk from the resolved export root one component at a time, opening each
+    # directory with O_NOFOLLOW (and O_DIRECTORY where available) via openat.
+    # Using file descriptors throughout means a symlink injected into any parent
+    # after validation cannot affect subsequent opens — the fd always refers to
+    # the original directory inode.
+    dir_flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_DIRECTORY"):
+        dir_flags |= os.O_DIRECTORY
+
+    open_fds: list[int] = []
+    try:
+        root_fd = os.open(str(root), dir_flags)
+        open_fds.append(root_fd)
+        cur_fd = root_fd
+
+        # Create and traverse intermediate directory components.
+        for part in rel_parts[:-1]:
+            try:
+                next_fd = os.open(part, dir_flags, dir_fd=cur_fd)
+            except FileNotFoundError:
+                os.mkdir(part, 0o777, dir_fd=cur_fd)
+                next_fd = os.open(part, dir_flags, dir_fd=cur_fd)
+            except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise SystemExit(
+                        f"Refusing to traverse symlink in export path: {path}"
+                    ) from exc
+                if exc.errno == errno.ENOTDIR:
+                    # On Linux, O_NOFOLLOW | O_DIRECTORY on a symlink may return
+                    # ENOTDIR instead of ELOOP; treat it as a symlink rejection.
+                    raise SystemExit(
+                        f"Refusing to traverse symlink or non-directory in export path: {path}"
+                    ) from exc
+                raise
+            open_fds.append(next_fd)
+            cur_fd = next_fd
+
+        # Open the target file using openat + O_NOFOLLOW on the final component.
+        filename = rel_parts[-1]
+        file_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        try:
+            fd = os.open(filename, file_flags, 0o666, dir_fd=cur_fd)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise SystemExit(
+                    f"Refusing to write export through symlink: {path}"
+                ) from exc
+            raise
+
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+    finally:
+        for fdi in reversed(open_fds):
+            try:
+                os.close(fdi)
+            except OSError:
+                pass
+
+    return output_path
 
 
 def _export_summary(candles: List[Dict[str, Any]], funding_history: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1088,12 +1209,12 @@ def run_export(args: argparse.Namespace) -> Dict[str, Any]:
         "candles": candles,
         "funding_history": funding_history,
     }
-    _write_json_file(output_path, payload)
+    written_path = _write_json_file(output_path, payload)
     return {
         "coin": args.coin,
         "interval": args.interval,
         "hours": args.hours,
-        "output_path": str(output_path),
+        "output_path": str(written_path),
         "summary": payload["summary"],
         "schema_version": payload["schema_version"],
     }

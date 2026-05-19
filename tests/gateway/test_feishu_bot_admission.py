@@ -476,6 +476,8 @@ def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
 
     asyncio.run(adapter._hydrate_bot_identity())
 
+    # BaseRequest exposes uri as a plain string and http_method as an enum;
+    # both are directly accessible via getattr in all lark_oapi versions.
     assert captured["uri"] == "/open-apis/bot/v3/info"
     assert str(captured["http_method"]).endswith("GET")
     assert adapter._bot_open_id == "ou_hydrated"
@@ -514,9 +516,9 @@ def test_resolve_sender_profile_uses_open_id_for_bot_name_lookup():
 
 # --- _allow_group_message matrix -------------------------------------------
 #
-# Bot-bypass semantics: admitted bots skip human allowlists, but explicit
-# deny-lists, channel-level locks (disabled, admin_only), and admin
-# short-circuits still apply.
+# Bot-bypass semantics: admitted bots skip allowlist/blacklist (parallel
+# human-scope filters), but channel-level locks (disabled, admin_only) and
+# admin short-circuits still apply.
 
 
 def _group_case(
@@ -647,7 +649,9 @@ def test_allow_group_message_channel_locks_apply_to_bots(policy, sender_type, ex
 
 
 @pytest.mark.parametrize("sender_type", ["bot", "app"])
-def test_allow_group_message_blacklist_blocks_bot_ids(sender_type):
+def test_allow_group_message_blacklist_is_human_scope_only(sender_type):
+    # blacklist is parallel to allowlist (human-scope); admitted bots bypass
+    # it. To block a specific bot, gate upstream via FEISHU_ALLOW_BOTS.
     adapter = make_adapter_skeleton()
     adapter._group_rules = {
         "oc_1": _group_rule("blacklist", blacklist={"ou_peer"})
@@ -657,21 +661,7 @@ def test_allow_group_message_blacklist_blocks_bot_ids(sender_type):
         sender_id=sender.sender_id,
         chat_id="oc_1",
         is_bot=True,
-    ) is False
-
-
-def test_admit_rejects_blacklisted_group_bot_even_when_mentions_allowed():
-    adapter = make_adapter_skeleton(
-        bot_open_id="ou_self", allow_bots="mentions", group_policy="open",
-    )
-    adapter._group_rules = {
-        "oc_1": _group_rule("blacklist", blacklist={"ou_peer"})
-    }
-    stub_mention(adapter, True)
-
-    sender = make_sender(sender_type="bot", open_id="ou_peer")
-    message = make_message(chat_type="group", chat_id="oc_1")
-    assert adapter._admit(sender, message) == "group_policy_rejected"
+    ) is True
 
 
 # --- Realistic payload smoke -----------------------------------------------

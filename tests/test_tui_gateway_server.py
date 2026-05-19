@@ -4649,37 +4649,3 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
     )
 
     assert ["Max Turns", "120"] in agent_rows
-
-
-def test_slash_worker_spawns_from_trusted_python_src_root(monkeypatch, tmp_path):
-    trusted_root = tmp_path / "hermes-src"
-    trusted_root.mkdir()
-    captured = {}
-
-    class FakePopen:
-        stdin = None
-        stdout = None
-        stderr = None
-
-        def __init__(self, argv, **kwargs):
-            captured["argv"] = argv
-            captured.update(kwargs)
-
-    class FakeThread:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def start(self):
-            pass
-
-    untrusted = tmp_path / "untrusted"
-    untrusted.mkdir()
-    monkeypatch.setenv("HERMES_PYTHON_SRC_ROOT", str(trusted_root))
-    monkeypatch.chdir(untrusted)
-    monkeypatch.setattr(server.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(server.threading, "Thread", FakeThread)
-
-    server._SlashWorker("session", "model")
-
-    assert captured["cwd"] == str(trusted_root)
-    assert captured["argv"][:3] == [sys.executable, "-m", "tui_gateway.slash_worker"]

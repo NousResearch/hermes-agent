@@ -60,18 +60,25 @@ Examples where you should **NOT** use clarify:
 - Ambiguous phrasing ("search for my username" without specifying)
 - No username mentioned at all ("do an OSINT search")
 
-When extracting, take the **exact** username as stated — preserve case, numbers, underscores, etc.
+When extracting, preserve only valid username characters. Before running Sherlock, validate the username:
+
+- Allowed characters: ASCII letters, numbers, underscores (`_`), hyphens (`-`), and periods (`.`)
+- Maximum length: 64 characters
+- Reject any username containing whitespace, quotes, shell metacharacters, command substitution syntax, path separators, or control characters
+- If the username is invalid, do **not** run Sherlock; explain that the username contains unsupported characters and ask for a plain username
 
 ### 3. Build Command
 
 **Default command** (use this unless user specifically requests otherwise):
 ```bash
-sherlock --print-found --no-color "<username>" --timeout 90
+sherlock --print-found --no-color --timeout 90 -- <validated_username>
 ```
 
 **Optional flags** (only add if user explicitly requests):
 - `--nsfw` — Include NSFW sites (only if user asks)
 - `--tor` — Route through Tor (only if user asks for anonymity)
+
+Place optional flags before `--` and keep the validated username after `--`.
 
 **Do NOT ask about options via clarify** — just run the default search. Users can request specific options if needed.
 
@@ -82,7 +89,7 @@ Run via the `terminal` tool. The command typically takes 30-120 seconds dependin
 **Example terminal call:**
 ```json
 {
-  "command": "sherlock --print-found --no-color \"target_username\"",
+  "command": "sherlock --print-found --no-color --timeout 90 -- target_username",
   "timeout": 180
 }
 ```
@@ -109,7 +116,7 @@ Present findings as clickable links when possible.
 ### No Results Found
 If Sherlock finds no accounts, this is often correct — the username may not be registered on checked platforms. Suggest:
 - Checking spelling/variation
-- Trying similar usernames with `?` wildcard: `sherlock "user?name"`
+- Trying similar plain username variations that pass the validation rules above
 - The user may have privacy settings or deleted accounts
 
 ### Timeout Issues
@@ -141,7 +148,7 @@ pip install sherlock-project
 ### Docker
 ```bash
 docker pull sherlock/sherlock
-docker run -it --rm sherlock/sherlock <username>
+docker run -it --rm sherlock/sherlock -- <validated_username>
 ```
 
 ### Linux packages
@@ -169,7 +176,7 @@ After running sherlock, verify:
 **Agent procedure:**
 1. Check `sherlock --version` (verify installed)
 2. Username provided — proceed directly
-3. Run: `sherlock --print-found --no-color "johndoe123" --timeout 90`
+3. Validate username `johndoe123`, then run: `sherlock --print-found --no-color --timeout 90 -- johndoe123`
 4. Parse output and present links
 
 **Response format:**
@@ -189,5 +196,5 @@ After running sherlock, verify:
 **Agent procedure:**
 1. Check sherlock installed
 2. Username + NSFW flag both provided
-3. Run: `sherlock --print-found --no-color --nsfw "alice" --timeout 90`
+3. Validate username `alice`, then run: `sherlock --print-found --no-color --nsfw --timeout 90 -- alice`
 4. Present results

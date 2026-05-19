@@ -111,6 +111,7 @@ class TestBuildRelaunchArgv:
 
     def test_falls_back_to_python_module(self, monkeypatch):
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: None)
+        monkeypatch.setattr(sys, "argv", ["hermes"])  # prevent pytest flags from bleeding in
         argv = relaunch_mod.build_relaunch_argv(["--resume", "abc"])
         assert argv == [sys.executable, "-m", "hermes_cli.main", "--resume", "abc"]
 
@@ -148,6 +149,7 @@ class TestRelaunch:
 
         monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
+        monkeypatch.setattr(sys, "argv", ["hermes"])  # prevent pytest flags from bleeding in
 
         with pytest.raises(SystemExit):
             relaunch_mod.relaunch(["--resume", "abc"])
@@ -161,6 +163,7 @@ class TestRelaunch:
         sys.exit instead."""
         monkeypatch.setattr(relaunch_mod.sys, "platform", "win32")
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: r"C:\Users\test\hermes.exe")
+        monkeypatch.setattr(relaunch_mod.sys, "argv", ["hermes"])  # prevent pytest flags from bleeding in
 
         import subprocess as _subprocess
 

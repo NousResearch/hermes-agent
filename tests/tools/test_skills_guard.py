@@ -645,3 +645,70 @@ e = m.__dict__[''.join(['e','n','v','i','r','o','n'])]
         findings = scan_file(f, "script.sh")
         pids = [f.pattern_id for f in findings]
         assert "ast_dynamic_import" not in pids
+
+    def test_scan_handles_recursion_error_gracefully(self, tmp_path, monkeypatch):
+        """Deeply-nested expressions that blow the visitor recursion limit must
+        not crash the scan — return whatever findings were collected so far."""
+        import sys
+        from tools import skills_guard
+
+        # Deep attribute chain — parses fine, but visiting it under a small
+        # recursion budget trips RecursionError inside _Visitor.visit().
+        src = "a" + ".x" * 5000 + "\n"
+        f = tmp_path / "deep.py"
+        f.write_text(src)
+
+        original_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(200)
+        try:
+            findings = skills_guard.scan_file(f, "deep.py")
+        finally:
+            sys.setrecursionlimit(original_limit)
+
+        # Must not raise; result is a list (possibly empty or partial).
+        assert isinstance(findings, list)
+
+    def test_scan_handles_malformed_ast_gracefully(self, tmp_path, monkeypatch):
+        """Visitor traversal errors (ValueError/RuntimeError) must not crash the scan."""
+        import ast
+        from tools import skills_guard
+
+        original_visit = ast.NodeVisitor.visit
+
+        def boom(self, node):
+            raise ValueError("synthetic visitor failure on hostile input")
+
+        monkeypatch.setattr(ast.NodeVisitor, "visit", boom)
+
+        f = tmp_path / "edge.py"
+        f.write_text("import importlib\n")
+        # Must not raise — visitor blew up, but scan_file returns a list.
+        findings = skills_guard.scan_file(f, "edge.py")
+        assert isinstance(findings, list)
+
+        # Restore so subsequent tests in the same session aren't poisoned
+        # (monkeypatch handles this automatically, but be explicit).
+        monkeypatch.setattr(ast.NodeVisitor, "visit", original_visit)
+
+    def test_ast_findings_deduplicated_against_regex_findings(self, tmp_path):
+        """Per the scan_file docstring, findings are deduplicated per (pattern_id, line).
+
+        When the AST visitor would emit multiple findings with the same
+        (pattern_id, line) — e.g. two getattr(<computed>) calls on the same
+        physical line — only one Finding should be emitted, mirroring the
+        regex scanner's `seen` invariant.
+        """
+        f = tmp_path / "twice.py"
+        # Two computed-name getattr calls on a single line produce two
+        # ast_dynamic_getattr AST findings sharing (pattern_id, line) = ("ast_dynamic_getattr", 1).
+        # After dedup, only one should reach the result.
+        f.write_text("x='a'; y='b'; r = getattr(o, x) + getattr(o, y)\n")
+        findings = scan_file(f, "twice.py")
+        getattr_hits = [
+            fd for fd in findings
+            if fd.pattern_id == "ast_dynamic_getattr" and fd.line == 1
+        ]
+        assert len(getattr_hits) == 1, (
+            f"expected exactly one ast_dynamic_getattr finding on line 1 after dedup, "
+            f"got {len(getattr_hits)}: {getattr_hits}"
+        )

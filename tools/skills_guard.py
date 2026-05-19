@@ -533,12 +533,19 @@ INVISIBLE_CHARS = {
 # ---------------------------------------------------------------------------
 
 def _ast_scan_python(content: str, rel_path: str) -> List[Finding]:
-    """Detect obfuscation via dynamic imports, attribute access, and string construction."""
+    """Detect obfuscation via dynamic imports, attribute access, and string construction.
+
+    Hostile or pathological input (deeply-nested expressions, malformed source) must
+    not crash the scan. Both ``ast.parse`` and the visitor traversal are guarded so
+    parse/visit failures degrade gracefully to "no AST findings" rather than raising.
+    """
     import ast
 
     try:
         tree = ast.parse(content)
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError):
+        # Malformed source, embedded NULs, or extreme nesting — silently skip
+        # per the convention used elsewhere in scan_file (cf. unreadable bytes).
         return []
 
     findings: List[Finding] = []
@@ -629,7 +636,13 @@ def _ast_scan_python(content: str, rel_path: str) -> List[Finding]:
                 ))
             self.generic_visit(node)
 
-    _Visitor().visit(tree)
+    try:
+        _Visitor().visit(tree)
+    except (RecursionError, ValueError, RuntimeError):
+        # Visitor traversal can fail on hostile input even when ast.parse succeeded
+        # (e.g. deeply-nested call/attribute chains exceed the recursion limit).
+        # Return whatever findings we collected before the failure.
+        return findings
     return findings
 
 
@@ -679,9 +692,16 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                     description=description,
                 ))
 
-    # AST-level analysis for Python files
+    # AST-level analysis for Python files — dedupe against the same `seen` set
+    # used by the regex scanner so the per-(pattern_id, line) contract documented
+    # in this function's docstring holds for AST findings too.
     if file_path.suffix.lower() == ".py":
-        findings.extend(_ast_scan_python(content, rel_path))
+        for ast_finding in _ast_scan_python(content, rel_path):
+            key = (ast_finding.pattern_id, ast_finding.line)
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append(ast_finding)
 
     # Invisible unicode character detection
     for i, line in enumerate(lines, start=1):

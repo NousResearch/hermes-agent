@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 

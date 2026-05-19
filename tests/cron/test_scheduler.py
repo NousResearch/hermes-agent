@@ -1773,6 +1773,24 @@ class TestSilentDelivery:
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
 
+    def test_whitespace_only_response_is_marked_failed_not_delivered(self):
+        """Whitespace-only final responses should behave like empty responses."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "   \n\t  ", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_not_called()
+        mark_mock.assert_called_once_with(
+            "monitor-job",
+            False,
+            "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
+            delivery_error=None,
+        )
+
 
 class TestBuildJobPromptSilentHint:
     """Verify _build_job_prompt always injects [SILENT] guidance."""

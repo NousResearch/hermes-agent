@@ -1842,7 +1842,10 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
+                # Treat whitespace-only final responses the same as empty
+                # responses: do not deliver a blank message, and let the
+                # empty-response guard below mark the run as a soft failure.
+                should_deliver = bool(deliver_content.strip())
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
@@ -1858,7 +1861,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # Treat empty final_response as a soft failure so last_status
                 # is not "ok" — the agent ran but produced nothing useful.
                 # (issue #8585)
-                if success and not final_response:
+                if success and not final_response.strip():
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 

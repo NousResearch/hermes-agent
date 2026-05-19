@@ -27,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 **Windows (native, PowerShell)** — *early beta, [details →](/docs/user-guide/windows-native)*
 
 ```powershell
-irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
 ```
 
 **Android (Termux)** — same curl one-liner as Linux; the installer auto-detects Termux.

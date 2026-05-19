@@ -538,33 +538,35 @@ function Install-Git {
             "32-bit-mingit"
         }
 
-        $releaseApi = "https://api.github.com/repos/git-for-windows/git/releases/latest"
-        $release = Invoke-RestMethod -Uri $releaseApi -UseBasicParsing -Headers @{ "User-Agent" = "hermes-installer" }
+        # Pinned git-for-windows release. We deliberately do NOT hit
+        # api.github.com/repos/.../releases/latest here: that endpoint
+        # is rate-limited to 60 requests/hour/IP for unauthenticated
+        # callers, and users behind CGNAT / corporate NAT / dorm WiFi
+        # routinely hit the limit, breaking the installer.
+        # Static github.com/.../releases/download/<tag>/<asset> URLs
+        # are not subject to the API rate limit.
+        $gitTag    = "v2.54.0.windows.1"
+        $gitVer    = "2.54.0"
+        $gitVerTag = "$gitVer.windows.1"
 
         if ($arch -eq "32-bit-mingit") {
             Write-Warn "32-bit Windows detected -- PortableGit is 64-bit only.  Installing MinGit 32-bit as a last resort; bash-dependent Hermes features (terminal tool, agent-browser) will not work on this machine."
-            $assetPattern = "MinGit-*-32-bit.zip"
+            $assetName    = "MinGit-$gitVer-32-bit.zip"
             $downloadIsZip = $true
         } elseif ($arch -eq "arm64") {
-            $assetPattern = "PortableGit-*-arm64.7z.exe"
+            $assetName    = "PortableGit-$gitVer-arm64.7z.exe"
             $downloadIsZip = $false
         } else {
-            $assetPattern = "PortableGit-*-64-bit.7z.exe"
+            $assetName    = "PortableGit-$gitVer-64-bit.7z.exe"
             $downloadIsZip = $false
         }
 
-        $asset = $release.assets | Where-Object { $_.name -like $assetPattern } | Select-Object -First 1
-
-        if (-not $asset) {
-            throw "Could not find $assetPattern in latest git-for-windows release"
-        }
-
-        $downloadUrl = $asset.browser_download_url
+        $downloadUrl = "https://github.com/git-for-windows/git/releases/download/$gitTag/$assetName"
         $downloadExt = if ($downloadIsZip) { "zip" } else { "7z.exe" }
-        $tmpFile = "$env:TEMP\$($asset.name)"
+        $tmpFile = "$env:TEMP\$assetName"
         $gitDir = "$HermesHome\git"
 
-        Write-Info "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB, 1)) MB)..."
+        Write-Info "Downloading $assetName (Git for Windows $gitVerTag)..."
         Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpFile -UseBasicParsing
 
         if (Test-Path $gitDir) {

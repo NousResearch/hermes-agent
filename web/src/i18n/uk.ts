@@ -654,6 +654,7 @@ export const uk: Translations = {
     columnLabels: {
       triage: "Сортування",
       todo: "До виконання",
+      scheduled: "Scheduled",
       ready: "Готово",
       running: "У роботі",
       blocked: "Заблоковано",
@@ -663,6 +664,7 @@ export const uk: Translations = {
     columnHelp: {
       triage: "Сирі ідеї — специфікатор деталізує специфікацію",
       todo: "Очікує на залежності або не призначено",
+      scheduled: "Waiting on a known time delay or scheduled follow-up",
       ready: "Залежності задоволені; призначте профіль для диспетчеризації",
       running: "Захоплено воркером — у роботі",
       blocked: "Воркер запитав втручання людини",

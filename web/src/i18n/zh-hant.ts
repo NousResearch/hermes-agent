@@ -654,6 +654,7 @@ export const zhHant: Translations = {
     columnLabels: {
       triage: "待分類",
       todo: "待辦",
+      scheduled: "Scheduled",
       ready: "就緒",
       running: "進行中",
       blocked: "已封鎖",
@@ -663,6 +664,7 @@ export const zhHant: Translations = {
     columnHelp: {
       triage: "原始想法 — 規格制定者將完善規格",
       todo: "等待相依項目或尚未指派",
+      scheduled: "Waiting on a known time delay or scheduled follow-up",
       ready: "相依項目已滿足；指派設定檔以便排程",
       running: "已被工作者領取 — 執行中",
       blocked: "工作者請求人工輸入",

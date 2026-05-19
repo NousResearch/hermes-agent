@@ -654,6 +654,7 @@ export const ko: Translations = {
     columnLabels: {
       triage: "분류",
       todo: "할 일",
+      scheduled: "Scheduled",
       ready: "준비됨",
       running: "진행 중",
       blocked: "차단됨",
@@ -663,6 +664,7 @@ export const ko: Translations = {
     columnHelp: {
       triage: "원시 아이디어 — 스페시파이어가 사양을 구체화합니다",
       todo: "종속성 대기 중 또는 미지정",
+      scheduled: "Waiting on a known time delay or scheduled follow-up",
       ready: "종속성이 충족됨; 디스패치하려면 프로필을 지정하세요",
       running: "워커가 점유 중 — 실행 중",
       blocked: "워커가 사람의 입력을 요청함",

@@ -654,6 +654,7 @@ export const ga: Translations = {
     columnLabels: {
       triage: "Triáiseáil",
       todo: "Le déanamh",
+      scheduled: "Scheduled",
       ready: "Réidh",
       running: "Ar siúl",
       blocked: "Bactha",
@@ -663,6 +664,7 @@ export const ga: Translations = {
     columnHelp: {
       triage: "Smaointe amha — déanfaidh specifier an spec a chur i bhfeidhm",
       todo: "Ag fanacht ar spleáchais nó gan sannadh",
+      scheduled: "Waiting on a known time delay or scheduled follow-up",
       ready: "Tá na spleáchais sásaithe; sann próifíl le dispatch a dhéanamh",
       running: "Éilithe ag worker — ar siúl",
       blocked: "D'iarr an worker ionchur duine",

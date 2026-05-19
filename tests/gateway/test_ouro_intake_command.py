@@ -733,3 +733,67 @@ def test_bo062_seed_construction_uses_vendored_seed_generator_parser():
         SeedGenerator.build_from_structured_response = original
 
     assert calls["count"] == 1
+
+
+
+def test_bo062_hermes_agent_extraction_override_feeds_vendored_generator():
+    from hermes_integrations.ouroboros_upstream import adapter
+    from hermes_integrations.ouroboros_upstream.core.seed import Seed
+
+    extraction = """GOAL: Hermes extracted goal
+CONSTRAINTS: no worker dispatch | no gateway restart
+ACCEPTANCE_CRITERIA: pytest exits 0 | Seed.from_dict validates
+ONTOLOGY_NAME: HermesExtractedAdmission
+ONTOLOGY_DESCRIPTION: Requirements extracted by Hermes acting as the Ouroboros LLM layer.
+ONTOLOGY_FIELDS: goal:string:Goal | proof:array:Proof artifacts
+EVALUATION_PRINCIPLES: completeness:All criteria are present:1.0 | authority:Execution authority remains separate:1.0
+EXIT_CONDITIONS: tests_pass:Tests pass:pytest exits 0 | authority_preserved:No dispatch:executor_dispatch remains forbidden
+PROJECT_TYPE: brownfield
+CONTEXT_REFERENCES: hermes://context:reference:existing gateway runtime
+EXISTING_PATTERNS: gateway wrapper | Kanban admission
+EXISTING_DEPENDENCIES: Hermes gateway
+"""
+    payload = adapter.build_seed_dict(
+        {
+            "goal": "Fallback goal should not win",
+            "hermes_extraction": extraction,
+        },
+        {"ambiguity_score": 0.12},
+        session_id="oi_hermes",
+    )
+    seed = Seed.from_dict(payload)
+    assert seed.goal == "Hermes extracted goal"
+    assert seed.brownfield_context.project_type == "brownfield"
+    assert seed.ontology_schema.name == "HermesExtractedAdmission"
+    assert "no worker dispatch" in seed.constraints
+
+
+def test_bo062_gateway_records_hermes_extraction_source():
+    import gateway.ouro_intake as ouro_intake
+
+    extraction = """GOAL: Gateway Hermes extraction
+CONSTRAINTS: no worker dispatch
+ACCEPTANCE_CRITERIA: pytest exits 0
+ONTOLOGY_NAME: GatewayHermesAdmission
+ONTOLOGY_DESCRIPTION: Hermes extraction contract test
+ONTOLOGY_FIELDS: goal:string:Goal
+EVALUATION_PRINCIPLES: completeness:Complete:1.0
+EXIT_CONDITIONS: tests_pass:Tests pass:pytest exits 0
+PROJECT_TYPE: brownfield
+CONTEXT_REFERENCES: hermes://context:reference:gateway
+EXISTING_PATTERNS: gateway wrapper
+EXISTING_DEPENDENCIES: Hermes gateway"""
+    seed_contract = ouro_intake._build_seed_contract(
+        {
+            "goal": "Gateway fallback",
+            "project": "bo",
+            "tenant": "kanban",
+            "hermes_extraction": extraction,
+        },
+        public_id="BO-TEST",
+        actor="tester",
+        session_id="oi_test",
+    )
+    assert seed_contract["seed_extraction"]["source"] == "hermes_agent_structured_extraction"
+    assert seed_contract["seed_extraction"]["provider_call"] is False
+    assert seed_contract["upstream_seed"]["goal"] == "Gateway Hermes extraction"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from hermes_integrations.ouroboros_upstream.bigbang.interview import (
@@ -149,11 +150,50 @@ def _structured_seed_extraction(values: dict[str, Any]) -> str:
     ])
 
 
+
+
+def build_hermes_extraction_prompt(state_payload: dict[str, Any] | None, values: dict[str, Any]) -> str:
+    """Build the prompt Hermes uses when acting as Ouroboros's extraction LLM.
+
+    The returned prompt is data-only and side-effect free. It can be shown to a
+    Hermes agent/subagent, whose response should be passed back as
+    `hermes_extraction` / `seed_extraction` and then parsed by the vendored
+    SeedGenerator.
+    """
+
+    state = InterviewState.model_validate(state_payload) if isinstance(state_payload, dict) else None
+    rounds: list[str] = []
+    if state is not None:
+        for round_data in state.rounds:
+            rounds.append(f"Q: {round_data.question}")
+            if round_data.user_response:
+                rounds.append(f"A: {round_data.user_response}")
+    confirmed_values = _structured_seed_extraction(values)
+    return "\n".join([
+        "Use hermes_integrations/ouroboros_upstream/agents/hermes-seed-extractor.md.",
+        "Return ONLY the structured extraction format. No markdown fences.",
+        "",
+        "Confirmed Hermes/Kanban values:",
+        confirmed_values,
+        "",
+        "Interview transcript:",
+        "\n".join(rounds) if rounds else "(no transcript stored)",
+    ])
+
+
+def _hermes_extraction_from_values(values: dict[str, Any]) -> str | None:
+    for key in ("hermes_extraction", "seed_extraction", "structured_extraction"):
+        value = values.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
 def build_seed(values: dict[str, Any], review: dict[str, Any], *, session_id: str | None) -> Seed:
     state = InterviewState(interview_id=session_id or "unknown", initial_context=str(values.get("goal") or ""))
     generator = SeedGenerator()
+    extraction = _hermes_extraction_from_values(values) or _structured_seed_extraction(values)
     return generator.build_from_structured_response(
-        _structured_seed_extraction(values),
+        extraction,
         state=state,
         ambiguity_score=float(review.get("ambiguity_score", 0.15)),
     )
@@ -185,14 +225,14 @@ def review_and_repair_seed_dict(seed_payload: dict[str, Any], *, max_iterations:
             "scores": review.grade_result.scores,
             "may_run": review.may_run,
             "can_repair": review.grade_result.can_repair,
-            "findings": [finding.__dict__ for finding in review.findings],
+            "findings": [asdict(finding) for finding in review.findings],
             "blockers": [blocker.to_dict() for blocker in review.grade_result.blockers],
         },
         "repair_history": [
             {
                 "changed": item.changed,
                 "applied_repairs": list(item.applied_repairs),
-                "unresolved_findings": [finding.__dict__ for finding in item.unresolved_findings],
+                "unresolved_findings": [asdict(finding) for finding in item.unresolved_findings],
                 "blocker": item.blocker,
             }
             for item in history

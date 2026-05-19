@@ -64,6 +64,12 @@ _KEY_ALIASES = {
     "session_id": "session_id",
     "side-effects": "side_effect_boundary_note",
     "side_effects": "side_effect_boundary_note",
+    "hermes-extraction": "hermes_extraction",
+    "hermes_extraction": "hermes_extraction",
+    "seed-extraction": "seed_extraction",
+    "seed_extraction": "seed_extraction",
+    "structured-extraction": "structured_extraction",
+    "structured_extraction": "structured_extraction",
 }
 
 _VALID_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*:")
@@ -865,6 +871,10 @@ def _build_seed_contract(values: dict[str, Any], *, public_id: str | None, actor
     upstream_seed = _upstream_seed_projection(values, review, session_id=session_id)
     upstream_auto = _vendored_ouroboros_review_and_repair_seed_dict(upstream_seed)
     upstream_seed = upstream_auto["seed"]
+    extraction_source = "hermes_agent_structured_extraction" if any(
+        isinstance(values.get(key), str) and values.get(key, "").strip()
+        for key in ("hermes_extraction", "seed_extraction", "structured_extraction")
+    ) else "hermes_gateway_confirmed_values"
     seed = {
         "source": "ouro_intake",
         "session_id": session_id,
@@ -874,6 +884,12 @@ def _build_seed_contract(values: dict[str, Any], *, public_id: str | None, actor
         "goal": goal,
         "context": context,
         "interview_refinements": values.get("refined_answers", []),
+        "seed_extraction": {
+            "source": extraction_source,
+            "parser": "vendored_q00_ouroboros_seed_generator",
+            "agent_prompt": "hermes_integrations/ouroboros_upstream/agents/hermes-seed-extractor.md",
+            "provider_call": False,
+        },
         "upstream_seed": upstream_seed,
         "upstream_auto_review": upstream_auto["review"],
         "upstream_auto_repair_history": upstream_auto["repair_history"],

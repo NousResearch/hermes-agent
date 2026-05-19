@@ -112,6 +112,20 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _stamp_worker_session_metadata(
+    task_id: str, metadata: Optional[dict]
+) -> Optional[dict]:
+    """Add trusted worker session id metadata for this worker's own task."""
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return metadata
+    session_id = os.environ.get("HERMES_SESSION_ID")
+    if not session_id:
+        return metadata
+    stamped = dict(metadata or {})
+    stamped["worker_session_id"] = session_id
+    return stamped
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -432,6 +446,7 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
+    metadata = _stamp_worker_session_metadata(tid, metadata)
     try:
         kb, conn = _connect()
         try:

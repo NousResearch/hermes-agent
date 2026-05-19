@@ -117,6 +117,8 @@ class ChatCompletionsTransport(ProviderTransport):
         Strips Codex Responses API fields (``codex_reasoning_items`` /
         ``codex_message_items`` on the message, ``call_id``/``response_item_id``
         on tool_calls) that strict chat-completions providers reject with 400/422.
+        Also replaces empty text content blocks with a single space because some
+        OpenAI-compatible gateways reject ``{"type": "text", "text": ""}``.
         """
         needs_sanitize = False
         for msg in messages:
@@ -130,6 +132,18 @@ class ChatCompletionsTransport(ProviderTransport):
                 for tc in tool_calls:
                     if isinstance(tc, dict) and (
                         "call_id" in tc or "response_item_id" in tc
+                    ):
+                        needs_sanitize = True
+                        break
+                if needs_sanitize:
+                    break
+            content = msg.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if (
+                        isinstance(part, dict)
+                        and part.get("type") in {"text", "input_text"}
+                        and not str(part.get("text") or "").strip()
                     ):
                         needs_sanitize = True
                         break
@@ -151,6 +165,15 @@ class ChatCompletionsTransport(ProviderTransport):
                     if isinstance(tc, dict):
                         tc.pop("call_id", None)
                         tc.pop("response_item_id", None)
+            content = msg.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if (
+                        isinstance(part, dict)
+                        and part.get("type") in {"text", "input_text"}
+                        and not str(part.get("text") or "").strip()
+                    ):
+                        part["text"] = " "
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

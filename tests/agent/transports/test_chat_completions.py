@@ -46,6 +46,34 @@ class TestChatCompletionsBasic:
         assert "codex_reasoning_items" in msgs[0]
         assert "codex_message_items" in msgs[0]
 
+    def test_convert_messages_replaces_empty_text_blocks(self, transport):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": ""},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                    {"type": "input_text", "text": "   "},
+                ],
+            }
+        ]
+
+        result = transport.convert_messages(msgs)
+
+        assert result is not msgs
+        assert result[0]["content"][0]["text"] == " "
+        assert result[0]["content"][1]["type"] == "image_url"
+        assert result[0]["content"][2]["text"] == " "
+        assert msgs[0]["content"][0]["text"] == ""
+        assert msgs[0]["content"][2]["text"] == "   "
+
+    def test_convert_messages_preserves_non_empty_text_blocks(self, transport):
+        msgs = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
+
+        result = transport.convert_messages(msgs)
+
+        assert result is msgs
+
 
 class TestChatCompletionsBuildKwargs:
 

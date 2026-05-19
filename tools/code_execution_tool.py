@@ -1166,10 +1166,9 @@ def execute_code(
         # Build a minimal environment for the child. We intentionally exclude
         # API keys and tokens to prevent credential exfiltration from LLM-
         # generated scripts. The child accesses tools via RPC, not direct API.
-        # Exception: non-managed env vars declared by loaded skills (via
-        # env_passthrough registry) or explicitly allowed by the user in
-        # config.yaml (terminal.env_passthrough) are passed through.
-        # On Windows, a small
+        # Exception: env vars declared by loaded skills (via env_passthrough
+        # registry) or explicitly allowed by the user in config.yaml
+        # (terminal.env_passthrough) are passed through.  On Windows, a small
         # OS-essential allowlist (SYSTEMROOT, WINDIR, COMSPEC, ...) is also
         # passed through — without those, the child can't create a socket
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
@@ -1629,7 +1628,9 @@ def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
     """
     if mode != "project":
         return staging_dir
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    from gateway.session_context import get_terminal_cwd
+
+    raw = (get_terminal_cwd("") or "").strip()
     if raw:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):

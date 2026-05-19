@@ -7,8 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, StreamingConfig
+from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import resolve_proxy_url
+from gateway.platforms.api_server import APIServerAdapter
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -280,8 +281,44 @@ class TestRunAgentViaProxy:
         # Verify streaming is requested
         assert session.captured_json["stream"] is True
 
+        # Verify the originating platform scope is preserved for the remote API server.
+        proxy_scope = session.captured_json["hermes_proxy_scope"]
+        assert proxy_scope["origin_platform"] == "matrix"
+        assert "enabled_toolsets" in proxy_scope
+
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
+
+
+    @pytest.mark.asyncio
+    async def test_forwards_resolved_platform_tool_scope(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={"platform_toolsets": {"matrix": ["todo"]}}):
+            with patch("hermes_cli.tools_config._get_platform_tools", return_value={"todo"}):
+                with _patch_aiohttp(session):
+                    with patch("aiohttp.ClientTimeout"):
+                        await runner._run_agent_via_proxy(
+                            message="hi",
+                            context_prompt="",
+                            history=[],
+                            source=source,
+                            session_id="test",
+                        )
+
+        assert session.captured_json["hermes_proxy_scope"] == {
+            "origin_platform": "matrix",
+            "enabled_toolsets": ["todo"],
+        }
 
     @pytest.mark.asyncio
     async def test_handles_http_error(self, monkeypatch):
@@ -517,3 +554,31 @@ class TestEnvVarRegistration:
         info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_KEY"]
         assert info["category"] == "messaging"
         assert info["password"] is True
+
+
+class TestAPIServerProxyScope:
+    """Verify the API server applies gateway-provided proxy scope."""
+
+    def test_create_agent_uses_proxy_scope(self, monkeypatch):
+        adapter = APIServerAdapter(PlatformConfig())
+        adapter._session_db = object()
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch("run_agent.AIAgent", FakeAgent):
+            with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}):
+                with patch("gateway.run._resolve_gateway_model", return_value="test-model"):
+                    with patch("gateway.run.GatewayRunner._load_reasoning_config", return_value=None):
+                        with patch("gateway.run.GatewayRunner._load_fallback_model", return_value=None):
+                            adapter._create_agent(
+                                session_id="sess",
+                                origin_platform="matrix",
+                                enabled_toolsets_override=["todo"],
+                            )
+
+        assert captured["platform"] == "matrix"
+        assert captured["enabled_toolsets"] == ["todo"]
+        assert captured["session_id"] == "sess"

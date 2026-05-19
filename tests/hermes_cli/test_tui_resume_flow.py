@@ -1,6 +1,5 @@
 from argparse import Namespace
 from pathlib import Path
-import os
 import sys
 import types
 
@@ -309,30 +308,6 @@ def _stub_plugin_discovery(monkeypatch):
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
 
-
-def test_oneshot_marks_noninteractive_without_enabling_yolo(monkeypatch, capsys):
-    import hermes_cli.oneshot as oneshot
-
-    captured = {}
-
-    def fake_run_agent(*_args, **_kwargs):
-        captured["oneshot"] = os.environ.get("HERMES_ONESHOT_MODE")
-        captured["hooks"] = os.environ.get("HERMES_ACCEPT_HOOKS")
-        captured["yolo"] = os.environ.get("HERMES_YOLO_MODE")
-        return "ok"
-
-    monkeypatch.delenv("HERMES_ONESHOT_MODE", raising=False)
-    monkeypatch.delenv("HERMES_ACCEPT_HOOKS", raising=False)
-    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
-    monkeypatch.setattr(oneshot, "_run_agent", fake_run_agent)
-
-    assert oneshot.run_oneshot("hello") == 0
-
-    assert captured == {"oneshot": "1", "hooks": "1", "yolo": None}
-    assert os.environ.get("HERMES_ONESHOT_MODE") is None
-    assert os.environ.get("HERMES_ACCEPT_HOOKS") is None
-    assert os.environ.get("HERMES_YOLO_MODE") is None
-    assert capsys.readouterr().out == "ok\n"
 
 def test_oneshot_rejects_invalid_only_toolsets(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)

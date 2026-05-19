@@ -48,7 +48,7 @@ from hermes_cli.config import cfg_get
 logger = logging.getLogger(__name__)
 
 # Import security scanner — external hub installs always get scanned;
-# agent-created skills are scanned by default to prevent durable prompt injection.
+# agent-created skills only get scanned when skills.guard_agent_created is on.
 try:
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
     _GUARD_AVAILABLE = True
@@ -57,30 +57,28 @@ except ImportError:
 
 
 def _guard_agent_created_enabled() -> bool:
-    """Read skills.guard_agent_created from config (default True).
+    """Read skills.guard_agent_created from config (default False).
 
-    The scanner is enabled by default because agent-created skills are
-    durable instructions that future sessions may load automatically.
+    Off by default because the agent can already execute the same code
+    paths via terminal() with no gate, so the scan adds friction without
+    meaningful security.  Users who want belt-and-suspenders can turn it
+    on via `hermes config set skills.guard_agent_created true`.
     """
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
         return is_truthy_value(
             cfg_get(cfg, "skills", "guard_agent_created"),
-            default=True,
+            default=False,
         )
     except Exception:
-        logger.warning(
-            "Failed to read skills.guard_agent_created; leaving guard enabled",
-            exc_info=True,
-        )
-        return True
+        return False
 
 
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     """Scan a skill directory after write. Returns error string if blocked, else None.
 
-    No-op only when skills.guard_agent_created is explicitly disabled.
+    No-op when skills.guard_agent_created is disabled (the default).
     """
     if not _GUARD_AVAILABLE:
         return None

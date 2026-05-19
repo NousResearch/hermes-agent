@@ -38,25 +38,6 @@ from check_deps import check_deps  # noqa: E402
 from _common import unwrap_workflow  # noqa: E402
 
 
-REDACTED_SECRET = "[REDACTED_SECRET]"
-SENSITIVE_VALUE_FLAGS = {"--set-hf-api-token", "--set-civitai-api-token"}
-
-
-def redact_cmd(cmd: list[str]) -> list[str]:
-    """Return a log-safe command line with values for secret flags masked."""
-    redacted: list[str] = []
-    mask_next = False
-    for arg in cmd:
-        if mask_next:
-            redacted.append(REDACTED_SECRET)
-            mask_next = False
-            continue
-        redacted.append(arg)
-        if arg in SENSITIVE_VALUE_FLAGS:
-            mask_next = True
-    return redacted
-
-
 def comfy_cli_available() -> str | None:
     """Return command prefix for comfy-cli, or None."""
     if shutil.which("comfy"):
@@ -69,7 +50,7 @@ def comfy_cli_available() -> str | None:
 def run_cmd(cmd: list[str], *, dry_run: bool = False) -> tuple[int, str]:
     if dry_run:
         return 0, "[dry-run]"
-    log(f"$ {' '.join(redact_cmd(cmd))}")
+    log(f"$ {' '.join(cmd)}")
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     out = (proc.stdout or "") + (proc.stderr or "")
     return proc.returncode, out

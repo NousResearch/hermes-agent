@@ -40,6 +40,7 @@ def yaml_load(content: str):
         loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
 
         def _load(value: str):
+            # Enforce safe_load via the SafeLoader/CSafeLoader explicitly
             return yaml.load(value, Loader=loader)
 
         _yaml_load_fn = _load
@@ -445,13 +446,19 @@ def resolve_skill_config_values(
         logical_key = var["key"]
         storage_key = f"{SKILL_CONFIG_PREFIX}.{logical_key}"
         value = _resolve_dotpath(config, storage_key)
+        from_declared_default = False
 
         if value is None or (isinstance(value, str) and not value.strip()):
             value = var.get("default", "")
+            from_declared_default = True
 
-        # Expand ~ in path-like values
-        if isinstance(value, str) and ("~" in value or "${" in value):
-            value = os.path.expanduser(os.path.expandvars(value))
+        if isinstance(value, str):
+            # Skill-declared defaults are untrusted metadata.  Expand only the
+            # user-controlled config.yaml value from the process environment so
+            # a malicious skill cannot inject local secrets via `${VAR}`.
+            value = os.path.expanduser(value)
+            if not from_declared_default and "$" in value:
+                value = os.path.expandvars(value)
 
         resolved[logical_key] = value
 

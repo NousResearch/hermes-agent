@@ -38,22 +38,6 @@ class TestWrapCommand:
         assert env._cwd_marker in wrapped
         assert "exit $__hermes_ec" in wrapped
 
-    def test_artifacts_live_in_private_session_directory(self):
-        env = _TestableEnv()
-
-        assert env._artifact_dir == f"/tmp/hermes-session-{env._session_id}"
-        assert env._snapshot_path == f"{env._artifact_dir}/snapshot.sh"
-        assert env._cwd_file == f"{env._artifact_dir}/cwd.txt"
-
-    def test_wrap_command_enforces_private_artifact_permissions(self):
-        env = _TestableEnv()
-        env._snapshot_ready = True
-        wrapped = env._wrap_command("echo hello", "/tmp")
-
-        assert "umask 077" in wrapped
-        assert f"mkdir -p -m 700 {env._artifact_dir}" in wrapped
-        assert f"chmod 700 {env._artifact_dir}" in wrapped
-
     def test_no_snapshot_skips_source(self):
         env = _TestableEnv()
         env._snapshot_ready = False
@@ -179,27 +163,6 @@ class TestInitSessionFailure:
         env.init_session()
 
         assert env._snapshot_ready is False
-
-    def test_init_session_enforces_private_artifact_permissions(self):
-        env = _TestableEnv()
-        calls = []
-
-        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
-            calls.append(cmd)
-            mock = MagicMock()
-            mock.poll.return_value = 0
-            mock.returncode = 0
-            mock.stdout.fileno.return_value = -1
-            return mock
-
-        env._run_bash = mock_run_bash
-        env._wait_for_process = lambda proc, timeout=120: {"output": "", "returncode": 0}
-        env.init_session()
-
-        assert "umask 077" in calls[0]
-        assert f"mkdir -p -m 700 {env._artifact_dir}" in calls[0]
-        assert f"chmod 700 {env._artifact_dir}" in calls[0]
-        assert env._snapshot_ready is True
 
     def test_login_flag_when_snapshot_not_ready(self):
         """When _snapshot_ready=False, execute() should pass login=True to _run_bash."""

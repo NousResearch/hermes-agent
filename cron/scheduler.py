@@ -35,7 +35,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_dir, get_hermes_home
+from hermes_constants import get_hermes_home
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
@@ -429,62 +429,6 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
-_DOCUMENT_EXTS = frozenset({
-    '.pdf', '.md', '.txt', '.csv', '.log', '.json', '.xml', '.yaml', '.yml',
-    '.toml', '.ini', '.cfg', '.zip', '.docx', '.xlsx', '.pptx',
-})
-_CRON_MEDIA_EXTS = frozenset().union(_IMAGE_EXTS, _VIDEO_EXTS, _DOCUMENT_EXTS, {
-    '.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac',
-})
-_CRON_MEDIA_CACHE_DIRS = (
-    ("cache/audio", "audio_cache"),
-    ("cache/images", "image_cache"),
-    ("cache/videos", "video_cache"),
-    ("cache/documents", "document_cache"),
-    ("cache/screenshots", "browser_screenshots"),
-)
-
-
-def _is_safe_cron_media_path(media_path: str) -> bool:
-    """Return True for Hermes-generated MEDIA files that cron may attach.
-
-    Cron final responses are model-generated, so a MEDIA tag must not be able
-    to name arbitrary host files. Only existing files with expected attachment
-    extensions inside Hermes-controlled media cache directories are eligible.
-    """
-    try:
-        path = Path(media_path).expanduser().resolve(strict=True)
-    except (OSError, RuntimeError):
-        return False
-    if not path.is_file() or path.suffix.lower() not in _CRON_MEDIA_EXTS:
-        return False
-
-    for new_subpath, old_name in _CRON_MEDIA_CACHE_DIRS:
-        try:
-            cache_dir = get_hermes_dir(new_subpath, old_name).resolve(strict=True)
-        except (OSError, RuntimeError):
-            continue
-        try:
-            path.relative_to(cache_dir)
-            return True
-        except ValueError:
-            continue
-    return False
-
-
-def _filter_cron_media_files(media_files: list, job: dict) -> list:
-    """Drop unsafe MEDIA paths before cron delivery opens or uploads them."""
-    safe_media = []
-    for media_path, is_voice in media_files:
-        if _is_safe_cron_media_path(media_path):
-            safe_media.append((media_path, is_voice))
-        else:
-            logger.warning(
-                "Job '%s': skipping unsafe MEDIA attachment path: %s",
-                job.get("id", "?"),
-                media_path,
-            )
-    return safe_media
 
 
 def _send_media_via_adapter(
@@ -582,7 +526,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = _filter_cron_media_files(media_files, job)
 
     try:
         config = load_gateway_config()
@@ -1101,26 +1044,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
 
-        # Apply workdir if configured — lets scripts use predictable relative
-        # paths. For no_agent jobs this is just the subprocess cwd (not an
-        # agent TERMINAL_CWD bridge).
-        _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
-
-        try:
-            ok, output = _run_job_script(script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+        # no_agent scripts already run as child processes via _run_job_script();
+        # never chdir the scheduler process for a per-job workdir.
+        ok, output = _run_job_script(script_path)
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1289,24 +1215,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         chat_id="",
         chat_name="",
     )
-    _cron_delivery_vars = (
-        "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-        "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-        "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+    _cron_context_vars = (
+        ("HERMES_CRON_SESSION", "1"),
+        ("HERMES_CRON_AUTO_DELIVER_PLATFORM", ""),
+        ("HERMES_CRON_AUTO_DELIVER_CHAT_ID", ""),
+        ("HERMES_CRON_AUTO_DELIVER_THREAD_ID", ""),
     )
-    for _var_name in _cron_delivery_vars:
-        _VAR_MAP[_var_name].set("")
+    for _var_name, _var_value in _cron_context_vars:
+        _VAR_MAP[_var_name].set(_var_value)
 
-    # Per-job working directory.  When set (and validated at create/update
-    # time), we point TERMINAL_CWD at it so:
-    #   - build_context_files_prompt() picks up AGENTS.md / CLAUDE.md /
-    #     .cursorrules from the job's project dir, AND
-    #   - the terminal, file, and code-exec tools run commands from there.
-    #
-    # tick() serializes workdir-jobs outside the parallel pool, so mutating
-    # os.environ["TERMINAL_CWD"] here is safe for those jobs.  For workdir-less
-    # jobs we leave TERMINAL_CWD untouched — preserves the original behaviour
-    # (skip_context_files=True, tools use whatever cwd the scheduler has).
+    # Per-job working directory. Use a ContextVar-backed TERMINAL_CWD
+    # override so this cron job sees its project cwd without exposing that
+    # cwd to unrelated gateway/API sessions in the same process.
     _job_workdir = (job.get("workdir") or "").strip() or None
     if _job_workdir and not Path(_job_workdir).is_dir():
         # Directory was removed between create-time validation and now.  Log
@@ -1316,9 +1236,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             job_id, _job_workdir,
         )
         _job_workdir = None
-    _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
+    _terminal_cwd_token = None
     if _job_workdir:
-        os.environ["TERMINAL_CWD"] = _job_workdir
+        from gateway.session_context import set_terminal_cwd
+        _terminal_cwd_token = set_terminal_cwd(_job_workdir)
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
     try:
@@ -1411,8 +1332,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             runtime_kwargs = {
                 "requested": job.get("provider"),
             }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            # Persisted cron records may contain legacy base_url values created
+            # from model-callable tool args. Never pass them as explicit URLs,
+            # because the resolver would pair arbitrary endpoints with the
+            # operator's ambient API keys. Custom endpoints must come from the
+            # operator-controlled provider configuration instead.
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
@@ -1670,17 +1594,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
-        # Restore TERMINAL_CWD to whatever it was before this job ran.  We
-        # only ever mutate it when the job has a workdir; see the setup block
-        # at the top of run_job for the serialization guarantee.
-        if _job_workdir:
-            if _prior_terminal_cwd == "_UNSET_":
-                os.environ.pop("TERMINAL_CWD", None)
-            else:
-                os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
+        # Restore this job's session-scoped cwd override without mutating
+        # process-global os.environ.
+        if _terminal_cwd_token is not None:
+            from gateway.session_context import reset_terminal_cwd
+            reset_terminal_cwd(_terminal_cwd_token)
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
-        for _var_name in _cron_delivery_vars:
+        for _var_name, _ in _cron_context_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
             try:
@@ -1826,10 +1747,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 mark_job_run(job["id"], False, str(e))
                 return False
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
-        # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
+        # Partition due jobs to preserve the original scheduling behavior for
+        # workdir jobs. Their cwd is now session-scoped rather than process-global.
         workdir_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
         parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
 

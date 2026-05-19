@@ -73,6 +73,14 @@ class TestSubscribe:
         ))
         assert _load_subscriptions()["s"]["secret"] == "my-secret"
 
+    def test_rejects_insecure_no_auth_secret(self, capsys):
+        webhook_command(
+            _make_args(webhook_action="subscribe", name="s", secret="INSECURE_NO_AUTH")
+        )
+        out = capsys.readouterr().out
+        assert "INSECURE_NO_AUTH is not allowed" in out
+        assert _load_subscriptions() == {}
+
     def test_auto_secret(self):
         webhook_command(_make_args(webhook_action="subscribe", name="s"))
         secret = _load_subscriptions()["s"]["secret"]

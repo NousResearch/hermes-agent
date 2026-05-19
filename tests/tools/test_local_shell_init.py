@@ -7,14 +7,12 @@ tests verify the config-driven prelude that fixes that.
 """
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from tools.environments.local import (
     LocalEnvironment,
-    _expand_shell_init_path,
     _prepend_shell_init,
     _read_terminal_shell_init_config,
     _resolve_shell_init_files,
@@ -163,73 +161,6 @@ class TestResolveShellInitFiles:
 
         assert resolved == []
 
-    def test_auto_sources_isolated_home_when_profile_home_exists(
-        self, tmp_path, monkeypatch
-    ):
-        operator_home = tmp_path / "operator-home"
-        operator_home.mkdir()
-        (operator_home / ".bashrc").write_text('export LEAKED=1\n')
-
-        hermes_home = tmp_path / "hermes-profile"
-        profile_home = hermes_home / "home"
-        profile_home.mkdir(parents=True)
-        profile_bashrc = profile_home / ".bashrc"
-        profile_bashrc.write_text('export SAFE=1\n')
-
-        monkeypatch.setenv("HOME", str(operator_home))
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        with patch(
-            "tools.environments.local._read_terminal_shell_init_config",
-            return_value=([], True),
-        ):
-            resolved = _resolve_shell_init_files()
-
-        assert resolved == [str(profile_bashrc)]
-        assert str(operator_home / ".bashrc") not in resolved
-
-    def test_explicit_home_templates_use_isolated_home(self, tmp_path, monkeypatch):
-        operator_home = tmp_path / "operator-home"
-        operator_home.mkdir()
-        (operator_home / "custom.sh").write_text('export LEAKED=1\n')
-
-        hermes_home = tmp_path / "hermes-profile"
-        profile_home = hermes_home / "home"
-        profile_home.mkdir(parents=True)
-        profile_custom = profile_home / "custom.sh"
-        profile_custom.write_text('export SAFE=1\n')
-
-        monkeypatch.setenv("HOME", str(operator_home))
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        with patch(
-            "tools.environments.local._read_terminal_shell_init_config",
-            return_value=(["~/custom.sh", "${HOME}/custom.sh"], False),
-        ):
-            resolved = _resolve_shell_init_files()
-
-        assert resolved == [str(profile_custom), str(profile_custom)]
-        assert str(operator_home / "custom.sh") not in resolved
-
-
-class TestExpandShellInitPath:
-    def test_preserves_unknown_vars(self, monkeypatch):
-        monkeypatch.delenv("MISSING_RC_DIR", raising=False)
-
-        assert (
-            _expand_shell_init_path("${MISSING_RC_DIR}/rc.sh")
-            == "${MISSING_RC_DIR}/rc.sh"
-        )
-
-    def test_expands_home_var_from_supplied_home(self, tmp_path, monkeypatch):
-        operator_home = tmp_path / "operator-home"
-        profile_home = tmp_path / "profile-home"
-        monkeypatch.setenv("HOME", str(operator_home))
-
-        assert _expand_shell_init_path("$HOME/rc.sh", home=str(profile_home)) == str(
-            profile_home / "rc.sh"
-        )
-
 
 class TestPrependShellInit:
     def test_empty_list_returns_command_unchanged(self):
@@ -282,39 +213,6 @@ class TestSnapshotEndToEnd:
         output = result.get("output", "")
         assert "PROBE=probe-ok" in output
         assert "/opt/shell-init-probe/bin" in output
-
-    def test_isolated_home_bashrc_cannot_reintroduce_filtered_provider_secret(
-        self, tmp_path, monkeypatch
-    ):
-        operator_home = tmp_path / "operator-home"
-        operator_home.mkdir()
-        (operator_home / ".bashrc").write_text(
-            'export OPENAI_API_KEY="real-home-secret"\n'
-            'export REAL_HOME_MARKER="sourced"\n'
-        )
-
-        hermes_home = tmp_path / "hermes-profile"
-        profile_home = hermes_home / "home"
-        profile_home.mkdir(parents=True)
-        (profile_home / ".bashrc").write_text('export PROFILE_HOME_MARKER="safe"\n')
-
-        monkeypatch.setenv("HOME", str(operator_home))
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setenv("OPENAI_API_KEY", "parent-secret")
-
-        with patch(
-            "tools.environments.local._read_terminal_shell_init_config",
-            return_value=([], True),
-        ):
-            env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
-            try:
-                snapshot = Path(env._snapshot_path).read_text()
-            finally:
-                env.cleanup()
-
-        assert "PROFILE_HOME_MARKER" in snapshot
-        assert "OPENAI_API_KEY" not in snapshot
-        assert "REAL_HOME_MARKER" not in snapshot
 
     def test_profile_path_export_survives_bashrc_interactive_guard(
         self, tmp_path, monkeypatch

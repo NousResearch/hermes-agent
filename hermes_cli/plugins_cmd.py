@@ -10,6 +10,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import shutil
@@ -170,33 +171,6 @@ def _read_manifest(plugin_dir: Path) -> dict:
         return {}
 
 
-def _copy_example_file_no_follow(example_file: Path, real_path: Path) -> None:
-    """Copy an example file without following symlink destinations."""
-    if example_file.is_symlink():
-        raise OSError("refusing to copy symlinked example file")
-    if real_path.is_symlink():
-        raise OSError("refusing to write through symlink destination")
-
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-
-    fd = os.open(real_path, flags, 0o666)
-    try:
-        with example_file.open("rb") as src, os.fdopen(fd, "wb") as dst:
-            fd = -1
-            shutil.copyfileobj(src, dst)
-    except Exception:
-        try:
-            real_path.unlink()
-        except OSError:
-            pass
-        raise
-    finally:
-        if fd >= 0:
-            os.close(fd)
-
-
 def _copy_example_files(plugin_dir: Path, console) -> None:
     """Copy any .example files to their real names if they don't already exist.
 
@@ -208,7 +182,7 @@ def _copy_example_files(plugin_dir: Path, console) -> None:
         real_path = plugin_dir / real_name
         if not real_path.exists():
             try:
-                _copy_example_file_no_follow(example_file, real_path)
+                shutil.copy2(example_file, real_path)
                 console.print(
                     f"[dim]  Created {real_name} from {example_file.name}[/dim]"
                 )
@@ -721,6 +695,14 @@ def _plugin_exists(name: str) -> bool:
             manifest = _read_manifest(child)
             if manifest.get("name") == name:
                 return True
+            dashboard_manifest = child / "dashboard" / "manifest.json"
+            if dashboard_manifest.exists():
+                try:
+                    data = json.loads(dashboard_manifest.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+                if data.get("name", child.name) == name:
+                    return True
     # Bundled: <repo>/plugins/<name>/ (or HERMES_BUNDLED_PLUGINS on Nix).
     from hermes_cli.plugins import get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
@@ -729,8 +711,21 @@ def _plugin_exists(name: str) -> bool:
         if candidate.is_dir() and (
             (candidate / "plugin.yaml").exists()
             or (candidate / "plugin.yml").exists()
+            or (candidate / "dashboard" / "manifest.json").exists()
         ):
             return True
+        for child in repo_plugins.iterdir():
+            if not child.is_dir():
+                continue
+            dashboard_manifest = child / "dashboard" / "manifest.json"
+            if not dashboard_manifest.exists():
+                continue
+            try:
+                data = json.loads(dashboard_manifest.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            if data.get("name", child.name) == name:
+                return True
     return False
 
 
@@ -763,15 +758,25 @@ def _discover_all_plugins() -> list:
             manifest_file = d / "plugin.yaml"
             if not manifest_file.exists():
                 manifest_file = d / "plugin.yml"
-            if not manifest_file.exists():
+            dashboard_manifest = d / "dashboard" / "manifest.json"
+            has_plugin_manifest = manifest_file.exists()
+            if not has_plugin_manifest and not dashboard_manifest.exists():
                 continue
             name = d.name
             version = ""
             description = ""
-            if yaml:
+            if has_plugin_manifest and yaml:
                 try:
                     with open(manifest_file, encoding="utf-8") as f:
                         manifest = yaml.safe_load(f) or {}
+                    name = manifest.get("name", d.name)
+                    version = manifest.get("version", "")
+                    description = manifest.get("description", "")
+                except Exception:
+                    pass
+            elif dashboard_manifest.exists():
+                try:
+                    manifest = json.loads(dashboard_manifest.read_text(encoding="utf-8"))
                     name = manifest.get("name", d.name)
                     version = manifest.get("version", "")
                     description = manifest.get("description", "")

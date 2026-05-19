@@ -435,6 +435,18 @@ class TelegramAdapter(BasePlatformAdapter):
         self._forum_lock = asyncio.Lock()
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
+        self._dm_topic_chat_ids: Set[str] = {
+            str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
+        }
+        # Document size cap. Telegram's public Bot API caps getFile at 20MB; a
+        # locally-hosted telegram-bot-api server (configured via extra.base_url)
+        # raises that to 2GB, so the presence of base_url is the opt-in.
+        self._max_doc_bytes: int = (
+            2 * 1024 * 1024 * 1024
+            if self.config.extra.get("base_url")
+            else 20 * 1024 * 1024
+        )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
@@ -1311,6 +1323,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Using custom Telegram base_url: %s",
                     self.name, custom_base_url,
                 )
+            # In local-mode telegram-bot-api, file_path is an absolute path on the
+            # server's filesystem rather than a relative HTTP path. PTB needs
+            # local_mode=True so download_*() reads from disk instead of issuing
+            # an HTTP GET that would 404. Requires that the same path is
+            # readable by the Hermes process (shared mount, same machine, etc.).
+            if self.config.extra.get("local_mode"):
+                builder = builder.local_mode(True)
+                logger.info("[%s] Using Telegram local_mode (read files from disk)", self.name)
 
             # PTB defaults (pool_timeout=1s) are too aggressive on flaky networks and
             # can trigger "Pool timeout: All connections in the connection pool are occupied"
@@ -1507,11 +1527,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommandScopeDefault,
                     BotCommandScopeChat,
                 )
-                from hermes_cli.commands import telegram_menu_commands
+                from hermes_cli.commands import (
+                    telegram_menu_commands,
+                    telegram_quick_menu_commands,
+                )
                 # Telegram allows up to 100 commands but has an undocumented
                 # payload size limit (~4KB total).  Limit to 30 core commands
                 # to stay well under the threshold while covering all categories.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                if self.config.extra.get("command_menu") == "quick_commands_only":
+                    # Fetch quick_commands via the gateway runner reference if
+                    # available; otherwise fall back to PlatformConfig.extra.
+                    _qc = self.config.extra.get("quick_commands")
+                    if not isinstance(_qc, dict) or not _qc:
+                        _runner_ref = getattr(self, "_runner_ref", None)
+                        _runner = _runner_ref() if callable(_runner_ref) else None
+                        _gw_cfg = getattr(_runner, "config", None) if _runner else None
+                        _qc = getattr(_gw_cfg, "quick_commands", {}) or {}
+                    menu_commands, hidden_count = telegram_quick_menu_commands(
+                        _qc,
+                        max_commands=MAX_COMMANDS_PER_SCOPE,
+                    )
+                else:
+                    menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
@@ -4132,6 +4169,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_GUEST_MODE", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _telegram_exclusive_bot_mentions(self) -> bool:
+        """Return whether explicit @...bot mentions exclusively route group messages."""
+        configured = self.config.extra.get("exclusive_bot_mentions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS", "true").lower() in {"true", "1", "yes", "on"}
+
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
@@ -4242,6 +4288,60 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
+    @staticmethod
+    def _extract_bot_mention_usernames(message: Message) -> set[str]:
+        """Extract explicit Telegram bot usernames mentioned in text/captions.
+
+        Telegram bot usernames are 5-32 characters and must end in "bot".
+        Entity mentions are authoritative. The raw-text fallback is intentionally narrow so
+        entity-less mobile/client variants still work without treating email
+        addresses or arbitrary substrings as bot mentions.
+        """
+        mentioned_bot_usernames: set[str] = set()
+
+        def _iter_sources():
+            yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
+            yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+
+        for source_text, entities in _iter_sources():
+            for entity in entities:
+                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+                if entity_type not in {"mention", "bot_command"}:
+                    continue
+                offset = int(getattr(entity, "offset", -1))
+                length = int(getattr(entity, "length", 0))
+                if offset < 0 or length <= 0:
+                    continue
+
+                entity_text = source_text[offset:offset + length].strip()
+                if entity_type == "mention":
+                    handle = entity_text.lstrip("@").lower()
+                    if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
+                        mentioned_bot_usernames.add(handle)
+                    continue
+
+                # Telegram emits /cmd@botname as one bot_command entity, not as
+                # a separate mention entity. Treat that suffix as an explicit
+                # bot address for exclusive multi-bot routing even when the
+                # group has require_mention/free-response disabled.
+                at_index = entity_text.find("@")
+                if at_index < 0:
+                    continue
+                command_target = entity_text[at_index + 1:].strip().lower()
+                if re.fullmatch(r"[a-z0-9_]{2,29}bot", command_target, re.IGNORECASE):
+                    mentioned_bot_usernames.add(command_target)
+
+        # Entity-less fallback for older/client-specific updates. If Telegram
+        # supplied entities for a source, trust them and do not regex-rescue
+        # malformed/URL/code spans that the server did not mark as mentions.
+        for raw_text, entities in _iter_sources():
+            if not raw_text or entities:
+                continue
+            for match in re.finditer(r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{2,29}bot)\b", raw_text):
+                mentioned_bot_usernames.add(match.group(1).lower())
+
+        return mentioned_bot_usernames
+
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
             return False
@@ -4256,7 +4356,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Telegram parses mentions server-side and emits MessageEntity objects
         # (type=mention for @username, type=text_mention for @FirstName targeting
-        # a user without a public username). Only those entities are authoritative —
+        # a user without a public username). Those entities are authoritative:
         # raw substring matches like "foo@hermes_bot.example" are not mentions
         # (bug #12545). Entities also correctly handle @handles inside URLs, code
         # blocks, and quoted text, where a regex scan would over-match.
@@ -4294,7 +4394,33 @@ class TelegramAdapter(BasePlatformAdapter):
                         continue
                     if command_text[at_index:].strip().lower() == expected:
                         return True
+        if bot_username and re.fullmatch(r"[a-z0-9_]{2,29}bot", bot_username, re.IGNORECASE):
+            return bot_username in self._extract_bot_mention_usernames(message)
         return False
+
+    def _explicit_bot_mentions_exclude_self(self, message: Message) -> bool:
+        """Return True when explicit bot handles target other bots, not this one.
+
+        Telegram groups can contain several Hermes bot profiles. A message like
+        ``@bot3 hi @bot4`` must not wake ``@bot1`` through reply/wake-word
+        fallbacks. Treat explicit bot-handle mentions as an exclusive routing
+        hint: if at least one @...bot username is present and none matches this
+        adapter's own bot username, this adapter should ignore the message.
+
+        MessageEntity values are preferred, but some Telegram clients expose
+        selected bot handles as plain text in group messages. The raw-text
+        fallback is intentionally limited to usernames ending in "bot", which
+        Telegram requires for bot accounts.
+        """
+        if not self._bot:
+            return False
+
+        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        if not bot_username:
+            return False
+
+        mentioned_bot_usernames = self._extract_bot_mention_usernames(message)
+        return bool(mentioned_bot_usernames) and bot_username not in mentioned_bot_usernames
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
@@ -4367,6 +4493,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if topic_id not in allowed_topics:
                 return False
 
+        # Check ignored_threads first — applies to both groups and DM topics
         if thread_id is not None:
             try:
                 if int(thread_id) in self._telegram_ignored_threads():
@@ -4374,7 +4501,18 @@ class TelegramAdapter(BasePlatformAdapter):
             except (TypeError, ValueError):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
 
+        if not self._is_group_chat(message):
+            # Root DM (non-topic): ignore if ignore_root_dm is configured
+            if thread_id is None and self.config.extra.get("ignore_root_dm", False):
+                chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+                if not is_command and chat_id in self._dm_topic_chat_ids:
+                    return False
+            return True
+
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+
+        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+            return False
 
         # Resolve guest-mode mention bypass once so _message_mentions_bot
         # is not called redundantly in the normal flow below.
@@ -4426,6 +4564,16 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
 
+    def _effective_update_message(self, update: Update) -> Optional[Message]:
+        """Return the message-like payload for normal messages and channel posts.
+
+        Telegram exposes channel broadcasts as ``update.channel_post`` rather
+        than ``update.message``.  MessageHandler filters can still dispatch
+        those updates, so handlers must use ``effective_message`` to avoid
+        consuming channel posts without ever building a gateway event.
+        """
+        return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -4433,35 +4581,37 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
-        if not update.message or not update.message.text:
+        msg = self._effective_update_message(update)
+        if not msg or not msg.text:
             return
-        if not self._should_process_message(update.message):
+        if not self._should_process_message(msg):
             return
         await self._ensure_forum_commands(update.message)
 
-        event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
-        if not update.message or not update.message.text:
+        msg = self._effective_update_message(update)
+        if not msg or not msg.text:
             return
-        if not self._should_process_message(update.message, is_command=True):
+        if not self._should_process_message(msg, is_command=True):
             return
-        await self._ensure_forum_commands(update.message)
-        
-        event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
+        await self._ensure_forum_commands(msg)
+
+        event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
-        if not update.message:
+        msg = self._effective_update_message(update)
+        if not msg:
             return
-        if not self._should_process_message(update.message):
+        if not self._should_process_message(msg):
             return
 
-        msg = update.message
         venue = getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
 
@@ -4760,11 +4910,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Check file size early so image documents cannot bypass the
                 # document size limit by taking the image path.
-                MAX_DOC_BYTES = 20 * 1024 * 1024
-                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
+                if not doc.file_size or doc.file_size > self._max_doc_bytes:
+                    limit_mb = self._max_doc_bytes // (1024 * 1024)
                     event.text = (
                         "The document is too large or its size could not be verified. "
-                        "Maximum: 20 MB."
+                        f"Maximum: {limit_mb} MB."
                     )
                     logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
                     await self.handle_message(event)
@@ -5012,10 +5162,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 .get("dm_topics", [])
             )
             if not dm_topics:
+                # Clear both config and precomputed set when all topics are removed
+                self._dm_topics_config = []
+                self._dm_topic_chat_ids = set()
                 return
 
             # Update in-memory config and cache any new thread_ids
             self._dm_topics_config = dm_topics
+            # Rebuild the chat_id set for O(1) root-DM ignore lookup
+            self._dm_topic_chat_ids = {
+                str(chat_entry["chat_id"]) for chat_entry in dm_topics if "chat_id" in chat_entry
+            }
             for chat_entry in dm_topics:
                 cid = chat_entry.get("chat_id")
                 if not cid:
@@ -5099,11 +5256,14 @@ class TelegramAdapter(BasePlatformAdapter):
         chat = message.chat
         user = message.from_user
         
-        # Determine chat type
+        # Determine chat type.  Normalize through ``str`` so tests/mocks and
+        # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
+        # string-like, but mocks often provide plain strings).
+        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
         chat_type = "dm"
-        if chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"
-        elif chat.type == ChatType.CHANNEL:
+        elif telegram_chat_type == "channel":
             chat_type = "channel"
 
         # Resolve Telegram topic name and skill binding.
@@ -5164,8 +5324,20 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
-            user_id=str(user.id) if user else (str(chat.id) if chat_type == "dm" else None),
-            user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
+            user_id=(
+                str(user.id)
+                if user
+                else (str(chat.id) if chat_type in {"dm", "channel"} else None)
+            ),
+            user_name=(
+                user.full_name
+                if user
+                else (
+                    chat.full_name
+                    if hasattr(chat, "full_name") and chat_type == "dm"
+                    else (chat.title if chat_type == "channel" else None)
+                )
+            ),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
             message_id=str(message.message_id),
@@ -5260,16 +5432,25 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
-        if not self._reactions_enabled():
-            return
+        """Add an in-progress reaction and pin the message when processing begins."""
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            if self._reactions_enabled():
+                await self._set_reaction(chat_id, message_id, "\U0001f440")
+            # Pin the incoming message for the duration of the turn
+            if self._bot:
+                try:
+                    await self._bot.pin_chat_message(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        disable_notification=True,
+                    )
+                except Exception:
+                    logger.debug("[Telegram] Failed to pin message %s in chat %s", message_id, chat_id)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction.
+        """Swap the in-progress reaction for a final success/failure reaction and unpin.
 
         Unlike Discord (additive reactions), Telegram's set_message_reaction
         replaces all existing reactions in one call — no remove step needed.
@@ -5281,17 +5462,25 @@ class TelegramAdapter(BasePlatformAdapter):
         another agent run to swap it to 👍/👎 — which never happens if the
         cancellation was the last activity in the chat.
         """
-        if not self._reactions_enabled():
-            return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if not (chat_id and message_id):
             return
-        if outcome == ProcessingOutcome.CANCELLED:
-            await self._clear_reactions(chat_id, message_id)
-        else:
-            await self._set_reaction(
-                chat_id,
-                message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
-            )
+        if self._reactions_enabled():
+            if outcome == ProcessingOutcome.CANCELLED:
+                await self._clear_reactions(chat_id, message_id)
+            else:
+                await self._set_reaction(
+                    chat_id,
+                    message_id,
+                    "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+                )
+        # Unpin the message when processing is complete
+        if self._bot:
+            try:
+                await self._bot.unpin_chat_message(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                )
+            except Exception:
+                logger.debug("[Telegram] Failed to unpin message %s in chat %s", message_id, chat_id)

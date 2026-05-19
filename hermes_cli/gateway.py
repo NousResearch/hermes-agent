@@ -2139,6 +2139,36 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
+def _systemd_restart_steps_supported() -> bool:
+    """Return True when systemd supports RestartSteps/RestartMaxDelaySec.
+
+    Debian 12 ships systemd 252, which logs these v254+ keys as unknown.
+    Omitting them keeps the generated unit valid and prevents the gateway
+    freshness check from fighting the locally-supported service definition.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        first = (result.stdout or "").splitlines()[0]
+        parts = first.split()
+        if len(parts) >= 2 and parts[0] == "systemd":
+            return int(parts[1]) >= 254
+    except Exception:
+        pass
+    return False
+
+
+def _systemd_restart_backoff_lines() -> str:
+    if not _systemd_restart_steps_supported():
+        return ""
+    return "RestartMaxDelaySec=300\nRestartSteps=5\n"
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -2161,6 +2191,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # (#8202). 30s of headroom covers the worst case we've observed.
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
     restart_timeout = max(60, _drain_timeout) + 30
+    restart_backoff = _systemd_restart_backoff_lines()
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -2197,9 +2228,7 @@ Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
-RestartMaxDelaySec=300
-RestartSteps=5
-RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+{restart_backoff}RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
@@ -2232,9 +2261,7 @@ Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
-RestartMaxDelaySec=300
-RestartSteps=5
-RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+{restart_backoff}RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID

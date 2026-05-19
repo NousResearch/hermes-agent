@@ -178,6 +178,7 @@ AUTHOR_MAP = {
     "karthikeyann@users.noreply.github.com": "karthikeyann",  # PR #26609 salvage (DM-topic routing pin)
     "rino.alpin@gmail.com": "kunci115",  # PR #27098 salvage (thread-not-found retry)
     "237601532+chromalinx@users.noreply.github.com": "chromalinx",  # PR #27014 salvage (commands for groups+DM)
+    "booker1207@gmail.com": "booker1207",  # PR #25132 salvage (gate profile bots by allowed topics)
     "282919977+eliteworkstation94-ai@users.noreply.github.com": "eliteworkstation94-ai",  # PR #28157 salvage (group reply session splits)
     "androidhtml@yandex.com": "hllqkb",
     "25840394+Bongulielmi@users.noreply.github.com": "Bongulielmi",

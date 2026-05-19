@@ -1278,6 +1278,28 @@ def test_unlink_tasks_triggers_recompute_ready(kanban_home):
             "child should promote to ready immediately after unlink_tasks "
             "removes its last blocking dependency"
         )
+
+
+def test_archive_task_triggers_recompute_ready_for_dependents(kanban_home):
+    """Archiving a parent must immediately unblock its children.
+
+    ``recompute_ready()`` already treats ``archived`` parents as satisfied
+    dependencies, just like ``done``. Regression: ``archive_task()`` updated
+    the parent row but never ran the ready-promotion pass, so children stayed
+    stuck in ``todo`` until a later dispatcher tick.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="obsolete parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.archive_task(conn, parent) is True
+
+        assert kb.get_task(conn, child).status == "ready", (
+            "child should promote to ready immediately after its last blocking "
+            "parent is archived"
+        )
+
 # ---------------------------------------------------------------------------
 # _add_column_if_missing / _migrate_add_optional_columns idempotency (#21708)
 # ---------------------------------------------------------------------------

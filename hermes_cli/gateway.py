@@ -561,12 +561,50 @@ def find_profile_gateway_processes(
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
     args = [get_python_path(), "-m", "hermes_cli.main"]
+<<<<<<< HEAD
+    args.extend(["--profile", profile])
+=======
     if profile != "default":
         args.extend(["--profile", profile])
+>>>>>>> fff93d5380c0ca5c30f611c1a8a151015ad5aff2
     args.extend(["gateway", "run", "--replace"])
     return args
 
 
+<<<<<<< HEAD
+def _profile_gateway_restart_env(profile: str) -> dict[str, str]:
+    """Build a clean environment for a detached profile gateway restart."""
+    from hermes_cli.profiles import get_profile_dir
+
+    allowed_keys = {
+        "CONDA_PREFIX",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "PATH",
+        "PATHEXT",
+        "PYTHONIOENCODING",
+        "PYTHONPATH",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "VIRTUAL_ENV",
+        "WINDIR",
+    }
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in allowed_keys
+    }
+    env["HERMES_HOME"] = str(get_profile_dir(profile))
+    return env
+
+
+=======
+>>>>>>> fff93d5380c0ca5c30f611c1a8a151015ad5aff2
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     """Relaunch a manually-run profile gateway after its current PID exits."""
     if old_pid <= 0:
@@ -625,7 +663,11 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
             )
         else:
             _popen_kwargs["start_new_session"] = True
+<<<<<<< HEAD
+        subprocess.Popen(cmd, env=os.environ.copy(), **_popen_kwargs)
+=======
         subprocess.Popen(cmd, **_popen_kwargs)
+>>>>>>> fff93d5380c0ca5c30f611c1a8a151015ad5aff2
         """
     ).strip()
 
@@ -633,9 +675,22 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         # Same platform-aware detach for the watcher process itself — so
         # closing the user's terminal doesn't kill the watcher.
         subprocess.Popen(
+<<<<<<< HEAD
+            [
+                sys.executable,
+                "-c",
+                watcher,
+                str(old_pid),
+                *_gateway_run_args_for_profile(profile),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=_profile_gateway_restart_env(profile),
+=======
             [sys.executable, "-c", watcher, str(old_pid), *_gateway_run_args_for_profile(profile)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+>>>>>>> fff93d5380c0ca5c30f611c1a8a151015ad5aff2
             **windows_detach_popen_kwargs(),
         )
     except OSError:

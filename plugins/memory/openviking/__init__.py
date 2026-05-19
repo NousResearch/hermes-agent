@@ -583,6 +583,27 @@ class OpenVikingMemoryProvider(MemoryProvider):
         )
         self._sync_thread.start()
 
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Update cached session state when the agent rotates session_id.
+
+        Without this hook, ``_session_id`` keeps pointing at the previous
+        session and subsequent ``sync_turn`` writes land in the old session.
+        """
+        if new_session_id and new_session_id != self._session_id:
+            logger.debug(
+                "OpenViking session switch: %s → %s (parent=%s reset=%s)",
+                self._session_id, new_session_id, parent_session_id, reset,
+            )
+            self._session_id = new_session_id
+            self._turn_count = 0
+
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Commit the session to trigger memory extraction.
 

@@ -13,6 +13,11 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+
+Behavioral toggles live in config.yaml under ``platforms.email`` (not env):
+    process_existing    — When true, process UNSEEN mail already in INBOX at
+                          startup instead of skipping it. Default false
+                          (skip existing, matches historical behaviour).
 """
 
 import asyncio
@@ -442,10 +447,11 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
-        # Skip attachments — configured via config.yaml:
+        # Behavioral toggles — configured via config.yaml:
         #   platforms:
         #     email:
         #       skip_attachments: true
+        #       process_existing: true
         self._skip_attachments = extra.get("skip_attachments", False)
 
         # Require the sender's From: domain to be authenticated (SPF/DKIM/DMARC)
@@ -475,6 +481,10 @@ class EmailAdapter(BasePlatformAdapter):
         self._authserv_id = (
             extra.get("authserv_id", "") or os.getenv("EMAIL_AUTHSERV_ID", "")
         ).strip().lower()
+
+        # When True, skip the connect()-time pre-fill so existing UNSEEN mail
+        # is picked up on the first poll.  Default False = upstream behaviour.
+        self._process_existing = bool(extra.get("process_existing", False))
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -585,16 +595,19 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
             _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
+            if not self._process_existing:
+                # Mark all existing messages as seen so we only process new ones
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    for uid in data[0].split():
+                        self._seen_uids.add(uid)
+                # Keep only the most recent UIDs to prevent unbounded growth
+                self._trim_seen_uids()
+                logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            else:
+                logger.info("[Email] process_existing=true — will process pre-existing UNSEEN mail on first poll.")
             imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False

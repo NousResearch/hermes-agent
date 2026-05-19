@@ -178,23 +178,33 @@ git worktree remove "$API_WT"
 
 ### Step 3 -- Launch Implementers in Background
 
-`--disallowedTools` enforces command safety as a best-effort guard:
+`--disallowedTools` enforces command safety as a best-effort guard.
+
+**Write prompt files before running this block** -- use Hermes `write_file` or your editor. Never embed arbitrary prompt text in a shell heredoc: if any line of the prompt exactly matches the heredoc sentinel (e.g. `EOF`), the shell terminates the heredoc early and silently drops the rest of the prompt or interprets it as shell commands.
 
 ```bash
-(cd "$AUTH_WT" && claude -p '<IMPLEMENTER_PROMPT_A>' \
+# Prompt files must already exist. Create them with Hermes write_file or your editor:
+#   $RESULT_DIR/prompt_auth.txt  -- implementer prompt for the auth pair
+#   $RESULT_DIR/prompt_api.txt   -- implementer prompt for the api pair
+if [ ! -f "$RESULT_DIR/prompt_auth.txt" ] || [ ! -f "$RESULT_DIR/prompt_api.txt" ]; then
+  echo "ERROR: prompt files missing. Write them with Hermes write_file or your editor first."
+  exit 1
+fi
+
+(cd "$AUTH_WT" && claude -p \
   --allowedTools "Read,Edit,Write,Bash" \
   --disallowedTools "Bash(git push*),Bash(git reset --hard*),Bash(rm -rf*),Bash(*DROP TABLE*),Bash(*deploy*)" \
   --max-turns 20 \
   --output-format json \
-  > "$RESULT_DIR/auth.json") &
+  < "$RESULT_DIR/prompt_auth.txt" > "$RESULT_DIR/auth.json") &
 AUTH_PID=$!
 
-(cd "$API_WT" && claude -p '<IMPLEMENTER_PROMPT_B>' \
+(cd "$API_WT" && claude -p \
   --allowedTools "Read,Edit,Write,Bash" \
   --disallowedTools "Bash(git push*),Bash(git reset --hard*),Bash(rm -rf*),Bash(*DROP TABLE*),Bash(*deploy*)" \
   --max-turns 20 \
   --output-format json \
-  > "$RESULT_DIR/api.json") &
+  < "$RESULT_DIR/prompt_api.txt" > "$RESULT_DIR/api.json") &
 API_PID=$!
 
 echo "Launched: auth PID=$AUTH_PID  api PID=$API_PID"
@@ -219,21 +229,26 @@ python3 -c "import json; r=json.load(open('$RESULT_DIR/api.json'));  print('api 
 ```python
 # Start each implementer with terminal(background=True). The returned dict includes a session_id.
 # Do not assume shell variables from a previous terminal() call persist here.
-# Paste the concrete values printed during pre-flight, or define them explicitly:
+# Paste the concrete values printed during pre-flight, or define them explicitly.
+# Write prompt files first — avoids shell quoting issues with multiline content:
 AUTH_WT = "/tmp/hermes-agent-pairs.xxxxxx/wt-phase1-auth"
 API_WT = "/tmp/hermes-agent-pairs.xxxxxx/wt-phase1-api"
 RESULT_DIR = "/tmp/hermes-agent-pairs.xxxxxx/results"
+write_file(path=f"{RESULT_DIR}/prompt_auth.txt", content="<PROMPT_A>")
+write_file(path=f"{RESULT_DIR}/prompt_api.txt", content="<PROMPT_B>")
 auth_proc = terminal(
-    command=f"claude -p '<PROMPT_A>' --allowedTools 'Read,Edit,Write,Bash' "
+    command=f"claude -p --allowedTools 'Read,Edit,Write,Bash' "
             f"--disallowedTools 'Bash(git push*),Bash(git reset --hard*),Bash(rm -rf*)' "
-            f"--max-turns 20 --output-format json > '{RESULT_DIR}/auth.json'",
+            f"--max-turns 20 --output-format json "
+            f"< '{RESULT_DIR}/prompt_auth.txt' > '{RESULT_DIR}/auth.json'",
     workdir=AUTH_WT,
     background=True,
 )
 api_proc = terminal(
-    command=f"claude -p '<PROMPT_B>' --allowedTools 'Read,Edit,Write,Bash' "
+    command=f"claude -p --allowedTools 'Read,Edit,Write,Bash' "
             f"--disallowedTools 'Bash(git push*),Bash(git reset --hard*),Bash(rm -rf*)' "
-            f"--max-turns 20 --output-format json > '{RESULT_DIR}/api.json'",
+            f"--max-turns 20 --output-format json "
+            f"< '{RESULT_DIR}/prompt_api.txt' > '{RESULT_DIR}/api.json'",
     workdir=API_WT,
     background=True,
 )
@@ -281,7 +296,7 @@ test "$(git -C "$API_WT" rev-list --count "$BASE_REF"..HEAD)" -gt 0
 
 ```bash
 # Review changes against the detected base branch. Never use --dangerously-bypass-approvals-and-sandbox for reviewer runs.
-codex exec review --base "$BASE_REF"
+codex review --base "$BASE_REF"
 # Run with workdir=$AUTH_WT
 ```
 
@@ -296,7 +311,7 @@ Via Hermes terminal:
 ```python
 BASE_REF = "origin/main"  # replace with the concrete value printed during pre-flight
 AUTH_WT = "/tmp/hermes-agent-pairs.xxxxxx/wt-phase1-auth"
-terminal(command=f'codex exec review --base "{BASE_REF}"',
+terminal(command=f'codex review --base "{BASE_REF}"',
          workdir=AUTH_WT, pty=True, timeout=120)
 ```
 

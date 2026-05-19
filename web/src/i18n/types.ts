@@ -666,6 +666,7 @@ export interface Translations {
     columnLabels: {
       triage: string;
       todo: string;
+      scheduled?: string;
       ready: string;
       running: string;
       blocked: string;
@@ -675,6 +676,7 @@ export interface Translations {
     columnHelp: {
       triage: string;
       todo: string;
+      scheduled?: string;
       ready: string;
       running: string;
       blocked: string;

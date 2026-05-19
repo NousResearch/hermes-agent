@@ -578,6 +578,7 @@ class TestSnapshotPersistence:
     ):
         hermes_home = tmp_path / ".hermes"
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        before = vercel_module._load_snapshots()
         env = make_env(task_id="")
         sandbox = vercel_sdk.current
 
@@ -586,7 +587,7 @@ class TestSnapshotPersistence:
         assert sandbox.snapshot_calls == []
         assert len(sandbox.stop_calls) == 1
         assert sandbox.closed == 1
-        assert vercel_module._load_snapshots() == {}
+        assert vercel_module._load_snapshots() == before
 
 
 class TestCleanup:

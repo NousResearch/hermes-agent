@@ -406,6 +406,26 @@ def test_block_then_unblock(kanban_home):
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_unblock_resets_failure_counters(kanban_home):
+    """unblock_task must reset consecutive_failures and last_failure_error."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        kb.claim_task(conn, t)
+        assert kb.block_task(conn, t, reason="need input")
+        # Simulate accumulated failures from the circuit breaker
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 5, "
+            "last_failure_error = 'test error' WHERE id = ?",
+            (t,),
+        )
+        conn.commit()
+        assert kb.unblock_task(conn, t)
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+
+
 # ---------------------------------------------------------------------------
 # Parent-completion invariant at the claim gate (RCA t_a6acd07d)
 # ---------------------------------------------------------------------------

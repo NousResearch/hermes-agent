@@ -126,6 +126,8 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert "route_proof" in data
         assert data["route_proof"]["surface"] == "dashboard"
+        assert "route_plan" in data
+        assert data["route_plan"]["tier_count"] == 7
         assert "credential_value" not in data["route_proof"]
 
     def test_dashboard_route_proof_parses_reasoning_and_service_tier(self, monkeypatch):
@@ -297,6 +299,46 @@ class TestWebServerEndpoints:
         )
         assert "token" not in raw.lower()
         assert "sk-" not in raw
+
+    def test_harness_route_plan_endpoint_is_metadata_only_and_seven_tier(self, monkeypatch):
+        import agent.harness as harness_module
+
+        class _ControlPlane:
+            def route_plan(self, route_proof=None):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "setup_mode": "hermes_recommended_codex_oauth",
+                    "recommended_baseline": {
+                        "provider": "openai-codex",
+                        "api_mode": "codex_responses",
+                        "openai_runtime": "auto",
+                        "requires_external_cli": False,
+                    },
+                    "tier_count": 7,
+                    "tiers": [{"tier": tier, "status": "ok"} for tier in range(1, 8)],
+                }
+
+        class _Harness:
+            @property
+            def control_plane(self):
+                return _ControlPlane()
+
+        monkeypatch.setattr(harness_module, "HermesHarness", _Harness)
+
+        resp = self.client.get("/api/harness/route-plan")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["schema_version"] == 1
+        assert data["content_policy"] == "metadata_only"
+        assert data["tier_count"] == 7
+        assert [item["tier"] for item in data["tiers"]] == [1, 2, 3, 4, 5, 6, 7]
+        assert data["recommended_baseline"]["provider"] == "openai-codex"
+        assert data["recommended_baseline"]["api_mode"] == "codex_responses"
+        raw = json.dumps(data, sort_keys=True)
+        assert "bearer" not in raw.lower()
+        assert "sk-proj" not in raw.lower()
 
     def test_harness_security_policy_endpoint_is_metadata_only(self, monkeypatch):
         import agent.harness as harness_module

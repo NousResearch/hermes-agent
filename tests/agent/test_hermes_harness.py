@@ -152,3 +152,26 @@ def test_control_plane_harness_exposes_security_policy(monkeypatch):
         "content_policy": "metadata_only",
         "mode": "audit_only_no_side_effects",
     }
+
+
+def test_control_plane_harness_exposes_route_plan(monkeypatch):
+    from hermes_cli import route_contracts
+
+    calls = []
+
+    def fake_build_route_hardening_plan(route_proof=None):
+        calls.append(route_proof)
+        return {"content_policy": "metadata_only", "tier_count": 7}
+
+    monkeypatch.setattr(
+        route_contracts,
+        "build_route_hardening_plan",
+        fake_build_route_hardening_plan,
+    )
+
+    route_proof = {"surface": "dashboard"}
+    assert HermesHarness().control_plane.route_plan(route_proof) == {
+        "content_policy": "metadata_only",
+        "tier_count": 7,
+    }
+    assert calls == [route_proof]

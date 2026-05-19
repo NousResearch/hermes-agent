@@ -230,6 +230,46 @@ def _cost_surface(provider: str, api_mode: str, auth_surface: str, base_url_is_l
     return "per_token_api"
 
 
+def _setup_mode(
+    provider: str,
+    api_mode: str,
+    auth_surface: str,
+    cost_surface: str,
+    base_url_is_local: bool,
+    acp_command: Any,
+) -> str:
+    if api_mode == "codex_app_server":
+        return "codex_app_server_opt_in"
+    if (
+        provider == "openai-codex"
+        and api_mode == "codex_responses"
+        and auth_surface == "oauth"
+        and cost_surface == "subscription"
+    ):
+        return "hermes_recommended_codex_oauth"
+    if acp_command:
+        return "external_cli_acp"
+    if base_url_is_local:
+        return "local_endpoint"
+    if cost_surface == "per_token_api":
+        return "metered_api"
+    if cost_surface == "subscription":
+        return "subscription_oauth"
+    return "custom"
+
+
+def _route_owner(api_mode: str, acp_command: Any) -> str:
+    if api_mode == "codex_app_server":
+        return "hermes_outer_codex_inner"
+    if acp_command:
+        return "external_cli"
+    return "hermes"
+
+
+def _requires_external_cli(api_mode: str, acp_command: Any) -> bool:
+    return bool(acp_command) or api_mode == "codex_app_server"
+
+
 def _reasoning_effort(reasoning_config: Any) -> str:
     if isinstance(reasoning_config, Mapping):
         if reasoning_config.get("enabled") is False:
@@ -281,6 +321,14 @@ def build_agent_route_proof(
     auth = _auth_surface(normalized_provider, kind, acp_command)
     runtime = _runtime_label(normalized_provider, normalized_api_mode, acp_command, is_local)
     cost = _cost_surface(normalized_provider, normalized_api_mode, auth, is_local)
+    setup_mode = _setup_mode(
+        normalized_provider,
+        normalized_api_mode,
+        auth,
+        cost,
+        is_local,
+        acp_command,
+    )
     fallback_chain = _normalise_fallback_chain(fallback_model)
 
     proof: dict[str, Any] = {
@@ -292,6 +340,9 @@ def build_agent_route_proof(
         "model": str(model or ""),
         "api_mode": normalized_api_mode,
         "runtime": runtime,
+        "setup_mode": setup_mode,
+        "route_owner": _route_owner(normalized_api_mode, acp_command),
+        "requires_external_cli": _requires_external_cli(normalized_api_mode, acp_command),
         "base_url_host": host,
         "base_url_path_hint": path_hint,
         "base_url_is_local": is_local,
@@ -384,9 +435,130 @@ def proof_from_agent(agent: Any, *, surface: str | None = None, policy: Mapping[
     )
 
 
+def _tier_record(tier: int, name: str, status: str, required_action: str) -> dict[str, Any]:
+    return {
+        "tier": tier,
+        "name": name,
+        "status": status,
+        "required_action": required_action,
+    }
+
+
+def build_route_hardening_plan(route_proof: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Map a content-safe route proof onto the broad seven-tier hardening plan.
+
+    This is a planning/control-plane surface, not a provider resolver.  It lets
+    operators see how a route choice affects each tier without leaking auth
+    material or raw prompts.
+    """
+
+    proof = dict(route_proof or build_agent_route_proof(surface="primary"))
+    setup_mode = str(proof.get("setup_mode") or "custom")
+    api_mode = str(proof.get("api_mode") or "")
+    raw_contract = proof.get("contract")
+    contract: Mapping[str, Any] = raw_contract if isinstance(raw_contract, Mapping) else {}
+    contract_status = str(contract.get("status") or "ok")
+    is_app_server = (
+        setup_mode == "codex_app_server_opt_in"
+        or api_mode == "codex_app_server"
+    )
+    is_recommended = setup_mode == "hermes_recommended_codex_oauth"
+    tier2_status = (
+        "blocked"
+        if contract_status == "blocked"
+        else "ok" if is_recommended else "attention"
+    )
+    tier2_action = (
+        "keep as canonical Hermes-recommended Codex OAuth/API-call route"
+        if is_recommended
+        else "document and prove app-server as an explicit opt-in exception"
+        if is_app_server
+        else "prove this non-default route explicitly before work starts"
+    )
+    tier5_status = "attention" if is_app_server else "ok"
+    tier6_status = "attention" if is_app_server else "ok"
+    tier7_status = "blocked" if contract_status == "blocked" else "ok"
+
+    tiers = [
+        _tier_record(
+            1,
+            "Reliability / source control",
+            "ok",
+            "preserve explicit local commits and do not mutate source control as part of route selection",
+        ),
+        _tier_record(2, "Route invariants", tier2_status, tier2_action),
+        _tier_record(
+            3,
+            "Trace / replay",
+            "ok",
+            "persist route_proof metadata in traces and classify blocked contracts as route_contract failures",
+        ),
+        _tier_record(
+            4,
+            "Context hygiene",
+            "ok",
+            "keep route proof in sidecar/control-plane metadata, not model-visible prompt content",
+        ),
+        _tier_record(
+            5,
+            "Skill lifecycle",
+            tier5_status,
+            "keep Hermes agent-loop skill tools native"
+            if not is_app_server
+            else "prove MCP skill discovery/skill_view bridge and background review downgrade before relying on app-server skills",
+        ),
+        _tier_record(
+            6,
+            "Autonomous loops",
+            tier6_status,
+            "prove delegation, cron, TUI, dashboard, and gateway routes independently"
+            if not is_app_server
+            else "scope cron/kanban/goal workers to profiles with explicit app-server route proof or keep them on default runtime",
+        ),
+        _tier_record(
+            7,
+            "Security",
+            tier7_status,
+            "forbid OpenAI Platform API-key fallback for Codex OAuth/subscription routes and expose only redacted metadata",
+        ),
+    ]
+
+    active_route = {
+        "surface": proof.get("surface") or "",
+        "provider": proof.get("provider") or "",
+        "model": proof.get("model") or "",
+        "api_mode": proof.get("api_mode") or "",
+        "runtime": proof.get("runtime") or "",
+        "setup_mode": setup_mode,
+        "route_owner": proof.get("route_owner") or "",
+        "requires_external_cli": bool(proof.get("requires_external_cli")),
+        "auth_surface": proof.get("auth_surface") or "",
+        "cost_surface": proof.get("cost_surface") or "",
+        "contract_status": contract_status,
+    }
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "content_policy": "metadata_only",
+        "setup_mode": setup_mode,
+        "active_route": active_route,
+        "recommended_baseline": {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "openai_runtime": "auto",
+            "route_owner": "hermes",
+            "auth_surface": "oauth",
+            "cost_surface": "subscription",
+            "requires_external_cli": False,
+        },
+        "tier_count": len(tiers),
+        "tiers": tiers,
+    }
+
+
 __all__ = [
     "RouteContractError",
     "build_agent_route_proof",
+    "build_route_hardening_plan",
     "credential_kind",
     "infer_surface",
     "proof_from_agent",

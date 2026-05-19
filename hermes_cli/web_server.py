@@ -698,6 +698,47 @@ async def get_harness_autonomous_loops():
         }
 
 
+@app.get("/api/harness/route-plan")
+async def get_harness_route_plan():
+    """Return the metadata-only seven-tier route impact plan."""
+    try:
+        return getattr(_control_plane_or_unavailable(), "route_plan")(
+            _dashboard_route_proof()
+        )
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "setup_mode": "unavailable",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "recommended_baseline": {
+                "provider": "openai-codex",
+                "api_mode": "codex_responses",
+                "openai_runtime": "auto",
+                "requires_external_cli": False,
+            },
+            "tier_count": 7,
+            "tiers": [
+                {
+                    "tier": tier,
+                    "name": name,
+                    "status": "unavailable",
+                    "required_action": "route plan unavailable",
+                }
+                for tier, name in [
+                    (1, "Reliability / source control"),
+                    (2, "Route invariants"),
+                    (3, "Trace / replay"),
+                    (4, "Context hygiene"),
+                    (5, "Skill lifecycle"),
+                    (6, "Autonomous loops"),
+                    (7, "Security"),
+                ]
+            ],
+        }
+
+
 @app.get("/api/harness/security-policy")
 async def get_harness_security_policy():
     """Return metadata-only Tier 7 security policy/check status."""
@@ -901,6 +942,12 @@ async def get_status():
     except Exception:
         pass
 
+    route_proof = _dashboard_route_proof()
+    try:
+        route_plan = getattr(_control_plane_or_unavailable(), "route_plan")(route_proof)
+    except Exception:
+        route_plan = None
+
     return {
         "version": __version__,
         "release_date": __release_date__,
@@ -917,7 +964,8 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
-        "route_proof": _dashboard_route_proof(),
+        "route_proof": route_proof,
+        "route_plan": route_plan,
     }
 
 

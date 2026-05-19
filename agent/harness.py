@@ -142,6 +142,14 @@ class ControlPlaneHarness:
 
         return security_policy.audit_security_policy()
 
+    def route_plan(
+        self,
+        route_proof: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        from hermes_cli.route_contracts import build_route_hardening_plan
+
+        return build_route_hardening_plan(route_proof)
+
     def learning_health_unavailable(self, error: Optional[str] = None) -> Dict[str, Any]:
         from agent import harness_control_plane
 

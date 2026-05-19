@@ -880,6 +880,31 @@ def test_bulk_status_done_forwards_completion_summary(client):
         conn.close()
 
 
+def test_bulk_status_running_rejected(client):
+    """Bulk updates must match single-task PATCH: direct 'running' is invalid."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [t["id"]], "status": "running"},
+    )
+
+    assert r.status_code == 200
+    results = r.json()["results"]
+    assert len(results) == 1
+    assert results[0]["id"] == t["id"]
+    assert results[0]["ok"] is False
+    assert "running" in results[0]["error"]
+
+    board = client.get("/api/plugins/kanban/board").json()
+    statuses = {
+        tt["id"]: col["name"]
+        for col in board["columns"]
+        for tt in col["tasks"]
+    }
+    assert statuses.get(t["id"]) != "running"
+
+
 def test_dashboard_done_actions_prompt_for_completion_summary():
     repo_root = Path(__file__).resolve().parents[2]
     bundle = (

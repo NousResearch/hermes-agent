@@ -73,9 +73,12 @@ def test_start_runs_interview_before_kanban_admission(hermes_home):
     assert result.public_id is None
     assert result.task_id is None
     assert result.dispatched is False
-    assert "Question (" in result.message
+    assert "질문:" in result.message
+    assert "그냥 평문으로 보내면 됩니다" in result.message
+    assert "Ambiguity:" not in result.message
+    assert "Ledger:" not in result.message
     assert "Socratic blockers" not in result.message
-    assert "No Kanban card" in result.message or "no Kanban card" in result.message
+    assert "Kanban 카드" in result.message
     assert (hermes_home / "ouro_intake_sessions.json").exists()
     assert not (hermes_home / "kanban.db").exists()
 
@@ -104,7 +107,8 @@ def test_answer_can_make_seed_ready_without_admitting(hermes_home):
     assert updated.action == "interview_updated"
     assert updated.session_id == started.session_id
     assert updated.public_id is None
-    assert "Restate gate is pending" in updated.message
+    assert "Restate:" in updated.message
+    assert "Seed는 승인 전까지 막혀 있습니다" in updated.message
     assert not (hermes_home / "kanban.db").exists()
 
     sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
@@ -194,7 +198,8 @@ def test_sensitive_prod_billing_env_seed_stays_decision_gated_after_admit(hermes
         actor="tester",
     )
     assert started.action == "interview_started"
-    assert "Seed is decision-gated" in started.message
+    assert "아직 Kanban 카드나 worker는 만들지 않았습니다" in started.message
+    assert "Ambiguity:" not in started.message
 
     result = handle_ouro_intake_command(f"admit session:{started.session_id}", actor="tester")
 
@@ -276,7 +281,42 @@ def test_plain_reply_routes_to_bound_active_interview_session(hermes_home):
     sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
     session = sessions[started.session_id]
     assert session["turns"][-1]["answer"] == "A와 B에 가까워"
+    assert session["turns"][-1]["refined_answer"]["scope_axes"] == ["intake/cardization", "kanban_execution_prep"]
+    assert session["last_question"]["id"] == "first_slice"
+    assert "하나만 골라" not in updated.message
+    assert "복수 선택" not in updated.message
     assert session["origin_binding"]["key"] == "discord|channel-1|thread-1|user-1"
+
+
+def test_plain_escape_cancels_active_capture(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command, handle_ouro_intake_plain_reply
+
+    origin = {"platform": "discord", "chat_id": "c", "thread_id": "t", "user_id": "u1", "user_name": "tester"}
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester", origin=origin)
+
+    cancelled = handle_ouro_intake_plain_reply("그만", actor="tester", origin=origin)
+
+    assert cancelled is not None
+    assert cancelled.action == "cancelled"
+    assert "취소" in cancelled.message
+    assert handle_ouro_intake_plain_reply("탈출 확인", actor="tester", origin=origin) is None
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    assert sessions[started.session_id]["status"] == "cancelled"
+    assert sessions[started.session_id]["origin_binding"]["expires_at"] < sessions[started.session_id]["cancelled_at"]
+
+
+def test_slash_cancel_does_not_start_new_session(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    origin = {"platform": "discord", "chat_id": "c", "thread_id": "t", "user_id": "u1", "user_name": "tester"}
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester", origin=origin)
+
+    cancelled = handle_ouro_intake_command("cancel", actor="tester", origin=origin)
+
+    assert cancelled.action == "cancelled"
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    assert list(sessions) == [started.session_id]
+    assert sessions[started.session_id]["status"] == "cancelled"
 
 
 def test_plain_reply_does_not_capture_other_user_or_slash_command(hermes_home):

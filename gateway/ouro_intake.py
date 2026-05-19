@@ -75,6 +75,21 @@ AMBIGUITY_READY_THRESHOLD = 0.20
 SENSITIVE_READY_THRESHOLD = 0.15
 ACTIVE_SESSION_TTL_SECONDS = 24 * 60 * 60
 _ACTIVE_STATUSES = {"interviewing", "restate_pending"}
+_ESCAPE_REPLIES = {"취소", "그만", "중단", "탈출", "나가기", "cancel", "stop", "exit", "quit"}
+_AUTOPILOT_AXIS_OPTIONS = {
+    "a": "intake/cardization",
+    "b": "kanban_execution_prep",
+    "c": "git_pr_ci_operations",
+    "d": "gateway_cron_runtime_monitoring",
+    "e": "other",
+}
+_AUTOPILOT_AXIS_LABELS = {
+    "intake/cardization": "A) intake/cardization",
+    "kanban_execution_prep": "B) Kanban execution prep",
+    "git_pr_ci_operations": "C) git/PR/CI operations",
+    "gateway_cron_runtime_monitoring": "D) gateway/cron/runtime monitoring",
+    "other": "E) other",
+}
 
 
 @dataclass(frozen=True)
@@ -96,7 +111,9 @@ def _help_message() -> str:
         "  /ouro-intake goal:<text> project:<bo|dc|ws|rs> [tenant:<name>] [context:<text>]\n"
         "  /ouro-intake answer session:<id> answer:<text>\n"
         "  /ouro-intake seed session:<id>\n"
-        "  /ouro-intake admit session:<id>\n\n"
+        "  /ouro-intake admit session:<id>\n"
+        "  /ouro-intake cancel [session:<id>]\n"
+        "After start, same-thread replies are captured as answers; reply `그만`/`탈출` to cancel.\n\n"
         "Boundary: admission only. executor_dispatch=forbidden_during_admission; "
         "no worker, repo mutation, PR, gateway restart, secret/env change, or live rollout is approved."
     )
@@ -228,6 +245,153 @@ def _active_session_for_origin(origin: dict[str, Any] | None, *, now: int | None
     return session_id, session
 
 
+
+def _active_sessions_for_origin(origin: dict[str, Any] | None, *, now: int | None = None) -> list[tuple[str, dict[str, Any]]]:
+    """Return every active session bound to this origin, newest first."""
+
+    key = _origin_key(origin)
+    if key is None:
+        return []
+    now = int(now or time.time())
+    candidates: list[tuple[int, str, dict[str, Any]]] = []
+    for session_id, session in _load_sessions().items():
+        if not isinstance(session, dict):
+            continue
+        if session.get("status") not in _ACTIVE_STATUSES:
+            continue
+        binding = session.get("origin_binding") if isinstance(session.get("origin_binding"), dict) else None
+        if not binding or binding.get("key") != key:
+            continue
+        expires_at = int(binding.get("expires_at") or 0)
+        if expires_at and expires_at < now:
+            continue
+        candidates.append((int(session.get("updated_at") or session.get("created_at") or 0), str(session_id), session))
+    return [(sid, sess) for _updated, sid, sess in sorted(candidates, reverse=True)]
+
+
+def _is_escape_reply(text: str) -> bool:
+    normalized = re.sub(r"[.!?。！？\s]+", "", (text or "").strip().lower())
+    return normalized in _ESCAPE_REPLIES
+
+
+def _cancel_sessions(session_ids: list[str], *, actor: str | None, reason: str = "user_cancelled") -> OuroIntakeResult:
+    sessions = _load_sessions()
+    now = int(time.time())
+    cancelled: list[str] = []
+    for session_id in session_ids:
+        session = sessions.get(session_id)
+        if not isinstance(session, dict):
+            continue
+        if session.get("status") == "cancelled":
+            continue
+        session["status"] = "cancelled"
+        session["phase"] = "cancelled"
+        session["cancelled_at"] = now
+        session["cancelled_by"] = actor or "unknown"
+        session["cancel_reason"] = reason
+        session["updated_at"] = now
+        binding = session.get("origin_binding") if isinstance(session.get("origin_binding"), dict) else None
+        if binding:
+            binding["expires_at"] = now - 1
+            binding["cancelled_at"] = now
+        session.setdefault("turns", []).append({"at": now, "phase": "cancelled", "answer": reason})
+        sessions[session_id] = session
+        cancelled.append(session_id)
+    if cancelled:
+        _save_sessions(sessions)
+        joined = ", ".join(cancelled)
+        return OuroIntakeResult(
+            action="cancelled",
+            mutated=True,
+            dispatched=False,
+            session_id=cancelled[0],
+            message=f"/ouro-intake session {joined} 취소했습니다. 이후 일반 메시지는 일반 Hermes 대화로 처리됩니다.",
+        )
+    return OuroIntakeResult(
+        action="cancel_noop",
+        mutated=False,
+        dispatched=False,
+        message="취소할 active /ouro-intake 세션이 없습니다. 일반 대화는 이미 정상 라우팅됩니다.",
+    )
+
+
+def _cancel_interview(raw_args: str = "", *, actor: str | None = None, origin: dict[str, Any] | None = None) -> OuroIntakeResult:
+    parsed = _parse_args(raw_args)
+    session_id = str(parsed.get("session_id") or parsed.get("goal") or "").strip()
+    if session_id and session_id.lower() not in {"cancel", "stop", "exit", "quit"}:
+        return _cancel_sessions([session_id], actor=actor, reason="explicit_cancel")
+    active = _active_sessions_for_origin(origin)
+    if active:
+        return _cancel_sessions([session_id for session_id, _session in active], actor=actor, reason="origin_cancel")
+    return OuroIntakeResult(
+        action="cancel_noop",
+        mutated=False,
+        dispatched=False,
+        message="취소할 active /ouro-intake 세션이 없습니다. 일반 대화는 이미 정상 라우팅됩니다.",
+    )
+
+
+def _detect_autopilot_axes(answer: str) -> list[str]:
+    text = (answer or "").strip().lower()
+    axes: list[str] = []
+    for letter, axis in _AUTOPILOT_AXIS_OPTIONS.items():
+        if re.search(rf"(?<![a-z]){letter}(?![a-z])", text):
+            axes.append(axis)
+    if "둘 다" in text or "both" in text:
+        axes.extend(["intake/cardization", "kanban_execution_prep"])
+    if "intake" in text or "카드" in text or "card" in text:
+        axes.append("intake/cardization")
+    if "kanban" in text or "실행 준비" in text or "execution prep" in text:
+        axes.append("kanban_execution_prep")
+    if "git" in text or "pr" in text or "ci" in text:
+        axes.append("git_pr_ci_operations")
+    if "gateway" in text or "cron" in text or "런타임" in text:
+        axes.append("gateway_cron_runtime_monitoring")
+    return list(dict.fromkeys(axes))
+
+
+def _refine_answer(values: dict[str, Any], answer: str, previous_question: dict[str, Any] | None) -> dict[str, Any]:
+    """Preserve and structure free-text answers before state updates.
+
+    This mirrors upstream Ouroboros' main-session Refine gate contract in a
+    deterministic, gateway-safe form: never collapse meaningful free text into a
+    single option label; keep raw text plus structured decision/context fields.
+    """
+
+    raw = (answer or "").strip()
+    refined: dict[str, Any] = {
+        "source": "from-user",
+        "refined": bool(raw),
+        "raw_answer": raw,
+        "decision": raw,
+        "reasoning": [],
+        "constraints": [],
+        "out_of_scope": [],
+        "context": [],
+    }
+    if not raw:
+        return refined
+    qid = (previous_question or {}).get("id")
+    if qid == "autopilot_axis" or re.search(r"오토파일럿|autopilot", " ".join(str(values.get(k) or "") for k in ("goal", "scope")), re.IGNORECASE):
+        axes = _detect_autopilot_axes(raw)
+        if axes:
+            refined["decision"] = " + ".join(_AUTOPILOT_AXIS_LABELS.get(axis, axis) for axis in axes)
+            refined["scope_axes"] = axes
+            refined["scope_confidence"] = "compound" if len(axes) > 1 else "single"
+            if {"intake/cardization", "kanban_execution_prep"}.issubset(set(axes)):
+                refined["reasoning"].append("User wants both intake/cardization and Kanban execution preparation, not a single-axis choice.")
+                refined["constraints"].append("This scope does not by itself approve worker dispatch or repo mutation.")
+                refined["out_of_scope"].extend([
+                    "git/PR/CI operations unless Chris later includes them",
+                    "gateway/cron/runtime monitoring unless Chris later includes it",
+                ])
+    if _OBSERVABLE_RE.search(raw):
+        refined["acceptance_criteria"] = raw
+    if re.search(r"\b(no|forbid|forbidden|approval|gate|금지|승인|하지마|말고)\b", raw, re.IGNORECASE):
+        refined["constraints"].append(raw)
+        refined["side_effect_boundary_note"] = raw
+    return refined
+
 def handle_ouro_intake_plain_reply(text: str, *, origin: dict[str, Any] | None = None, actor: str | None = None) -> OuroIntakeResult | None:
     """Route a normal same-thread/user message into an active intake interview.
 
@@ -242,6 +406,8 @@ def handle_ouro_intake_plain_reply(text: str, *, origin: dict[str, Any] | None =
     active = _active_session_for_origin(origin)
     if active is None:
         return None
+    if _is_escape_reply(answer):
+        return _cancel_interview(actor=actor, origin=origin)
     session_id, _session = active
     return _answer_interview(f"session:{session_id} answer:{shlex.quote(answer)}", actor=actor)
 
@@ -260,6 +426,7 @@ def _ambiguity_analysis(values: dict[str, Any]) -> dict[str, Any]:
 
     goal = str(values.get("goal") or "").strip()
     context = str(values.get("context") or "").strip()
+    scope_axes = values.get("scope_axes") if isinstance(values.get("scope_axes"), list) else []
     constraints = _as_list(values.get("constraints"))
     non_goals = _as_list(values.get("non_goals"))
     acceptance = _as_list(values.get("acceptance_criteria"))
@@ -307,6 +474,8 @@ def _ambiguity_analysis(values: dict[str, Any]) -> dict[str, Any]:
     if context:
         context_clarity = 0.85 if len(context.split()) >= 3 else 0.55
         context_reason = "context supplied"
+    elif scope_axes:
+        context_clarity, context_reason = 0.70, "structured scope decision supplied; concrete runtime context still useful"
     else:
         context_clarity, context_reason = 0.25, "missing current repo/runtime/product context"
 
@@ -384,7 +553,7 @@ def _detect_language(values: dict[str, Any]) -> str:
 def _infer_track(values: dict[str, Any]) -> str:
     text = " ".join(str(values.get(key) or "") for key in ("goal", "context", "scope"))
     lowered = text.lower()
-    if re.search(r"오토파일럿|autopilot", text, re.IGNORECASE):
+    if re.search(r"오토파일럿|autopilot", text, re.IGNORECASE) and not values.get("scope_axes"):
         return "autopilot"
     if "gateway" in lowered or "discord" in lowered or "command" in lowered:
         return "trigger_surface"
@@ -396,8 +565,11 @@ def _infer_track(values: dict[str, Any]) -> str:
 def _restate_goal(values: dict[str, Any]) -> str:
     goal = str(values.get("goal") or "").strip()
     scope = str(values.get("scope") or "").strip()
+    axes = values.get("scope_axes") if isinstance(values.get("scope_axes"), list) else []
     context = str(values.get("context") or "").strip()
-    if scope:
+    if axes:
+        base = f"{goal} — scope: {' + '.join(_AUTOPILOT_AXIS_LABELS.get(axis, axis) for axis in axes)}"
+    elif scope:
         base = f"{goal} — scope: {scope}"
     elif context:
         base = f"{goal} — context: {context[:160]}"
@@ -426,17 +598,25 @@ def _highest_impact_question(values: dict[str, Any], review: dict[str, Any], *, 
         if language == "ko":
             text = (
                 "오토파일럿이라고 할 때, 먼저 자동화하려는 축이 어느 쪽이에요? "
-                "하나만 골라주세요: A) intake/카드화 자동화, B) Kanban 실행 준비 자동화, "
+                "복수 선택도 괜찮습니다: A) intake/카드화 자동화, B) Kanban 실행 준비 자동화, "
                 "C) git·PR·CI 운영 자동화, D) gateway·cron·런타임 감시 자동화, E) 다른 범위."
             )
         else:
             text = (
-                "When you say autopilot, which axis should it automate first? Choose one: "
+                "When you say autopilot, which axis should it automate first? Multiple axes are fine: "
                 "A) intake/cardization, B) Kanban execution prep, C) git/PR/CI operations, "
                 "D) gateway/cron/runtime monitoring, or E) another scope."
             )
         options = ["intake/cardization", "Kanban execution prep", "git/PR/CI operations", "gateway/cron/runtime monitoring", "other"]
         return {"id": "autopilot_axis", "track": "scope", "text": text, "options": options}
+
+    if values.get("scope_axes") and not str(values.get("first_slice") or "").strip():
+        text = (
+            "좋아요. A/B를 함께 본다면 첫 버전은 어디까지를 완료로 볼까요? 예: ‘요청 → refined Seed 초안 → Kanban admission/실행준비 카드까지, 실제 worker dispatch는 제외’."
+            if language == "ko"
+            else "Good. If this is a combined scope, where should v1 stop? For example: request -> refined Seed draft -> Kanban admission/execution-prep card, excluding worker dispatch."
+        )
+        return {"id": "first_slice", "track": "scope", "text": text, "options": []}
 
     if "goal_unclear" in flags:
         text = "결과물을 한 문장으로 좁히면 무엇인가요?" if language == "ko" else "What concrete output should this produce, in one sentence?"
@@ -455,27 +635,19 @@ def _highest_impact_question(values: dict[str, Any], review: dict[str, Any], *, 
 
 
 def _format_interview_question(session_id: str, review: dict[str, Any], question: dict[str, Any]) -> str:
-    ledger_hint = ", ".join(
-        f"{item['name']}={item['clarity_score']:.2f}" for item in review.get("ambiguity_ledger", [])
-    )
     return (
-        f"Started /ouro-intake interview session {session_id}.\n"
-        f"Ambiguity: {review['ambiguity_score']:.2f} ({review['ambiguity_level']}); Seed is decision-gated.\n"
-        f"Question ({question['track']}): {question['text']}\n"
-        f"Ledger: {ledger_hint}\n"
-        f"Reply with `/ouro-intake answer session:{session_id} answer:<answer>`; no Kanban card or worker was created."
+        f"/ouro-intake 인터뷰를 시작했습니다 (`{session_id}`).\n"
+        "답은 이 thread에 그냥 평문으로 보내면 됩니다. 중단하려면 `/ouro-intake cancel` 또는 `그만`이라고 보내세요.\n\n"
+        f"질문: {question['text']}\n\n"
+        "아직 Kanban 카드나 worker는 만들지 않았습니다."
     )
 
 
 def _format_next_question(session_id: str, review: dict[str, Any], question: dict[str, Any]) -> str:
-    ledger_hint = ", ".join(
-        f"{item['name']}={item['clarity_score']:.2f}" for item in review.get("ambiguity_ledger", [])
-    )
     return (
         f"Updated /ouro-intake session {session_id}.\n"
-        f"Ambiguity: {review['ambiguity_score']:.2f} ({review['ambiguity_level']}); Seed remains decision-gated.\n"
-        f"Next question ({question['track']}): {question['text']}\n"
-        f"Ledger: {ledger_hint}"
+        "좋아요. 답변은 구조화해서 반영했습니다.\n\n"
+        f"다음 질문: {question['text']}"
     )
 
 
@@ -483,9 +655,9 @@ def _format_restate(session_id: str, values: dict[str, Any], review: dict[str, A
     restatement = _restate_goal(values)
     return (
         f"Updated /ouro-intake session {session_id}.\n"
-        f"Ambiguity: {review['ambiguity_score']:.2f} ({review['ambiguity_level']}) — Restate gate is pending.\n"
-        f"Restate: {restatement}\n"
-        f"If correct, reply `/ouro-intake answer session:{session_id} answer:승인`. Seed remains blocked until this confirmation."
+        "제가 이해한 목표를 한 문장으로 확인할게요.\n\n"
+        f"Restate: {restatement}\n\n"
+        "맞으면 `승인`이라고 답해주세요. 아니면 수정할 내용을 그대로 보내면 됩니다. Seed는 승인 전까지 막혀 있습니다."
     )
 
 def _ontology_for(values: dict[str, Any]) -> dict[str, Any]:
@@ -593,6 +765,7 @@ def _build_seed_contract(values: dict[str, Any], *, public_id: str | None, actor
         "created_at": int(time.time()),
         "goal": goal,
         "context": context,
+        "interview_refinements": values.get("refined_answers", []),
         "non_goals": non_goals,
         "constraints": _as_list(values.get("constraints"), default=["Seed is Kanban admission source material only"]),
         "ontology": _ontology_for(values),
@@ -726,7 +899,7 @@ def _start_interview(raw_args: str, *, actor: str | None, origin: dict[str, Any]
     return OuroIntakeResult(action="interview_started", mutated=True, dispatched=False, session_id=session_id, message=message)
 
 
-def _merge_answer(values: dict[str, Any], parsed: dict[str, Any], free_answer: str) -> dict[str, Any]:
+def _merge_answer(values: dict[str, Any], parsed: dict[str, Any], free_answer: str, refinement: dict[str, Any] | None = None) -> dict[str, Any]:
     merged = dict(values)
     for key in ("context", "acceptance_criteria", "verification_requirements", "constraints", "non_goals", "side_effect_boundary_note", "scope"):
         if parsed.get(key):
@@ -736,6 +909,26 @@ def _merge_answer(values: dict[str, Any], parsed: dict[str, Any], free_answer: s
     if answer:
         existing_context = str(merged.get("context") or "").strip()
         merged["context"] = f"{existing_context}; interview answer: {answer}" if existing_context else f"interview answer: {answer}"
+    if refinement and refinement.get("raw_answer"):
+        merged.setdefault("refined_answers", [])
+        merged["refined_answers"] = [*list(merged.get("refined_answers") or []), refinement]
+        axes = refinement.get("scope_axes") if isinstance(refinement.get("scope_axes"), list) else []
+        if axes:
+            existing_axes = list(merged.get("scope_axes") or []) if isinstance(merged.get("scope_axes"), list) else []
+            merged["scope_axes"] = list(dict.fromkeys([*existing_axes, *axes]))
+            merged["scope"] = " + ".join(_AUTOPILOT_AXIS_LABELS.get(axis, axis) for axis in merged["scope_axes"])
+        if refinement.get("acceptance_criteria") and not str(merged.get("acceptance_criteria") or "").strip():
+            merged["acceptance_criteria"] = refinement["acceptance_criteria"]
+        for key in ("constraints", "non_goals"):
+            items = refinement.get("constraints" if key == "constraints" else "out_of_scope")
+            if items:
+                existing = str(merged.get(key) or "").strip()
+                addition = "; ".join(str(item) for item in items if str(item).strip())
+                merged[key] = f"{existing}; {addition}" if existing else addition
+        if refinement.get("side_effect_boundary_note"):
+            existing = str(merged.get("side_effect_boundary_note") or "").strip()
+            merged["side_effect_boundary_note"] = f"{existing}; {refinement['side_effect_boundary_note']}" if existing else refinement["side_effect_boundary_note"]
+    if answer:
         if _OBSERVABLE_RE.search(answer) and not str(merged.get("acceptance_criteria") or "").strip():
             merged["acceptance_criteria"] = answer
         if re.search(r"\b(no|forbid|forbidden|approval|gate|금지|승인)\b", answer, re.IGNORECASE):
@@ -775,11 +968,15 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
         )
         return OuroIntakeResult(action="interview_updated", mutated=True, dispatched=False, session_id=session_id, message=message)
 
-    values = _merge_answer(dict(session.get("values") or {}), parsed, str(parsed.get("goal") or ""))
+    base_values = dict(session.get("values") or {})
+    refinement = _refine_answer(base_values, answer_text, previous_question)
+    values = _merge_answer(base_values, parsed, str(parsed.get("goal") or ""), refinement=refinement)
+    if (previous_question or {}).get("id") == "first_slice" and answer_text:
+        values["first_slice"] = answer_text
     review = _seed_review(values)
     session["values"] = values
     session["updated_at"] = int(time.time())
-    session.setdefault("turns", []).append({"at": int(time.time()), "question": previous_question, "answer": answer_text, "review": review})
+    session.setdefault("turns", []).append({"at": int(time.time()), "question": previous_question, "answer": answer_text, "refined_answer": refinement, "review": review})
     session.setdefault("rounds", []).append({"at": int(time.time()), "answer": answer_text, "review": review})
     session["language"] = _detect_language(values)
     session["ambiguity_ledger"] = review["ambiguity_ledger"]
@@ -819,7 +1016,7 @@ def _show_or_seed(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
             message=(
                 f"Seed is blocked for session {session_id}. Restate gate has not been approved.\n"
                 f"Restate: {restate}\n"
-                f"Reply `/ouro-intake answer session:{session_id} answer:승인` if this is correct; no Kanban action was taken."
+                "맞으면 `승인`이라고 답해주세요. 아직 Kanban action은 하지 않았습니다."
             ),
         )
     values = dict(session.get("values") or {})
@@ -946,12 +1143,14 @@ def handle_ouro_intake_command(raw_args: str = "", *, actor: str | None = None, 
     # tokens would turn `answer:"multi word"` into `answer:multi word`, causing
     # only the first word to bind to the key and losing the actual interview
     # answer that reduces ambiguity.
-    rest = raw_args[len(raw_args.split(maxsplit=1)[0]) :].strip() if subcommand in {"start", "answer", "continue", "seed", "show", "admit"} else raw_args
+    rest = raw_args[len(raw_args.split(maxsplit=1)[0]) :].strip() if subcommand in {"start", "answer", "continue", "seed", "show", "admit", "cancel", "stop", "exit", "quit"} else raw_args
 
     if subcommand in {"answer", "continue"}:
         return _answer_interview(rest, actor=actor)
     if subcommand in {"seed", "show"}:
         return _show_or_seed(rest, actor=actor)
+    if subcommand in {"cancel", "stop", "exit", "quit"}:
+        return _cancel_interview(rest, actor=actor, origin=origin)
     if subcommand == "admit":
         return _admit_seed(rest)
     if subcommand == "start":

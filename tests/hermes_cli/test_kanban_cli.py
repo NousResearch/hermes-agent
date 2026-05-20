@@ -11,6 +11,7 @@ import pytest
 
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_pr_review as prp
 
 
 @pytest.fixture
@@ -88,6 +89,24 @@ def test_run_slash_create_and_list(kanban_home):
     out = kc.run_slash("list")
     assert "ship feature" in out
     assert "alice" in out
+
+
+def test_run_slash_pr_review_poll_wired(monkeypatch, kanban_home):
+    called = {}
+
+    def fake_poll(conn, task_id):
+        called["task_id"] = task_id
+        return prp.PollResult(
+            state="pending",
+            summary="PR checks are still pending; task remains in review.",
+            pr={"number": 42},
+            pending_items=[prp.ActionItem("check:ci:PENDING", "check", "ci", "PENDING")],
+        )
+
+    monkeypatch.setattr(kc.kanban_pr_review, "poll_task", fake_poll)
+    out = kc.run_slash("pr-review-poll t_deadbeef")
+    assert called["task_id"] == "t_deadbeef"
+    assert "PR checks are still pending" in out
 
 
 def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):

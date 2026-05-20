@@ -314,7 +314,25 @@ For engineering and review tasks, prefer this optional metadata shape:
 }
 ```
 
-These keys are a convention, not a schema requirement. The useful property is
+These keys are a convention, not a schema requirement. For coding tasks that open GitHub PRs, include PR metadata so Hermes can keep the card in the `review` column instead of treating PR creation as final completion:
+
+```json
+{
+  "changed_files": ["src/auth.py", "tests/test_auth.py"],
+  "verification": ["pytest tests/test_auth.py -q"],
+  "github": {
+    "repo": "OWNER/REPO",
+    "pr_number": 123,
+    "pr_url": "https://github.com/OWNER/REPO/pull/123"
+  },
+  "branch": "feat/auth-flow",
+  "worktree_path": "/absolute/path/to/worktree"
+}
+```
+
+A PR-bearing completion preserves the run handoff, does not set `completed_at`, and does not unblock dependents until the review agent later completes the task after merge/deploy or explicit handoff. Operators can run `hermes kanban pr-review-poll <task_id>` to record CI failures, pending checks, requested changes, unresolved review threads, or a closed-unmerged PR as durable events/comments on the same card.
+
+The useful property is
 that every worker leaves enough evidence for the next reader to answer four
 questions quickly:
 

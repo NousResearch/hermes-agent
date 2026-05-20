@@ -650,6 +650,79 @@ def test_complete_records_result(kanban_home):
     assert task.completed_at is not None
 
 
+def test_complete_with_pr_metadata_enters_review_without_unblocking_child(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="ship pr", assignee="a")
+        child = kb.create_task(conn, title="dependent", assignee="a", parents=[parent])
+        kb.claim_task(conn, parent)
+        assert kb.complete_task(
+            conn,
+            parent,
+            result="PR opened",
+            summary="Implemented and opened PR.",
+            metadata={
+                "github": {
+                    "pr_url": "https://github.com/org/repo/pull/42",
+                    "pr_number": 42,
+                    "repo": "org/repo",
+                },
+                "branch": "feat/x",
+            },
+        )
+        task = kb.get_task(conn, parent)
+        runs = kb.list_runs(conn, parent)
+        events = kb.list_events(conn, parent)
+        child_task = kb.get_task(conn, child)
+
+    assert task.status == "review"
+    assert task.completed_at is None
+    assert task.result == "PR opened"
+    assert child_task.status == "todo"
+    assert len(runs) == 1
+    assert runs[0].status == "review"
+    assert runs[0].outcome == "completed"
+    assert runs[0].metadata["github"]["pr_number"] == 42
+    kinds = [event.kind for event in events]
+    assert "review_requested" in kinds
+    assert "completed" not in kinds
+
+
+def test_review_agent_completion_with_pr_metadata_can_finish_task(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="review pr", assignee="a")
+        child = kb.create_task(conn, title="dependent", assignee="a", parents=[parent])
+        _set_task_status(conn, parent, "review")
+        claimed = kb.claim_review_task(conn, parent)
+        assert claimed is not None
+        assert kb.complete_task(
+            conn,
+            parent,
+            result="PR merged and deployed",
+            summary="Review passed; PR merged and deployed.",
+            metadata={
+                "github": {
+                    "pr_url": "https://github.com/org/repo/pull/42",
+                    "pr_number": 42,
+                    "repo": "org/repo",
+                },
+            },
+        )
+        task = kb.get_task(conn, parent)
+        runs = kb.list_runs(conn, parent)
+        events = kb.list_events(conn, parent)
+        child_task = kb.get_task(conn, child)
+
+    assert task is not None
+    assert child_task is not None
+    assert task.status == "done"
+    assert task.completed_at is not None
+    assert child_task.status == "ready"
+    assert runs[-1].status == "done"
+    assert runs[-1].outcome == "completed"
+    kinds = [event.kind for event in events]
+    assert "completed" in kinds
+
+
 def test_block_then_unblock(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

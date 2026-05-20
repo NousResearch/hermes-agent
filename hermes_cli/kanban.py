@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_pr_review
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
@@ -514,6 +515,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
 
+    p_pr_poll = sub.add_parser(
+        "pr-review-poll",
+        help="One-shot poll of a task's GitHub PR checks and review feedback",
+    )
+    p_pr_poll.add_argument("task_id")
+    p_pr_poll.add_argument("--json", action="store_true")
+
     p_edit = sub.add_parser(
         "edit",
         help="Edit recovery fields on an already-completed task",
@@ -895,6 +903,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "claim":    _cmd_claim,
         "comment":  _cmd_comment,
         "complete": _cmd_complete,
+        "pr-review-poll": _cmd_pr_review_poll,
         "edit":     _cmd_edit,
         "block":    _cmd_block,
         "schedule": _cmd_schedule,
@@ -1865,6 +1874,23 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             else:
                 print(f"Completed {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_pr_review_poll(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        result = kanban_pr_review.poll_task(conn, args.task_id)
+    if getattr(args, "json", False):
+        print(json.dumps(result.to_event_payload(), indent=2, ensure_ascii=False))
+        return 0
+    print(f"{args.task_id}: {result.summary}")
+    if result.action_items:
+        for item in result.action_items:
+            suffix = f" ({item.url})" if item.url else ""
+            print(f"- [{item.kind}] {item.title}: {item.state}{suffix}")
+    elif result.pending_items:
+        for item in result.pending_items:
+            print(f"- [pending] {item.title}: {item.state}")
+    return 0
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:

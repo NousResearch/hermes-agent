@@ -47,28 +47,30 @@ kanban_complete(
 )
 ```
 
-**Coding task that needs human review (review-required):**
+**Coding task with a PR:**
 
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+For code-changing tasks that open a PR, call `kanban_complete` with PR metadata. Hermes treats that as a coding handoff, not final completion: the task moves to the single `review` state, keeps the closing run metadata, does not set `completed_at`, and does not unblock dependent tasks. The dispatcher will spawn a review agent with `sdlc-review`; operators can also run `hermes kanban pr-review-poll <task_id>` to record CI/reviewer feedback on the same card.
 
 ```python
-import json
-
-kanban_comment(
-    body="review-required handoff:\n" + json.dumps({
+kanban_complete(
+    summary="rate limiter shipped in PR #123 — token bucket, keys on user_id with IP fallback, 14/14 tests pass",
+    metadata={
         "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
         "tests_run": 14,
         "tests_passed": 14,
-        "diff_path": "/path/to/worktree",  # or PR url if pushed
+        "github": {
+            "repo": "org/repo",
+            "pr_number": 123,
+            "pr_url": "https://github.com/org/repo/pull/123",
+        },
+        "branch": "feat/rate-limiter",
+        "worktree_path": "/path/to/worktree",
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
-    }, indent=2),
-)
-kanban_block(
-    reason="review-required: rate limiter shipped, 14/14 tests pass — needs eyes on the user_id/IP fallback choice before merging",
+    },
 )
 ```
 
-Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
+Use `kanban_block` only when you need human input before a PR exists. Use plain terminal `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
 
 **Research task:**
 ```python
@@ -184,6 +186,7 @@ You can configure the gateway to receive cross-profile Kanban task notifications
 Every tool has a CLI equivalent for human operators and scripts:
 - `kanban_show` ↔ `hermes kanban show <id> --json`
 - `kanban_complete` ↔ `hermes kanban complete <id> --summary "..." --metadata '{...}'`
+- PR review poll ↔ `hermes kanban pr-review-poll <id>`
 - `kanban_block` ↔ `hermes kanban block <id> "reason"`
 - `kanban_create` ↔ `hermes kanban create "title" --assignee <profile> [--parent <id>]`
 - etc.

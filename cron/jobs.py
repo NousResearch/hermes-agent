@@ -274,14 +274,19 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
     
-    # Duration like "30m", "2h", "1d" → one-shot from now
+    # Duration like "30m", "2h", "1d" → one-shot from now.
+    # ``interval_minutes`` is preserved so callers that pair this schedule
+    # with ``repeat > 1`` can promote it to a recurring interval — without
+    # it, the scheduler has no way to compute next_run_at after the first
+    # execution and silently marks the job completed (see #29392).
     try:
         minutes = parse_duration(schedule)
         run_at = _hermes_now() + timedelta(minutes=minutes)
         return {
             "kind": "once",
             "run_at": run_at.isoformat(),
-            "display": f"once in {original}"
+            "display": f"once in {original}",
+            "interval_minutes": minutes,
         }
     except ValueError:
         pass
@@ -293,6 +298,41 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         f"  - Cron: '0 9 * * *' (cron expression)\n"
         f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
     )
+
+
+def _promote_once_to_interval_for_repeat(
+    parsed_schedule: Dict[str, Any],
+    repeat: Optional[int],
+) -> Dict[str, Any]:
+    """Promote duration-style one-shot schedules to recurring intervals when
+    paired with ``repeat > 1``.
+
+    ``parse_schedule("2m")`` returns ``kind="once"`` because a bare duration
+    is one-shot by default. When the caller also requests ``repeat=3`` the
+    user's intent is "every 2 minutes, 3 times" — but without a recurring
+    schedule, ``mark_job_run`` silently flips the job to ``state="completed"``
+    after the first run because there is no anchor for ``next_run_at``. Match
+    intent rather than failing quietly (see #29392).
+
+    Only the duration form ("2m", "30m", "1h") is promoted — an explicit ISO
+    timestamp paired with ``repeat>1`` has no implied interval, so it falls
+    through to the existing one-shot path. Use ``every 2m`` + ``repeat=N`` if
+    you need a timestamp-anchored recurring schedule.
+    """
+    if (
+        parsed_schedule.get("kind") == "once"
+        and repeat is not None
+        and repeat > 1
+        and "interval_minutes" in parsed_schedule
+    ):
+        interval_minutes = parsed_schedule["interval_minutes"]
+        return {
+            "kind": "interval",
+            "minutes": interval_minutes,
+            "display": f"every {interval_minutes}m",
+        }
+    return parsed_schedule
+
 
 
 def _ensure_aware(dt: datetime) -> datetime:
@@ -605,6 +645,8 @@ def create_job(
     if repeat is not None and repeat <= 0:
         repeat = None
 
+    parsed_schedule = _promote_once_to_interval_for_repeat(parsed_schedule, repeat)
+
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
@@ -797,6 +839,18 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             # create_job() does so downstream code can call .get() safely.
             if isinstance(updated_schedule, str):
                 updated_schedule = parse_schedule(updated_schedule)
+                # Mirror create_job's promotion of "2m" + repeat>1 → recurring
+                # interval so swapping a schedule via update_job doesn't
+                # silently re-introduce the one-shot-with-repeat completion
+                # bug (#29392). The promotion keys off the job's current
+                # ``repeat.times``, which is also updatable in this call.
+                _repeat_blob = updated.get("repeat")
+                updated_repeat = (
+                    _repeat_blob.get("times") if isinstance(_repeat_blob, dict) else None
+                )
+                updated_schedule = _promote_once_to_interval_for_repeat(
+                    updated_schedule, updated_repeat,
+                )
                 updated["schedule"] = updated_schedule
             updated["schedule_display"] = updates.get(
                 "schedule_display",

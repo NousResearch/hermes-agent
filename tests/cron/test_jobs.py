@@ -260,6 +260,24 @@ class TestJobCRUD:
         job = create_job(prompt="Recurring", schedule="every 1h")
         assert job["repeat"]["times"] is None
 
+    def test_once_with_repeat_promoted_to_interval(self, tmp_cron_dir):
+        # Duration-style schedule paired with repeat > 1 reads as "every N
+        # minutes, M times". Without the promotion the job would be stored as
+        # kind=once and silently flip to state=completed after the first run
+        # because there is no recurring schedule to anchor next_run_at on
+        # (#29392).
+        job = create_job(prompt="Watchdog", schedule="2m", repeat=3)
+        assert job["schedule"]["kind"] == "interval"
+        assert job["schedule"]["minutes"] == 2
+        assert job["repeat"]["times"] == 3
+
+    def test_once_with_repeat_one_stays_once(self, tmp_cron_dir):
+        # The promotion only fires for repeat > 1 — a single-shot duration
+        # schedule with the default repeat=1 must continue to be one-shot.
+        job = create_job(prompt="OneShot", schedule="2m", repeat=1)
+        assert job["schedule"]["kind"] == "once"
+        assert job["repeat"]["times"] == 1
+
     def test_default_delivery_origin(self, tmp_cron_dir):
         job = create_job(
             prompt="Test", schedule="30m",
@@ -304,6 +322,17 @@ class TestUpdateJob:
         fetched = get_job(job["id"])
         assert fetched["schedule"]["minutes"] == 120
         assert fetched["schedule_display"] == "every 120m"
+
+    def test_update_schedule_promotes_once_with_existing_repeat(self, tmp_cron_dir):
+        # Mirror of create_job's promotion through the update path: swapping
+        # a recurring schedule to the bare duration form ("2m") on a job
+        # that already has repeat=3 must keep the schedule recurring, not
+        # silently revert to one-shot (#29392).
+        job = create_job(prompt="Watchdog", schedule="every 1h", repeat=3)
+        updated = update_job(job["id"], {"schedule": "2m"})
+        assert updated is not None
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["schedule"]["minutes"] == 2
 
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")
@@ -474,6 +503,21 @@ class TestMarkJobRun:
         updated = get_job(job["id"])
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "timeout"
+
+    def test_once_with_repeat_three_survives_first_run(self, tmp_cron_dir):
+        # Regression for #29392: a job created with schedule="2m" and
+        # repeat=3 used to flip to state=completed after the first run
+        # because parse_schedule classified "2m" as kind=once. After the
+        # create-time promotion, the first run leaves the job scheduled
+        # with completed=1/3 and next_run_at populated.
+        job = create_job(prompt="Watchdog", schedule="2m", repeat=3)
+        mark_job_run(job["id"], success=True)
+        updated = get_job(job["id"])
+        assert updated is not None, "job should not be deleted after 1 of 3 runs"
+        assert updated["repeat"]["completed"] == 1
+        assert updated["repeat"]["times"] == 3
+        assert updated["state"] == "scheduled"
+        assert updated["next_run_at"] is not None
 
     def test_delivery_error_tracked_separately(self, tmp_cron_dir):
         """Agent succeeds but delivery fails — both tracked independently."""

@@ -545,7 +545,12 @@ def load_cli_config() -> Dict[str, Any]:
                 # CLI: always export (overrides stale .env or inherited values)
                 os.environ[env_var] = str(terminal_config[config_key])
                 continue
-            if _file_has_terminal_config or env_var not in os.environ:
+            # Always export TERMINAL_ENV from config.  It selects the terminal
+            # backend and should always be controlled by config.yaml, even when
+            # a stale .env value (left over from a previous setup or migration)
+            # is already set.  All other terminal env vars respect the existing
+            # env-only-overrides-defaults design (comment at line 404).
+            if env_var == "TERMINAL_ENV" or _file_has_terminal_config or env_var not in os.environ:
                 val = terminal_config[config_key]
                 if isinstance(val, (list, dict)):
                     os.environ[env_var] = json.dumps(val)

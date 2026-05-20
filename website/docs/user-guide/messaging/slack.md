@@ -335,6 +335,10 @@ platforms:
       # (Slack's "Also send to channel" feature).
       # Only the first chunk of the first reply is broadcast.
       reply_broadcast: false
+
+      # Opt in to Slack-native plan/task cards for tool progress.
+      # Final assistant replies are still posted as normal messages.
+      native_task_cards: false
 ```
 
 | Key | Default | Description |
@@ -342,6 +346,7 @@ platforms:
 | `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
+| `platforms.slack.extra.native_task_cards` | `false` | When `true`, Slack tool-progress updates use native plan/task-card stream chunks while final replies remain normal messages. |
 
 ### Session Isolation
 

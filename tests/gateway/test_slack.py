@@ -1390,6 +1390,153 @@ class TestSendTyping:
 
 
 # ---------------------------------------------------------------------------
+# TestNativeTaskCardProgress — Slack chat.*Stream plan/task chunks
+# ---------------------------------------------------------------------------
+
+
+class TestNativeTaskCardProgress:
+    def test_native_task_cards_config_gate_defaults_off(self):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+
+        assert adapter.native_task_cards_enabled() is False
+
+    def test_native_task_cards_config_gate_supports_nested_progress(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="xoxb-fake",
+            extra={"streaming": {"progress": {"native_task_cards": True}}},
+        )
+        adapter = SlackAdapter(config)
+
+        assert adapter.native_task_cards_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_sends_plan_task_chunks_over_slack_stream(self, adapter):
+        adapter.config.extra["native_task_cards"] = True
+        adapter._app.client.api_call = AsyncMock(
+            side_effect=[
+                {"ok": True, "ts": "stream_ts"},
+                {"ok": True},
+            ]
+        )
+
+        result = await adapter.send_native_task_card_progress(
+            "C123",
+            [{"id": "terminal_1", "title": "terminal - pwd", "status": "in_progress"}],
+            metadata={"thread_id": "parent_ts"},
+            fallback_text="Hermes is working\n- terminal - pwd - running",
+        )
+
+        assert result.success
+        assert result.message_id == "stream_ts"
+        adapter._app.client.api_call.assert_has_awaits(
+            [
+                call(
+                    "chat.startStream",
+                    json={
+                        "channel": "C123",
+                        "thread_ts": "parent_ts",
+                        "task_display_mode": "plan",
+                    },
+                ),
+                call(
+                    "chat.appendStream",
+                    json={
+                        "channel": "C123",
+                        "ts": "stream_ts",
+                        "chunks": [
+                            {"type": "plan_update", "title": "Hermes is working"},
+                            {
+                                "type": "task_update",
+                                "id": "terminal_1",
+                                "title": "terminal - pwd",
+                                "status": "in_progress",
+                            },
+                        ],
+                        "markdown_text": "Hermes is working\n- terminal - pwd - running",
+                    },
+                ),
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_start_stream_includes_optional_recipient_metadata(self, adapter):
+        adapter.config.extra["native_task_cards"] = True
+        adapter._app.client.api_call = AsyncMock(
+            side_effect=[
+                {"ok": True, "ts": "stream_ts"},
+                {"ok": True},
+            ]
+        )
+
+        result = await adapter.send_native_task_card_progress(
+            "C123",
+            [{"id": "terminal_1", "title": "terminal - pwd", "status": "in_progress"}],
+            metadata={
+                "thread_id": "parent_ts",
+                "recipient_team_id": "T123",
+                "recipient_user_id": "U123",
+            },
+        )
+
+        assert result.success
+        start_payload = adapter._app.client.api_call.await_args_list[0].kwargs["json"]
+        assert start_payload == {
+            "channel": "C123",
+            "thread_ts": "parent_ts",
+            "task_display_mode": "plan",
+            "recipient_team_id": "T123",
+            "recipient_user_id": "U123",
+        }
+
+    @pytest.mark.asyncio
+    async def test_native_stream_requires_thread_target(self, adapter):
+        adapter.config.extra["native_task_cards"] = True
+        adapter._app.client.api_call = AsyncMock()
+
+        result = await adapter.send_native_task_card_progress(
+            "C123",
+            [{"id": "terminal_1", "title": "terminal - pwd", "status": "in_progress"}],
+        )
+
+        assert not result.success
+        assert result.error == "No Slack thread target"
+        adapter._app.client.api_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_updates_existing_stream_and_stops_it(self, adapter):
+        adapter.config.extra["native_task_cards"] = True
+        adapter._app.client.api_call = AsyncMock(
+            side_effect=[
+                {"ok": True, "ts": "stream_ts"},
+                {"ok": True},
+                {"ok": True},
+                {"ok": True},
+            ]
+        )
+
+        await adapter.send_native_task_card_progress(
+            "C123",
+            [{"id": "terminal_1", "title": "terminal - pwd", "status": "in_progress"}],
+            metadata={"thread_id": "parent_ts"},
+        )
+        await adapter.send_native_task_card_progress(
+            "C123",
+            [{"id": "terminal_1", "title": "terminal - pwd", "status": "complete"}],
+            metadata={"thread_id": "parent_ts"},
+        )
+        await adapter.stop_native_task_card_progress(
+            "C123",
+            metadata={"thread_id": "parent_ts"},
+        )
+
+        method_names = [args.args[0] for args in adapter._app.client.api_call.await_args_list]
+        assert method_names == ["chat.startStream", "chat.appendStream", "chat.appendStream", "chat.stopStream"]
+        stop_payload = adapter._app.client.api_call.await_args_list[-1].kwargs["json"]
+        assert stop_payload == {"channel": "C123", "ts": "stream_ts"}
+
+
+# ---------------------------------------------------------------------------
 # TestFormatMessage — Markdown → mrkdwn conversion
 # ---------------------------------------------------------------------------
 

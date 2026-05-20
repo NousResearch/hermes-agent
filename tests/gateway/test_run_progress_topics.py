@@ -121,6 +121,87 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class SlackNativeTaskCardAdapter(ProgressCaptureAdapter):
+    def __init__(self):
+        super().__init__(platform=Platform.SLACK)
+        self.config.extra["native_task_cards"] = True
+        self.native_updates = []
+        self.native_stops = []
+
+    def native_task_cards_enabled(self) -> bool:
+        return True
+
+    async def send_native_task_card_progress(
+        self,
+        chat_id,
+        tasks,
+        *,
+        title="Hermes is working",
+        reply_to=None,
+        metadata=None,
+        fallback_text=None,
+    ) -> SendResult:
+        self.native_updates.append(
+            {
+                "chat_id": chat_id,
+                "tasks": [dict(task) for task in tasks],
+                "title": title,
+                "reply_to": reply_to,
+                "metadata": metadata,
+                "fallback_text": fallback_text,
+            }
+        )
+        return SendResult(success=True, message_id="native-stream-1")
+
+    async def stop_native_task_card_progress(
+        self,
+        chat_id,
+        *,
+        reply_to=None,
+        metadata=None,
+    ) -> None:
+        self.native_stops.append(
+            {
+                "chat_id": chat_id,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+
+
+class SlackNativeTaskCardDisabledAdapter(SlackNativeTaskCardAdapter):
+    def __init__(self):
+        super().__init__()
+        self.config.extra["native_task_cards"] = False
+
+    def native_task_cards_enabled(self) -> bool:
+        return False
+
+
+class FailingSlackNativeTaskCardAdapter(SlackNativeTaskCardAdapter):
+    async def send_native_task_card_progress(
+        self,
+        chat_id,
+        tasks,
+        *,
+        title="Hermes is working",
+        reply_to=None,
+        metadata=None,
+        fallback_text=None,
+    ) -> SendResult:
+        self.native_updates.append(
+            {
+                "chat_id": chat_id,
+                "tasks": [dict(task) for task in tasks],
+                "title": title,
+                "reply_to": reply_to,
+                "metadata": metadata,
+                "fallback_text": fallback_text,
+            }
+        )
+        return SendResult(success=False, error="native stream unavailable")
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -137,6 +218,63 @@ class FakeAgent:
             time.sleep(0.35)
             cb("tool.started", "browser_navigate", "https://example.com", {})
             time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class CompletingToolAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "pwd", {})
+            time.sleep(0.35)
+            cb("tool.completed", "terminal", None, None, duration=0.2, is_error=False)
+            time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class FailingToolAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "false", {})
+            time.sleep(0.35)
+            cb("tool.completed", "terminal", None, None, duration=0.2, is_error=True)
+            time.sleep(0.1)
+        return {
+            "final_response": "handled failure",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class RepeatedToolAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "pwd", {})
+            time.sleep(0.35)
+            cb("tool.started", "terminal", "ls", {})
+            time.sleep(0.1)
         return {
             "final_response": "done",
             "messages": [],
@@ -243,6 +381,151 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+async def _run_slack_native_progress_case(
+    monkeypatch,
+    tmp_path,
+    adapter,
+    agent_cls,
+    *,
+    thread_id="parent_ts",
+    chat_type="group",
+    user_id=None,
+    guild_id=None,
+):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = agent_cls
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type=chat_type,
+        thread_id=thread_id,
+        user_id=user_id,
+        guild_id=guild_id,
+    )
+
+    return await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-slack-native",
+        session_key=f"agent:main:slack:group:C123:{thread_id or 'root'}",
+        event_message_id="event_ts",
+    )
+
+
+@pytest.mark.asyncio
+async def test_slack_native_task_cards_receive_running_tool_update(monkeypatch, tmp_path):
+    adapter = SlackNativeTaskCardAdapter()
+    result = await _run_slack_native_progress_case(
+        monkeypatch, tmp_path, adapter, CompletingToolAgent
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.native_updates
+    first_update = adapter.native_updates[0]
+    assert first_update["metadata"] == {"thread_id": "parent_ts"}
+    assert first_update["tasks"][0]["title"] == "terminal - pwd"
+    assert first_update["tasks"][0]["status"] == "in_progress"
+    assert adapter.native_updates[-1]["tasks"][0]["status"] == "complete"
+    assert adapter.native_stops == [
+        {
+            "chat_id": "C123",
+            "reply_to": None,
+            "metadata": {"thread_id": "parent_ts"},
+        }
+    ]
+    assert adapter.sent == []
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_slack_native_task_cards_include_recipient_metadata(monkeypatch, tmp_path):
+    adapter = SlackNativeTaskCardAdapter()
+    result = await _run_slack_native_progress_case(
+        monkeypatch,
+        tmp_path,
+        adapter,
+        CompletingToolAgent,
+        user_id="U123",
+        guild_id="T123",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.native_updates[0]["metadata"] == {
+        "thread_id": "parent_ts",
+        "recipient_team_id": "T123",
+        "recipient_user_id": "U123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_slack_native_task_cards_are_off_by_default(monkeypatch, tmp_path):
+    adapter = SlackNativeTaskCardDisabledAdapter()
+    result = await _run_slack_native_progress_case(
+        monkeypatch, tmp_path, adapter, CompletingToolAgent
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.native_updates == []
+    assert adapter.native_stops == []
+    assert adapter.sent
+    assert adapter.sent[0]["metadata"] == {"thread_id": "parent_ts"}
+    assert adapter.edits
+
+
+@pytest.mark.asyncio
+async def test_slack_native_task_cards_map_failed_tools_to_error(monkeypatch, tmp_path):
+    adapter = SlackNativeTaskCardAdapter()
+    result = await _run_slack_native_progress_case(
+        monkeypatch, tmp_path, adapter, FailingToolAgent
+    )
+
+    assert result["final_response"] == "handled failure"
+    assert adapter.native_updates
+    assert adapter.native_updates[-1]["tasks"][0]["status"] == "error"
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_slack_native_task_cards_keep_repeated_tool_calls_distinct(monkeypatch, tmp_path):
+    adapter = SlackNativeTaskCardAdapter()
+    result = await _run_slack_native_progress_case(
+        monkeypatch, tmp_path, adapter, RepeatedToolAgent
+    )
+
+    assert result["final_response"] == "done"
+    latest_tasks = adapter.native_updates[-1]["tasks"]
+    assert [task["id"] for task in latest_tasks] == ["terminal_1", "terminal_2"]
+    assert [task["title"] for task in latest_tasks] == ["terminal - pwd", "terminal - ls"]
+
+
+@pytest.mark.asyncio
+async def test_slack_native_task_card_failure_falls_back_in_thread(monkeypatch, tmp_path):
+    adapter = FailingSlackNativeTaskCardAdapter()
+    result = await _run_slack_native_progress_case(
+        monkeypatch, tmp_path, adapter, CompletingToolAgent
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.native_updates
+    assert adapter.sent
+    assert adapter.sent[0]["metadata"] == {"thread_id": "parent_ts"}
+    assert adapter.sent[0]["content"].startswith("Hermes is working\n- terminal - pwd")
 
 
 @pytest.mark.asyncio

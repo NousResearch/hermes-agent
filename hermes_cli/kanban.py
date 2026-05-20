@@ -783,6 +783,42 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit one JSON object per task on stdout",
     )
 
+    # --- taskstoissues --- (Spec-Kit tasks.md -> deterministic tickets)
+    p_taskstoissues = sub.add_parser(
+        "taskstoissues",
+        help="Create deterministic kanban tickets from a Spec-Kit tasks.md file",
+    )
+    p_taskstoissues.add_argument(
+        "spec_id",
+        help="Spec id / directory name, e.g. 067-tasks-to-tickets",
+    )
+    p_taskstoissues.add_argument(
+        "--root-ticket",
+        required=True,
+        help="Root kanban ticket id",
+    )
+    p_taskstoissues.add_argument(
+        "--spec-root",
+        default=".specify/specs",
+        help="Directory containing spec folders (default: .specify/specs)",
+    )
+    p_taskstoissues.add_argument(
+        "--tasks-file",
+        default=None,
+        help="Explicit tasks.md path; overrides --spec-root/spec-id/tasks.md",
+    )
+    p_taskstoissues.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the plan without writing",
+    )
+    p_taskstoissues.add_argument(
+        "--author",
+        default=None,
+        help="Author for audit comments",
+    )
+    p_taskstoissues.add_argument("--json", action="store_true", help="Emit JSON output")
+
     # --- gc ---
     p_gc = sub.add_parser(
         "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
@@ -915,6 +951,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "context":  _cmd_context,
         "specify":  _cmd_specify,
         "decompose":  _cmd_decompose,
+        "taskstoissues": _cmd_taskstoissues,
         "gc":       _cmd_gc,
     }
     handler = handlers.get(action)
@@ -2529,6 +2566,65 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
     if not all_flag:
         return 0 if ok_count == 1 else 1
     return 0 if (ok_count > 0 or not ids) else 1
+
+
+def _cmd_taskstoissues(args: argparse.Namespace) -> int:
+    """Create kanban tickets from a deterministic Spec-Kit tasks.md."""
+    from hermes_cli import kanban_taskstoissues as tti
+
+    tasks_file = tti.resolve_tasks_file(
+        args.spec_id,
+        spec_root=getattr(args, "spec_root", None),
+        tasks_file=getattr(args, "tasks_file", None),
+    )
+    author = getattr(args, "author", None) or _profile_author()
+    want_json = bool(getattr(args, "json", False))
+
+    with kb.connect() as conn:
+        if getattr(args, "dry_run", False):
+            plan = tti.build_plan(
+                conn,
+                spec_id=args.spec_id,
+                root_ticket=args.root_ticket,
+                tasks_file=tasks_file,
+            )
+            data = tti.plan_to_dict(plan)
+            if want_json:
+                print(json.dumps(data, indent=2))
+            else:
+                print(
+                    f"Would create {plan.creates} ticket(s) from {plan.tasks_file} "
+                    f"({plan.existing} existing)."
+                )
+                for item in plan.items:
+                    label = item.ticket_id or "new"
+                    deps = ", ".join(item.task.depends_on) or "-"
+                    print(
+                        f"{item.task.task_id} [{item.action}:{label}] "
+                        f"deps={deps} {item.task.title}"
+                    )
+            return 0
+
+        result = tti.apply_tasks_to_issues(
+            conn,
+            spec_id=args.spec_id,
+            root_ticket=args.root_ticket,
+            tasks_file=tasks_file,
+            author=author,
+        )
+
+    data = tti.result_to_dict(result)
+    if want_json:
+        print(json.dumps(data, indent=2))
+    else:
+        print(
+            f"Created {len(result.created_ticket_ids)} ticket(s), "
+            f"reused {len(result.existing_ticket_ids)} existing ticket(s) "
+            f"for {result.spec_id}."
+        )
+        for task_id, ticket_id in result.task_ticket_ids.items():
+            print(f"{task_id} -> {ticket_id}")
+    return 0
 
 
 def _cmd_gc(args: argparse.Namespace) -> int:

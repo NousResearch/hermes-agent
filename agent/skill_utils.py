@@ -9,8 +9,9 @@ import logging
 import os
 import re
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from hermes_constants import get_config_path, get_skills_dir
 
@@ -168,6 +169,260 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
+# ── Registry entry dataclass ──────────────────────────────────────────────
+
+# Valid scope values, ordered from most-specific (personal) to least (global).
+# Resolution follows CSS specificity: personal overrides team overrides global.
+SCOPE_ORDER: List[str] = ["personal", "team", "global"]
+
+
+@dataclass
+class RegistryEntry:
+    """Represents a single entry in ``skills.registries`` config block.
+
+    Carries all metadata needed for scope-aware resolution, Git sync, and
+    write-gate enforcement.  Fields match the YAML config shape defined in
+    Plan 003.
+
+    Assumptions:
+      - ``scope`` is one of "personal", "team", "global"; unknown scopes are
+        treated as "global" (lowest precedence) so they never shadow personal.
+      - ``path`` is always stored as an absolute resolved Path after construction.
+      - ``writable`` defaults to True for personal, False for global; callers
+        should not assume a default — they should read this field explicitly.
+    """
+
+    scope: Literal["personal", "team", "global"]
+    name: str
+    path: Path
+    writable: bool = True
+    remote: Optional[str] = None
+    auto_sync: bool = False
+    promote_requires_pr: bool = False
+    # Optional channel tags for context-aware skill surfacing (ST-003-B.1).
+    # Skills within this registry may declare ``channel_tags`` in their
+    # frontmatter; this field is for registry-level defaults (not yet used
+    # but wired so the dataclass doesn't need a breaking change later).
+    channel_tags: List[str] = field(default_factory=list)
+
+
+# ── Registry cache ─────────────────────────────────────────────────────────
+
+# (config_path_str, mtime_ns) -> (registries_list, external_dirs_list).
+# Same mtime-keyed strategy as _EXTERNAL_DIRS_CACHE to keep cold-start cheap.
+_REGISTRY_CACHE: Dict[Tuple[str, int], Tuple[List[RegistryEntry], List[Path]]] = {}
+
+
+def _registry_cache_clear() -> None:
+    """Test hook — drop both caches at once."""
+    _REGISTRY_CACHE.clear()
+    _EXTERNAL_DIRS_CACHE.clear()
+
+
+def _resolve_path(raw: str) -> Path:
+    """Expand shell shortcuts and return an absolute Path."""
+    expanded = os.path.expanduser(os.path.expandvars(str(raw).strip()))
+    p = Path(expanded)
+    if not p.is_absolute():
+        from hermes_constants import get_hermes_home
+        p = (get_hermes_home() / p).resolve()
+    else:
+        p = p.resolve()
+    return p
+
+
+def get_skill_registries() -> List[RegistryEntry]:
+    """Parse ``skills.registries`` from config.yaml and return structured entries.
+
+    Falls back gracefully:
+      - If ``skills.registries`` is absent, returns an empty list (caller
+        falls through to legacy ``external_dirs`` path).
+      - Unknown ``scope`` values are coerced to ``"global"`` so they never
+        silently override personal or team entries.
+      - Paths that do not exist on disk are still returned — callers decide
+        whether to skip non-existent dirs (scan paths) or create them (write
+        paths).
+
+    Cached in-process keyed on config.yaml mtime.  Same rationale as the
+    existing ``_EXTERNAL_DIRS_CACHE``.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return []
+
+    try:
+        stat = config_path.stat()
+        cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
+    except OSError:
+        cache_key = None  # type: ignore[assignment]
+
+    if cache_key is not None:
+        cached = _REGISTRY_CACHE.get(cache_key)
+        if cached is not None:
+            regs, _ = cached
+            return list(regs)
+
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+
+    raw_regs = skills_cfg.get("registries")
+    if not raw_regs or not isinstance(raw_regs, list):
+        # No registries block — cache empty result so we don't re-parse.
+        if cache_key is not None:
+            _REGISTRY_CACHE[cache_key] = ([], [])
+        return []
+
+    local_skills = get_skills_dir().resolve()
+    seen_paths: Set[Path] = set()
+    entries: List[RegistryEntry] = []
+
+    for item in raw_regs:
+        if not isinstance(item, dict):
+            continue
+        raw_path = item.get("path")
+        if not raw_path:
+            continue
+
+        p = _resolve_path(str(raw_path))
+
+        # Skip duplicates (same resolved path under different names is an error)
+        if p in seen_paths:
+            logger.debug(
+                "skills.registries: duplicate path %s, skipping entry named %r",
+                p, item.get("name"),
+            )
+            continue
+        seen_paths.add(p)
+
+        raw_scope = str(item.get("scope", "global")).strip().lower()
+        if raw_scope not in SCOPE_ORDER:
+            logger.debug(
+                "skills.registries: unknown scope %r for %r, treating as 'global'",
+                raw_scope, item.get("name"),
+            )
+            raw_scope = "global"
+
+        # Global registries are always read-only regardless of config.
+        # Personal and team registries default to writable=True unless
+        # the user explicitly sets writable: false.
+        if raw_scope == "global":
+            writable = bool(item.get("writable", False))
+        else:
+            writable = bool(item.get("writable", True))
+
+        remote = item.get("remote")
+        if remote is not None:
+            remote = str(remote).strip() or None
+
+        channel_tags_raw = item.get("channel_tags", [])
+        if isinstance(channel_tags_raw, str):
+            channel_tags_raw = [channel_tags_raw]
+        channel_tags = [str(t).strip() for t in channel_tags_raw if str(t).strip()]
+
+        entry = RegistryEntry(
+            scope=raw_scope,  # type: ignore[arg-type]
+            name=str(item.get("name", p.name)),
+            path=p,
+            writable=writable,
+            remote=remote,
+            auto_sync=bool(item.get("auto_sync", False)),
+            promote_requires_pr=bool(item.get("promote_requires_pr", False)),
+            channel_tags=channel_tags,
+        )
+        entries.append(entry)
+
+    # Sort into canonical resolution order: personal → team → global.
+    # Within the same scope, preserve config.yaml declaration order (stable
+    # sort keeps relative order for same-scope entries).
+    entries.sort(key=lambda e: SCOPE_ORDER.index(e.scope))
+
+    # Pre-compute external_dirs from this registry list for the combo cache.
+    ext_dirs = [e.path for e in entries if e.path != local_skills and e.path.is_dir()]
+
+    if cache_key is not None:
+        _REGISTRY_CACHE[cache_key] = (list(entries), list(ext_dirs))
+
+    return entries
+
+
+def get_skill_scope_for_path(path: Path) -> str:
+    """Return the scope label for a skill path by checking it against known registries.
+
+    Used by the skills list and promotion CLI to annotate skills with their
+    effective scope.  Falls back to ``"personal"`` for paths that live under
+    the default ``~/.hermes/skills/`` dir (which is the implicit personal
+    registry), and to ``"global"`` for bundled skills in the hermes-agent
+    repo.  Returns ``"unknown"`` when no registry matches and the path is not
+    under a known default location.
+
+    Args:
+        path: Absolute path to a skill directory (not the SKILL.md file itself).
+
+    Returns:
+        One of ``"personal"``, ``"team"``, ``"global"``, or ``"unknown"``.
+    """
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+
+    # Check structured registries first (most precise)
+    for entry in get_skill_registries():
+        try:
+            resolved.relative_to(entry.path)
+            return entry.scope
+        except (ValueError, OSError):
+            continue
+
+    # Fallback heuristics for pre-registry installs
+    local_skills = get_skills_dir().resolve()
+    try:
+        resolved.relative_to(local_skills)
+        return "personal"
+    except (ValueError, OSError):
+        pass
+
+    # Bundled skills shipped with hermes-agent are global
+    try:
+        import hermes_constants as _hc
+        hermes_home = _hc.get_hermes_home().resolve()
+        hermes_agent_dir = Path(__file__).resolve().parents[1]
+        resolved.relative_to(hermes_agent_dir / "skills")
+        return "global"
+    except (ValueError, OSError, AttributeError):
+        pass
+
+    return "unknown"
+
+
+def get_skill_registry_for_path(path: Path) -> Optional[RegistryEntry]:
+    """Return the ``RegistryEntry`` that contains *path*, or ``None``.
+
+    Used by the write path (skill_manage, git push after write) to know
+    which remote to push to.
+    """
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+
+    for entry in get_skill_registries():
+        try:
+            resolved.relative_to(entry.path)
+            return entry
+        except (ValueError, OSError):
+            continue
+    return None
+
+
 # ── External skills directories ──────────────────────────────────────────
 
 # (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
@@ -271,13 +526,49 @@ def get_external_skills_dirs() -> List[Path]:
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+    """Return all skill directories in resolution order: personal → team → global → legacy.
 
-    The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    Resolution order follows CSS specificity: more-specific scope wins when two
+    registries contain a skill with the same name.  First-found-wins semantics
+    are preserved — callers iterate and stop at the first match.
+
+    Order:
+      1. Directories from ``skills.registries`` sorted personal → team → global
+         (already enforced by ``get_skill_registries()``).
+      2. Legacy ``~/.hermes/skills/`` personal dir if NOT already covered by a
+         registry entry — ensures backward compatibility for users without a
+         ``registries`` block.
+      3. Legacy ``skills.external_dirs`` entries appended last.
+
+    The local ``~/.hermes/skills/`` directory is always included (even if it
+    doesn't exist yet) so callers that create skills there see it immediately.
     """
-    dirs = [get_skills_dir()]
-    dirs.extend(get_external_skills_dirs())
+    local_skills = get_skills_dir()
+    local_skills_resolved = local_skills.resolve()
+
+    # Step 1: registry-based dirs (already sorted personal→team→global)
+    registry_entries = get_skill_registries()
+    registry_paths: List[Path] = [e.path for e in registry_entries]
+    registry_paths_resolved: Set[Path] = {p.resolve() for p in registry_paths}
+
+    dirs: List[Path] = list(registry_paths)
+
+    # Step 2: personal fallback — ensure ~/.hermes/skills/ is always present
+    # even when no registries block exists.
+    if local_skills_resolved not in registry_paths_resolved:
+        dirs.insert(0, local_skills)
+
+    # Step 3: legacy external_dirs (skip any already covered by a registry)
+    seen: Set[Path] = {p.resolve() for p in dirs}
+    for ext_dir in get_external_skills_dirs():
+        try:
+            ext_resolved = ext_dir.resolve()
+        except OSError:
+            ext_resolved = ext_dir
+        if ext_resolved not in seen:
+            dirs.append(ext_dir)
+            seen.add(ext_resolved)
+
     return dirs
 
 

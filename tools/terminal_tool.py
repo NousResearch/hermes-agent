@@ -1894,6 +1894,25 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
+        # Plan 002-B: when workdir is not explicitly set by the agent and we are
+        # running in a local environment, default to the session's sandbox workspace
+        # so that file writes are contained within the session's ephemeral directory.
+        # Falls back to cwd (TERMINAL_CWD / os.getcwd()) if no sandbox is active.
+        if not workdir and env_type == "local":
+            session_id = os.environ.get("HERMES_SESSION_ID", "")
+            if session_id:
+                try:
+                    from hermes_constants import get_runtime_root
+                    candidate = get_runtime_root() / "sessions" / session_id / "workspace"
+                    if candidate.exists():
+                        workdir = str(candidate)
+                        logger.debug(
+                            "terminal_tool: no workdir set — using session sandbox %s",
+                            workdir,
+                        )
+                except Exception as _wr_exc:
+                    logger.debug("terminal_tool: session workspace lookup failed: %s", _wr_exc)
+
         # Validate workdir against shell injection
         if workdir:
             workdir_error = _validate_workdir(workdir)

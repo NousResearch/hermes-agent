@@ -53,7 +53,25 @@ logger = logging.getLogger(__name__)
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
+    """Return the memory directory, preferring the canonical user-namespaced location.
+
+    Resolution order:
+    1. If HERMES_USER_ID is set AND ``users/{id}/memory/`` exists on disk,
+       return the canonical new path (Phase 002-A layout).
+    2. Otherwise fall back to the legacy ``~/.hermes/memories/`` path so that
+       existing local installations continue to work before migration.
+
+    Migration:  run ``scripts/migrate_002a.sh`` to create the new tree and
+    copy memory files.  After that, set HERMES_USER_ID in the session
+    environment to activate the new path automatically.
+    """
+    user_id = os.environ.get("HERMES_USER_ID", "").strip()
+    if user_id:
+        from hermes_constants import get_memory_root
+        canonical = get_memory_root(user_id)
+        if canonical.exists():
+            return canonical
+    # Legacy fallback — always works before migration is run
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"

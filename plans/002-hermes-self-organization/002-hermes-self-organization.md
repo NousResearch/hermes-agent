@@ -1,8 +1,8 @@
 # Plan 002: Hermes Self-Organization
 
-**Status:** Not started  
+**Status:** Complete (all 4 phases) — 2026-05-19  
 **Date:** 2026-05-18  
-**Branch:** feat/002-self-organization (to be created)  
+**Branch:** feat/plan-002-hermes-self-organization  
 **Depends on:** Plan 001-0 (HermesIdentity dataclass must exist before Phase B)  
 
 ---

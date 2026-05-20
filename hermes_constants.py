@@ -361,6 +361,144 @@ def get_skills_dir() -> Path:
     return get_hermes_home() / "skills"
 
 
+# ─── Plan 002-A: User-Namespaced Path Resolvers ───────────────────────────────
+#
+# Every function checks its env var override first, then falls back to the
+# default under HERMES_HOME.  This is the Phase D contract:  pointing any
+# subtree at a cloud/shared mount requires only setting an env var — no caller
+# code changes.
+#
+# Design:  user-scoped paths (memory, plans, skills, artifacts, credentials)
+# all delegate to get_user_home() which delegates to get_users_root().
+# Setting HERMES_USERS_ROOT therefore automatically redirects the entire
+# user namespace.  Only get_runtime_root() and get_mcp_servers_config() have
+# independent env vars because they have different operational requirements
+# (runtime should be local/fast; mcp-servers.json is a single config file).
+
+
+def get_users_root() -> Path:
+    """Return the users namespace root (~/.hermes/users/ by default).
+
+    Override: HERMES_USERS_ROOT — point at a shared mount or cloud path.
+    All user-scoped paths inherit this override automatically.
+    """
+    override = os.environ.get("HERMES_USERS_ROOT", "").strip()
+    if override:
+        return Path(override)
+    return get_hermes_home() / "users"
+
+
+def get_user_home(user_id: str) -> Path:
+    """Return the home directory for a specific user under the users root.
+
+    Args:
+        user_id: Identifier for the user (e.g. "blake").
+
+    Returns:
+        Path: ``get_users_root() / user_id``
+    """
+    return get_users_root() / user_id
+
+
+def get_memory_root(user_id: str) -> Path:
+    """Return the memory directory for a user (MEMORY.md, USER.md live here).
+
+    Args:
+        user_id: Identifier for the user.
+
+    Returns:
+        Path: ``get_user_home(user_id) / "memory"``
+    """
+    return get_user_home(user_id) / "memory"
+
+
+def get_plans_root(user_id: str) -> Path:
+    """Return the plans directory for a user.
+
+    Args:
+        user_id: Identifier for the user.
+
+    Returns:
+        Path: ``get_user_home(user_id) / "plans"``
+    """
+    return get_user_home(user_id) / "plans"
+
+
+def get_skills_root(user_id: str) -> Path:
+    """Return the user-authored skills directory.
+
+    Distinct from ``get_skills_dir()`` which returns the global system skills
+    directory.  User-authored skills live under the user namespace and are
+    writable only by that user.
+
+    Args:
+        user_id: Identifier for the user.
+
+    Returns:
+        Path: ``get_user_home(user_id) / "skills"``
+    """
+    return get_user_home(user_id) / "skills"
+
+
+def get_artifacts_root(user_id: str) -> Path:
+    """Return the artifacts directory for a user.
+
+    Promoted session outputs land in ``artifacts/sessions/``.
+    Long-running project work lands in ``artifacts/projects/``.
+
+    Args:
+        user_id: Identifier for the user.
+
+    Returns:
+        Path: ``get_user_home(user_id) / "artifacts"``
+    """
+    return get_user_home(user_id) / "artifacts"
+
+
+def get_credentials_root(user_id: str) -> Path:
+    """Return the credentials ref directory for a user (refs only, never values).
+
+    Files here are JSON credential refs pointing to Keychain or Secrets Manager
+    entries.  The actual secret values are resolved in-memory by CredentialResolver
+    (Phase 002-C) and never written to disk.
+
+    Args:
+        user_id: Identifier for the user.
+
+    Returns:
+        Path: ``get_user_home(user_id) / "credentials"``
+    """
+    return get_user_home(user_id) / "credentials"
+
+
+def get_runtime_root() -> Path:
+    """Return the ephemeral runtime root (~/.hermes/runtime/ by default).
+
+    Override: HERMES_RUNTIME_ROOT — should be local, fast storage (/tmp or tmpfs).
+    Do not point at a network mount; runtime/ is ephemeral and latency-sensitive.
+
+    Returns:
+        Path to the runtime directory.
+    """
+    override = os.environ.get("HERMES_RUNTIME_ROOT", "").strip()
+    if override:
+        return Path(override)
+    return get_hermes_home() / "runtime"
+
+
+def get_mcp_servers_config() -> Path:
+    """Return path to system/mcp-servers.json (system-wide MCP server definitions).
+
+    Override: HERMES_MCP_SERVERS_CONFIG — absolute path to a JSON file.
+
+    Returns:
+        Path to the MCP servers configuration file.
+    """
+    override = os.environ.get("HERMES_MCP_SERVERS_CONFIG", "").strip()
+    if override:
+        return Path(override)
+    return get_hermes_home() / "system" / "mcp-servers.json"
+
 
 def get_env_path() -> Path:
     """Return the path to the ``.env`` file under HERMES_HOME."""

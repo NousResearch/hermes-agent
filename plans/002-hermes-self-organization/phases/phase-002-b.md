@@ -237,7 +237,7 @@ ls ~/.hermes/users/blake/artifacts/sessions/  # should show promoted outputs
 ```
 
 ## Status
-Not started
+Complete — 2026-05-19
 
 ## Bug Log
 | # | Description | Status |

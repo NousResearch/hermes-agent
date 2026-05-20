@@ -3281,6 +3281,108 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
+# ---------------------------------------------------------------------------
+# Plan 002-C: MCPGateway credential injection
+#
+# Thread-local storage for per-call credential injection.  MCPGateway sets
+# _per_call_credential.credential before dispatching a tool call, and the
+# MCP session layer (future) reads it to inject the credential into the
+# appropriate auth channel.
+#
+# Current status: the credential is stored and cleared correctly, but stdio
+# MCP servers do not yet support per-call env overlays at the mcp SDK level.
+# For those servers, the credential is available for custom session
+# implementations that consult _per_call_credential.credential.
+# HTTP/SSE servers that accept an Authorization header can read it here.
+# ---------------------------------------------------------------------------
+_per_call_credential: threading.local = threading.local()
+
+
+def call_tool_with_credential(
+    server_name: str,
+    tool_name: str,
+    args: dict,
+    credential: str | None = None,
+) -> Any:
+    """Call an MCP tool via the existing pool, with optional credential injection.
+
+    Plan 002-C: this is the MCPGateway's dispatch entry point into mcp_tool.
+    It follows the existing _make_tool_handler / _call_once path but surfaces
+    the credential in _per_call_credential thread-local so future auth-aware
+    session implementations can pick it up.
+
+    For stdio servers: the credential is stored in _per_call_credential but
+    not yet injected into the subprocess env (per-call env overlay requires
+    mcp SDK support that doesn't exist yet).  Falls back to existing behavior.
+    For HTTP servers: future implementation can read _per_call_credential to
+    inject an Authorization header.
+
+    Args:
+        server_name: MCP server name as defined in config.yaml.
+        tool_name: Tool name within the server.
+        args: Tool arguments dict.
+        credential: Optional credential value (token, API key, etc.).
+                    None means use the server's globally configured credential,
+                    if any (current default behavior).
+
+    Returns:
+        JSON string result from the tool handler.
+
+    Raises:
+        Exception: Propagates any exception from the underlying tool handler.
+    """
+    _per_call_credential.credential = credential
+    try:
+        # Locate the registered handler for this tool.
+        # _servers contains the MCPServerTask instances; the tool handlers are
+        # registered in the global tool registry via _make_tool_handler.
+        # We re-use that path to stay consistent with auth, circuit breakers,
+        # and retry logic already implemented there.
+        handler = _get_registered_handler(server_name, tool_name)
+        if handler is None:
+            import json as _json
+            return _json.dumps({
+                "error": (
+                    f"MCP tool '{tool_name}' on server '{server_name}' is not "
+                    f"registered.  Make sure discover_mcp_tools() has been called "
+                    f"and the server is connected."
+                )
+            }, ensure_ascii=False)
+        return handler(args)
+    finally:
+        _per_call_credential.credential = None
+
+
+def _get_registered_handler(server_name: str, tool_name: str):
+    """Return the registered handler for an MCP tool, or None if not found.
+
+    Looks up the handler in the global tool registry using the naming
+    convention established by _make_tool_handler and _register_server_tools.
+    MCP tool names in the registry are stored as-is (server_name__tool_name
+    is NOT the convention — tools are stored by their raw tool_name with
+    server_name resolved via closure).
+
+    This is a best-effort lookup: if the registry format ever changes,
+    call_tool_with_credential falls back to a clear error message rather
+    than crashing.
+    """
+    try:
+        from tools.registry import registry
+        entry = registry.get_entry(tool_name)
+        if entry is not None and hasattr(entry, "handler"):
+            return entry.handler
+    except Exception:
+        pass
+    # Fallback: look up in _servers and synthesize the call directly
+    with _lock:
+        srv = _servers.get(server_name)
+    if srv is None or not srv.session:
+        return None
+    # Return a synthesized handler that replicates _make_tool_handler logic
+    tool_timeout = 60.0  # conservative fallback timeout
+    return _make_tool_handler(server_name, tool_name, tool_timeout)
+
+
 def discover_mcp_tools() -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 

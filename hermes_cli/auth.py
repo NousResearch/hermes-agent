@@ -122,6 +122,22 @@ QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL = "https://accounts.spotify.com"
+
+
+def normalize_codex_base_url(base_url: str) -> str:
+    """Normalize Codex base URLs to the endpoint shape Hermes expects."""
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        return DEFAULT_CODEX_BASE_URL
+    if normalized.endswith("/codex/responses"):
+        return normalized[: -len("/responses")]
+    if normalized.endswith("/codex"):
+        return normalized
+    if normalized.endswith("/backend-api/v1"):
+        normalized = normalized[: -len("/v1")]
+    if normalized.endswith("/backend-api"):
+        return f"{normalized}/codex"
+    return normalized
 DEFAULT_SPOTIFY_API_BASE_URL = "https://api.spotify.com/v1"
 DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:43827/spotify/callback"
 SPOTIFY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/spotify"
@@ -3715,7 +3731,7 @@ def resolve_codex_runtime_credentials(
                 tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
                 access_token = str(tokens.get("access_token", "") or "").strip()
 
-    base_url = (
+    base_url = normalize_codex_base_url(
         os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
         or DEFAULT_CODEX_BASE_URL
     )

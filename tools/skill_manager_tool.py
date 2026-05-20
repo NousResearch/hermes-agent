@@ -851,6 +851,15 @@ def _promote_skill(name: str, target_scope: str = "team") -> Dict[str, Any]:
 # Main entry point
 # =============================================================================
 
+def _is_saas_mode() -> bool:
+    """Return True when HERMES_MODE=saas is set in the environment.
+
+    All cloud-routing branches are gated on this flag so local dev is never
+    affected by S3 availability or missing boto3.
+    """
+    return os.environ.get("HERMES_MODE", "").lower() == "saas"
+
+
 def skill_manage(
     action: str,
     name: str,

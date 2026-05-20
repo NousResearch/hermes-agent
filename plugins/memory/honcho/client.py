@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.profiles import _get_default_hermes_home
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,7 +47,7 @@ def resolve_active_host() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
-        if profile and profile not in ("default", "custom"):
+        if profile and profile not in {"default", "custom"}:
             return f"{HOST}.{profile}"
     except Exception:
         pass
@@ -73,7 +74,7 @@ def resolve_config_path() -> Path:
         return local_path
 
     # Default profile's config — host blocks accumulate here via setup/clone
-    default_path = Path.home() / ".hermes" / "honcho.json"
+    default_path = _get_default_hermes_home() / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
 
@@ -652,7 +653,7 @@ class HonchoClientConfig:
             return base
 
         # per-directory: one Honcho session per working directory (default)
-        if self.session_strategy in ("per-directory", "per-session"):
+        if self.session_strategy in {"per-directory", "per-session"}:
             base = Path(cwd).name
             if self.session_peer_prefix and self.peer_name:
                 return f"{self.peer_name}-{base}"

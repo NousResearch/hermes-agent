@@ -267,7 +267,7 @@ cat ~/Documents/hermes-agent/docs/env-vars.md | head -20
 ```
 
 ## Status
-Not started
+Complete — 2026-05-19
 
 ## Bug Log
 | # | Description | Status |

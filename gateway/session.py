@@ -16,8 +16,10 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
+
+from hermes_identity import HermesIdentity  # noqa: F401 — re-exported for gateway callers
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +93,12 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
-    
+
+    # Typed identity carrier populated by the gateway adapter.  None for non-Slack
+    # platforms until their adapters are updated.  Consumed by the agent runner to
+    # scope skill/memory queries without accessing raw session fields.
+    hermes_identity: Optional[HermesIdentity] = field(default=None)
+
     @property
     def description(self) -> str:
         """Human-readable description of the source."""
@@ -518,6 +525,9 @@ class SessionEntry:
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
+            "was_auto_reset": self.was_auto_reset,
+            "auto_reset_reason": self.auto_reset_reason,
+            "reset_had_activity": self.reset_had_activity,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -567,6 +577,9 @@ class SessionEntry:
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
+            was_auto_reset=data.get("was_auto_reset", False),
+            auto_reset_reason=data.get("auto_reset_reason"),
+            reset_had_activity=data.get("reset_had_activity", False),
         )
 
 
@@ -1320,17 +1333,23 @@ class SessionStore:
         transcript_path = self.get_transcript_path(session_id)
         jsonl_messages = []
         if transcript_path.exists():
-            with open(transcript_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            jsonl_messages.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                "Skipping corrupt line in transcript %s: %s",
-                                session_id, line[:120],
-                            )
+            try:
+                with open(transcript_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                jsonl_messages.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                logger.warning(
+                                    "Skipping corrupt line in transcript %s: %s",
+                                    session_id, line[:120],
+                                )
+            except OSError as e:
+                # JSONL is the legacy compatibility store. If it becomes
+                # unreadable, keep gateway recovery working by falling back to
+                # SQLite rows loaded above (or [] when no DB exists).
+                logger.debug("Failed to read JSONL transcript for %s: %s", session_id, e)
 
         # Prefer whichever source has more messages.
         #

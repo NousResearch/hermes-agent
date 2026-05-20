@@ -1,0 +1,37 @@
+name: simplex-platform
+label: SimpleX Chat
+kind: platform
+version: 1.0.0
+description: >
+  SimpleX Chat gateway adapter for Hermes Agent.
+  Connects to a local simplex-chat daemon via WebSocket and relays
+  messages between SimpleX contacts/groups and the Hermes agent.
+  SimpleX is decentralised and assigns no persistent user IDs —
+  every contact is an opaque internal ID generated at connection
+  time, making it one of the most private messengers available.
+author: Mibayy
+# ``requires_env`` and ``optional_env`` entries are surfaced in the
+# ``hermes config`` UI via the platform-plugin env var injector in
+# ``hermes_cli/config.py``.
+requires_env:
+  - name: SIMPLEX_WS_URL
+    description: "WebSocket URL of the simplex-chat daemon (e.g. ws://127.0.0.1:5225)"
+    prompt: "SimpleX daemon WebSocket URL"
+    password: false
+optional_env:
+  - name: SIMPLEX_ALLOWED_USERS
+    description: "Comma-separated SimpleX contact IDs allowed to talk to the bot"
+    prompt: "Allowed contact IDs (comma-separated)"
+    password: false
+  - name: SIMPLEX_ALLOW_ALL_USERS
+    description: "Allow any contact to talk to the bot (dev only — disables allowlist)"
+    prompt: "Allow all contacts? (true/false)"
+    password: false
+  - name: SIMPLEX_HOME_CHANNEL
+    description: "Default contact/group ID for cron / notification delivery"
+    prompt: "Home channel contact/group ID (or empty)"
+    password: false
+  - name: SIMPLEX_HOME_CHANNEL_NAME
+    description: "Human label for the home channel (defaults to the ID)"
+    prompt: "Home channel display name (or empty)"
+    password: false

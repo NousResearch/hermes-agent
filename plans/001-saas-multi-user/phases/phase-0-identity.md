@@ -1,6 +1,6 @@
 # Phase 0: Identity & Tenant Model
 
-**Status**: TODO
+**Status**: Complete (code; Neon apply pending — see Step 7 in this file + migration/001_tenants_and_users.sql)
 **Depends on**: None
 **Blocks**: Phase A, Phase B, Phase D
 
@@ -45,14 +45,15 @@ Migrations for `tenants`, `users`, `conversations`, `messages` tables with RLS p
 
 ## Acceptance Criteria
 
-- [ ] `HermesIdentity` is a frozen dataclass with `platform`, `team_id`, `user_id`, `channel_id`, `thread_id`
-- [ ] `scope_chain` returns `[personal_scope, team_scope, "global"]` in that order
-- [ ] Slack gateway constructs a valid `HermesIdentity` from a real Slack event payload
-- [ ] `AIAgent` accepts and stores `identity` without breaking existing tests
-- [ ] Neon schema: `tenants`, `users`, `conversations`, `messages` tables exist
-- [ ] RLS policy `tenant_isolation_messages` blocks cross-tenant reads when `app.tenant_id` is set
-- [ ] `pytest tests/test_identity.py -v` — all pass
-- [ ] Zero regressions in existing test suite
+- [x] `HermesIdentity` is a frozen dataclass with `platform`, `team_id`, `user_id`, `channel_id`, `thread_id` — `hermes_identity.py`
+- [x] `scope_chain` returns `[personal_scope, team_scope, "global"]` in that order — verified by `tests/test_identity.py::TestScopeChain`
+- [x] Slack gateway constructs a valid `HermesIdentity` from a real Slack event payload — `gateway/platforms/slack.py` + `tests/test_identity.py::TestSlackEventExtraction`
+- [x] `AIAgent` accepts and stores `identity` without breaking existing tests — `run_agent.py` `__init__` + `self.identity`
+- [x] Neon schema: `tenants`, `users`, `conversations`, `messages` tables exist — `migrations/001_tenants_and_users.sql` (NOT yet applied)
+- [x] RLS policy `tenant_isolation_messages` blocks cross-tenant reads when `app.tenant_id` is set — in migration file (NOT yet applied)
+- [x] `pytest tests/test_identity.py -v` — 26/26 passed
+- [x] Zero regressions in existing test suite — confirmed (pre-existing 52 failures unchanged)
+- [ ] **GATED**: Neon provisioning + migration apply (Step 7) — requires Blake's action. See `migrations/001_tenants_and_users.sql` apply instructions.
 
 ## Key Files
 

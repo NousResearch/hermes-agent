@@ -16,7 +16,7 @@ from typing import Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
-_MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB cap on response bodies
+_MAX_BODY_SIZE = 1024 * 1024  # 1 MB cap on response bodies
 
 
 @dataclass

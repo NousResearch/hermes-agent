@@ -275,6 +275,91 @@ def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
     )
 
 
+def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
+    """Return a cheap checkout fingerprint without spawning git."""
+    git_dir = repo_root / ".git"
+    try:
+        if git_dir.is_file():
+            for line in git_dir.read_text(encoding="utf-8", errors="replace").splitlines():
+                key, _, value = line.partition(":")
+                if key.strip() == "gitdir" and value.strip():
+                    git_dir = (repo_root / value.strip()).resolve()
+                    break
+        head_file = git_dir / "HEAD"
+        head = head_file.read_text(encoding="utf-8", errors="replace").strip()
+        if head.startswith("ref:"):
+            ref = head.split(":", 1)[1].strip()
+            ref_file = git_dir / ref
+            if ref_file.exists():
+                return f"git:{ref}:{ref_file.read_text(encoding='utf-8', errors='replace').strip()}"
+        return f"git:HEAD:{head}"
+    except OSError:
+        return None
+
+
+def _termux_bundled_skills_fingerprint() -> str:
+    """Cheap invalidation key for Termux bundled-skill startup sync."""
+    git_fp = _read_git_revision_fingerprint(PROJECT_ROOT)
+    if git_fp:
+        return git_fp
+    skills_dir = PROJECT_ROOT / "skills"
+    try:
+        stat = skills_dir.stat()
+        return f"skills:{__version__}:{__release_date__}:{stat.st_mtime_ns}:{stat.st_size}"
+    except OSError:
+        return f"skills:{__version__}:{__release_date__}:missing"
+
+
+def _termux_bundled_skills_stamp_path() -> Path:
+    return get_hermes_home() / "skills" / ".termux_bundled_sync_stamp"
+
+
+def _termux_bundled_skills_sync_needed() -> bool:
+    if not _is_termux_startup_environment():
+        return True
+    if os.environ.get("HERMES_TERMUX_FORCE_SKILLS_SYNC") == "1":
+        return True
+    try:
+        stamp = _termux_bundled_skills_stamp_path()
+        return stamp.read_text(encoding="utf-8").strip() != _termux_bundled_skills_fingerprint()
+    except OSError:
+        return True
+
+
+def _mark_termux_bundled_skills_synced() -> None:
+    if not _is_termux_startup_environment():
+        return
+    try:
+        stamp = _termux_bundled_skills_stamp_path()
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(_termux_bundled_skills_fingerprint() + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _sync_bundled_skills_for_startup() -> bool:
+    """Sync bundled skills, but skip unchanged Termux checkouts cheaply.
+
+    Hashing every bundled skill is safe but expensive on older Android
+    storage. The git/ref stamp keeps post-update correctness: a changed
+    checkout revision forces one real sync, then later starts skip it.
+    """
+    if _is_termux_startup_environment() and not _termux_bundled_skills_sync_needed():
+        return False
+
+    from tools.skills_sync import sync_skills
+
+    sync_skills(quiet=True)
+    _mark_termux_bundled_skills_synced()
+    return True
+
+
+def _termux_should_prefetch_update_check() -> bool:
+    if not _is_termux_startup_environment():
+        return True
+    return os.environ.get("HERMES_TERMUX_PREFETCH_UPDATES") == "1"
+
+
 def _relative_time(ts) -> str:
     """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
     if not ts:
@@ -1523,19 +1608,20 @@ def cmd_chat(args):
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
 
-    # Start update check in background (runs while other init happens)
-    try:
-        from hermes_cli.banner import prefetch_update_check
+    # Start update check in background (runs while other init happens).
+    # On Termux this imports rich/prompt_toolkit in the foreground and then
+    # competes for CPU on single-core devices, so keep it opt-in there.
+    if _termux_should_prefetch_update_check():
+        try:
+            from hermes_cli.banner import prefetch_update_check
 
-        prefetch_update_check()
-    except Exception:
-        pass
+            prefetch_update_check()
+        except Exception:
+            pass
 
     # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
     try:
-        from tools.skills_sync import sync_skills
-
-        sync_skills(quiet=True)
+        _sync_bundled_skills_for_startup()
     except Exception:
         pass
 
@@ -5971,8 +6057,7 @@ def cmd_import(args):
     run_import(args)
 
 
-def cmd_version(args):
-    """Show version."""
+def _print_version_info(*, check_updates: bool = True) -> None:
     print(f"Hermes Agent v{__version__} ({__release_date__})")
     print(f"Project: {PROJECT_ROOT}")
 
@@ -5992,6 +6077,9 @@ def cmd_version(args):
     except ImportError:
         print("OpenAI SDK: Not installed")
 
+    if not check_updates:
+        return
+
     # Show update status (synchronous — acceptable since user asked for version info)
     try:
         from hermes_cli.banner import check_for_updates
@@ -6008,6 +6096,11 @@ def cmd_version(args):
             print("Up to date")
     except Exception:
         pass
+
+
+def cmd_version(args):
+    """Show version."""
+    _print_version_info(check_updates=True)
 
 
 def cmd_uninstall(args):
@@ -10515,6 +10608,137 @@ def _plugin_cli_discovery_needed() -> bool:
     return True
 
 
+_AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+_AGENT_SUBCOMMANDS = {
+    "cron": ("cron_command", {"run", "tick"}),
+    "gateway": ("gateway_command", {"run"}),
+    "mcp": ("mcp_action", {"serve"}),
+}
+
+
+def _prepare_agent_startup(args) -> None:
+    """Discover plugins/MCP/hooks for commands that can run an agent turn."""
+    _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
+    if not (
+        args.command in _AGENT_COMMANDS
+        or (_sub_attr and getattr(args, _sub_attr, None) in _sub_set)
+    ):
+        return
+
+    _accept_hooks = bool(getattr(args, "accept_hooks", False))
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+    except Exception:
+        logger.warning(
+            "plugin discovery failed at CLI startup",
+            exc_info=True,
+        )
+    try:
+        # MCP tool discovery — no event loop running in CLI/TUI startup,
+        # so inline is safe.  Moved here from model_tools.py module scope
+        # to avoid freezing the gateway's event loop on its first message
+        # via the same lazy import path (#16856).
+        from tools.mcp_tool import discover_mcp_tools
+
+        discover_mcp_tools()
+    except Exception:
+        logger.debug(
+            "MCP tool discovery failed at CLI startup",
+            exc_info=True,
+        )
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(load_config(), accept_hooks=_accept_hooks)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at CLI startup",
+            exc_info=True,
+        )
+
+
+def _set_chat_arg_defaults(args) -> None:
+    for attr, default in [
+        ("query", None),
+        ("model", None),
+        ("provider", None),
+        ("toolsets", None),
+        ("verbose", False),
+        ("resume", None),
+        ("continue_last", None),
+        ("worktree", False),
+    ]:
+        if not hasattr(args, attr):
+            setattr(args, attr, default)
+
+
+def _is_termux_fast_version_argv(argv: list[str]) -> bool:
+    return argv in (["--version"], ["-V"], ["version"])
+
+
+def _try_termux_fast_cli_launch() -> bool:
+    """Run obvious Termux non-TUI chat/oneshot/version paths on a light parser."""
+    if not _is_termux_startup_environment():
+        return False
+    if os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
+        return False
+
+    argv = sys.argv[1:]
+    if "-h" in argv or "--help" in argv:
+        return False
+    if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
+        return False
+
+    if _is_termux_fast_version_argv(argv):
+        _print_version_info(check_updates=False)
+        return True
+
+    first = _first_positional_argv()
+    has_oneshot = any(
+        arg == "-z" or arg == "--oneshot" or arg.startswith("--oneshot=")
+        for arg in argv
+    )
+    if not has_oneshot and first not in {None, "chat"}:
+        return False
+
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=cmd_chat)
+    args = parser.parse_args(_coalesce_session_name_args(argv))
+
+    if getattr(args, "version", False):
+        _print_version_info(check_updates=False)
+        return True
+
+    if getattr(args, "oneshot", None):
+        _prepare_agent_startup(args)
+        from hermes_cli.oneshot import run_oneshot
+
+        sys.exit(
+            run_oneshot(
+                args.oneshot,
+                model=getattr(args, "model", None),
+                provider=getattr(args, "provider", None),
+                toolsets=getattr(args, "toolsets", None),
+            )
+        )
+
+    if (args.resume or args.continue_last) and args.command is None:
+        args.command = "chat"
+
+    if args.command in {None, "chat"}:
+        _set_chat_arg_defaults(args)
+        _prepare_agent_startup(args)
+        cmd_chat(args)
+        return True
+
+    return False
+
+
 def _try_termux_fast_tui_launch() -> bool:
     """Launch obvious Termux TUI invocations before building every subparser.
 
@@ -10574,6 +10798,8 @@ def main():
         pass
 
     if _try_termux_fast_tui_launch():
+        return
+    if _try_termux_fast_cli_launch():
         return
 
     from hermes_cli._parser import build_top_level_parser
@@ -13373,51 +13599,7 @@ Examples:
     # so introspection/management commands (hermes hooks list, cron
     # list, gateway status, mcp add, ...) don't pay discovery cost or
     # trigger consent prompts for hooks the user is still inspecting.
-    # Groups with mixed admin/CRUD vs. agent-running entries narrow via
-    # the nested subcommand (dest varies by parser).
-    _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
-    _AGENT_SUBCOMMANDS = {
-        "cron": ("cron_command", {"run", "tick"}),
-        "gateway": ("gateway_command", {"run"}),
-        "mcp": ("mcp_action", {"serve"}),
-    }
-    _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
-    if args.command in _AGENT_COMMANDS or (
-        _sub_attr and getattr(args, _sub_attr, None) in _sub_set
-    ):
-        _accept_hooks = bool(getattr(args, "accept_hooks", False))
-        try:
-            from hermes_cli.plugins import discover_plugins
-
-            discover_plugins()
-        except Exception:
-            logger.warning(
-                "plugin discovery failed at CLI startup",
-                exc_info=True,
-            )
-        try:
-            # MCP tool discovery — no event loop running in CLI/TUI startup,
-            # so inline is safe.  Moved here from model_tools.py module scope
-            # to avoid freezing the gateway's event loop on its first message
-            # via the same lazy import path (#16856).
-            from tools.mcp_tool import discover_mcp_tools
-
-            discover_mcp_tools()
-        except Exception:
-            logger.debug(
-                "MCP tool discovery failed at CLI startup",
-                exc_info=True,
-            )
-        try:
-            from hermes_cli.config import load_config
-            from agent.shell_hooks import register_from_config
-
-            register_from_config(load_config(), accept_hooks=_accept_hooks)
-        except Exception:
-            logger.debug(
-                "shell-hook registration failed at CLI startup",
-                exc_info=True,
-            )
+    _prepare_agent_startup(args)
 
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.

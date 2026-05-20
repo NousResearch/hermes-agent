@@ -318,8 +318,8 @@ def triage_aux_status(config: Optional[dict]) -> Optional[dict]:
         decomposer_explicit = _aux_slot_explicit(aux.get("kanban_decomposer"))
         specifier_explicit = _aux_slot_explicit(aux.get("triage_specifier"))
 
-    # ``auto_decompose`` defaults to True per kanban DEFAULT_CONFIG.
-    auto_decompose = True
+    # ``auto_decompose`` defaults to False per kanban DEFAULT_CONFIG.
+    auto_decompose = False
     if isinstance(kanban_cfg, dict) and "auto_decompose" in kanban_cfg:
         auto_decompose = bool(kanban_cfg.get("auto_decompose"))
 
@@ -389,7 +389,7 @@ def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
 def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnostic]:
     """A triage task cannot leave triage without an auxiliary helper.
 
-    With the auto-decompose dispatcher (kanban.auto_decompose, default True),
+    With the auto-decompose dispatcher (kanban.auto_decompose, default False),
     triage tasks fan out via ``auxiliary.kanban_decomposer`` and fall back to
     ``auxiliary.triage_specifier`` when the decomposer returns ``fanout=false``.
     With auto-decompose off, the user must run ``hermes kanban specify``,

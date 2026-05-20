@@ -134,7 +134,7 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     """Return ``(running, message)``.
 
     - ``running=True``: a gateway is alive for this HERMES_HOME and its
-      config has ``kanban.dispatch_in_gateway`` on (default). Message
+      config has ``kanban.dispatch_in_gateway`` on. Message
       is a short status line.
     - ``running=False``: either no gateway is running, or the gateway
       is running but the config flag is off. Message is human guidance
@@ -159,9 +159,9 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", True))
+        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", False))
     except Exception:
-        dispatch_on = True  # can't tell — assume default
+        dispatch_on = False  # can't tell — fail safe and warn
 
     if pid and dispatch_on:
         return (True, f"gateway pid={pid}, dispatch enabled")
@@ -178,9 +178,9 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
         "No gateway is running — the task will sit in 'ready' until you "
         "start it. Run:\n"
         "    hermes gateway start\n"
-        "The gateway hosts an embedded dispatcher (tick interval 60s by "
-        "default); your task will be picked up on the next tick after "
-        "the gateway comes up."
+        "Then enable kanban.dispatch_in_gateway=true in config.yaml and "
+        "restart the gateway, OR run the standalone dispatcher explicitly "
+        "(`hermes kanban daemon --force`)."
     )
 
 
@@ -2073,13 +2073,14 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "hermes kanban daemon: DEPRECATED — the dispatcher now runs\n"
             "inside the gateway. To use kanban:\n"
             "\n"
-            "    hermes gateway start       # starts the gateway + embedded dispatcher\n"
+            "    hermes gateway start\n"
+            "    # then opt in with kanban.dispatch_in_gateway=true\n"
             "\n"
             "Ready tasks will be picked up on the next dispatcher tick\n"
             "(default: every 60 seconds). Configure via config.yaml:\n"
             "\n"
             "    kanban:\n"
-            "      dispatch_in_gateway: true      # default\n"
+            "      dispatch_in_gateway: true      # opt-in\n"
             "      dispatch_interval_seconds: 60\n"
             "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
             "\n"
@@ -2108,7 +2109,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         f"Kanban dispatcher running STANDALONE via --force "
         f"(interval={args.interval}s, pid={os.getpid()}). "
         f"Ctrl-C to stop. NOTE: if a gateway is also running with "
-        f"dispatch_in_gateway=true (default), you have two dispatchers "
+        f"dispatch_in_gateway=true, you have two dispatchers "
         f"racing for claims.",
         file=sys.stderr,
     )

@@ -1517,12 +1517,11 @@ DEFAULT_CONFIG = {
     # each claimable ready task. One dispatcher per profile is sufficient;
     # running more than one on the same kanban.db will race for claims.
     "kanban": {
-        # Run the dispatcher inside the gateway process. On by default —
-        # the cost is ~300µs every `dispatch_interval_seconds` when idle,
-        # and gateway is the supervisor users already have. Set to false
-        # only if you run the dispatcher as a separate systemd unit or
-        # don't want the gateway to spawn workers.
-        "dispatch_in_gateway": True,
+        # Run the dispatcher inside the gateway process. Off by default so
+        # starting the gateway/WebUI cannot silently spawn paid model-backed
+        # workers across local boards. Set to true only after choosing
+        # explicit worker caps and accepting the cost/quota implications.
+        "dispatch_in_gateway": False,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
@@ -1546,10 +1545,11 @@ DEFAULT_CONFIG = {
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
         # When true, the kanban dispatcher auto-runs the decomposer on
-        # tasks that land in Triage (every dispatcher tick). When false,
-        # decomposition is manual via `hermes kanban decompose <id>` or
-        # the dashboard's Decompose button.
-        "auto_decompose": True,
+        # tasks that land in Triage (every dispatcher tick). Off by default:
+        # decomposition can spend model quota and should be an explicit
+        # operator choice via `hermes kanban decompose <id>` or the
+        # dashboard's Decompose button.
+        "auto_decompose": False,
         # Max triage tasks to decompose per dispatcher tick. Prevents a
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.

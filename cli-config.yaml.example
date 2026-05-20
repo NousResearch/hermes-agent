@@ -887,6 +887,19 @@ delegation:
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
 
 # =============================================================================
+# Kanban Dispatcher
+# =============================================================================
+# Safe default: starting the gateway/WebUI does not automatically spawn
+# model-backed Kanban workers. Enable this only when you want the gateway to
+# dispatch ready tasks and you have set conservative worker caps.
+kanban:
+  dispatch_in_gateway: false
+  dispatch_interval_seconds: 60
+  max_spawn: 1
+  max_in_progress: 1
+  auto_decompose: false
+
+# =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
 # =============================================================================
 # AI-native persistent memory via Honcho (https://honcho.dev/).

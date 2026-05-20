@@ -161,6 +161,58 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+def _locked_guard(name: str, skill_dir: "Path") -> Optional[str]:
+    """Return a refusal message if *name* is user-locked, else None.
+
+    A skill is considered locked if EITHER:
+      - its directory is not user-writable (e.g. ``chmod 555`` — the OS
+        would block writes anyway, but a clean structured error beats a
+        raw ``PermissionError`` traceback bubbling out to the agent), OR
+      - its SKILL.md frontmatter contains ``locked: true``.
+
+    This protects hand-curated skills from the background skill-review
+    auto-patching. The agent must not retry, must not chmod, must not
+    attempt to bypass — report back to the user instead.
+    """
+    # Check 1: filesystem (chmod 555 / dir not writable)
+    try:
+        if skill_dir.exists() and not os.access(skill_dir, os.W_OK):
+            return (
+                f"Skill '{name}' is user-locked: the skill directory is not "
+                f"writable (the user has intentionally set restrictive file "
+                f"permissions). DO NOT retry, do not attempt to chmod, do not "
+                f"try to bypass the protection. If a change is genuinely needed, "
+                f"report it to the user in your response and let them update "
+                f"the skill manually."
+            )
+    except Exception:
+        logger.debug("locked-guard fs check failed for %s", name, exc_info=True)
+
+    # Check 2: frontmatter `locked: true`
+    try:
+        skill_md = skill_dir / "SKILL.md"
+        if skill_md.exists():
+            content = skill_md.read_text(encoding="utf-8")
+            if content.startswith("---"):
+                end_match = re.search(r'\n---\s*\n', content[3:])
+                if end_match:
+                    yaml_content = content[3:end_match.start() + 3]
+                    parsed = yaml.safe_load(yaml_content) or {}
+                    if isinstance(parsed, dict) and parsed.get("locked") is True:
+                        return (
+                            f"Skill '{name}' is user-locked via frontmatter "
+                            f"(`locked: true`). The user has intentionally "
+                            f"protected this skill from automated modification. "
+                            f"DO NOT retry. If a change is genuinely needed, "
+                            f"report it to the user in your response and let "
+                            f"them update the skill manually."
+                        )
+    except Exception:
+        logger.debug("locked-guard frontmatter check failed for %s", name, exc_info=True)
+
+    return None
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -441,6 +493,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
+    lock_err = _locked_guard(name, existing["path"])
+    if lock_err:
+        return {"success": False, "error": lock_err}
+
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -482,6 +538,10 @@ def _patch_skill(
         return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
+
+    lock_err = _locked_guard(name, skill_dir)
+    if lock_err:
+        return {"success": False, "error": lock_err}
 
     if file_path:
         # Patching a supporting file
@@ -639,6 +699,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
+    lock_err = _locked_guard(name, existing["path"])
+    if lock_err:
+        return {"success": False, "error": lock_err}
+
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -674,6 +738,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
+
+    lock_err = _locked_guard(name, skill_dir)
+    if lock_err:
+        return {"success": False, "error": lock_err}
 
     target, err = _resolve_skill_target(skill_dir, file_path)
     if err:

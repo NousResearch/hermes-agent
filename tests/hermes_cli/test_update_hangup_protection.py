@@ -17,11 +17,18 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import (
-    _UpdateOutputStream,
-    _finalize_update_output,
-    _install_hangup_protection,
-)
+from hermes_cli import main as hermes_main
+
+# Some CLI tests reload ``hermes_cli.main`` after collection to rebind
+# HERMES_HOME-sensitive module state. Keep these globals pointed at the live
+# module objects before each test so class identity assertions do not compare an
+# instance created by the reloaded module with a stale class imported at
+# collection time.
+@pytest.fixture(autouse=True)
+def _refresh_main_symbols():
+    globals()["_UpdateOutputStream"] = hermes_main._UpdateOutputStream
+    globals()["_finalize_update_output"] = hermes_main._finalize_update_output
+    globals()["_install_hangup_protection"] = hermes_main._install_hangup_protection
 
 
 # -----------------------------------------------------------------------------

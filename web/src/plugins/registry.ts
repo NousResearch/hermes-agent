@@ -21,6 +21,7 @@ import { api, fetchJSON } from "@/lib/api";
 import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -121,7 +122,7 @@ export function exposePluginSDK() {
     // Raw fetchJSON for plugin-specific endpoints
     fetchJSON,
 
-    // UI components (shadcn/ui primitives)
+    // UI components — Nous DS where available, shadcn/ui primitives elsewhere.
     components: {
       Card,
       CardHeader,
@@ -129,6 +130,7 @@ export function exposePluginSDK() {
       CardContent,
       Badge,
       Button,
+      Checkbox,
       Input,
       Label,
       Select,

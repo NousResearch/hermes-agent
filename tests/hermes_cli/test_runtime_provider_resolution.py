@@ -865,7 +865,8 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="custom:local-llm")
 
     assert resolved["base_url"] == "http://localhost:1234/v1"
-    assert resolved["api_key"] == "env-openai-key"
+    # localhost is not openai.com — OPENAI_API_KEY must not leak to local endpoints (#28660)
+    assert resolved["api_key"] == "no-key-required"
     assert resolved["requested_provider"] == "custom:local-llm"
 
 

@@ -20,10 +20,9 @@ class CustomProfile(ProviderProfile):
         *,
         reasoning_config: dict | None = None,
         ollama_num_ctx: int | None = None,
-        **ctx: Any,
+        **ctx,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
-
         # Ollama context window
         if ollama_num_ctx:
             options = extra_body.get("options", {})

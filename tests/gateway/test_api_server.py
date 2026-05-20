@@ -676,6 +676,102 @@ class TestCapabilitiesEndpoint:
             data = await authed.json()
             assert data["auth"]["required"] is True
 
+    @pytest.mark.asyncio
+    async def test_capabilities_include_plugin_extension_payload(self, adapter):
+        class _PluginManager:
+            def get_api_server_capabilities(self, *, adapter=None, request=None):
+                return [
+                    {"plugin": "alpha", "capabilities": {"alpha_flag": True}},
+                    {"plugin": "beta", "capabilities": {"beta_count": 2}},
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["extensions"]["plugins"] == {
+                "alpha": {"alpha_flag": True},
+                "beta": {"beta_count": 2},
+            }
+
+
+class TestPluginApiServerRoutes:
+    def test_mount_plugin_routes_after_core_routes(self, adapter):
+        async def _plugin_handler(request):
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/test-ping",
+                        "handler": _plugin_handler,
+                        "name": "test_ping",
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        adapter._mount_plugin_api_routes(app.router)
+        paths = [res.canonical for res in app.router.resources()]
+        assert "/v1/models" in paths
+        assert "/v1/plugins/test-ping" in paths
+        assert paths.index("/v1/plugins/test-ping") > paths.index("/v1/models")
+
+    def test_plugin_route_registration_failure_is_isolated(self, adapter, caplog):
+        async def _plugin_handler(request):
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "NOPE",
+                        "path": "/v1/plugins/bad",
+                        "handler": _plugin_handler,
+                        "name": "bad",
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING"):
+            adapter._mount_plugin_api_routes(app.router)
+        paths = [res.canonical for res in app.router.resources()]
+        assert "/v1/models" in paths
+        assert "/v1/plugins/bad" not in paths
+        assert "plugin route" in caplog.text.lower()
+
+    def test_plugin_route_cannot_shadow_core_route(self, adapter, caplog):
+        async def _plugin_handler(request):
+            return web.json_response({"shadow": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/models",
+                        "handler": _plugin_handler,
+                        "name": "models_shadow",
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING"):
+            adapter._mount_plugin_api_routes(app.router)
+
+        matching = [res for res in app.router.resources() if res.canonical == "/v1/models"]
+        assert len(matching) == 1
+        assert "route already registered" in caplog.text.lower()
+
 
 # ---------------------------------------------------------------------------
 # /v1/skills and /v1/toolsets endpoints
@@ -3006,6 +3102,24 @@ class TestCORS:
             )
             assert resp.status == 200
             assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+    @pytest.mark.asyncio
+    async def test_cors_allows_mobile_routing_headers(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/runs",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "X-Portal-Client-Id, X-Hermes-Thread-Id",
+                },
+            )
+            assert resp.status == 200
+            allow_headers = resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "X-Portal-Client-Id" in allow_headers
+            assert "X-Hermes-Thread-Id" in allow_headers
 
     @pytest.mark.asyncio
     async def test_cors_sets_vary_origin_header(self):

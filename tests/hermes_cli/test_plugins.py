@@ -1463,6 +1463,59 @@ class TestPluginDispatchTool:
         assert '"error"' in result
 
 
+class TestPluginApiServerHooks:
+    def test_register_api_server_route_tracks_route_definition(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="api-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        async def _handler(request):
+            return None
+
+        ctx.register_api_server_route("GET", "/v1/plugins/ping", _handler, name="plugin_ping")
+
+        routes = mgr.get_api_server_routes()
+        assert len(routes) == 1
+        assert routes[0]["method"] == "GET"
+        assert routes[0]["path"] == "/v1/plugins/ping"
+        assert routes[0]["handler"] is _handler
+        assert routes[0]["name"] == "plugin_ping"
+        assert routes[0]["plugin"] == "api-plugin"
+
+    def test_register_api_server_capability_provider_is_invoked_with_context(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="api-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        seen = {}
+
+        def _provider(*, adapter=None, request=None):
+            seen["adapter"] = adapter
+            seen["request"] = request
+            return {"feature_flag": True}
+
+        ctx.register_api_server_capability(_provider)
+
+        capabilities = mgr.get_api_server_capabilities(adapter="adapter-x", request="request-y")
+        assert capabilities == [{"plugin": "api-plugin", "capabilities": {"feature_flag": True}}]
+        assert seen == {"adapter": "adapter-x", "request": "request-y"}
+
+    def test_plugin_capability_provider_failure_isolated(self, caplog):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="api-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        def _bad_provider(*, adapter=None, request=None):
+            raise RuntimeError("boom")
+
+        ctx.register_api_server_capability(_bad_provider)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            capabilities = mgr.get_api_server_capabilities(adapter=None, request=None)
+        assert capabilities == []
+        assert "api server capability provider" in caplog.text.lower()
+
+
 class TestPluginDebugLogging:
     """HERMES_PLUGINS_DEBUG opt-in stderr handler for plugin developers."""
 

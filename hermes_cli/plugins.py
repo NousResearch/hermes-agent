@@ -952,6 +952,43 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    # -- API server registration --------------------------------------------
+
+    def register_api_server_route(
+        self,
+        method: str,
+        path: str,
+        handler: Callable,
+        *,
+        name: str | None = None,
+    ) -> None:
+        """Register an aiohttp route contribution for the API server adapter."""
+        self._manager._api_server_routes.append(
+            {
+                "method": str(method or "").upper(),
+                "path": path,
+                "handler": handler,
+                "name": name,
+                "plugin": self.manifest.name,
+            }
+        )
+        logger.debug(
+            "Plugin %s registered API server route: %s %s",
+            self.manifest.name,
+            str(method or "").upper(),
+            path,
+        )
+
+    def register_api_server_capability(self, provider: Callable) -> None:
+        """Register a provider callback for /v1/capabilities extensions."""
+        self._manager._api_server_capability_providers.append(
+            {
+                "plugin": self.manifest.name,
+                "provider": provider,
+            }
+        )
+        logger.debug("Plugin %s registered API server capability provider", self.manifest.name)
+
     # -- skill registration -------------------------------------------------
 
     def register_skill(
@@ -1022,6 +1059,8 @@ class PluginManager:
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        self._api_server_routes: List[Dict[str, Any]] = []
+        self._api_server_capability_providers: List[Dict[str, Any]] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -1044,6 +1083,8 @@ class PluginManager:
             self._plugin_commands.clear()
             self._plugin_skills.clear()
             self._aux_tasks.clear()
+            self._api_server_routes.clear()
+            self._api_server_capability_providers.clear()
             self._context_engine = None
         self._discovered = True
 
@@ -1599,6 +1640,38 @@ class PluginManager:
                 }
             )
         return result
+
+    def get_api_server_routes(self) -> List[Dict[str, Any]]:
+        """Return plugin-contributed API server routes in registration order."""
+        return list(self._api_server_routes)
+
+    def get_api_server_capabilities(self, *, adapter: Any = None, request: Any = None) -> List[Dict[str, Any]]:
+        """Resolve plugin capability contributions for /v1/capabilities."""
+        results: List[Dict[str, Any]] = []
+        for entry in self._api_server_capability_providers:
+            plugin_name = entry.get("plugin", "unknown")
+            provider = entry.get("provider")
+            if not callable(provider):
+                continue
+            try:
+                payload = provider(adapter=adapter, request=request)
+            except Exception as exc:
+                logger.warning(
+                    "Plugin '%s' API server capability provider failed: %s",
+                    plugin_name,
+                    exc,
+                )
+                continue
+            if payload is None:
+                continue
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "Plugin '%s' API server capability provider returned non-dict payload; skipping",
+                    plugin_name,
+                )
+                continue
+            results.append({"plugin": plugin_name, "capabilities": payload})
+        return results
 
     # -----------------------------------------------------------------------
     # Plugin skill lookups

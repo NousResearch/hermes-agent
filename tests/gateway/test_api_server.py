@@ -128,6 +128,53 @@ class TestResponseStore:
         # resp_2 mapping should still be intact
         assert store.get_conversation("chat-b") == "resp_2"
 
+    def test_concurrent_put_get_is_thread_safe(self):
+        """
+        FastAPI/aiohttp dispatches blocking work across worker threads, so the
+        sqlite3 connection (opened with check_same_thread=False) is touched
+        concurrently. Without the internal lock, interleaved execute() /
+        fetch* / commit() calls raise ProgrammingError / DatabaseError
+        ("no more rows available", "Recursive use of cursors not allowed",
+        "cannot start a transaction within a transaction") and leak partial
+        rows. This test hammers put/get/set_conversation/get_conversation
+        from many threads and asserts no exception escapes and per-thread
+        data stays consistent.
+        """
+        import threading
+
+        store = ResponseStore(max_size=2000)
+        errors: list = []
+        N_THREADS = 16
+        N_OPS = 50
+
+        def worker(tid: int) -> None:
+            try:
+                for i in range(N_OPS):
+                    key = f"resp_{tid}_{i}"
+                    store.put(key, {"tid": tid, "i": i})
+                    got = store.get(key)
+                    assert got == {"tid": tid, "i": i}, got
+                    store.set_conversation(f"chat_{tid}_{i}", key)
+                    assert store.get_conversation(f"chat_{tid}_{i}") == key
+                    # Touch a sibling thread's key to force cross-thread reads
+                    other = f"resp_{(tid + 1) % N_THREADS}_{i}"
+                    store.get(other)  # may be None, that's fine
+                    assert len(store) >= 0
+            except Exception as exc:  # pragma: no cover - captured for assert
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=worker, args=(t,)) for t in range(N_THREADS)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"thread errors: {errors[:3]}"
+        # Store length stays bounded by max_size even under concurrent eviction.
+        assert len(store) <= 2000
+
 
 # ---------------------------------------------------------------------------
 # _IdempotencyCache

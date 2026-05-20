@@ -1267,9 +1267,11 @@ class MCPServerTask:
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
 
-        # Check package against OSV malware database before spawning
+        # Check package against OSV malware database before spawning.
+        # OSV queries use blocking urllib I/O; keep that off the MCP event loop
+        # so an intermittent SSL handshake hang cannot freeze startup discovery.
         from tools.osv_check import check_package_for_malware
-        malware_error = check_package_for_malware(command, args)
+        malware_error = await asyncio.to_thread(check_package_for_malware, command, args)
         if malware_error:
             raise ValueError(
                 f"MCP server '{self.name}': {malware_error}"

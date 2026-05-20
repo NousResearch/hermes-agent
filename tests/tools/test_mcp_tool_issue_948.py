@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -93,5 +94,43 @@ def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
             assert call_kwargs["env"]["PATH"].split(os.pathsep)[0] == str(node_bin)
 
             await server.shutdown()
+
+    asyncio.run(_test())
+
+
+def test_run_stdio_malware_check_does_not_block_event_loop():
+    mock_session = MagicMock()
+    mock_session.initialize = AsyncMock()
+    mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+
+    mock_stdio_cm = MagicMock()
+    mock_stdio_cm.__aenter__ = AsyncMock(return_value=(object(), object()))
+    mock_stdio_cm.__aexit__ = AsyncMock(return_value=False)
+
+    mock_session_cm = MagicMock()
+    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_cm.__aexit__ = AsyncMock(return_value=False)
+
+    def slow_malware_check(_command, _args):
+        time.sleep(0.2)
+        return None
+
+    async def _test():
+        with patch("tools.osv_check.check_package_for_malware", side_effect=slow_malware_check), \
+             patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
+             patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
+            server = MCPServerTask("srv")
+            start_task = asyncio.create_task(
+                server.start({"command": sys.executable, "args": ["-m", "fake_mcp"]})
+            )
+
+            started_at = time.monotonic()
+            await asyncio.sleep(0.05)
+            elapsed = time.monotonic() - started_at
+
+            await start_task
+            await server.shutdown()
+
+        assert elapsed < 0.12
 
     asyncio.run(_test())

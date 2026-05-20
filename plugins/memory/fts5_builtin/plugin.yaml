@@ -1,0 +1,5 @@
+name: fts5_builtin
+version: 0.1.0
+description: "FTS5 keyword memory — zero-dependency local SQLite FTS5 fact store with full-text search and prefetch injection."
+hooks:
+  - on_session_end

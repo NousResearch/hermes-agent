@@ -1176,7 +1176,7 @@ class NativeToolCallingChatClient(
                 "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata, camera capability checks, Wi-Fi analysis/channel ratings/signal history, Bluetooth nearby scans/service metadata, radio capability checks, resource summaries, or Tasker-style automation. " +
                 "When writing multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
                 "For HTML/browser work: write the file with file_write_tool, then call android_automation_tool action=open_uri with data_uri set to the workspace filename. " +
-                "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings/signal history, Bluetooth nearby devices/service metadata, camera/sensor status plus accelerometer/gyroscope hardware metadata, active overlays, tool catalog, Kai-style agent environment reports, RF capability limits, MediaTek/Snapdragon/SOC context, or phone preflight checks before TikTok/Instagram/Gmail work. " +
+                "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings/signal history, Bluetooth nearby devices/service metadata, camera/sensor status plus accelerometer/gyroscope hardware metadata, active overlays, tool catalog, Kai-style agent environment reports, cross-signal awareness reports, RF capability limits, MediaTek/Snapdragon/SOC context, or phone preflight checks before TikTok/Instagram/Gmail work. " +
                 "Use hindsight_memory_tool to retain, recall, reflect, and inspect promoted durable local memories before or after complex work. " +
                 "Report missing Android permissions honestly. Keep replies brief."
         } else {
@@ -1237,9 +1237,9 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, channel ratings, access-point detail/export rows, signal history, vendor/OUI metadata and filter facets, nearby Bluetooth devices plus service/manufacturer/proximity metadata, camera capability, sensors with range/resolution/power/sampling-rate metadata, overlay status, SOC/GPU compatibility context, Kai-style agent environment parity/readiness, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, channel ratings, access-point detail/export rows, signal history, vendor/OUI metadata and filter facets, nearby Bluetooth devices plus service/manufacturer/proximity metadata, camera capability, sensors with range/resolution/power/sampling-rate metadata, overlay status, SOC/GPU compatibility context, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_channel_rating, wifi_ap_details, wifi_export, bluetooth_scan, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
+                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_channel_rating, wifi_ap_details, wifi_export, bluetooth_scan, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, signal_awareness_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point detail/export rows. Defaults to limit, or the Wi-Fi max for wifi_ap_details/wifi_export."))
                         .put("export_format", stringProp("Wi-Fi export format for wifi_export: json, csv, or both."))
@@ -1455,6 +1455,12 @@ class NativeToolCallingChatClient(
                     "wifi security",
                     "wi-fi security",
                     "interference",
+                    "signal awareness",
+                    "nearby signal report",
+                    "rf sensor fusion",
+                    "ambient context",
+                    "cross signal",
+                    "situational awareness",
                     "bluetooth scanner",
                     "nearby bluetooth",
                     "ble scan",
@@ -3258,10 +3264,15 @@ internal object NativeToolContextCompressor {
                 "wifi_security_summary_count",
                 "wifi_width_summary_count",
                 "wifi_standard_summary_count",
+                "cached_wifi_history_network_count",
                 "agent_capability_count",
                 "ready_capability_count",
                 "kai_parity_count",
                 "workflow_readiness_count",
+                "signal_awareness_count",
+                "ready_signal_awareness_count",
+                "signal_workflow_route_count",
+                "signal_constraint_count",
                 "camera_count",
                 "sensor_count",
                 "sensor_capability_count",
@@ -3334,6 +3345,10 @@ internal object NativeToolContextCompressor {
         "agent_capability_matrix",
         "kai_parity_matrix",
         "workflow_readiness_matrix",
+        "signal_awareness_matrix",
+        "signal_workflow_routes",
+        "signal_constraint_matrix",
+        "cached_wifi_signal_history",
         "ai_experience_elevation_plan",
         "bluetooth_devices",
         "bluetooth_metadata_summary",
@@ -3426,6 +3441,11 @@ internal object NativeToolContextCompressor {
         "detail",
         "fraction",
         "parity_source",
+        "tool_action",
+        "permission_gate",
+        "hardware_gate",
+        "constraint_type",
+        "source_surface",
         "report_scope",
         "count",
         "options",

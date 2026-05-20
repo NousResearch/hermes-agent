@@ -338,6 +338,41 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesSignalAwarenessRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Signal Awareness")
+                        .put("body", "Fused rows.")
+                        .put("graph_type", "signal_awareness_matrix")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("category", "signal_awareness")
+                                    .put("label", "Bluetooth proximity metadata")
+                                    .put("ready", true)
+                                    .put("value_label", "scan ready")
+                                    .put("detail", "Service UUID and manufacturer rows available.")
+                                    .put("recommendation", "Use bluetooth_scan.")
+                                    .put("fraction", 0.9),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("Bluetooth proximity metadata", row.label)
+        assertEquals("scan ready", row.valueLabel)
+        assertTrue(row.detail.contains("Service UUID"))
+        assertTrue(row.fraction > 0.8f)
+    }
+
+    @Test
     fun parsesWifiSignalHistoryRowsForExpandableSignalCards() {
         val content = JSONObject()
             .put(

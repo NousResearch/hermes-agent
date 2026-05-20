@@ -212,7 +212,30 @@ def test_android_diagnostics_exposes_agent_environment_report_for_kai_parity():
     assert '"agent_capability_matrix"' in chat_client
     assert '"kai_parity_matrix"' in chat_client
     assert '"workflow_readiness_matrix"' in chat_client
-    assert '"agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness" -> capabilityMatrixRow(row)' in diagnostic_cards
+    assert '"agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness"' in diagnostic_cards
+    assert 'capabilityMatrixRow(row)' in diagnostic_cards
+
+
+def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_cards():
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+
+    assert '"signal_awareness_report"' in diagnostics_bridge
+    assert 'signalAwarenessReportJson(appContext)' in diagnostics_bridge
+    assert 'signalAwarenessRows(' in diagnostics_bridge
+    assert 'signalWorkflowRouteRows(' in diagnostics_bridge
+    assert 'signalConstraintRows(' in diagnostics_bridge
+    assert '"signal_awareness_matrix"' in diagnostics_bridge
+    assert '"signal_workflow_routes"' in diagnostics_bridge
+    assert '"signal_constraint_matrix"' in diagnostics_bridge
+    assert 'cached_wifi_signal_history' in diagnostics_bridge
+    assert 'Route broad RF explanation' in diagnostics_bridge
+    assert 'signal_awareness_report' in chat_client
+    assert '"signal_awareness_matrix"' in chat_client
+    assert '"signal_workflow_routes"' in chat_client
+    assert '"signal_constraint_matrix"' in chat_client
+    assert '"signal_awareness_matrix", "signal_workflow_routes", "signal_constraint_matrix" -> capabilityMatrixRow(row)' in diagnostic_cards
 
 
 def test_android_linux_subsystem_reapplies_executable_bits_before_reusing_cached_prefix():

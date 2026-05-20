@@ -316,6 +316,72 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun compactsSignalAwarenessReportWithoutDroppingRoutesOrConstraints() {
+        val awareness = JSONArray()
+        repeat(18) { index ->
+            awareness.put(
+                JSONObject()
+                    .put("category", "signal_awareness")
+                    .put("label", "Signal row $index")
+                    .put("ready", index % 3 == 0)
+                    .put("value_label", "value $index")
+                    .put("detail", "Detailed signal awareness row $index")
+                    .put("recommendation", "Use the right scanner.")
+                    .put("tool_action", "wifi_ap_details")
+                    .put("fraction", 0.75),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "signal_awareness_report")
+            .put("signal_awareness_count", 18)
+            .put("ready_signal_awareness_count", 6)
+            .put("signal_workflow_route_count", 1)
+            .put("signal_constraint_count", 1)
+            .put("cached_wifi_history_network_count", 3)
+            .put("signal_awareness_matrix", awareness)
+            .put(
+                "signal_workflow_routes",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "signal_route")
+                        .put("label", "Route Wi-Fi analyzer work")
+                        .put("ready", true)
+                        .put("value_label", "wifi_ap_details")
+                        .put("tool_action", "wifi_ap_details"),
+                ),
+            )
+            .put(
+                "signal_constraint_matrix",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "signal_constraint")
+                        .put("label", "AM/FM tuner public API")
+                        .put("ready", false)
+                        .put("value_label", "not public")
+                        .put("constraint_type", "hardware_api"),
+                ),
+            )
+            .put("cards", JSONArray().put(JSONObject().put("title", "Signal Awareness").put("body", "18 rows")))
+            .toString()
+
+        val parsed = JSONObject(NativeToolContextCompressor.compactToolResult(result))
+        val awarenessMatrix = parsed.getJSONObject("signal_awareness_matrix")
+        val routes = parsed.getJSONArray("signal_workflow_routes")
+        val constraints = parsed.getJSONArray("signal_constraint_matrix")
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(18, parsed.getInt("signal_awareness_count"))
+        assertEquals(3, parsed.getInt("cached_wifi_history_network_count"))
+        assertEquals("array", awarenessMatrix.getString("type"))
+        assertEquals("Signal row 0", awarenessMatrix.getJSONArray("items").getJSONObject(0).getString("label"))
+        assertEquals("wifi_ap_details", awarenessMatrix.getJSONArray("items").getJSONObject(0).getString("tool_action"))
+        assertEquals("Route Wi-Fi analyzer work", routes.getJSONObject(0).getString("label"))
+        assertEquals("AM/FM tuner public API", constraints.getJSONObject(0).getString("label"))
+        assertEquals("hardware_api", constraints.getJSONObject(0).getString("constraint_type"))
+    }
+
+    @Test
     fun compactsBluetoothAndRadioDiagnosticRowsWithoutDroppingSignalMetadata() {
         val devices = JSONArray()
         repeat(30) { index ->

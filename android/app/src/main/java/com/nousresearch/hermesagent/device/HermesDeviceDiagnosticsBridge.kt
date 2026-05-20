@@ -74,6 +74,8 @@ object HermesDeviceDiagnosticsBridge {
                 radioSignalStatusJson(appContext).toString()
             "signal_capability_status", "rf_capabilities", "radio_status", "microwave_status" ->
                 signalCapabilityStatusJson(appContext).toString()
+            "signal_awareness_report", "nearby_signal_report", "rf_sensor_fusion_report", "ambient_context_report" ->
+                signalAwarenessReportJson(appContext).toString()
             "agent_environment_report", "environment_report", "capability_matrix", "system_capability_report", "kai_parity_report" ->
                 agentEnvironmentReportJson(appContext).toString()
             "social_gmail_goal_preflight", "social_gmail_preflight", "phone_goal_preflight", "end_to_end_goal_preflight" ->
@@ -609,6 +611,82 @@ object HermesDeviceDiagnosticsBridge {
             )
     }
 
+    fun signalAwarenessReportJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val diagnostics = statusJson(appContext)
+        val signalStatus = signalCapabilityStatusJson(appContext)
+        val radioStatus = radioSignalStatusJson(appContext)
+        val preferredModel = preferredLocalModelJson(appContext)
+        val socProfile = diagnostics.optJSONObject("soc_profile") ?: socProfileJson()
+        val availableSensors = diagnostics.optJSONArray("available_sensor_types") ?: JSONArray()
+        val cachedWifiHistory = wifiSignalHistoryRowsFromStore(readWifiSignalHistory(appContext))
+        val awarenessRows = signalAwarenessRows(
+            diagnostics = diagnostics,
+            signalStatus = signalStatus,
+            radioStatus = radioStatus,
+            preferredModel = preferredModel,
+            socProfile = socProfile,
+            availableSensors = availableSensors,
+            cachedWifiHistory = cachedWifiHistory,
+        )
+        val workflowRows = signalWorkflowRouteRows(
+            diagnostics = diagnostics,
+            signalStatus = signalStatus,
+            preferredModel = preferredModel,
+            availableSensors = availableSensors,
+            cachedWifiHistory = cachedWifiHistory,
+        )
+        val constraintRows = signalConstraintRows(diagnostics, signalStatus, radioStatus)
+        return JSONObject()
+            .put("success", true)
+            .put("action", "signal_awareness_report")
+            .put("report_scope", "Cross-signal situational awareness across Wi-Fi, Bluetooth, AM/FM/RF limits, sensors, SOC backend policy, and local multimodal readiness.")
+            .put("android_device_identity", deviceIdentityJson())
+            .put("soc_profile", socProfile)
+            .put("preferred_local_model", preferredModel)
+            .put("signal_capability_status", compactSignalCapabilityJson(signalStatus))
+            .put("wifi_scan_permission_status", diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject())
+            .put("bluetooth_scan_permission_status", diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject())
+            .put("cached_wifi_signal_history", cachedWifiHistory)
+            .put("cached_wifi_history_network_count", cachedWifiHistory.length())
+            .put("radio_bands", radioStatus.optJSONArray("radio_bands") ?: JSONArray())
+            .put("signal_awareness_matrix", awarenessRows)
+            .put("signal_workflow_routes", workflowRows)
+            .put("signal_constraint_matrix", constraintRows)
+            .put("signal_awareness_count", awarenessRows.length())
+            .put("ready_signal_awareness_count", countReadyRows(awarenessRows))
+            .put("signal_workflow_route_count", workflowRows.length())
+            .put("signal_constraint_count", constraintRows.length())
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "Signal Awareness",
+                            body = "${awarenessRows.length()} fused row(s) covering Wi-Fi, Bluetooth, radio limits, sensors, SOC, and local model context.",
+                            graphType = "signal_awareness_matrix",
+                            rows = awarenessRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Signal Routes",
+                            body = "${workflowRows.length()} next-tool route row(s) for choosing the right scanner or sensor path.",
+                            graphType = "signal_workflow_routes",
+                            rows = workflowRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Signal Constraints",
+                            body = "${constraintRows.length()} Android permission, hardware, and public-API constraints for honest radio/sensor reasoning.",
+                            graphType = "signal_constraint_matrix",
+                            rows = constraintRows,
+                        ),
+                    ),
+            )
+    }
+
     fun agentEnvironmentReportJson(context: Context): JSONObject {
         val appContext = context.applicationContext
         val diagnostics = statusJson(appContext)
@@ -1105,6 +1183,279 @@ object HermesDeviceDiagnosticsBridge {
                     detail = "Best next tool: android_device_diagnostics_tool action=signal_capability_status or radio_signal_status.",
                     recommendation = "Use this row to be explicit about public Android AM/FM/microwave limitations.",
                     fraction = 0.5f,
+                ),
+            )
+    }
+
+    private fun signalAwarenessRows(
+        diagnostics: JSONObject,
+        signalStatus: JSONObject,
+        radioStatus: JSONObject,
+        preferredModel: JSONObject,
+        socProfile: JSONObject,
+        availableSensors: JSONArray,
+        cachedWifiHistory: JSONArray,
+    ): JSONArray {
+        val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
+        val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
+        val sensorNames = jsonStringList(availableSensors)
+        val motionSensors = sensorNames.filter { it in MOTION_SENSOR_TYPES }
+        val ambientSensors = sensorNames.filter { it in AMBIENT_SENSOR_TYPES }
+        val wifiReady = diagnostics.optBoolean("wifi_supported", false) && wifiPermission.optBoolean("can_read_scan_results", false)
+        val bluetoothReady = diagnostics.optBoolean("bluetooth_supported", false) &&
+            (bluetoothPermission.optBoolean("can_scan_nearby_devices", false) || bluetoothPermission.optBoolean("can_read_paired_devices", false))
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "Wi-Fi scan surface",
+                    ready = wifiReady,
+                    valueLabel = if (wifiReady) "live scan ready" else if (diagnostics.optBoolean("wifi_supported", false)) "permission gated" else "no Wi-Fi feature",
+                    detail = "${cachedWifiHistory.length()} cached trend row(s); AP detail, channel rating, vendor/OUI, security, width, standard, and export rows are available when scan access is ready.",
+                    recommendation = "Use wifi_ap_details or wifi_export before making channel, roaming, or nearby-network decisions.",
+                    fraction = if (wifiReady) 1f else if (diagnostics.optBoolean("wifi_supported", false)) 0.55f else 0.1f,
+                    extra = JSONObject()
+                        .put("tool_action", "wifi_ap_details")
+                        .put("permission_gate", "nearby Wi-Fi/location scan access"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "Cached Wi-Fi trend memory",
+                    ready = cachedWifiHistory.length() > 0,
+                    valueLabel = "${cachedWifiHistory.length()} tracked AP(s)",
+                    detail = "Hermes keeps bounded Wi-Fi RSSI history so Gemma can compare current, average, min/max, trend, and last-seen metadata after scans.",
+                    recommendation = "Run wifi_scan periodically when diagnosing changing signal strength or room-to-room network quality.",
+                    fraction = if (cachedWifiHistory.length() > 0) (cachedWifiHistory.length() / 8f).coerceIn(0.35f, 1f) else 0.25f,
+                    extra = JSONObject().put("tool_action", "wifi_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "Bluetooth proximity metadata",
+                    ready = bluetoothReady,
+                    valueLabel = if (bluetoothReady) "scan or paired metadata ready" else "permission gated",
+                    detail = "Bluetooth rows can expose paired devices, BLE RSSI, proximity, class/category, service UUIDs, manufacturer IDs, and connectable status.",
+                    recommendation = "Use bluetooth_scan before reasoning about nearby peripherals, beacons, wearables, audio devices, or service advertisements.",
+                    fraction = if (bluetoothReady) 1f else if (diagnostics.optBoolean("bluetooth_supported", false)) 0.55f else 0.1f,
+                    extra = JSONObject()
+                        .put("tool_action", "bluetooth_scan")
+                        .put("permission_gate", "Bluetooth connect/scan access"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "Motion/orientation sensors",
+                    ready = motionSensors.isNotEmpty(),
+                    valueLabel = "${motionSensors.size} motion type(s)",
+                    detail = "Motion sensors present: ${motionSensors.joinToString(", ").ifBlank { "none reported" }}.",
+                    recommendation = "Use sensor_snapshot for accelerometer, gyroscope, gravity, linear acceleration, and rotation-vector context before motion-aware workflows.",
+                    fraction = (motionSensors.size / MOTION_SENSOR_TYPES.size.toFloat()).coerceIn(0.1f, 1f),
+                    extra = JSONObject().put("tool_action", "sensor_snapshot"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "Ambient/environment sensors",
+                    ready = ambientSensors.isNotEmpty(),
+                    valueLabel = "${ambientSensors.size} ambient type(s)",
+                    detail = "Ambient sensors present: ${ambientSensors.joinToString(", ").ifBlank { "none reported" }}.",
+                    recommendation = "Use sensor_snapshot for light, proximity, pressure, temperature, humidity, or magnetic-field context when environment can affect the workflow.",
+                    fraction = (ambientSensors.size / AMBIENT_SENSOR_TYPES.size.toFloat()).coerceIn(0.1f, 1f),
+                    extra = JSONObject().put("tool_action", "sensor_snapshot"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "Radio/RF limits",
+                    ready = radioStatus.optBoolean("am_fm_public_android_scan_supported", false),
+                    valueLabel = if (signalStatus.optBoolean("requires_external_sdr_for_broad_rf", true)) "external SDR needed" else "built-in radio feed",
+                    detail = "AM/FM, broad RF, and microwave scans are not exposed through normal public Android APIs on this device path.",
+                    recommendation = "Use radio_signal_status and external SDR/vendor bridges for broad RF, AM, FM, or microwave work.",
+                    fraction = if (radioStatus.optBoolean("am_fm_public_android_scan_supported", false)) 0.8f else 0.25f,
+                    extra = JSONObject()
+                        .put("tool_action", "radio_signal_status")
+                        .put("hardware_gate", "external SDR or vendor radio API"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "SOC backend compatibility",
+                    ready = true,
+                    valueLabel = socProfile.optString("litert_lm_acceleration_label").ifBlank { "SOC-neutral policy" },
+                    detail = "${socProfile.optString("soc_family_label").ifBlank { "unknown SOC" }} | ${socProfile.optString("gpu_family_label").ifBlank { "unknown GPU" }} | ${socProfile.optString("primary_abi").ifBlank { "unknown ABI" }}",
+                    recommendation = "Keep MediaTek/Mali/PowerVR, Tensor/Mali, Exynos/Xclipse, Snapdragon/Adreno, Unisoc, and CPU fallback paths visible before local model work.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("source_surface", "soc_profile"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "Local multimodal reasoning",
+                    ready = preferredModel.optBoolean("ready"),
+                    valueLabel = preferredModel.optString("title").ifBlank { "model import needed" },
+                    detail = "Signal reports are structured so Gemma can read wireless metadata, sensor metadata, radio limits, and SOC policy as compact top cards.",
+                    recommendation = "Import and prefer a local Gemma LiteRT-LM or Qwen GGUF model before treating signal-aware workflows as offline-ready.",
+                    fraction = if (preferredModel.optBoolean("ready")) 1f else 0.35f,
+                    extra = JSONObject().put("source_surface", "preferred_local_model"),
+                ),
+            )
+    }
+
+    private fun signalWorkflowRouteRows(
+        diagnostics: JSONObject,
+        signalStatus: JSONObject,
+        preferredModel: JSONObject,
+        availableSensors: JSONArray,
+        cachedWifiHistory: JSONArray,
+    ): JSONArray {
+        val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
+        val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
+        val sensorNames = jsonStringList(availableSensors)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "signal_route",
+                    label = "Route Wi-Fi analyzer work",
+                    ready = wifiPermission.optBoolean("can_read_scan_results", false),
+                    valueLabel = "wifi_ap_details",
+                    detail = "Use for live AP details, security/standard/width summaries, vendor/OUI lookup, channel rating, distance estimate, and export rows.",
+                    recommendation = "Ask for location/nearby Wi-Fi permission when this row is not ready.",
+                    fraction = if (wifiPermission.optBoolean("can_read_scan_results", false)) 1f else 0.45f,
+                    extra = JSONObject().put("tool_action", "wifi_ap_details"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_route",
+                    label = "Route Wi-Fi trend work",
+                    ready = cachedWifiHistory.length() > 0,
+                    valueLabel = "wifi_scan",
+                    detail = "Use cached signal history rows when comparing changing RSSI, trend, last seen, and AP stability across scans.",
+                    recommendation = "Refresh scans sparingly because Android may throttle active Wi-Fi scanning.",
+                    fraction = if (cachedWifiHistory.length() > 0) 0.85f else 0.35f,
+                    extra = JSONObject().put("tool_action", "wifi_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_route",
+                    label = "Route Bluetooth proximity work",
+                    ready = bluetoothPermission.optBoolean("can_scan_nearby_devices", false) || bluetoothPermission.optBoolean("can_read_paired_devices", false),
+                    valueLabel = "bluetooth_scan",
+                    detail = "Use for BLE/paired-device rows, RSSI proximity, service UUID, manufacturer ID, and category metadata.",
+                    recommendation = "Ask for Bluetooth scan/connect permissions when nearby scan rows are not available.",
+                    fraction = if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) 1f else if (bluetoothPermission.optBoolean("can_read_paired_devices", false)) 0.75f else 0.45f,
+                    extra = JSONObject().put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_route",
+                    label = "Route sensor context work",
+                    ready = sensorNames.isNotEmpty(),
+                    valueLabel = "sensor_snapshot",
+                    detail = "Use for accelerometer, gyroscope, magnetic, ambient, proximity, pressure, humidity, temperature, and sensor hardware metadata.",
+                    recommendation = "Sample only the sensor types that matter to the workflow to reduce latency and power use.",
+                    fraction = (sensorNames.size / SENSOR_TYPE_LABELS.size.toFloat()).coerceIn(0.15f, 1f),
+                    extra = JSONObject().put("tool_action", "sensor_snapshot"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_route",
+                    label = "Route broad RF explanation",
+                    ready = true,
+                    valueLabel = "signal_capability_status",
+                    detail = "Use for AM/FM, broad RF, microwave, Wi-Fi, Bluetooth, audio, camera, and sensor capability boundaries.",
+                    recommendation = "Tell the user when public Android APIs cannot scan a requested RF band and name the needed external hardware/API.",
+                    fraction = 0.75f,
+                    extra = JSONObject().put("tool_action", "signal_capability_status"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_route",
+                    label = "Route local reasoning",
+                    ready = preferredModel.optBoolean("ready"),
+                    valueLabel = if (preferredModel.optBoolean("ready")) "local model" else "import model",
+                    detail = "Use this report before wireless or sensor-heavy reasoning so the local agent has SOC, permission, and signal limits in context.",
+                    recommendation = "Run signal_awareness_report first for broad situational context, then call the narrow scanner.",
+                    fraction = if (preferredModel.optBoolean("ready")) 1f else 0.4f,
+                    extra = JSONObject().put("tool_action", "signal_awareness_report"),
+                ),
+            )
+    }
+
+    private fun signalConstraintRows(diagnostics: JSONObject, signalStatus: JSONObject, radioStatus: JSONObject): JSONArray {
+        val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
+        val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "signal_constraint",
+                    label = "Wi-Fi scan permission and throttling",
+                    ready = wifiPermission.optBoolean("can_read_scan_results", false),
+                    valueLabel = if (wifiPermission.optBoolean("can_read_scan_results", false)) "readable" else "permission needed",
+                    detail = "Nearby Wi-Fi/location permissions and enabled location services can gate scan reads; Android may throttle active refreshes.",
+                    recommendation = "Prefer cached scan age/history when Android denies or throttles an active refresh.",
+                    fraction = if (wifiPermission.optBoolean("can_read_scan_results", false)) 0.9f else 0.45f,
+                    extra = JSONObject().put("constraint_type", "permission"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_constraint",
+                    label = "Bluetooth scan permission",
+                    ready = bluetoothPermission.optBoolean("can_scan_nearby_devices", false),
+                    valueLabel = if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) "scan readable" else "permission needed",
+                    detail = "Android 12+ can require BLUETOOTH_SCAN/CONNECT and may expose paired metadata separately from live BLE scan results.",
+                    recommendation = "Use paired-device metadata when scan permission is missing; request scan access for proximity and advertisement context.",
+                    fraction = if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) 0.9f else 0.45f,
+                    extra = JSONObject().put("constraint_type", "permission"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_constraint",
+                    label = "AM/FM tuner public API",
+                    ready = radioStatus.optBoolean("am_fm_public_android_scan_supported", false),
+                    valueLabel = if (radioStatus.optBoolean("am_fm_public_android_scan_supported", false)) "vendor exposed" else "not public",
+                    detail = "Normal Android apps cannot read AM/FM tuner scan results through public APIs even when a vendor declares radio features.",
+                    recommendation = "Use external SDR or vendor-specific bridges for actual AM/FM station scans.",
+                    fraction = if (radioStatus.optBoolean("am_fm_public_android_scan_supported", false)) 0.8f else 0.25f,
+                    extra = JSONObject().put("constraint_type", "hardware_api"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_constraint",
+                    label = "Broad RF and microwave hardware",
+                    ready = !signalStatus.optBoolean("requires_external_sdr_for_broad_rf", true),
+                    valueLabel = if (signalStatus.optBoolean("requires_external_sdr_for_broad_rf", true)) "external hardware" else "built-in",
+                    detail = "Public Android phone APIs do not expose a general-purpose RF or microwave spectrum analyzer.",
+                    recommendation = "Attach an SDR or specialized vendor radio bridge before claiming broad RF or microwave scan support.",
+                    fraction = if (signalStatus.optBoolean("requires_external_sdr_for_broad_rf", true)) 0.25f else 0.8f,
+                    extra = JSONObject().put("constraint_type", "hardware"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_constraint",
+                    label = "Sensor sampling latency",
+                    ready = true,
+                    valueLabel = "bounded sample",
+                    detail = "One-shot sensor snapshots use a bounded timeout; missing samples can mean no default sensor, sensor delay, or hardware reporting limits.",
+                    recommendation = "Set timeout_ms and sensor_types narrowly when the workflow needs faster response.",
+                    fraction = 0.75f,
+                    extra = JSONObject().put("constraint_type", "runtime"),
                 ),
             )
     }
@@ -2816,6 +3167,13 @@ object HermesDeviceDiagnosticsBridge {
         return updated
     }
 
+    private fun readWifiSignalHistory(context: Context): JSONObject {
+        val prefs = context.getSharedPreferences(WIFI_SIGNAL_HISTORY_PREFS, Context.MODE_PRIVATE)
+        return runCatching {
+            JSONObject(prefs.getString(WIFI_SIGNAL_HISTORY_KEY, "{}").orEmpty().ifBlank { "{}" })
+        }.getOrDefault(JSONObject())
+    }
+
     private fun wifiHistoryKey(row: JSONObject): String {
         val bssid = row.optString("bssid").trim().lowercase(Locale.US)
         if (bssid.isNotBlank()) return bssid
@@ -3162,6 +3520,7 @@ object HermesDeviceDiagnosticsBridge {
         "camera_status",
         "radio_signal_status",
         "signal_capability_status",
+        "signal_awareness_report",
         "agent_environment_report",
         "social_gmail_goal_preflight",
         "show_active_overlay",
@@ -3184,6 +3543,7 @@ object HermesDeviceDiagnosticsBridge {
         "relative_humidity" to "Relative humidity",
     )
     private val MOTION_SENSOR_TYPES = setOf("accelerometer", "gyroscope", "gravity", "linear_acceleration", "rotation_vector")
+    private val AMBIENT_SENSOR_TYPES = setOf("magnetic_field", "light", "proximity", "pressure", "ambient_temperature", "relative_humidity")
     private val DEFAULT_SENSOR_TYPES = listOf("accelerometer", "gyroscope", "magnetic_field", "light", "proximity")
     private const val DEFAULT_LIMIT = 5
     private const val MAX_LIMIT = 20

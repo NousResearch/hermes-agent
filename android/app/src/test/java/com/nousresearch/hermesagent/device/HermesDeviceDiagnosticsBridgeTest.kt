@@ -385,10 +385,46 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_channel_rating"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_ap_details"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_export"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("signal_awareness_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("agent_environment_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_scan"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_status"))
         assertTrue(result.getJSONObject("hindsight_memory_translation").has("retain"))
+    }
+
+    @Test
+    fun signalAwarenessReportFusesWirelessRadioSensorsAndSocContext() {
+        val result = HermesDeviceDiagnosticsBridge.signalAwarenessReportJson(context)
+        val awareness = result.getJSONArray("signal_awareness_matrix")
+        val routes = result.getJSONArray("signal_workflow_routes")
+        val constraints = result.getJSONArray("signal_constraint_matrix")
+        val awarenessLabels = buildSet {
+            for (index in 0 until awareness.length()) add(awareness.getJSONObject(index).getString("label"))
+        }
+        val routeLabels = buildSet {
+            for (index in 0 until routes.length()) add(routes.getJSONObject(index).getString("label"))
+        }
+        val constraintLabels = buildSet {
+            for (index in 0 until constraints.length()) add(constraints.getJSONObject(index).getString("label"))
+        }
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("signal_awareness_report", result.getString("action"))
+        assertTrue(result.getJSONObject("soc_profile").has("litert_lm_backend_strategy"))
+        assertTrue(result.getJSONObject("signal_capability_status").has("requires_external_sdr_for_broad_rf"))
+        assertTrue(result.has("cached_wifi_signal_history"))
+        assertTrue(awarenessLabels.contains("Wi-Fi scan surface"))
+        assertTrue(awarenessLabels.contains("Bluetooth proximity metadata"))
+        assertTrue(awarenessLabels.contains("Radio/RF limits"))
+        assertTrue(awarenessLabels.contains("SOC backend compatibility"))
+        assertTrue(routeLabels.contains("Route Wi-Fi analyzer work"))
+        assertTrue(routeLabels.contains("Route Bluetooth proximity work"))
+        assertTrue(constraintLabels.contains("AM/FM tuner public API"))
+        assertTrue(constraintLabels.contains("Broad RF and microwave hardware"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Signal Awareness"))
+        assertTrue(result.getInt("signal_awareness_count") >= 8)
+        assertTrue(result.getInt("signal_workflow_route_count") >= 6)
+        assertTrue(result.getInt("signal_constraint_count") >= 5)
     }
 
     @Test

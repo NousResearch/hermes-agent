@@ -22,6 +22,10 @@ def trap_config(tmp_path: Path) -> Path:
     p = tmp_path / "config.yaml"
     p.write_text(
         "# Hermes config (sample)\n"
+        "model:\n"
+        "  provider: xai             # current primary model config\n"
+        "  default: grok-code-fast-1 # retiring\n"
+        "  model: x-ai/grok-4-fast-non-reasoning  # legacy key with prefix\n"
         "principal:\n"
         "  provider: xai             # the main model\n"
         "  model: grok-4-1-fast-non-reasoning  # retiring May 15\n"
@@ -107,6 +111,23 @@ class TestApplyReplacement:
         cfg = _parse(trap_config)
         assert cfg["principal"]["model"] == "grok-4.3"
 
+    def test_replaces_current_model_default_and_legacy_model(self, trap_config: Path):
+        issues = find_retired_xai_refs(_parse(trap_config))
+        apply_migration(trap_config, issues)
+        cfg = _parse(trap_config)
+        assert cfg["model"]["default"] == "grok-4.3"
+        assert cfg["model"]["model"] == "x-ai/grok-4.3"
+        assert cfg["model"]["reasoning_effort"] == "none"
+
+    def test_replaces_root_model_string(self, tmp_path: Path):
+        config = tmp_path / "config.yaml"
+        config.write_text("model: xai/grok-3\n", encoding="utf-8")
+        issues = find_retired_xai_refs(_parse(config))
+        result = apply_migration(config, issues, backup=False)
+        assert result.config_changed is True
+        cfg = _parse(config)
+        assert cfg["model"] == "xai/grok-4.3"
+
     def test_adds_reasoning_effort_for_non_reasoning_variant(self, trap_config: Path):
         issues = find_retired_xai_refs(_parse(trap_config))
         apply_migration(trap_config, issues)
@@ -166,6 +187,7 @@ class TestRoundTripPreservation:
         apply_migration(trap_config, issues)
         text = trap_config.read_text(encoding="utf-8")
         order = [
+            text.index("model:"),
             text.index("principal:"),
             text.index("auxiliary:"),
             text.index("delegation:"),

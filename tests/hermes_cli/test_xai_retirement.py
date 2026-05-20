@@ -107,6 +107,27 @@ class TestFindRetiredPerSlot:
         assert issues[0].replacement == "grok-4.3"
         assert issues[0].reasoning_effort is None
 
+    def test_model_default_retired(self):
+        cfg = {"model": {"provider": "xai", "default": "grok-code-fast-1"}}
+        issues = find_retired_xai_refs(cfg)
+        assert len(issues) == 1
+        assert issues[0].config_path == "model.default"
+        assert issues[0].current_model == "grok-code-fast-1"
+        assert issues[0].replacement == "grok-4.3"
+
+    def test_model_model_retired_legacy_key(self):
+        cfg = {"model": {"provider": "xai", "model": "grok-4-fast-non-reasoning"}}
+        issues = find_retired_xai_refs(cfg)
+        assert len(issues) == 1
+        assert issues[0].config_path == "model.model"
+        assert issues[0].reasoning_effort == "none"
+
+    def test_root_model_string_retired(self):
+        cfg = {"model": "grok-3"}
+        issues = find_retired_xai_refs(cfg)
+        assert len(issues) == 1
+        assert issues[0].config_path == "model"
+
     def test_principal_with_x_ai_prefix(self):
         cfg = {"principal": {"model": "x-ai/grok-4-1-fast-non-reasoning"}}
         issues = find_retired_xai_refs(cfg)

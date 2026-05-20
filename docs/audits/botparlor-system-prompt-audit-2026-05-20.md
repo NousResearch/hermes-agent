@@ -274,3 +274,32 @@ Verification:
 - `./scripts/run_tests.sh tests/agent/test_system_prompt_restore.py tests/agent/test_prompt_builder.py tests/tools/test_mcp_tool.py tests/tools/test_mcp_tool_session_expired.py`
   - `351 passed in 15.34s`
 - `python3 -m py_compile model_tools.py toolsets.py tools/lazy_tool_loader.py agent/agent_runtime_helpers.py agent/tool_executor.py`
+
+## Ria Canary Deploy
+
+Ria-only deployment completed on 2026-05-20:
+
+- Hermes checkout: `ria.st-el.com:/home/alex/.hermes/hermes-agent`
+- Branch: `ria/lazy-tool-canary`
+- Commit: `a7c1ff47f`
+- Service drop-in:
+  - `HERMES_TUI_TOOLSETS=botparlor,memory,tool_loader`
+  - `HERMES_TUI_VISIBLE_TOOLS=mcp_botparlor_set_mood,memory,load_tool_pack`
+- The previous uncommitted Ria `runtime_provider.py` patch was stashed and
+  backed up; equivalent provider-profile behavior is included in the canary
+  commit.
+- Ria's standalone `tui-ws-bridge.py` needed explicit MCP startup discovery
+  restored after moving to the newer Hermes branch. The deployed bridge now
+  calls `discover_mcp_tools()` before starting Uvicorn.
+
+Ria verification:
+
+- `python -m py_compile` passed for touched Hermes files.
+- `./scripts/run_tests.sh tests/test_lazy_tool_loader.py tests/hermes_cli/test_runtime_provider_resolution.py`
+  - `119 passed in 22.65s`
+- `tui-ws-bridge.service` and `hermes-gateway.service` are active.
+- Fresh bridge session visible tools:
+  - `mcp_botparlor_set_mood`
+  - `memory`
+  - `load_tool_pack`
+- BotParlor MCP status in that session: connected, 12 registered tools.

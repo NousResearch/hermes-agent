@@ -242,11 +242,10 @@ class TestSpawnEnvIsolation:
         # And HOME still passes through unchanged
         assert captured["env"].get("HOME") == "/users/alice"
 
-    def test_kanban_worker_adds_only_kanban_writable_root(self, monkeypatch):
-        """Codex-runtime Kanban workers need to write board state outside
-        their scratch/worktree workspace, but should not fall back to
-        danger-full-access. Hermes passes a narrow app-server config override
-        for the Kanban root only.
+    def test_kanban_worker_adds_board_and_project_home_writable_roots(self, monkeypatch):
+        """Codex-runtime Kanban workers need narrow extra writable roots for
+        the board DB and, when present, the linked Project Autopilot home.
+        Hermes must not widen the sandbox beyond those explicit paths.
         """
         import subprocess
         from agent.transports import codex_app_server as cas
@@ -283,6 +282,10 @@ class TestSpawnEnvIsolation:
             "HERMES_KANBAN_DB",
             "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
         )
+        monkeypatch.setenv(
+            "HERMES_KANBAN_PROJECT_HOME",
+            "/users/alice/Documents/hermes-projects/active/smoke",
+        )
 
         client = cas.CodexAppServerClient(codex_bin="codex")
         client._closed = True
@@ -291,7 +294,8 @@ class TestSpawnEnvIsolation:
         assert cmd[:2] == ["codex", "app-server"]
         assert 'sandbox_mode="workspace-write"' in cmd
         assert (
-            'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'
+            'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke", '
+            '"/users/alice/Documents/hermes-projects/active/smoke"]'
             in cmd
         )
         assert "sandbox_workspace_write.network_access=false" in cmd

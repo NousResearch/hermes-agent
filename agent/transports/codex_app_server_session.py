@@ -24,6 +24,7 @@ call is synchronous and behaves like AIAgent's existing chat_completions loop.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -58,6 +59,50 @@ _HERMES_TO_CODEX_PERMISSION_PROFILE = {
     # Backstop alias used by some skills/tests.
     "yolo": "full-access",
 }
+
+
+def _build_dynamic_tools() -> list[dict[str, Any]]:
+    """Return Hermes tool schemas in Codex dynamicTools format.
+
+    Kanban workers need a reliable model-visible path to kanban_complete /
+    kanban_block / kanban_comment. In practice some codex app-server sessions
+    come up with an empty MCP surface, which leaves workers with only Codex's
+    built-in shell/apply_patch tools and no dependable way to hand results back
+    to Hermes. Register the Hermes callback tools directly as dynamicTools on
+    thread/start so the worker can always complete or block itself.
+    """
+
+    try:
+        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+        from model_tools import get_tool_definitions
+    except Exception:
+        logger.exception("failed to build codex dynamicTools from Hermes tool registry")
+        return []
+
+    tool_defs = {
+        td["function"]["name"]: td["function"]
+        for td in (get_tool_definitions(quiet_mode=True) or [])
+        if isinstance(td, dict)
+        and td.get("type") == "function"
+        and isinstance(td.get("function"), dict)
+    }
+
+    out: list[dict[str, Any]] = []
+    for name in EXPOSED_TOOLS:
+        spec = tool_defs.get(name)
+        if not spec:
+            continue
+        out.append(
+            {
+                "name": name,
+                "description": spec.get("description") or f"Hermes {name} tool",
+                "inputSchema": spec.get("parameters") or {
+                    "type": "object",
+                    "properties": {},
+                },
+            }
+        )
+    return out
 
 
 @dataclass
@@ -115,6 +160,37 @@ _OAUTH_REFRESH_FAILURE_HINTS = (
     "no auth profile",
     "oauth",
 )
+
+
+def _auto_accept_via_hermes_approval_policy() -> bool:
+    """Return True when Hermes' own approval policy says prompts should be bypassed.
+
+    Codex app-server server-side approval requests (exec/apply_patch) need to
+    honor the same top-level approval semantics as Hermes' native tools. In
+    particular, unattended worker profiles often run with ``approvals.mode:
+    off`` (or YOLO) specifically to avoid interactive approval prompts.
+
+    Before this helper existed, the codex app-server bridge invoked the CLI
+    approval callback directly whenever one was installed, bypassing
+    ``approvals.mode=off`` and session YOLO. In non-interactive kanban runs that
+    callback timed out after 60s, denied the request, and then left the codex
+    app-server session silent / wedged after the tool result.
+    """
+    try:
+        from tools.approval import _get_approval_mode, is_current_session_yolo_enabled
+
+        if _get_approval_mode() == "off":
+            return True
+        if is_current_session_yolo_enabled():
+            return True
+    except Exception:
+        logger.debug(
+            "Failed to read Hermes approval policy for codex request",
+            exc_info=True,
+        )
+
+    raw = str(os.getenv("HERMES_YOLO_MODE", "")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _classify_oauth_failure(*parts: str) -> Optional[str]:
@@ -185,6 +261,7 @@ class CodexAppServerSession:
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
+        self._dynamic_tools = _build_dynamic_tools()
 
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
@@ -213,6 +290,7 @@ class CodexAppServerSession:
             client_name="hermes",
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
+            capabilities={"experimentalApi": True},
         )
         # Permission selection is intentionally NOT sent on thread/start.
         # Two reasons (live-tested against codex 0.130.0):
@@ -230,6 +308,8 @@ class CodexAppServerSession:
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
+        if self._dynamic_tools:
+            params["dynamicTools"] = self._dynamic_tools
         result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
@@ -595,8 +675,7 @@ class CodexAppServerSession:
             logger.warning("turn/interrupt timed out")
 
     def _handle_server_request(self, req: dict) -> None:
-        """Translate a codex server request (approval) into Hermes' approval
-        flow, then send the response.
+        """Translate a codex server request into Hermes callbacks.
 
         Method names verified live against codex 0.130.0 (Apr 2026):
           item/commandExecution/requestApproval — exec approvals
@@ -605,6 +684,7 @@ class CodexAppServerSession:
                                                   (we decline; user controls
                                                   permission profile in
                                                   ~/.codex/config.toml).
+          item/tool/call                        — dynamicTools callback
         """
         if self._client is None:
             return
@@ -624,6 +704,8 @@ class CodexAppServerSession:
             # profile in ~/.codex/config.toml and surprise escalations
             # shouldn't be silently accepted.
             self._client.respond(rid, {"decision": "decline"})
+        elif method == "item/tool/call":
+            self._handle_dynamic_tool_call(rid, params)
         elif method == "mcpServer/elicitation/request":
             # Codex's MCP layer asks the user for structured input on
             # behalf of an MCP server (e.g. tool-call confirmation,
@@ -652,8 +734,60 @@ class CodexAppServerSession:
                 rid, code=-32601, message=f"Unsupported method: {method}"
             )
 
+    def _handle_dynamic_tool_call(self, request_id: Any, params: dict) -> None:
+        """Dispatch a Codex dynamic tool call through Hermes' tool registry."""
+        if self._client is None:
+            return
+
+        tool_name = str(params.get("tool") or "").strip()
+        arguments = params.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            arguments = {"arguments": arguments}
+        if not tool_name:
+            self._client.respond(
+                request_id,
+                {
+                    "contentItems": [
+                        {"type": "inputText", "text": "Missing dynamic tool name."}
+                    ],
+                    "success": False,
+                },
+            )
+            return
+
+        try:
+            from model_tools import handle_function_call
+
+            tool_result = handle_function_call(tool_name, arguments)
+            self._client.respond(
+                request_id,
+                {
+                    "contentItems": [
+                        {"type": "inputText", "text": str(tool_result or "")}
+                    ],
+                    "success": True,
+                },
+            )
+        except Exception as exc:
+            logger.exception("dynamic tool %s raised", tool_name)
+            self._client.respond(
+                request_id,
+                {
+                    "contentItems": [
+                        {
+                            "type": "inputText",
+                            "text": json.dumps(
+                                {"error": str(exc), "tool": tool_name},
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ],
+                    "success": False,
+                },
+            )
+
     def _decide_exec_approval(self, params: dict) -> str:
-        if self._routing.auto_approve_exec:
+        if self._routing.auto_approve_exec or _auto_accept_via_hermes_approval_policy():
             return "accept"
         command = params.get("command") or ""
         # Codex's CommandExecutionRequestApprovalParams has cwd as Optional —
@@ -676,7 +810,7 @@ class CodexAppServerSession:
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
-        if self._routing.auto_approve_apply_patch:
+        if self._routing.auto_approve_apply_patch or _auto_accept_via_hermes_approval_policy():
             return "accept"
         if self._approval_callback is not None:
             # FileChangeRequestApprovalParams gives us reason + grantRoot.

@@ -25,6 +25,17 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except Exception:
+        return default
+    return value if value > 0 else default
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -65,8 +76,17 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    turn_timeout = _env_float("HERMES_CODEX_TURN_TIMEOUT_SEC", 600.0)
+    post_tool_quiet_timeout = _env_float(
+        "HERMES_CODEX_POST_TOOL_QUIET_TIMEOUT_SEC", 90.0
+    )
+
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            turn_timeout=turn_timeout,
+            post_tool_quiet_timeout=post_tool_quiet_timeout,
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn

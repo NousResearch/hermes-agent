@@ -30,6 +30,52 @@ from typing import Any, Callable, Optional
 MIN_CODEX_VERSION = (0, 125, 0)
 
 
+def _codex_workspace_write_roots(spawn_env: dict[str, str]) -> list[str]:
+    """Return narrow extra writable roots for kanban Codex workers.
+
+    The default Codex workspace-write sandbox only allows writes inside the
+    current task workspace. Hermes kanban workers also need access to a few
+    carefully-scoped external paths:
+
+    - the board root that contains the shared kanban SQLite DB/logs
+    - the linked Project Autopilot project home, when the dispatcher knows it
+
+    Keep this list narrow; if a task needs some *other* external path (for
+    example creating a new git worktree off a repo outside the board root), the
+    task should block for human intervention rather than silently widening the
+    sandbox or inventing a fallback clone.
+    """
+
+    roots: list[str] = []
+
+    kanban_db = spawn_env.get("HERMES_KANBAN_DB")
+    kanban_root = (
+        os.path.dirname(kanban_db)
+        if kanban_db
+        else spawn_env.get(
+            "HERMES_KANBAN_ROOT",
+            os.path.join(
+                spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
+                "kanban",
+            ),
+        )
+    )
+    if kanban_root:
+        roots.append(os.path.abspath(os.path.expanduser(kanban_root)))
+
+    project_home = (spawn_env.get("HERMES_KANBAN_PROJECT_HOME") or "").strip()
+    if project_home:
+        roots.append(os.path.abspath(os.path.expanduser(project_home)))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for root in roots:
+        if root not in seen:
+            seen.add(root)
+            deduped.append(root)
+    return deduped
+
+
 @dataclass
 class CodexAppServerError(RuntimeError):
     """Raised on JSON-RPC errors from the app-server."""
@@ -82,29 +128,19 @@ class CodexAppServerClient:
 
         app_server_args = list(extra_args or [])
         # Kanban workers must be able to write their handoff/status back to
-        # the board DB, which lives outside the per-task workspace. Keep the
-        # Codex sandbox on, but add the Kanban root as the only extra writable
-        # root. Without this, codex-runtime workers finish their actual work
-        # but crash/block when kanban_complete/kanban_block writes SQLite.
+        # the board DB, and Project Autopilot tasks may also need the linked
+        # project home outside the per-task workspace. Keep the Codex sandbox
+        # on and add only these narrow extra writable roots. If a task needs
+        # some other external root, it should block for human intervention
+        # instead of creating fallback clones or widening permissions.
         if spawn_env.get("HERMES_KANBAN_TASK"):
-            kanban_db = spawn_env.get("HERMES_KANBAN_DB")
-            kanban_root = (
-                os.path.dirname(kanban_db)
-                if kanban_db
-                else spawn_env.get(
-                    "HERMES_KANBAN_ROOT",
-                    os.path.join(
-                        spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
-                        "kanban",
-                    ),
-                )
-            )
+            writable_roots_json = json.dumps(_codex_workspace_write_roots(spawn_env))
             app_server_args.extend(
                 [
                     "-c",
                     'sandbox_mode="workspace-write"',
                     "-c",
-                    f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                    f"sandbox_workspace_write.writable_roots={writable_roots_json}",
                     "-c",
                     "sandbox_workspace_write.network_access=false",
                 ]

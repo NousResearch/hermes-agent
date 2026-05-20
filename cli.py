@@ -2277,6 +2277,34 @@ def _bind_prompt_submit_keys(kb, handler) -> None:
         kb.add("c-j")(handler)
 
 
+def _consume_backslash_submit_newline(buffer) -> bool:
+    r"""On macOS, treat a trailing backslash + Enter as a literal newline.
+
+    This gives Terminal.app/iTerm users a terminal-agnostic multiline fallback
+    even when Option/Shift/Ctrl/Cmd+Enter are intercepted or collapsed before
+    prompt_toolkit sees them. It also matches the `\\` + Enter sequence the
+    Hermes TUI installs in VS Code/Cursor/Windsurf terminals.
+
+    Only a *single* trailing backslash immediately before the cursor is
+    consumed. Double-backslash stays literal so users can still submit text
+    ending in `\\` by typing two backslashes.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        before = buffer.document.current_line_before_cursor
+    except Exception:
+        return False
+    if not before.endswith("\\") or before.endswith("\\\\"):
+        return False
+    try:
+        buffer.delete_before_cursor(count=1)
+        buffer.insert_text("\n")
+        return True
+    except Exception:
+        return False
+
+
 def _disable_prompt_toolkit_cpr_warning(app) -> None:
     """Let prompt_toolkit fall back from CPR without printing into the prompt."""
     try:
@@ -12154,6 +12182,10 @@ class HermesCLI:
                 return
 
             # --- Normal input routing ---
+            if _consume_backslash_submit_newline(event.current_buffer):
+                event.app.invalidate()
+                return
+
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:

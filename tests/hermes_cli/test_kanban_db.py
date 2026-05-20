@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -1190,6 +1191,98 @@ def test_respawn_guard_blocker_auth_on_authentication_error(kanban_home):
     assert reason == "blocker_auth"
 
 
+def _init_git_repo(repo: Path) -> None:
+    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True, check=True)
+    (repo / "README.md").write_text("# Test Repo\n")
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, capture_output=True, check=True)
+
+
+def test_archive_task_removes_scratch_workspace(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="scratch cleanup")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        (ws / "artifact.txt").write_text("leftover")
+        assert ws.exists()
+        assert kb.archive_task(conn, tid) is True
+    assert not ws.exists()
+
+
+def test_archive_task_keeps_worktree_with_unpushed_commits(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    wt_path = tmp_path / "repo-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", str(wt_path), "-b", "feat/test-cleanup", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    (wt_path / "feature.txt").write_text("hello\n")
+    subprocess.run(["git", "add", "feature.txt"], cwd=wt_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "feature work"], cwd=wt_path, capture_output=True, check=True)
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="worktree cleanup",
+            workspace_kind="worktree",
+            workspace_path=str(wt_path),
+        )
+        assert kb.archive_task(conn, tid) is True
+    assert wt_path.exists()
+
+
+def test_archive_task_removes_worktree_when_no_unpushed_commits(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    wt_path = tmp_path / "repo-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", str(wt_path), "-b", "feat/test-cleanup", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="worktree cleanup",
+            workspace_kind="worktree",
+            workspace_path=str(wt_path),
+        )
+        assert kb.archive_task(conn, tid) is True
+    assert not wt_path.exists()
+    branches = subprocess.run(
+        ["git", "branch", "--list", "feat/test-cleanup"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert not branches.stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# Tenancy
+# ---------------------------------------------------------------------------
+
+def test_tenant_column_filters_listings(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="authn-task", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("Authentication failed: invalid credentials", t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
 def test_respawn_guard_blocker_auth_on_authorization_error(kanban_home):
     """Full word 'authorization' triggers blocker_auth (regex covers auth\\w*)."""
     with kb.connect() as conn:
@@ -1815,12 +1908,20 @@ class TestSharedBoardPaths:
     def test_dispatcher_spawn_injects_kanban_db_and_workspaces_root(
         self, tmp_path, monkeypatch
     ):
-        # The dispatcher's `_default_spawn` must inject HERMES_KANBAN_DB
-        # and HERMES_KANBAN_WORKSPACES_ROOT into the worker env so the
-        # worker converges on the dispatcher's paths even when the
+        # The dispatcher's `_default_spawn` must inject HERMES_KANBAN_DB,
+        # HERMES_KANBAN_WORKSPACES_ROOT, and when present the linked project
+        # home, so the worker converges on the dispatcher's paths even when the
         # `-p <profile>` flag rewrites HERMES_HOME.
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
+        linked_project_home = (
+            tmp_path / "Documents" / "hermes-projects" / "active" / "default"
+        )
+        linked_project_home.mkdir(parents=True)
+        monkeypatch.setenv(
+            "HERMES_PROJECTS_ROOT",
+            str(tmp_path / "Documents" / "hermes-projects"),
+        )
         self._set_home(monkeypatch, tmp_path, default_home)
 
         captured = {}
@@ -1858,6 +1959,7 @@ class TestSharedBoardPaths:
         assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(
             default_home / "kanban" / "workspaces"
         )
+        assert env["HERMES_KANBAN_PROJECT_HOME"] == str(linked_project_home)
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
 

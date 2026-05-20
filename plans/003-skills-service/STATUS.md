@@ -1,8 +1,8 @@
 # Status — Plan 003: Skills Service
 
-**Status:** IN PROGRESS
-**Last updated:** 2026-05-19
-**Blocked by:** Plan 001-0 (HermesIdentity dataclass — scope resolution requires user_id/team_id)
+**Status:** COMPLETE
+**Last updated:** 2026-05-20
+**Blocked by:** (none — all phases shipped)
 **Blocks:** Plan 001-A (superseded by this plan)
 
 ---
@@ -27,12 +27,14 @@
 | 003-C | `RegistrySkillSource` + MCP surface | **Complete** | hermes-skills-service/ standalone repo; FastAPI + MCP; HERMES_SKILLS_SERVICE_URL fallthrough |
 | 003-D | Git sync + advisory write locks | **Complete** | skill_lock.py flock context manager; startup auto-sync; auto-push after write |
 | 003-E | `blake-cowork-plugins` migration | **Complete** | 4 SKILL.md files created; writing-plans calls annotation updated |
-| 003-F | `S3SkillSource` (saas only) | Not started | Depends: 003-C + Plan 001-D (AWS gate) |
+| 003-F | `S3SkillSource` (saas only) | **Complete** | S3RegistrySkillSource in hermes-skills-service/sources/s3_source.py; Resolver delegates in saas mode; 28 unit + 1 live test pass; live round-trip verified against hermes-saas-skills bucket |
 
 ---
 
 ## Resumption Context
 
-- **Next phase:** 003-F (blocked on Plan 001-D cloud storage gate)
-- **Standalone repo path:** `~/Documents/hermes-skills-service/` (created in 003-C)
+- **All phases complete.** Plan 003 is fully shipped.
+- **Standalone repo path:** `~/Documents/hermes-skills-service/` (git initialized 2026-05-20)
 - **Service port:** 8001 (Atlas = 8000)
+- **S3 bucket:** hermes-saas-skills (us-east-1) — live, IAM verified, round-trip tested
+- **Key layout:** hermes-skills/{tenant_slug}/{scope}/{skill_name}/SKILL.md (matches hermes-agent S3SkillSource)

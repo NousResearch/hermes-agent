@@ -4,14 +4,14 @@
 |------|-------|--------|-----------|
 | 001 | Multi-User SaaS Hermes — Identity, Scoped Skills & Memory, Cloud Storage | **IN PROGRESS** (Phases 0/A/B/D Complete 2026-05-20; Neon live + RLS verified; S3 Terraform apply pending). 6 phases (0, A, B, C, D, E). C/E pending. | — |
 | 002 | Hermes Self-Organization — Directory Structure, MCP Pool, Runtime Isolation | DRAFT (2026-05-18) — 4 phases (A, B, C, D). Defines the canonical directory layout, pooled MCP gateway, runtime workspace isolation, credential injection. Cloud-routable via env vars. | 001-0 |
-| 003 | Skills Service — Scoped Registry, MCP Surface, Git-Backed Collaboration | APPROVED (2026-05-18) — 6 phases (A–F). Standalone repo (`hermes-skills-service/`), port 8001, `promote_requires_pr: false`, `blake-cowork-plugins` as team scope. Extracts skills into an external service (mirroring Atlas) with three-scope CSS resolution (personal → team → global), Git-backed registries, promotion CLI, advisory write locks, S3 backend for SaaS mode. Supersedes Plan 001-A. | 001-0 |
+| 003 | Skills Service — Scoped Registry, MCP Surface, Git-Backed Collaboration | **COMPLETE** (2026-05-20) — All 6 phases (A–F) shipped. Standalone repo (`hermes-skills-service/`), port 8001, CSS scope resolution, Git-backed registries, promotion CLI, advisory write locks, S3 backend (HERMES_MODE=saas). hermes-saas-skills bucket live; round-trip verified. Supersedes Plan 001-A. | 001-0 |
 | 004 | Self-Improvement Service — Hermes↔Skills↔Atlas Feedback Loop | STUB (2026-05-18) — Stub plan only. No phases yet. Defines the boundary between Hermes agent behavior scoring, Skills Service promotion, and Atlas memory. Port 8002 (TBD). | 003 + Atlas 012 |
 
 ## Active plans
 
 - **001 — Multi-User SaaS** (IN PROGRESS 2026-05-20): Phases 0/A/B/D all Complete. Phase D shipped 2026-05-20: StorageBackend protocol + SQLiteBackend + NeonBackend (asyncpg, RLS context manager, Secrets Manager DSN pull) + S3SkillSource (tenant-prefix isolation). 72 tests pass (18 SQLite unit + 23 Neon unit + 5 live against ep-weathered-credit-aqq9kjyf + 31 S3 unit). S3 bucket `terraform plan: 8 to add` — needs `terraform apply` from Blake (`cd infra/terraform/s3-skills-bucket && terraform apply`). Phases C/E pending.
 - **002 — Hermes Self-Organization** (2026-05-18): Spec complete at `~/.hermes/STRUCTURE.md` (v2.0). Plan lives at `plans/002-hermes-self-organization/`. Not started — awaiting Plan 001-0 (HermesIdentity dataclass).
-- **003 — Skills Service** (APPROVED 2026-05-18): All decisions locked. Awaiting Plan 001-0 (for phases B–F); phase A (config block) and phase E (blake-cowork-plugins migration) can start independently.
+- **003 — Skills Service** (COMPLETE 2026-05-20): All 6 phases shipped. S3RegistrySkillSource in hermes-skills-service/sources/s3_source.py; Resolver delegates to S3 when HERMES_MODE=saas; 37 tests pass (28 unit + 9 original service + 1 live against hermes-saas-skills).
 - **004 — Self-Improvement Service** (STUB 2026-05-18): Placeholder only. Real spec TBD after Skills Service (003) + Atlas 012 (Hermes↔Atlas connector) complete.
 
 ## Cross-repo consistency pass

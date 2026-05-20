@@ -379,3 +379,20 @@ Verification:
   - `system_chars=9843`
   - `has_project_context=False`
   - `has_agents=False`
+
+Fresh live Ria session `20260520_141211_ddaf1b` after the context-file trim:
+
+- System prompt: `9,843` chars, roughly `2,460` tokens.
+- Saved prompt contains no `# Project Context` and no `AGENTS.md`.
+- First model call: `3,596` input tokens, down from previous canary's `8,275`
+  input tokens (`-4,679`, about `56.5%` lower).
+- First user-visible reply after mood tool result: `3,685` input tokens, down
+  from `8,361` (`-4,676`, about `55.9%` lower).
+- Normal chat calls before lazy reminder loading stayed around
+  `3,721`-`4,163` input tokens.
+- Reminder flow loaded on demand:
+  `load_tool_pack(pack=reminders)`, then `mcp_botparlor_create_reminder`.
+- Max observed context after reminder pack/tool result: `5,464` input tokens.
+- Session through six visible user messages: `12` model calls,
+  `49,364` cumulative prompt tokens, `396` generated tokens, about `15.1s`
+  summed model-call latency (`1.26s/call` average).

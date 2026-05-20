@@ -547,11 +547,6 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Record that the final content reached the user even
-                    # if the cosmetic final edit below fails.
-                    if current_update_visible and self._accumulated:
-                        self._final_content_delivered = True
-
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
@@ -568,6 +563,9 @@ class GatewayStreamConsumer:
                             # final edit — but only for adapters that don't
                             # need an explicit finalize signal.
                             self._final_response_sent = True
+                            # For adapters that don't require explicit finalize,
+                            # the mid-stream edit is the authoritative delivery.
+                            self._final_content_delivered = True
                         elif self._message_id:
                             # Either the mid-stream edit didn't run (no
                             # visible update this tick) OR the adapter needs
@@ -575,8 +573,19 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(
                                 self._accumulated, finalize=True,
                             )
+                            # Record final delivery only after the explicit
+                            # finalize edit returns — not from the earlier
+                            # mid-stream edit.  This prevents false positives
+                            # when REQUIRES_EDIT_FINALIZE=True and the mid-stream
+                            # edit landed but the finalize edit subsequently
+                            # failed, leaving the user with a truncated message
+                            # while the gateway still believes delivery succeeded.
+                            if self._final_response_sent:
+                                self._final_content_delivered = True
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            if self._final_response_sent:
+                                self._final_content_delivered = True
                     return
 
                 if commentary_text is not None:

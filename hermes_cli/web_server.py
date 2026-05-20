@@ -3771,9 +3771,10 @@ def _dashboard_plugin_is_enabled(name: str, directory_name: str) -> bool:
             return False
 
         enabled = _get_enabled_plugins()
-        return enabled is not None and (name in enabled or directory_name in enabled)
+        # None means no explicit allow-list configured: allow all non-disabled plugins
+        return enabled is None or (name in enabled or directory_name in enabled)
     except Exception:
-        return False
+        return True
 
 
 def _discover_dashboard_plugins() -> list:

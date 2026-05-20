@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "postinstall": "node -e \"try { require.resolve('patch-package/package.json'); require('child_process').execSync('npx --no-install patch-package', { stdio: 'inherit' }); } catch (error) { if (error && error.code !== 'MODULE_NOT_FOUND') throw error; }\"",
     "sync-assets": "rm -rf public/fonts public/ds-assets && cp -r node_modules/@nous-research/ui/dist/fonts public/fonts && cp -r node_modules/@nous-research/ui/dist/assets public/ds-assets",
     "predev": "npm run sync-assets",
     "prebuild": "npm run sync-assets",
@@ -32,6 +33,7 @@
     "react-router-dom": "^7.14.1",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.1",
+    "patch-package": "^8.0.1",
     "unicode-animations": "^1.0.3"
   },
   "devDependencies": {

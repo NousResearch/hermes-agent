@@ -93,6 +93,29 @@ Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, we
 Paid Nous Portal subscribers also get access to the **[Tool Gateway](/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. On a fresh install, `hermes setup --portal` logs you in, sets Nous as your provider, and turns the gateway on in one command. Existing users can enable it from `hermes model` or per-tool from `hermes tools`. Inspect routing at any time with `hermes portal info`.
 :::
 
+### Validate provider readiness
+
+Once a provider or custom endpoint responds, you can screen whether it works inside the real Hermes agent loop:
+
+```bash
+hermes providers validate \
+  --provider custom:local-qwen \
+  --model qwen3-coder \
+  --suite agent-readiness \
+  --out /tmp/hermes-provider-validation
+```
+
+This is not a raw API smoke test and not a benchmark leaderboard. The validation command runs real `hermes chat -Q` turns with tool schemas enabled, reads the persisted session receipts, and checks common deployment-readiness failures:
+
+- required tool calls were actually emitted;
+- tool results were recovered after a failed read;
+- side-effecting tools such as `write_file`, `patch`, `terminal`, and `execute_code` were not called when the prompt requires abstention;
+- user-visible output does not leak reasoning markers such as `<think>`.
+
+Internal reasoning fields in the session receipt are allowed for diagnostics. The leak check only fails reasoning markers that appear in the final response shown to the user.
+
+The command writes `results.jsonl`, `summary.json`, `summary.md`, raw stdout/stderr, and session receipts under `--out`. Treat it as an automated readiness screen that reduces manual smoke testing; workflow-specific validation is still required for sensitive or high-stakes use.
+
 ### Two Commands for Model Management
 
 Hermes has **two** model commands that serve different purposes:

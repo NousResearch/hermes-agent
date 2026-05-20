@@ -41,6 +41,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes model` | Interactively choose the default provider and model. |
 | `hermes moa` | Configure named Mixture of Agents presets selectable from the model picker. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
+| `hermes providers` | Provider utilities, including agent-loop readiness validation. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
 | `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
@@ -210,6 +211,37 @@ If you've only configured OpenRouter, `/model` will only show OpenRouter models.
 :::
 
 Provider and base URL changes are persisted to `config.yaml` automatically. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
+
+## `hermes providers`
+
+```bash
+hermes providers validate [options]
+```
+
+Run a deployment-readiness screen for a provider/model inside the real Hermes agent loop. This is different from a raw `/v1/chat/completions` smoke test: Hermes runs actual `hermes chat -Q` turns, persists session receipts, and scores tool-call behavior from those receipts.
+
+Common options:
+
+| Option | Description |
+|--------|-------------|
+| `--provider <provider>` | Provider to validate. Defaults to the configured provider. |
+| `--model <model>` | Model to validate. Defaults to the configured model. |
+| `--toolsets <csv>` | Toolsets enabled for validation turns. Defaults to `file`. |
+| `--suite agent-readiness` | Validation suite to run. Currently the only built-in suite. |
+| `--out <dir>` | Directory for `results.jsonl`, `summary.json`, `summary.md`, and raw stdout/stderr/session receipts. Defaults to a temp directory. |
+| `--timeout <seconds>` | Per-case timeout. Defaults to `120`. |
+
+Example:
+
+```bash
+hermes providers validate \
+  --provider custom:local-qwen \
+  --model qwen3-coder \
+  --suite agent-readiness \
+  --out /tmp/hermes-provider-validation
+```
+
+The built-in `agent-readiness` suite checks common provider-readiness failures: missing tool calls, fabricated tool execution, recovery after a failed tool call, abstention from side-effecting tools, and reasoning markers such as `<think>` leaking into user-visible output. It is a screening tool, not an exhaustive evaluation suite; workflow-specific validation is still required before relying on a provider for sensitive or high-stakes tasks.
 
 ## `hermes gateway`
 

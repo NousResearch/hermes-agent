@@ -12405,7 +12405,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
-        "project", "proxy",
+        "project", "providers", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -13049,7 +13049,62 @@ def main():
     secrets_parser.set_defaults(func=_dispatch_secrets)
 
     # =========================================================================
-    # migrate command
+    # providers command — validate provider readiness in the real agent loop
+    # =========================================================================
+    from hermes_cli.provider_validate import cmd_providers
+
+    providers_parser = subparsers.add_parser(
+        "providers",
+        help="Validate provider readiness for Hermes agent-loop use",
+        description=(
+            "Provider utilities. Use `providers validate` to run a real Hermes "
+            "agent-loop readiness screen against a provider/model."
+        ),
+    )
+    providers_subparsers = providers_parser.add_subparsers(dest="providers_command")
+    providers_validate = providers_subparsers.add_parser(
+        "validate",
+        help="Run a real Hermes agent-loop readiness validation suite",
+        description=(
+            "Run deployment-readiness checks against a provider/model using "
+            "real `hermes chat -Q` turns and persisted session receipts. This "
+            "is not an exhaustive benchmark."
+        ),
+    )
+    providers_validate.add_argument(
+        "--provider",
+        help="Inference provider to validate (default: configured provider)",
+    )
+    providers_validate.add_argument(
+        "--model",
+        help="Model to validate (default: configured model)",
+    )
+    providers_validate.add_argument(
+        "--toolsets",
+        default="file",
+        help="Comma-separated toolsets to enable for validation turns (default: file)",
+    )
+    providers_validate.add_argument(
+        "--suite",
+        default="agent-readiness",
+        choices=["agent-readiness"],
+        help="Validation suite to run (default: agent-readiness)",
+    )
+    providers_validate.add_argument(
+        "--out",
+        help="Directory for JSONL/JSON/Markdown receipts (default: temp dir)",
+    )
+    providers_validate.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="Per-case timeout in seconds (default: 120)",
+    )
+    providers_validate.set_defaults(func=cmd_providers)
+    providers_parser.set_defaults(func=cmd_providers)
+
+    # =========================================================================
+    # migrate command — migrate deprecated config/model settings
     # =========================================================================
     from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
 

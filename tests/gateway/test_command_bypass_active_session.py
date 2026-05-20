@@ -185,6 +185,23 @@ class TestCommandBypassActiveSession:
         assert any("handled:tasks" in r for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
+    async def test_runtime_awareness_approval_phrase_bypasses_guard(self):
+        """Runtime Awareness approvals must bypass without interrupting active builds."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("APPROVE runtime-awareness repair 20260520T155326Z"))
+
+        assert sk not in adapter._pending_messages, (
+            "Runtime Awareness approval was queued as user text instead of being dispatched"
+        )
+        assert not adapter._active_sessions[sk].is_set(), (
+            "Runtime Awareness approval interrupted the active session"
+        )
+        assert any("handled:text:APPROVE runtime-awareness repair 20260520T155326Z" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
     async def test_background_bypasses_guard(self):
         """/background must bypass so it spawns a parallel task, not an interrupt."""
         adapter = _make_adapter()

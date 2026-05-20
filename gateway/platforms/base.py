@@ -32,6 +32,14 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+_RUNTIME_AWARENESS_APPROVAL_RE = re.compile(
+    r"^\s*APPROVE\s+runtime-awareness\s+repair\s+20\d{6}T\d{6}Z\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_runtime_awareness_approval_text(text: str | None) -> bool:
+    return bool(_RUNTIME_AWARENESS_APPROVAL_RE.match(text or ""))
 
 
 def _platform_name(platform) -> str:
@@ -2902,6 +2910,35 @@ class BasePlatformAdapter(ABC):
                             )
                 except Exception as e:
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
+                return
+
+            if _is_runtime_awareness_approval_text(event.text):
+                logger.debug(
+                    "[%s] Runtime Awareness approval bypassing active-session guard for %s",
+                    self.name, session_key,
+                )
+                try:
+                    _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                    response = await self._message_handler(event)
+                    _text, _eph_ttl = self._unwrap_ephemeral(response)
+                    if _text:
+                        _r = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=_text,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_thread_meta,
+                        )
+                        if _eph_ttl > 0 and _r.success and _r.message_id:
+                            self._schedule_ephemeral_delete(
+                                chat_id=event.source.chat_id,
+                                message_id=_r.message_id,
+                                ttl_seconds=_eph_ttl,
+                            )
+                except Exception as e:
+                    logger.error(
+                        "[%s] Runtime Awareness approval dispatch failed: %s",
+                        self.name, e, exc_info=True,
+                    )
                 return
 
             # Clarify text-capture bypass: if the agent is blocked on a

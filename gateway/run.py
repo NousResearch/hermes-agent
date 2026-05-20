@@ -610,8 +610,17 @@ if _config_path.exists():
                 os.environ[_key] = str(_val)
         # Terminal config is nested — bridge to TERMINAL_* env vars.
         # config.yaml overrides .env for these since it's the documented config path.
+        # TERMINAL_ENV is always exported so config.yaml is authoritative for the
+        # terminal backend selection; stale .env values from a previous setup or
+        # migration cannot silently override it (see #29186).
         _terminal_cfg = _cfg.get("terminal", {})
         if _terminal_cfg and isinstance(_terminal_cfg, dict):
+            # Always export TERMINAL_ENV first, before the per-key loop below.
+            # This ensures the backend selector is always set from config even
+            # when a stale .env value pre-exists and no other terminal config
+            # key is present to trigger the loop.
+            if "backend" in _terminal_cfg:
+                os.environ["TERMINAL_ENV"] = str(_terminal_cfg["backend"])
             _terminal_env_map = {
                 "backend": "TERMINAL_ENV",
                 "cwd": "TERMINAL_CWD",

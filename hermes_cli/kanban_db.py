@@ -801,6 +801,27 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass
+class BlockedRouteDecision:
+    """Classifier outcome for a sticky blocked task."""
+
+    task_id: str
+    action: str  # "pm_actionable" | "human_required" | "ignored"
+    reason: str
+    matched_prefix: Optional[str] = None
+    block_event_id: Optional[int] = None
+
+
+@dataclass
+class BlockedRouterResult:
+    """Outcome of one blocked-router scan."""
+
+    routed: list[tuple[str, str]] = field(default_factory=list)
+    human_required: list[str] = field(default_factory=list)
+    ignored: list[str] = field(default_factory=list)
+    skipped_existing: list[str] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1857,6 +1878,290 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
             )
         )
     return out
+
+
+def latest_block_event(conn: sqlite3.Connection, task_id: str) -> Optional[Event]:
+    """Return the latest sticky blocked event for ``task_id``.
+
+    A blocked event is sticky until a later ``unblocked`` event. This helper
+    intentionally ignores older block events after an unblock so the blocked
+    router does not resurrect stale reasons.
+    """
+    row = conn.execute(
+        "SELECT * FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or row["kind"] != "blocked":
+        return None
+    try:
+        payload = json.loads(row["payload"]) if row["payload"] else None
+    except Exception:
+        payload = None
+    return Event(
+        id=int(row["id"]),
+        task_id=row["task_id"],
+        kind=row["kind"],
+        payload=payload,
+        created_at=int(row["created_at"]),
+        run_id=(int(row["run_id"]) if "run_id" in row.keys() and row["run_id"] is not None else None),
+    )
+
+
+def _normalised_prefixes(prefixes: Iterable[str]) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for prefix in prefixes or []:
+        text = str(prefix or "").strip()
+        if text:
+            out.append((text, text.casefold()))
+    return out
+
+
+def classify_blocked_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    routed_prefixes: Iterable[str],
+    human_required_prefixes: Iterable[str],
+) -> BlockedRouteDecision:
+    """Classify a blocked task's latest sticky block reason.
+
+    Human-required prefixes win over PM-routable prefixes so a task that
+    mentions credentials or destructive actions is never auto-routed to a PM
+    task by accident.
+    """
+    event = latest_block_event(conn, task_id)
+    payload = event.payload if event and isinstance(event.payload, dict) else {}
+    reason = str((payload or {}).get("reason") or "").strip()
+    folded = reason.casefold()
+    if not reason:
+        return BlockedRouteDecision(task_id, "ignored", "", block_event_id=event.id if event else None)
+
+    for original, prefix in _normalised_prefixes(human_required_prefixes):
+        if prefix and prefix in folded:
+            return BlockedRouteDecision(
+                task_id, "human_required", reason,
+                matched_prefix=original, block_event_id=event.id if event else None,
+            )
+    for original, prefix in _normalised_prefixes(routed_prefixes):
+        if prefix and folded.startswith(prefix):
+            return BlockedRouteDecision(
+                task_id, "pm_actionable", reason,
+                matched_prefix=original, block_event_id=event.id if event else None,
+            )
+    return BlockedRouteDecision(task_id, "ignored", reason, block_event_id=event.id if event else None)
+
+
+def _shorten_text(text: Optional[str], limit: int = 4000) -> str:
+    value = (text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 20].rstrip() + "\n… [truncated]"
+
+
+def _blocked_router_idempotency_key(source_task_id: str, block_event_id: int, pm_profile: str) -> str:
+    return f"blocked-router:{source_task_id}:{block_event_id}:{pm_profile}"
+
+
+def _existing_task_for_idempotency(conn: sqlite3.Connection, key: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (key,),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def _blocked_router_skill_if_available(skill_name: str) -> list[str]:
+    """Return ``[skill_name]`` only when it appears installed.
+
+    Missing optional skills must not make dispatcher-spawned workers fail at
+    startup. This intentionally uses conservative filesystem probing rather
+    than importing the skill loader on the dispatch hot path.
+    """
+    try:
+        root = kanban_home()
+        candidates = [
+            root / "skills",
+            root / "optional-skills",
+        ]
+        for profile_dir in (root / "profiles").glob("*"):
+            candidates.append(profile_dir / "skills")
+        needle = skill_name.casefold()
+        for base in candidates:
+            if not base.exists():
+                continue
+            for skill_md in base.rglob("SKILL.md"):
+                if skill_md.parent.name.casefold() == needle:
+                    return [skill_name]
+                try:
+                    head = skill_md.read_text(encoding="utf-8", errors="ignore")[:500]
+                except OSError:
+                    continue
+                if re.search(r"(?mi)^name:\s*['\"]?" + re.escape(skill_name) + r"['\"]?\s*$", head):
+                    return [skill_name]
+    except Exception:
+        pass
+    return []
+
+
+def route_blocked_task_to_pm(
+    conn: sqlite3.Connection,
+    source_task_id: str,
+    *,
+    pm_profile: str,
+    reason: str,
+    pm_instructions: Optional[str] = None,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Create or return an idempotent PM follow-up task for a blocked task."""
+    source = get_task(conn, source_task_id)
+    if source is None:
+        return None
+    event = latest_block_event(conn, source_task_id)
+    if event is None:
+        return None
+    pm = (pm_profile or "default").strip() or "default"
+    key = _blocked_router_idempotency_key(source_task_id, int(event.id), pm)
+    existing = _existing_task_for_idempotency(conn, key)
+    if existing:
+        return existing
+
+    comments = list_comments(conn, source_task_id)[-5:]
+    recent_comments = "\n".join(
+        f"- {c.author or 'unknown'}: {_shorten_text(c.body, 500)}" for c in comments
+    ) or "- (none)"
+    body = (
+        f"Blocked-router PM follow-up for source task `{source_task_id}`.\n\n"
+        f"Source title: {source.title}\n"
+        f"Source assignee: {source.assignee or '(unassigned)'}\n"
+        f"Block reason: {reason}\n"
+        f"Block event id: {event.id}\n\n"
+        "Source body excerpt:\n"
+        f"{_shorten_text(source.body, 4000) or '(empty)'}\n\n"
+        "Recent comments:\n"
+        f"{recent_comments}\n\n"
+        "PM policy / allowed outcomes:\n"
+        "- Inspect linked PRs or external artifacts directly when mentioned.\n"
+        "- Do not implement code directly unless this PM profile is explicitly assigned implementation work.\n"
+        "- If the blocked handoff is approved/resolved, unblock or complete the source task with a clear comment.\n"
+        "- If changes are needed, create a follow-up implementation task assigned to the appropriate developer profile.\n"
+        "- If genuine human input, credentials, or destructive approval is required, escalate with `user-decision-required:`, `credential-required:`, or `destructive-action-required:`.\n"
+    )
+    if pm_instructions and str(pm_instructions).strip():
+        body += "\nConfigured PM instructions:\n" + str(pm_instructions).strip() + "\n"
+
+    return create_task(
+        conn,
+        title=f"PM review/recovery for blocked task {source_task_id}",
+        body=body,
+        assignee=pm,
+        created_by="blocked-router",
+        workspace_kind="scratch",
+        tenant=source.tenant,
+        priority=max(int(source.priority or 0), int(source.priority or 0) + 10),
+        idempotency_key=key,
+        skills=_blocked_router_skill_if_available("kanban-orchestrator") or None,
+        board=board,
+    )
+
+
+def _has_blocked_router_event_since_block(
+    conn: sqlite3.Connection,
+    task_id: str,
+    block_event_id: int,
+    kind: str,
+) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? AND id > ? LIMIT 1",
+        (task_id, kind, block_event_id),
+    ).fetchone()
+    return bool(row)
+
+
+def route_blocked_once(
+    conn: sqlite3.Connection,
+    *,
+    enabled: bool,
+    pm_profile: Optional[str],
+    routed_prefixes: Iterable[str],
+    human_required_prefixes: Iterable[str],
+    per_tick: int = 3,
+    min_age_seconds: int = 30,
+    pm_instructions: Optional[str] = None,
+    board: Optional[str] = None,
+) -> BlockedRouterResult:
+    """Scan sticky blocked tasks and create bounded PM follow-ups."""
+    result = BlockedRouterResult()
+    if not enabled:
+        return result
+    pm = (pm_profile or "default").strip() or "default"
+    try:
+        budget = max(1, int(per_tick))
+    except (TypeError, ValueError):
+        budget = 3
+    try:
+        min_age = max(0, int(min_age_seconds))
+    except (TypeError, ValueError):
+        min_age = 30
+    now = int(time.time())
+
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE status = 'blocked' AND claim_lock IS NULL "
+        "ORDER BY priority DESC, created_at ASC"
+    ).fetchall()
+    routed_count = 0
+    for row in rows:
+        task_id = row["id"]
+        event = latest_block_event(conn, task_id)
+        if event is None:
+            result.ignored.append(task_id)
+            continue
+        if min_age and now - int(event.created_at) < min_age:
+            result.ignored.append(task_id)
+            continue
+        decision = classify_blocked_task(
+            conn, task_id,
+            routed_prefixes=routed_prefixes,
+            human_required_prefixes=human_required_prefixes,
+        )
+        if decision.action == "human_required":
+            result.human_required.append(task_id)
+            if not _has_blocked_router_event_since_block(conn, task_id, event.id, "blocked_route_skipped"):
+                with write_txn(conn):
+                    _append_event(
+                        conn, task_id, "blocked_route_skipped",
+                        {"action": decision.action, "reason": decision.reason, "matched_prefix": decision.matched_prefix},
+                    )
+            continue
+        if decision.action != "pm_actionable":
+            result.ignored.append(task_id)
+            continue
+        key = _blocked_router_idempotency_key(task_id, event.id, pm)
+        existing = _existing_task_for_idempotency(conn, key)
+        if existing:
+            result.skipped_existing.append(task_id)
+            continue
+        if routed_count >= budget:
+            continue
+        pm_task_id = route_blocked_task_to_pm(
+            conn,
+            task_id,
+            pm_profile=pm,
+            reason=decision.reason,
+            pm_instructions=pm_instructions,
+            board=board,
+        )
+        if pm_task_id:
+            routed_count += 1
+            result.routed.append((task_id, pm_task_id))
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "blocked_routed",
+                    {"pm_task_id": pm_task_id, "reason": decision.reason, "matched_prefix": decision.matched_prefix},
+                )
+    return result
 
 
 def _append_event(
@@ -3657,6 +3962,14 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    blocked_routed: list[tuple[str, str]] = field(default_factory=list)
+    """Blocked-router follow-ups as ``(source_task_id, pm_task_id)`` pairs."""
+    blocked_human_required: list[str] = field(default_factory=list)
+    """Blocked task ids classified as requiring human input/credentials/destructive approval."""
+    blocked_ignored: list[str] = field(default_factory=list)
+    """Blocked task ids ignored by the router (unknown reason, too new, no sticky block)."""
+    blocked_skipped_existing: list[str] = field(default_factory=list)
+    """Blocked task ids that already have a live PM follow-up for the block event."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4656,6 +4969,7 @@ def dispatch_once(
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
+    blocked_router_config: Optional[dict] = None,
     board: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
@@ -4734,6 +5048,27 @@ def dispatch_once(
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
+    if blocked_router_config:
+        br_cfg = blocked_router_config or {}
+        br = route_blocked_once(
+            conn,
+            enabled=bool(br_cfg.get("enabled", False)),
+            pm_profile=br_cfg.get("pm_profile") or None,
+            routed_prefixes=br_cfg.get("routed_prefixes") or [
+                "review-required:", "pm-actionable:", "recovery-needed:",
+            ],
+            human_required_prefixes=br_cfg.get("human_required_prefixes") or [
+                "user-decision-required:", "credential-required:", "destructive-action-required:",
+            ],
+            per_tick=br_cfg.get("per_tick", 3),
+            min_age_seconds=br_cfg.get("min_age_seconds", 30),
+            pm_instructions=br_cfg.get("pm_instructions") or None,
+            board=board,
+        )
+        result.blocked_routed = br.routed
+        result.blocked_human_required = br.human_required
+        result.blocked_ignored = br.ignored
+        result.blocked_skipped_existing = br.skipped_existing
     result.promoted = recompute_ready(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -4917,12 +5252,14 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        # Force-load sdlc-review skill for review agents.  The
-        # _default_spawn function already auto-loads kanban-worker, and
-        # appends task.skills via --skills.  Setting task.skills here
-        # means the review agent gets both kanban-worker (lifecycle)
-        # and sdlc-review (review logic: AC verification, merge, etc.).
-        claimed.skills = ["sdlc-review"]
+        # Force-load review skill only when it is actually installed. Missing
+        # optional skills must not crash review worker startup; the review
+        # column can still dispatch with the worker's profile defaults.
+        claimed.skills = (
+            _blocked_router_skill_if_available("sdlc-review")
+            or _blocked_router_skill_if_available("requesting-code-review")
+            or None
+        )
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect

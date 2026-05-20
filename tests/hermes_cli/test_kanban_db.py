@@ -285,6 +285,230 @@ def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Blocked router
+# ---------------------------------------------------------------------------
+
+ROUTED_PREFIXES = ["review-required:", "pm-actionable:", "recovery-needed:"]
+HUMAN_REQUIRED_PREFIXES = [
+    "user-decision-required:",
+    "credential-required:",
+    "destructive-action-required:",
+]
+
+
+def _blocked_task(conn, reason: str, **kwargs) -> str:
+    tid = kb.create_task(
+        conn,
+        title=kwargs.pop("title", "blocked source"),
+        body=kwargs.pop("body", "source body"),
+        assignee=kwargs.pop("assignee", "worker"),
+        priority=kwargs.pop("priority", 5),
+        tenant=kwargs.pop("tenant", None),
+        **kwargs,
+    )
+    assert kb.block_task(conn, tid, reason=reason)
+    return tid
+
+
+def test_latest_block_event_tracks_unblock_boundaries(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="source", assignee="worker")
+        assert kb.latest_block_event(conn, tid) is None
+
+        assert kb.block_task(conn, tid, reason="review-required: check this")
+        first = kb.latest_block_event(conn, tid)
+        assert first is not None
+        assert first.kind == "blocked"
+        assert first.payload["reason"] == "review-required: check this"
+
+        assert kb.unblock_task(conn, tid)
+        assert kb.latest_block_event(conn, tid) is None
+
+        assert kb.block_task(conn, tid, reason="pm-actionable: retry")
+        latest = kb.latest_block_event(conn, tid)
+        assert latest is not None
+        assert latest.id > first.id
+        assert latest.payload["reason"] == "pm-actionable: retry"
+
+
+def test_classify_blocked_task_uses_machine_readable_prefixes(kanban_home):
+    with kb.connect() as conn:
+        review = _blocked_task(conn, "  REVIEW-REQUIRED: PR is ready")
+        pm = _blocked_task(conn, "pm-actionable: split follow-up")
+        credential = _blocked_task(conn, "credential-required: missing token")
+        unknown = _blocked_task(conn, "please look at this")
+
+        assert kb.classify_blocked_task(
+            conn, review,
+            routed_prefixes=ROUTED_PREFIXES,
+            human_required_prefixes=HUMAN_REQUIRED_PREFIXES,
+        ).action == "pm_actionable"
+        assert kb.classify_blocked_task(
+            conn, pm,
+            routed_prefixes=ROUTED_PREFIXES,
+            human_required_prefixes=HUMAN_REQUIRED_PREFIXES,
+        ).action == "pm_actionable"
+        assert kb.classify_blocked_task(
+            conn, credential,
+            routed_prefixes=ROUTED_PREFIXES,
+            human_required_prefixes=HUMAN_REQUIRED_PREFIXES,
+        ).action == "human_required"
+        assert kb.classify_blocked_task(
+            conn, unknown,
+            routed_prefixes=ROUTED_PREFIXES,
+            human_required_prefixes=HUMAN_REQUIRED_PREFIXES,
+        ).action == "ignored"
+
+
+def test_classify_blocked_task_human_required_wins_over_routed_text(kanban_home):
+    with kb.connect() as conn:
+        tid = _blocked_task(
+            conn,
+            "review-required: credential-required: need the user secret",
+        )
+        decision = kb.classify_blocked_task(
+            conn, tid,
+            routed_prefixes=ROUTED_PREFIXES,
+            human_required_prefixes=HUMAN_REQUIRED_PREFIXES,
+        )
+    assert decision.action == "human_required"
+    assert decision.matched_prefix == "credential-required:"
+
+
+def test_route_blocked_task_to_pm_is_idempotent_and_inherits_context(kanban_home):
+    with kb.connect() as conn:
+        source = _blocked_task(
+            conn,
+            "review-required: PR #42 ready",
+            title="Implement thing",
+            body="Full source body",
+            tenant="tenant-a",
+            priority=7,
+        )
+        first = kb.route_blocked_task_to_pm(
+            conn,
+            source,
+            pm_profile="pm-hermes",
+            reason="review-required: PR #42 ready",
+            pm_instructions="Inspect PRs directly.",
+        )
+        second = kb.route_blocked_task_to_pm(
+            conn,
+            source,
+            pm_profile="pm-hermes",
+            reason="review-required: PR #42 ready",
+            pm_instructions="Inspect PRs directly.",
+        )
+        assert first == second
+        pm_task = kb.get_task(conn, first)
+        assert pm_task.assignee == "pm-hermes"
+        assert pm_task.tenant == "tenant-a"
+        assert pm_task.priority >= 7
+        assert pm_task.created_by == "blocked-router"
+        assert pm_task.status == "ready"
+        assert source in (pm_task.body or "")
+        assert "review-required: PR #42 ready" in (pm_task.body or "")
+        assert "Inspect PRs directly." in (pm_task.body or "")
+        assert len([t for t in kb.list_tasks(conn) if t.created_by == "blocked-router"]) == 1
+
+
+def test_route_blocked_once_respects_disabled_min_age_per_tick_and_idempotency(kanban_home):
+    with kb.connect() as conn:
+        old_a = _blocked_task(conn, "review-required: A", priority=10)
+        old_b = _blocked_task(conn, "pm-actionable: B", priority=9)
+        new_c = _blocked_task(conn, "recovery-needed: C", priority=8)
+        # Age only the first two block events.
+        conn.execute(
+            "UPDATE task_events SET created_at = created_at - 60 "
+            "WHERE task_id IN (?, ?) AND kind = 'blocked'",
+            (old_a, old_b),
+        )
+        conn.commit()
+
+        disabled = kb.route_blocked_once(
+            conn,
+            enabled=False,
+            pm_profile="pm-hermes",
+            routed_prefixes=ROUTED_PREFIXES,
+            human_required_prefixes=HUMAN_REQUIRED_PREFIXES,
+        )
+        assert disabled.routed == []
+
+        routed = kb.route_blocked_once(
+            conn,
+            enabled=True,
+            pm_profile="pm-hermes",
+            routed_prefixes=ROUTED_PREFIXES,
+            human_required_prefixes=HUMAN_REQUIRED_PREFIXES,
+            per_tick=1,
+            min_age_seconds=30,
+        )
+        assert len(routed.routed) == 1
+        assert routed.routed[0][0] == old_a
+        assert new_c in routed.ignored
+
+        again = kb.route_blocked_once(
+            conn,
+            enabled=True,
+            pm_profile="pm-hermes",
+            routed_prefixes=ROUTED_PREFIXES,
+            human_required_prefixes=HUMAN_REQUIRED_PREFIXES,
+            per_tick=3,
+            min_age_seconds=30,
+        )
+        assert old_a in again.skipped_existing
+        assert any(source == old_b for source, _pm in again.routed)
+        assert len([t for t in kb.list_tasks(conn) if t.created_by == "blocked-router"]) == 2
+        assert kb.get_task(conn, old_a).status == "blocked"
+
+
+def test_route_blocked_once_skips_human_required_without_pm_task(kanban_home):
+    with kb.connect() as conn:
+        source = _blocked_task(conn, "credential-required: provide API key")
+        result = kb.route_blocked_once(
+            conn,
+            enabled=True,
+            pm_profile="pm-hermes",
+            routed_prefixes=ROUTED_PREFIXES,
+            human_required_prefixes=HUMAN_REQUIRED_PREFIXES,
+            min_age_seconds=0,
+        )
+        assert source in result.human_required
+        assert not [t for t in kb.list_tasks(conn) if t.created_by == "blocked-router"]
+        assert kb.get_task(conn, source).status == "blocked"
+
+
+def test_dispatch_once_runs_blocked_router_before_ready_spawns(
+    kanban_home, all_assignees_spawnable,
+):
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append((task.id, task.assignee, task.body))
+        return 1234
+
+    with kb.connect() as conn:
+        source = _blocked_task(conn, "review-required: PM should review")
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            blocked_router_config={
+                "enabled": True,
+                "pm_profile": "pm-hermes",
+                "routed_prefixes": ROUTED_PREFIXES,
+                "human_required_prefixes": HUMAN_REQUIRED_PREFIXES,
+                "min_age_seconds": 0,
+                "per_tick": 3,
+            },
+        )
+        assert res.blocked_routed
+        assert res.blocked_routed[0][0] == source
+        pm_task_id = res.blocked_routed[0][1]
+        assert any(spawn[0] == pm_task_id and spawn[1] == "pm-hermes" for spawn in spawns)
+        assert kb.get_task(conn, source).status == "blocked"
+
+
+# ---------------------------------------------------------------------------
 # Atomic claim (CAS)
 # ---------------------------------------------------------------------------
 
@@ -2593,9 +2817,14 @@ def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
 
 
 def test_dispatch_review_spawns_with_correct_skills(
-    kanban_home, all_assignees_spawnable,
+    kanban_home, all_assignees_spawnable, monkeypatch,
 ):
-    """Review tasks get sdlc-review skill set before spawning."""
+    """Review tasks get an installed review skill set before spawning."""
+    monkeypatch.setattr(
+        kb,
+        "_blocked_router_skill_if_available",
+        lambda name: [name] if name == "sdlc-review" else [],
+    )
     spawned_tasks = []
 
     def capture_spawn(task, workspace, board=None):
@@ -2609,6 +2838,26 @@ def test_dispatch_review_spawns_with_correct_skills(
     assert len(res.spawned) == 1
     assert len(spawned_tasks) == 1
     assert spawned_tasks[0].skills == ["sdlc-review"]
+
+
+def test_dispatch_review_tolerates_missing_review_skills(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """Missing optional review skills must not block review dispatch."""
+    monkeypatch.setattr(kb, "_blocked_router_skill_if_available", lambda name: [])
+    spawned_tasks = []
+
+    def capture_spawn(task, workspace, board=None):
+        spawned_tasks.append(task)
+        return 42
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review me", assignee="alice")
+        _set_task_status(conn, t, "review")
+        res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
+    assert len(res.spawned) == 1
+    assert len(spawned_tasks) == 1
+    assert spawned_tasks[0].skills is None
 
 
 def test_dispatch_review_skips_unassigned(kanban_home):

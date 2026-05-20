@@ -71,6 +71,22 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_kanban_blocked_router_defaults_are_conservative(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            router = config["kanban"]["blocked_router"]
+            assert router["enabled"] is False
+            assert router["pm_profile"] == ""
+            assert router["per_tick"] == 3
+            assert router["min_age_seconds"] == 30
+            assert "review-required:" in router["routed_prefixes"]
+            assert "pm-actionable:" in router["routed_prefixes"]
+            assert "recovery-needed:" in router["routed_prefixes"]
+            assert "credential-required:" in router["human_required_prefixes"]
+            assert router["create_mode"] == "pm_task"
+            assert router["followup_status"] == "ready"
+            assert router["pm_instructions"] == ""
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

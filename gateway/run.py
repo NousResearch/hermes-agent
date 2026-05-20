@@ -5104,6 +5104,12 @@ class GatewayRunner:
             )
             stale_timeout_seconds = 0
 
+        # Blocked router: disabled by default. When enabled, dispatch_once scans
+        # sticky blocked tasks and creates idempotent PM follow-ups before ready
+        # task spawning.
+        raw_blocked_router = kanban_cfg.get("blocked_router", {})
+        blocked_router_config = raw_blocked_router if isinstance(raw_blocked_router, dict) else {}
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -5173,6 +5179,7 @@ class GatewayRunner:
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
+                    blocked_router_config=blocked_router_config,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
@@ -5354,13 +5361,14 @@ class GatewayRunner:
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
-                        any_spawned = True
+                    if res is not None and (getattr(res, "spawned", None) or getattr(res, "blocked_routed", None)):
+                        any_spawned = any_spawned or bool(getattr(res, "spawned", None))
                         # Quiet by default — only log when something actually
                         # happened, so an idle gateway stays silent.
                         logger.info(
                             "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d "
+                            "blocked_routed=%d blocked_human_required=%d",
                             slug,
                             len(res.spawned),
                             res.reclaimed,
@@ -5368,6 +5376,8 @@ class GatewayRunner:
                             len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            len(getattr(res, "blocked_routed", []) or []),
+                            len(getattr(res, "blocked_human_required", []) or []),
                         )
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)

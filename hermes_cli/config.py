@@ -1560,6 +1560,28 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Disabled-by-default router for machine-actionable blocked handoffs.
+        # It never unblocks the source task; it creates an idempotent PM
+        # follow-up for explicit prefixes such as ``review-required:``.
+        "blocked_router": {
+            "enabled": False,
+            "pm_profile": "",
+            "per_tick": 3,
+            "min_age_seconds": 30,
+            "routed_prefixes": [
+                "review-required:",
+                "pm-actionable:",
+                "recovery-needed:",
+            ],
+            "human_required_prefixes": [
+                "user-decision-required:",
+                "credential-required:",
+                "destructive-action-required:",
+            ],
+            "create_mode": "pm_task",
+            "followup_status": "ready",
+            "pm_instructions": "",
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

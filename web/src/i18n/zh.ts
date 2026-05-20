@@ -464,8 +464,8 @@ loadingChat: "正在加载对话…",
 
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      kicker: "AI 成就猎人",
+      title: "Hermes 成就",
       subtitle:
         "从真实会话历史中获得的 Hermes 可收集徽章。已知尚未达成的成就显示为「已发现」；秘密成就在首次出现匹配行为之前保持隐藏。",
       scan_subtitle:
@@ -482,7 +482,7 @@ loadingChat: "正在加载对话…",
       secrets: "秘密",
       secrets_hint: "在首次信号出现前保持隐藏",
       highest_tier: "最高等级",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
+      highest_tier_hint: "铜 → 银 → 金 → 钻 → 奥林匹斯",
       latest: "最新",
       latest_hint_empty: "多多运行 Hermes",
       none_yet: "暂无",

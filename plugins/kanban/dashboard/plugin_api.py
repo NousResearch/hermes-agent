@@ -993,6 +993,8 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                 if payload.archive:
                     if not kanban_db.archive_task(conn, tid):
                         entry.update(ok=False, error="archive refused")
+                        results.append(entry)
+                        continue
                 if payload.status is not None and not payload.archive:
                     s = payload.status
                     if s == "done":
@@ -1030,6 +1032,8 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         continue
                     if not ok:
                         entry.update(ok=False, error=f"transition to {s!r} refused")
+                        results.append(entry)
+                        continue
                 if payload.assignee is not None:
                     try:
                         if payload.reclaim_first:
@@ -1045,6 +1049,8 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             entry.update(ok=False, error="assign refused")
                     except RuntimeError as e:
                         entry.update(ok=False, error=str(e))
+                        results.append(entry)
+                        continue
                 if payload.priority is not None:
                     with kanban_db.write_txn(conn):
                         conn.execute(

@@ -124,8 +124,8 @@ Quick scope check — useful when an operation 403s and you want to confirm the 
 ```python
 info = inkbox.whoami()
 print(info.auth_type, getattr(info, "auth_subtype", None))
-# api_key + agent_scoped_claimed (typical Hermes runtime)
-# api_key + admin_scoped (admin operations available)
+# api_key api_key.agent_scoped.claimed (typical Hermes runtime)
+# api_key api_key.admin_scoped (admin operations available)
 ```
 
 **Handles are immutable in practice.** Any identity with a platform-domain (`@inkboxmail.com`) mailbox rejects `identity.update(new_handle=...)` with a 409 — the handle is load-bearing for the email address. Deleting and recreating identities is an admin operation; the agent never does it.

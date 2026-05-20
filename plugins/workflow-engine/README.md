@@ -80,9 +80,66 @@ The [hermes-switchui](https://github.com/Interstellar-code/hermes-switchui) UI e
 
 Toggle location: Settings → Workflows → Backend. The setting is persisted in `localStorage` and sent as `?backend=plugin` on all workflow API calls.
 
+## Architecture (after refactor)
+
+The plugin uses two distinct Hermes extension surfaces that must not be confused:
+
+### 1. Dashboard router (HTTP)
+
+`dashboard/plugin_api.py` exports a FastAPI `APIRouter`. The Hermes web server auto-mounts it via `_mount_plugin_api_routes` (no `include_router` call in `__init__.py`). All REST endpoints listed above are served here. The router imports from `_shared.get_engine()` — the same singleton used by agent tools.
+
+### 2. Agent tools (5 tools)
+
+`__init__.py:register(ctx)` registers 5 tools via `ctx.register_tool`. These are callable from any authenticated Hermes chat session:
+
+| Tool | Description |
+|------|-------------|
+| `workflow_list` | List workflow definitions (read-only, always allowed) |
+| `workflow_run` | Start a run (rate-capped, working_path allowlist) |
+| `workflow_status` | Get run status + recent events (read-only) |
+| `workflow_approve` | Approve/reject a paused approval node (ownership-gated) |
+| `workflow_cancel` | Cancel an active run (ownership-gated) |
+
+Auth gates (configured via `workflow.*` config keys):
+
+```yaml
+workflow:
+  allowed_roots: ["~", "${HERMES_HOME}"]  # working_path must resolve here
+  run_rate_per_session: 5                 # max workflow_run calls per minute per session
+  approve_any: false                      # if true, any session may approve any run
+```
+
+### 3. Background scheduler (daemon process)
+
+`CronPoller` and `KanbanDispatcher` run in a **separate process** — not inside the gateway. Start with:
+
+```bash
+hermes workflow daemon --interval 60
+```
+
+The daemon owns its own `asyncio.run()` loop and handles `SIGINT`/`SIGTERM` cleanly.
+
+> **Note**: Without a supervisor installed, the daemon does **not** auto-restart on crash. Use foreground mode (`hermes workflow daemon`) for dev; install the systemd unit or launchd plist for always-on deployments.
+
+### Key invariant: `_shared.py` is the only sys.path mutator
+
+```
+_shared.py          ← sys.path injection (once, idempotent, thread-safe)
+  └─ get_engine()   ← singleton WorkflowEngine, shared across dashboard + tools
+
+dashboard/plugin_api.py   ← imports from .._shared; never touches sys.path
+__init__.py               ← imports from ._shared; never touches sys.path
+daemon.py                 ← imports from ._shared; never touches sys.path
+tools/*.py                ← import from .._shared inside handler functions
+```
+
+### Follow-up (out of scope for this PR)
+
+A future upstream PR will add `workflow.dispatch_in_gateway` (mirroring `kanban.dispatch_in_gateway`) so the scheduler runs embedded in the gateway process. The systemd/launchd units will then be marked DEPRECATED.
+
 ## Cron integration
 
-The plugin ships a built-in cron poller (`cron_poller.py`). Workflows with a `cron:` field in their YAML are triggered automatically at the configured interval. The poller runs inside the hermes-agent process — no external cron daemon required.
+The plugin ships a built-in cron poller (`engine/cron/poller.py`). Workflows with a `cron:` field in their YAML are triggered automatically at the configured interval. The poller runs in the **workflow daemon process** (`hermes workflow daemon`) — not inside the hermes-agent gateway. See the Background scheduler section above.
 
 ```yaml
 # Example: run every hour

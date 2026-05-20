@@ -261,9 +261,18 @@ import time as _time
 from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
-from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
-
 logger = logging.getLogger(__name__)
+
+
+def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
+    """Import-safe Termux check for cold-start-sensitive CLI paths."""
+    check = env or os.environ
+    prefix = str(check.get("PREFIX", ""))
+    return bool(
+        check.get("TERMUX_VERSION")
+        or "com.termux/files/usr" in prefix
+        or prefix.startswith("/data/data/com.termux/")
+    )
 
 
 def _relative_time(ts) -> str:
@@ -967,6 +976,72 @@ def _tui_need_npm_install(root: Path) -> bool:
     return False
 
 
+_TUI_BUILD_INPUT_DIRS = (
+    "src",
+    "packages/hermes-ink/src",
+)
+
+_TUI_BUILD_INPUT_FILES = (
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+    "tsconfig.build.json",
+    "babel.compiler.config.cjs",
+    "scripts/build.mjs",
+    "packages/hermes-ink/package.json",
+    "packages/hermes-ink/package-lock.json",
+    "packages/hermes-ink/index.js",
+    "packages/hermes-ink/text-input.js",
+)
+
+_TUI_BUILD_INPUT_SUFFIXES = frozenset(
+    {".cjs", ".js", ".jsx", ".json", ".mjs", ".ts", ".tsx"}
+)
+
+
+def _iter_tui_build_inputs(root: Path):
+    """Yield source/config files that affect ``ui-tui/dist/entry.js``."""
+    for rel in _TUI_BUILD_INPUT_FILES:
+        path = root / rel
+        if path.is_file():
+            yield path
+
+    for rel in _TUI_BUILD_INPUT_DIRS:
+        base = root / rel
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if path.is_file() and path.suffix in _TUI_BUILD_INPUT_SUFFIXES:
+                yield path
+
+
+def _tui_need_rebuild(root: Path) -> bool:
+    """True when ``dist/entry.js`` is missing or older than TUI inputs.
+
+    The TUI bundle is self-contained. Rebuilding it on every launch adds a
+    visible cold-start tax on slow Termux CPUs, while a simple mtime freshness
+    check still rebuilds immediately after source updates, dependency updates,
+    or local edits. Set ``HERMES_TUI_FORCE_BUILD=1`` to force the old behaviour.
+    """
+    force = (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower()
+    if force in {"1", "true", "yes", "on"}:
+        return True
+
+    entry = root / "dist" / "entry.js"
+    try:
+        output_mtime = entry.stat().st_mtime
+    except OSError:
+        return True
+
+    for path in _iter_tui_build_inputs(root):
+        try:
+            if path.stat().st_mtime > output_mtime:
+                return True
+        except OSError:
+            return True
+    return False
+
+
 def _ensure_tui_node() -> None:
     """Make sure `node` + `npm` are on PATH for the TUI.
 
@@ -1081,6 +1156,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
+    did_install = False
     if _tui_need_npm_install(tui_dir):
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
@@ -1100,6 +1176,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             if preview:
                 print(preview)
             sys.exit(1)
+        did_install = True
 
     if tui_dev:
         # Keep the local @hermes/ink package exports in sync with source.
@@ -1128,21 +1205,28 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir
 
-    # Always rebuild — esbuild is fast and this avoids staleness-edge-case bugs.
-    npm = _node_bin("npm")
-    result = subprocess.run(
-        [npm, "run", "build"],
-        cwd=str(tui_dir),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
-        preview = "\n".join(combined.splitlines()[-30:])
-        print("TUI build failed.")
-        if preview:
-            print(preview)
-        sys.exit(1)
+    # Desktop/dev launches retain the historical "always rebuild" behaviour.
+    # Termux cold starts use the freshness check because esbuild startup is
+    # expensive on old mobile CPUs.
+    should_build = True
+    if _is_termux_startup_environment():
+        should_build = did_install or _tui_need_rebuild(tui_dir)
+
+    if should_build:
+        npm = _node_bin("npm")
+        result = subprocess.run(
+            [npm, "run", "build"],
+            cwd=str(tui_dir),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+            preview = "\n".join(combined.splitlines()[-30:])
+            print("TUI build failed.")
+            if preview:
+                print(preview)
+            sys.exit(1)
 
     node = _node_bin("node")
     return [node, str(tui_dir / "dist" / "entry.js")], tui_dir
@@ -2589,6 +2673,7 @@ def _prompt_provider_choice(choices, *, default=0):
 
 def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
+    from hermes_constants import OPENROUTER_BASE_URL
     from hermes_cli.auth import (
         ProviderConfig,
         _prompt_model_selection,
@@ -2649,6 +2734,7 @@ def _model_flow_openrouter(config, current_model=""):
 
 def _model_flow_ai_gateway(config, current_model=""):
     """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
+    from hermes_constants import AI_GATEWAY_BASE_URL
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
@@ -4242,8 +4328,11 @@ def _model_flow_named_custom(config, provider_info):
     print(f"   Provider: {name} ({base_url})")
 
 
-# Curated model lists for direct API-key providers — single source in models.py
-from hermes_cli.models import _PROVIDER_MODELS
+# Keep the historical eager model catalog import on desktop/CI. Termux defers
+# it to the model-selection handlers so plain `hermes --tui` does not pay for
+# requests/models.dev catalog imports before the Node TUI starts.
+if not _is_termux_startup_environment():
+    from hermes_cli.models import _PROVIDER_MODELS
 
 
 def _current_reasoning_effort(config) -> str:
@@ -4360,6 +4449,7 @@ def _model_flow_copilot(config, current_model=""):
     )
     from hermes_cli.config import save_env_value, load_config, save_config
     from hermes_cli.models import (
+        _PROVIDER_MODELS,
         fetch_api_models,
         fetch_github_model_catalog,
         github_model_reasoning_efforts,
@@ -4552,6 +4642,7 @@ def _model_flow_copilot_acp(config, current_model=""):
         resolve_external_process_provider_credentials,
     )
     from hermes_cli.models import (
+        _PROVIDER_MODELS,
         fetch_github_model_catalog,
         normalize_copilot_model_id,
     )
@@ -4755,6 +4846,7 @@ def _model_flow_kimi(config, current_model=""):
         load_config,
         save_config,
     )
+    from hermes_cli.models import _PROVIDER_MODELS
 
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -4865,7 +4957,7 @@ def _model_flow_stepfun(config, current_model=""):
         load_config,
         save_config,
     )
-    from hermes_cli.models import fetch_api_models
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
 
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -5245,6 +5337,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_config,
     )
     from hermes_cli.models import (
+        _PROVIDER_MODELS,
         fetch_api_models,
         opencode_model_api_mode,
         normalize_opencode_model_id,
@@ -7662,9 +7755,7 @@ def _install_python_dependencies_with_optional_fallback(
 
 
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:
-    check = env or os.environ
-    prefix = str(check.get("PREFIX", ""))
-    return "com.termux" in prefix or prefix.startswith("/data/data/com.termux/")
+    return _is_termux_startup_environment(env)
 
 
 def _is_android_python() -> bool:
@@ -10318,7 +10409,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
+        "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -10412,6 +10503,47 @@ def _plugin_cli_discovery_needed() -> bool:
     return True
 
 
+def _try_termux_fast_tui_launch() -> bool:
+    """Launch obvious Termux TUI invocations before building every subparser.
+
+    `hermes --tui` is the hot path on phones. The full parser setup imports
+    command modules for model, fallback, migrate, kanban, bundles, plugins,
+    etc. even though the TUI immediately execs Node. On Termux only, parse the
+    lightweight top-level/chat parser and hand off to ``cmd_chat`` when the
+    invocation is unambiguously the built-in TUI/chat path.
+    """
+    if not _is_termux_startup_environment():
+        return False
+
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        return False
+
+    wants_tui = os.environ.get("HERMES_TUI") == "1" or "--tui" in sys.argv[1:]
+    if not wants_tui:
+        return False
+
+    first = _first_positional_argv()
+    if first not in {None, "chat"}:
+        return False
+
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=cmd_chat)
+    args = parser.parse_args(_coalesce_session_name_args(sys.argv[1:]))
+
+    # Preserve top-level behaviours whose semantics are not "launch chat/TUI".
+    if getattr(args, "version", False) or getattr(args, "oneshot", None):
+        return False
+    if getattr(args, "command", None) not in {None, "chat"}:
+        return False
+    if not (getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"):
+        return False
+
+    cmd_chat(args)
+    return True
+
+
 def main():
     """Main entry point for hermes CLI."""
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
@@ -10428,6 +10560,9 @@ def main():
         _cleanup_quarantined_exes()
     except Exception:
         pass
+
+    if _try_termux_fast_tui_launch():
+        return
 
     from hermes_cli._parser import build_top_level_parser
 

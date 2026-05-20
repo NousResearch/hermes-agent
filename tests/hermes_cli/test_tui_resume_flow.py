@@ -251,6 +251,38 @@ def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):
     assert captured == {"toolsets": "web,terminal", "tui": True}
 
 
+def test_termux_fast_tui_launch_uses_light_parser(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(
+        sys, "argv", ["hermes", "--tui", "--toolsets", "web,terminal"]
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "cmd_chat",
+        lambda args: captured.update({"toolsets": args.toolsets, "tui": args.tui}),
+    )
+
+    assert main_mod._try_termux_fast_tui_launch() is True
+    assert captured == {"toolsets": "web,terminal", "tui": True}
+
+
+def test_termux_fast_tui_launch_skips_help(monkeypatch, main_mod):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(sys, "argv", ["hermes", "--tui", "--help"])
+
+    assert main_mod._try_termux_fast_tui_launch() is False
+
+
+def test_fast_tui_launch_is_termux_only(monkeypatch, main_mod):
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(sys, "argv", ["hermes", "--tui"])
+
+    assert main_mod._try_termux_fast_tui_launch() is False
+
+
 def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
     captured = {}
 

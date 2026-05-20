@@ -203,12 +203,12 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_approval_action)
 
-            # Register Block Kit action handlers for Artemis job-match cards
+            # Register Block Kit action handlers for Artemis send_jobs cards
             # (S-0511-08). Save writes to ~/.hermes/artemis/<user_id>/shortlist.json;
-            # Skip is fire-and-forget ack. Both post a hard-coded follow-up
-            # message — Coach LLM is not in the click loop.
-            self._app.action("job_card_save")(self._handle_job_card_save)
-            self._app.action("job_card_skip")(self._handle_job_card_skip)
+            # Skip removes the entry if Saved earlier (else fire-and-forget ack).
+            # Both ack in the same thread as the card.
+            self._app.action("job_save")(self._handle_job_save)
+            self._app.action("job_skip")(self._handle_job_skip)
 
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token)
@@ -1234,7 +1234,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Artemis job-match card buttons (S-0511-08) -----
 
-    async def _handle_job_card_save(self, ack, body, action) -> None:
+    async def _handle_job_save(self, ack, body, action) -> None:
         """Save click — write to ~/.hermes/artemis/<user_id>/shortlist.json.
 
         Schema must stay in sync with Artemis `mcp-server/tools/shortlist.py`.
@@ -1324,7 +1324,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Slack] job_card_save handler failed: %s", exc, exc_info=True)
 
-    async def _handle_job_card_skip(self, ack, body, action) -> None:
+    async def _handle_job_skip(self, ack, body, action) -> None:
         """Skip click — dismiss this card from the list.
 
         If the job was previously Saved (present in shortlist.json), Skip

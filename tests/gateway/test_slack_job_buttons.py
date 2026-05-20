@@ -1,7 +1,7 @@
 """Tests for Slack job-match-card button handlers (S-0511-08, Artemis pilot).
 
-Mirrors test_slack_approval_buttons.py shape for the new job_card_save and
-job_card_skip handlers. Shortlist writes go to ~/.hermes/artemis/<user_id>/
+Mirrors test_slack_approval_buttons.py shape for the new job_save and
+job_skip handlers. Shortlist writes go to ~/.hermes/artemis/<user_id>/
 shortlist.json — schema kept in sync with Artemis mcp-server/tools/shortlist.py.
 """
 
@@ -103,9 +103,9 @@ class TestJobCardSave:
         adapter._team_clients["T1"].chat_postMessage = AsyncMock()
         ack = AsyncMock()
 
-        action = {"action_id": "job_card_save", "value": _save_value("job-A")}
+        action = {"action_id": "job_save", "value": _save_value("job-A")}
 
-        await adapter._handle_job_card_save(ack, _click_body(), action)
+        await adapter._handle_job_save(ack, _click_body(), action)
         ack.assert_called_once()
 
         path = hermes_home / "artemis" / "U0FIXTURE01" / "shortlist.json"
@@ -127,9 +127,9 @@ class TestJobCardSave:
         adapter._team_clients["T1"].chat_postMessage = AsyncMock()
         ack = AsyncMock()
 
-        action = {"action_id": "job_card_save", "value": _save_value("job-A")}
-        await adapter._handle_job_card_save(ack, _click_body(), action)
-        await adapter._handle_job_card_save(ack, _click_body(), action)
+        action = {"action_id": "job_save", "value": _save_value("job-A")}
+        await adapter._handle_job_save(ack, _click_body(), action)
+        await adapter._handle_job_save(ack, _click_body(), action)
 
         path = hermes_home / "artemis" / "U0FIXTURE01" / "shortlist.json"
         entries = json.loads(path.read_text())
@@ -150,8 +150,8 @@ class TestJobCardSave:
             return original_replace(self, target)
 
         monkeypatch.setattr(Path, "replace", spy)
-        action = {"action_id": "job_card_save", "value": _save_value("job-A")}
-        await adapter._handle_job_card_save(ack, _click_body(), action)
+        action = {"action_id": "job_save", "value": _save_value("job-A")}
+        await adapter._handle_job_save(ack, _click_body(), action)
 
         assert len(seen) == 1
         src, dst = seen[0]
@@ -165,9 +165,9 @@ class TestJobCardSave:
         adapter._team_clients["T1"].chat_postMessage = AsyncMock()
         ack = AsyncMock()
 
-        action = {"action_id": "job_card_save", "value": _save_value("job-A")}
+        action = {"action_id": "job_save", "value": _save_value("job-A")}
         body = _click_body(message_ts="2.0", thread_ts="1.5")
-        await adapter._handle_job_card_save(ack, body, action)
+        await adapter._handle_job_save(ack, body, action)
 
         post_kwargs = adapter._team_clients["T1"].chat_postMessage.call_args[1]
         assert post_kwargs.get("thread_ts") == "1.5"
@@ -179,9 +179,9 @@ class TestJobCardSave:
         adapter._team_clients["T1"].chat_postMessage = AsyncMock()
         ack = AsyncMock()
 
-        action = {"action_id": "job_card_save", "value": _save_value("job-A")}
+        action = {"action_id": "job_save", "value": _save_value("job-A")}
         body = _click_body(message_ts="3.0", thread_ts=None)
-        await adapter._handle_job_card_save(ack, body, action)
+        await adapter._handle_job_save(ack, body, action)
 
         post_kwargs = adapter._team_clients["T1"].chat_postMessage.call_args[1]
         assert post_kwargs.get("thread_ts") == "3.0"
@@ -193,9 +193,9 @@ class TestJobCardSave:
         ack = AsyncMock()
 
         # value is not valid JSON
-        action = {"action_id": "job_card_save", "value": "not-json"}
+        action = {"action_id": "job_save", "value": "not-json"}
         # Must not raise
-        await adapter._handle_job_card_save(ack, _click_body(), action)
+        await adapter._handle_job_save(ack, _click_body(), action)
         ack.assert_called_once()
 
         path = hermes_home / "artemis" / "U0FIXTURE01" / "shortlist.json"
@@ -210,8 +210,8 @@ class TestJobCardSkip:
         adapter._team_clients["T1"].chat_postMessage = AsyncMock()
         ack = AsyncMock()
 
-        action = {"action_id": "job_card_skip", "value": "job-A"}
-        await adapter._handle_job_card_skip(ack, _click_body(message_ts="2.0", thread_ts="1.5"), action)
+        action = {"action_id": "job_skip", "value": "job-A"}
+        await adapter._handle_job_skip(ack, _click_body(message_ts="2.0", thread_ts="1.5"), action)
         ack.assert_called_once()
 
         post_kwargs = adapter._team_clients["T1"].chat_postMessage.call_args[1]
@@ -230,15 +230,15 @@ class TestJobCardSkip:
         ack = AsyncMock()
 
         # Pre-seed shortlist with the job
-        save_action = {"action_id": "job_card_save", "value": _save_value("job-A")}
-        await adapter._handle_job_card_save(ack, _click_body(), save_action)
+        save_action = {"action_id": "job_save", "value": _save_value("job-A")}
+        await adapter._handle_job_save(ack, _click_body(), save_action)
 
         path = hermes_home / "artemis" / "U0FIXTURE01" / "shortlist.json"
         assert len(json.loads(path.read_text())) == 1
 
         # Now Skip should remove it
-        skip_action = {"action_id": "job_card_skip", "value": "job-A"}
-        await adapter._handle_job_card_skip(ack, _click_body(message_ts="2.0", thread_ts="1.5"), skip_action)
+        skip_action = {"action_id": "job_skip", "value": "job-A"}
+        await adapter._handle_job_skip(ack, _click_body(message_ts="2.0", thread_ts="1.5"), skip_action)
 
         entries = json.loads(path.read_text())
         assert len(entries) == 0, "Skip after Save should remove the entry"
@@ -256,14 +256,14 @@ class TestJobCardSkip:
         ack = AsyncMock()
 
         # Pre-seed two entries
-        await adapter._handle_job_card_save(ack, _click_body(), {"action_id": "job_card_save", "value": _save_value("job-A")})
-        await adapter._handle_job_card_save(ack, _click_body(), {"action_id": "job_card_save", "value": _save_value("job-B", title="Other PM")})
+        await adapter._handle_job_save(ack, _click_body(), {"action_id": "job_save", "value": _save_value("job-A")})
+        await adapter._handle_job_save(ack, _click_body(), {"action_id": "job_save", "value": _save_value("job-B", title="Other PM")})
 
         path = hermes_home / "artemis" / "U0FIXTURE01" / "shortlist.json"
         assert len(json.loads(path.read_text())) == 2
 
         # Skip job-A only
-        await adapter._handle_job_card_skip(ack, _click_body(), {"action_id": "job_card_skip", "value": "job-A"})
+        await adapter._handle_job_skip(ack, _click_body(), {"action_id": "job_skip", "value": "job-A"})
 
         entries = json.loads(path.read_text())
         assert len(entries) == 1

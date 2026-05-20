@@ -4520,6 +4520,35 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _is_github_pr_closed(pr_url: str) -> bool:
+    """Check if a GitHub PR is closed/merged via the public API.
+
+    Returns True if the PR is closed or merged (guard should be skipped).
+    Returns False on any error (network, rate-limit, non-GitHub URL) so
+    the guard falls back to the safe "assume active" behavior.
+    """
+    try:
+        import urllib.request, json as _json
+        # Parse https://github.com/owner/repo/pull/123 → API URL
+        m = re.match(
+            r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_url
+        )
+        if not m:
+            return False
+        owner, repo, number = m.groups()
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}"
+        gh_token = os.environ.get("GITHUB_TOKEN", "")
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        if gh_token:
+            headers["Authorization"] = f"token {gh_token}"
+        req = urllib.request.Request(api_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read().decode())
+            return data.get("state") == "closed"  # covers merged too
+    except Exception:
+        return False  # On error, assume PR is still active (safe default)
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -4578,12 +4607,17 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Check if the PR is still open; skip the guard for closed/merged PRs
+    #    so operators aren't stuck waiting 24h after closing a stale PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            pr_match = _RESPAWN_GUARD_PR_URL_RE.search(c["body"])
+            if pr_match and _is_github_pr_closed(pr_match.group()):
+                continue  # PR is closed/merged — don't guard
             return "active_pr"
 
     return None

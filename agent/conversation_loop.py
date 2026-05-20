@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from agent.anthropic_adapter import _is_oauth_token
@@ -71,6 +72,89 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+
+# ── Structured response metadata ──────────────────────────────────────
+# These dataclasses enrich the return value of run_conversation() so
+# downstream consumers (gateway platforms, chat(), session persistence)
+# can access per-turn content without relying on the overwritten
+# ``final_response`` string.  See FR #28431.
+
+@dataclass
+class ContentSegment:
+    """One piece of assistant content produced during the conversation loop.
+
+    Attributes:
+        content: The text content from this assistant turn (after stripping
+            think/reasoning blocks).
+        had_tool_calls: True if this turn also contained tool calls.
+        tool_call_count: Number of tool calls in this turn (0 if none).
+        tool_names: Names of the tools called in this turn.
+    """
+    content: str
+    had_tool_calls: bool = False
+    tool_call_count: int = 0
+    tool_names: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ToolCallResult:
+    """One tool call invocation with its outcome and timing.
+
+    Attributes:
+        call_id: The model's tool_call_id for this invocation.
+        tool_name: Name of the tool invoked.
+        arguments: The deserialized arguments dict passed to the tool.
+        outcome: One of "success", "error", "skipped", "blocked".
+        response: The tool's result string (None for skipped/blocked).
+        duration_ms: Wall-clock time in milliseconds (0 for skipped/blocked).
+    """
+    call_id: str
+    tool_name: str
+    arguments: dict
+    outcome: str
+    response: Optional[str]
+    duration_ms: float
+
+
+@dataclass
+class RunMetadata:
+    """Summary metadata about a run_conversation() invocation.
+
+    Attributes:
+        model: Resolved model name (e.g. "gpt-4o").
+        turns: Number of assistant turns in this run.
+        total_tokens: Sum of prompt + completion + cached tokens (None if unavailable).
+        finish_reason: Why the loop exited (e.g. "stop", "length", "guardrail_halt").
+        duration_seconds: Total wall-clock time for the run (None if unavailable).
+    """
+    model: str
+    turns: int
+    total_tokens: Optional[int]
+    finish_reason: Optional[str]
+    duration_seconds: Optional[float]
+
+
+def _safe_content_segment(s: ContentSegment) -> dict:
+    """Convert a ContentSegment dataclass to a JSON-serializable dict."""
+    return {
+        "content": s.content,
+        "had_tool_calls": s.had_tool_calls,
+        "tool_call_count": s.tool_call_count,
+        "tool_names": s.tool_names,
+    }
+
+
+def _safe_tool_call_record(r: ToolCallResult) -> dict:
+    """Convert a ToolCallResult dataclass to a JSON-serializable dict."""
+    return {
+        "call_id": r.call_id,
+        "tool_name": r.tool_name,
+        "arguments": r.arguments,
+        "outcome": r.outcome,
+        "response": r.response,
+        "duration_ms": r.duration_ms,
+    }
 
 
 def _ra():
@@ -283,6 +367,13 @@ def run_conversation(
     agent._last_content_with_tools = None
     agent._last_content_tools_all_housekeeping = False
     agent._mute_post_response = False
+    # Collect structured per-turn content metadata for downstream consumers.
+    # See FR #28431.
+    _content_segments: List[ContentSegment] = []
+    # Collect per-tool invocation log for structured response metadata.
+    # See FR #28474.
+    agent._tool_call_log: List[ToolCallResult] = []
+    _run_start_time = time.time()
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
@@ -532,6 +623,7 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    _raw_finish_reason: Optional[str] = None
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
     # Per-turn file-mutation verifier state.  Keyed by resolved path;
@@ -3271,6 +3363,14 @@ def run_conversation(
                 # answer and calls memory/skill tools as a side-effect in the same
                 # turn. If the follow-up turn after tools is empty, we use this.
                 turn_content = assistant_message.content or ""
+                # Collect structured content segment for this turn.
+                _tc_names = [tc.function.name for tc in assistant_message.tool_calls]
+                _content_segments.append(ContentSegment(
+                    content=agent._strip_think_blocks(turn_content).strip() if turn_content else "",
+                    had_tool_calls=True,
+                    tool_call_count=len(assistant_message.tool_calls),
+                    tool_names=_tc_names,
+                ))
                 if turn_content and agent._has_content_after_think_block(turn_content):
                     agent._last_content_with_tools = turn_content
                     # Only mute subsequent output when EVERY tool call in
@@ -3419,6 +3519,11 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+                # Collect structured content segment for this final turn.
+                _content_segments.append(ContentSegment(
+                    content=agent._strip_think_blocks(final_response).strip() if final_response else "",
+                    had_tool_calls=False,
+                ))
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
@@ -3743,6 +3848,7 @@ def run_conversation(
 
                 messages.append(final_msg)
                 
+                _raw_finish_reason = finish_reason
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
@@ -4021,6 +4127,21 @@ def run_conversation(
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
+        # Structured per-turn content metadata.  See FR #28431.
+        # Each ContentSegment records the text and tool-call info for one
+        # assistant turn, allowing consumers to reconstruct multi-turn
+        # content without relying on the single overwritten ``final_response``.
+        "content_segments": list(_content_segments),
+        # Structured per-tool invocation log.  See FR #28474.
+        "tool_call_log": [_safe_tool_call_record(r) for r in agent._tool_call_log],
+        # Summary metadata about this run.  See FR #28474.
+        "metadata": RunMetadata(
+            model=agent.model,
+            turns=len(_content_segments),
+            total_tokens=agent.session_total_tokens,
+            finish_reason=_raw_finish_reason,
+            duration_seconds=round(time.time() - _run_start_time, 3) if _run_start_time else None,
+        ),
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
@@ -4096,4 +4217,4 @@ def run_conversation(
 
 
 
-__all__ = ["run_conversation"]
+__all__ = ["run_conversation", "ContentSegment", "ToolCallResult", "RunMetadata"]

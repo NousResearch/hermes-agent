@@ -1,0 +1,17 @@
+{
+  "28291": {
+    "title": "Bug: moonshot_schema._fill_missing_type crashes on JSON Schema union types (list type)",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28291",
+    "seen_at": "2026-05-19T01:52:57.089263+00:00"
+  },
+  "28285": {
+    "title": "Bug: Kanban 数据库连接泄漏导致 Gateway 调度器崩溃",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28285",
+    "seen_at": "2026-05-19T01:52:57.114581+00:00"
+  },
+  "28208": {
+    "title": "[Bug]: WhatsApp gateway should support intentional no-reply/no-op responses and must not send provider diagnostic spam when the correct response is silence",
+    "url": "https://github.com/NousResearch/hermes-agent/issues/28208",
+    "seen_at": "2026-05-19T01:52:57.114774+00:00"
+  }
+}

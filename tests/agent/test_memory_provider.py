@@ -95,6 +95,23 @@ class TestMemoryProviderABC:
         with pytest.raises(TypeError):
             MemoryProvider()
 
+
+    def test_get_tool_schemas_is_abstract(self):
+        """Classes missing get_tool_schemas cannot be instantiated."""
+        class MissingToolSchemasProvider(MemoryProvider):
+            @property
+            def name(self): return "missing"
+            def is_available(self): return True
+            def initialize(self, session_id, **kwargs): pass
+
+        with pytest.raises(TypeError, match="MissingToolSchemasProvider"):
+            MissingToolSchemasProvider()
+
+    def test_get_tool_schemas_returns_value(self):
+        """A valid implementation can return tool schemas."""
+        p = FakeMemoryProvider(tools=[{"name": "my_tool", "description": "test", "parameters": {}}])
+        assert p.get_tool_schemas() == [{"name": "my_tool", "description": "test", "parameters": {}}]
+
     def test_concrete_provider_works(self):
         """Concrete implementation can be instantiated."""
         p = FakeMemoryProvider()

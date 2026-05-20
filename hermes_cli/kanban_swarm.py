@@ -74,6 +74,21 @@ def _swarm_context(root_id: str, goal: str) -> str:
     )
 
 
+def _child_idempotency_key(root_key: Optional[str], role: str) -> Optional[str]:
+    """Derive a stable idempotency key for a swarm child card.
+
+    Returns ``None`` when the swarm was created without an ``idempotency_key``
+    so non-idempotent callers keep getting a fresh graph on every call. When a
+    key is present, every child card gets a deterministic key derived from it,
+    so a retry after a partial failure re-attaches to the already-created cards
+    instead of building a second parallel graph under the same root. See
+    :func:`create_swarm`.
+    """
+    if not root_key:
+        return None
+    return f"{root_key}::swarm::{role}"
+
+
 def create_swarm(
     conn: sqlite3.Connection,
     *,
@@ -96,6 +111,11 @@ def create_swarm(
     The returned graph is immediately dispatchable: the planning root is marked
     ``done`` with topology metadata, parallel workers are ``ready``, the verifier
     waits for every worker, and the synthesizer waits for the verifier.
+
+    When ``idempotency_key`` is provided the whole graph is idempotent: a retry
+    after a partial failure (e.g. the process dies before the topology comment
+    is written) recovers the same cards instead of creating a second parallel
+    graph under the root.
     """
 
     goal = _require_text(goal, "goal")
@@ -127,9 +147,13 @@ def create_swarm(
         skills=["kanban-orchestrator"],
     )
 
-    # If idempotency returned an existing non-archived root, do not duplicate the
-    # swarm graph. Recover the topology from the root's latest blackboard, if it
-    # was created by this helper previously.
+    # Fast path: if idempotency returned an existing non-archived root that a
+    # previous call already built in full, recover the topology from its latest
+    # blackboard and return without touching the graph. If that previous call
+    # died before writing the topology comment (see end of this function), the
+    # topology is missing here and we fall through -- the derived child
+    # idempotency keys below then re-attach to the existing cards instead of
+    # duplicating the whole graph.
     existing = latest_blackboard(conn, root).get("topology")
     if isinstance(existing, dict):
         worker_ids = [str(x) for x in existing.get("worker_ids", []) if x]
@@ -156,7 +180,7 @@ def create_swarm(
 
     context_suffix = _swarm_context(root, goal)
     worker_ids: list[str] = []
-    for spec in worker_specs:
+    for index, spec in enumerate(worker_specs):
         worker_id = kb.create_task(
             conn,
             title=spec.title,
@@ -170,6 +194,7 @@ def create_swarm(
             workspace_path=workspace_path,
             skills=spec.skills or None,
             max_runtime_seconds=spec.max_runtime_seconds,
+            idempotency_key=_child_idempotency_key(idempotency_key, f"worker:{index}"),
         )
         worker_ids.append(worker_id)
 
@@ -191,6 +216,7 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["requesting-code-review"],
+        idempotency_key=_child_idempotency_key(idempotency_key, "verifier"),
     )
 
     synthesizer_body = (
@@ -210,6 +236,7 @@ def create_swarm(
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
         skills=["avoid-ai-writing"],
+        idempotency_key=_child_idempotency_key(idempotency_key, "synthesizer"),
     )
 
     created = SwarmCreated(root, worker_ids, verifier, synthesizer)

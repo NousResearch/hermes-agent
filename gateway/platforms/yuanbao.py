@@ -1410,19 +1410,19 @@ class RecallGuardMiddleware(InboundMiddleware):
             logger.warning("[%s] Recall: failed to resolve session: %s", adapter.name, exc)
             return
 
-        # Read JSONL directly — SQLite doesn't preserve message_id field.
-        transcript: list = []
+        # Load transcript from canonical store (state.db).
+        #
+        # Branch A1 below tries to match the recalled message by its platform
+        # `message_id`. state.db does NOT preserve `message_id` (only its own
+        # autoincrement primary key), so A1 will not match for any message
+        # persisted post-DB-canonical (i.e. all messages going forward). Recall
+        # falls through to A2 (content match) or B (system redaction note), both
+        # of which work DB-only.
+        #
+        # TODO: add a `platform_message_id` column to state.db messages to restore
+        # exact-id matching. Tracked separately.
         try:
-            path = store.get_transcript_path(sid)
-            if path.exists():
-                with open(path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            try:
-                                transcript.append(json.loads(line))
-                            except json.JSONDecodeError:
-                                pass
+            transcript = store.load_transcript(sid)
         except Exception as exc:
             logger.warning("[%s] Recall: failed to load transcript: %s", adapter.name, exc)
             return

@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HEALTHCHECK = REPO_ROOT / "healthcheck.sh"
+HEALTHCHECK = REPO_ROOT / "scripts" / "healthcheck-host.sh"
 
 
 def run_healthcheck(tmp_path, df_output, meminfo, **env_overrides):

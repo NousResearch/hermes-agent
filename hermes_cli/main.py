@@ -1552,6 +1552,10 @@ def _ensure_tui_node() -> None:
         Path("/opt/homebrew/sbin"),
         Path("/usr/local/bin"),
         Path("/usr/local/sbin"),
+        Path("/usr/bin"),
+        Path("/bin"),
+        Path("/usr/sbin"),
+        Path("/sbin"),
     ):
         s = str(extra)
         if extra.is_dir() and s not in parts:

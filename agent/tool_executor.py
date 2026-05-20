@@ -477,13 +477,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
-                skip_msg = {
-                    "role": "tool",
-                    "name": skipped_name,
-                    "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
-                    "tool_call_id": skipped_tc.id,
-                }
-                messages.append(skip_msg)
+                messages.append(make_tool_result_message(
+                    skipped_name,
+                    f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
+                    skipped_tc.id,
+                ))
             break
 
         function_name = tool_call.function.name

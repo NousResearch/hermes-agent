@@ -111,6 +111,46 @@ class TestPreToolCheck:
         # No actual tool handlers should have been called
         # (handle_function_call should NOT have been invoked)
 
+    def test_sequential_per_iteration_interrupt_sets_tool_name(self):
+        """execute_tool_calls_sequential per-iteration interrupt must set tool_name.
+
+        Regression: the per-iteration _interrupt_requested check in
+        execute_tool_calls_sequential built skip messages manually without
+        tool_name, while the sibling concurrent path (and the end-of-loop
+        sequential path) were already using make_tool_result_message.
+        """
+        from unittest.mock import MagicMock
+        import types
+        from run_agent import AIAgent
+        from agent.tool_executor import execute_tool_calls_sequential
+
+        tc1 = MagicMock()
+        tc1.id = "tc_1"
+        tc1.function.name = "terminal"
+
+        tc2 = MagicMock()
+        tc2.id = "tc_2"
+        tc2.function.name = "web_search"
+
+        assistant_msg = MagicMock()
+        assistant_msg.tool_calls = [tc1, tc2]
+
+        messages = []
+
+        agent = MagicMock()
+        agent._interrupt_requested = True
+        agent.log_prefix = ""
+
+        execute_tool_calls_sequential(agent, assistant_msg, messages, "task-1")
+
+        assert len(messages) == 2
+        for msg in messages:
+            assert msg.get("tool_name"), (
+                f"tool_name must be set on interrupt skip message, got: {msg}"
+            )
+            assert msg["tool_name"] == msg["name"]
+            assert msg["role"] == "tool"
+
 
 # ---------------------------------------------------------------------------
 # Unit tests: message combining

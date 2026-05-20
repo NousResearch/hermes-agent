@@ -226,7 +226,7 @@ def backfill(*, ledger_conn: Optional[sqlite3.Connection] = None) -> dict[str, A
     session_entries = 0
     run_entries = 0
     linked_sessions: set[str] = set()
-    counted_session_usage: set[str] = set()
+    counted_task_session_usage: set[tuple[str, str]] = set()
 
     if not state_path.exists():
         lconn.execute("INSERT OR REPLACE INTO ledger_meta(key, value) VALUES ('last_backfill_error', ?)", (f"missing state db: {state_path}",))
@@ -280,11 +280,11 @@ def backfill(*, ledger_conn: Optional[sqlite3.Connection] = None) -> dict[str, A
                     session_row = _get_state_session(sconn, session_id)
                     values = _session_values(session_row)
                     if session_id:
-                        session_key = str(session_id)
-                        if session_key in counted_session_usage:
+                        session_key = (str(row["task_id"]), str(session_id))
+                        if session_key in counted_task_session_usage:
                             values = _zero_usage_values(values)
                         else:
-                            counted_session_usage.add(session_key)
+                            counted_task_session_usage.add(session_key)
                     _upsert_entry(lconn, {
                         **values,
                         "source_type": "task_run",

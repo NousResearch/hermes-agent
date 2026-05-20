@@ -109,6 +109,18 @@ def test_project_usage_backfill_counts_session_usage_once_across_runs(usage_home
     assert data["tasks"][0]["input_tokens"] == 100
 
 
+def test_project_usage_backfill_dedupes_per_task_not_globally(usage_home):
+    _seed_session(usage_home, "sess-shared", in_tok=100, out_tok=50, cost=0.0123)
+    tid1 = _seed_completed_run("sess-shared", title="first shared task")
+    tid2 = _seed_completed_run("sess-shared", title="second shared task")
+
+    data1 = usage.get_summary(board="default", task_id=tid1, refresh=True)
+    data2 = usage.get_summary(board="default", task_id=tid2, refresh=False)
+
+    assert data1["totals"]["input_tokens"] == 100
+    assert data2["totals"]["input_tokens"] == 100
+
+
 def test_get_task_rollups_finds_specific_task_beyond_summary_limit(usage_home):
     conn = usage.connect()
     try:

@@ -16,6 +16,7 @@ from agent.i18n import t
 from agent import terminal_image
 from agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
+from hermes_cli.skin_engine import get_active_status_prefix
 from typing import Any, Dict, Optional
 
 _SB = "class:status-bar"
@@ -1042,10 +1043,11 @@ class CLIStatusBarMixin:
                 add(name, style(count) if callable(style) else style, f"{glyph} {count}")
 
         if _ok("model"):
+            prefix = get_active_status_prefix()
             if styled:
-                segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
+                segs.append([(_SB, f" {prefix}"), (_STRONG, model_short)])
             else:
-                segs.append([("", f"☤ {model_short}")])
+                segs.append([("", f"{prefix}{model_short}")])
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
@@ -1121,7 +1123,7 @@ class CLIStatusBarMixin:
             session_title = (snapshot.get("session_title") or "") if show_title else ""
             segs = self._status_bar_segments(
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=False)
-            parts = ["".join(t for _, t in seg) for seg in segs] or [f"☤ {model_short}"]
+            parts = ["".join(t for _, t in seg) for seg in segs] or [f"{get_active_status_prefix()}{model_short}"]
             # Narrow bars always join the battery with │; wider tiers use the tier separator.
             if battery_label:
                 parts.insert(0, battery_label)
@@ -1131,7 +1133,7 @@ class CLIStatusBarMixin:
                 text = (" · " if width < 76 else " │ ").join(parts)
             return self._right_align_status_title(text, session_title, width)
         except Exception:
-            return f"☤ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"{get_active_status_prefix()}{self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
         if (
@@ -1157,7 +1159,7 @@ class CLIStatusBarMixin:
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=True)
             sep = " · " if width < 76 else " │ "
             frags: list = []
-            for seg in segs or [[(_SB, " ☤ "), (_STRONG, snapshot["model_short"])]]:
+            for seg in segs or [[(_SB, f" {get_active_status_prefix()}"), (_STRONG, snapshot["model_short"])]]:
                 if frags:
                     frags.append((_DIM, sep))
                 frags.extend(seg)

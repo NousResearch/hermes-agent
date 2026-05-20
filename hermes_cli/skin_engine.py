@@ -47,6 +47,7 @@ def _branding(who: str, symbol: str, goodbye: str, prompt: str = "", help_header
         "agent_name": f"{who} Agent",
         "welcome": f"Welcome to {who} Agent! Type your message or /help for commands.",
         "goodbye": goodbye, "response_label": f" {symbol} {who} ", "prompt_symbol": prompt or symbol,
+        "status_prefix": f"{symbol} ",
         "help_header": help_header or f"({symbol}) Available Commands"}
 
 
@@ -493,6 +494,15 @@ def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
 
 def get_active_goodbye(fallback: str = "Goodbye! ☤") -> str:
     return _active_branding("goodbye", fallback)
+
+
+def get_active_status_prefix(fallback: str = "☤ ") -> str:
+    """Prefix painted before the model name in the status bar (skin ``status_prefix``).
+
+    Kept separate from ``response_label``: the response box header and the footer badge do not
+    always want the same glyph, and a skin that sets neither inherits *fallback*.
+    """
+    return _active_branding("status_prefix", fallback)
 
 
 # Palette resolution order for prompt_toolkit styles: (name, skin color key, fallback). A

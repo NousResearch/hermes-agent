@@ -622,6 +622,246 @@ def test_recover_with_credential_pool_still_refreshes_genuine_auth_failure():
 
 
 # ---------------------------------------------------------------------------
+# Fix D-bis: bad-credentials 403 must NOT be classified as entitlement (#29344)
+#
+# xAI returns the same permission-denied ``code`` text for two distinct
+# conditions: unsubscribed account vs. stale OAuth access token.  The
+# ``error`` field's ``[WKE=unauthenticated:...]`` suffix (and the
+# accompanying "OAuth2 access token could not be validated" phrasing) is
+# xAI's authoritative disambiguator — when present, the body is an auth
+# failure, not entitlement, and the credential-pool refresh path must
+# run.  Pre-fix, long-running TUI sessions stuck on a stale token
+# surfaced as a non-retryable client error; the workaround was to exit
+# and reopen the TUI so the startup-resolve path refreshed.
+# ---------------------------------------------------------------------------
+
+
+def test_is_entitlement_failure_false_for_bad_credentials_wke_suffix():
+    """403 with ``[WKE=unauthenticated:bad-credentials]`` is auth, not entitlement.
+
+    Verbatim shape from the #29344 reporter — the ``code`` text matches
+    the entitlement permission-denied heuristic, but the ``error`` field
+    carries xAI's explicit "this is a credential validation failure"
+    signal.  Classifier must honor it.
+    """
+    from run_agent import AIAgent
+
+    assert not AIAgent._is_entitlement_failure(
+        {
+            "code": "The caller does not have permission to execute the specified operation",
+            "error": "The OAuth2 access token could not be validated. [WKE=unauthenticated:bad-credentials]",
+        },
+        403,
+    )
+
+
+def test_is_entitlement_failure_false_for_wke_suffix_in_normalized_shape():
+    """The same body after ``_extract_api_error_context`` normalisation.
+
+    Real runtime paths feed the classifier through
+    ``_extract_api_error_context``, which converts the raw body to
+    ``{message, reason, reset_at}``.  The disambiguator must fire in
+    BOTH the raw-body shape (test above) and the normalised shape so
+    the fix actually reaches the production call site at
+    ``_recover_with_credential_pool``.
+    """
+    from run_agent import AIAgent
+
+    assert not AIAgent._is_entitlement_failure(
+        {
+            "reason": "The caller does not have permission to execute the specified operation",
+            "message": "The OAuth2 access token could not be validated. [WKE=unauthenticated:bad-credentials]",
+        },
+        403,
+    )
+
+
+@pytest.mark.parametrize("wke_variant", [
+    # The headline variant — what xAI returns today.
+    "[WKE=unauthenticated:bad-credentials]",
+    # Forward-compat: xAI documents the WKE prefix as a stable shape,
+    # the suffix after the colon is the "reason code" and could grow
+    # new values.  Anything under ``unauthenticated:`` must route to
+    # the refresh path.
+    "[WKE=unauthenticated:expired-token]",
+    "[WKE=unauthenticated:revoked]",
+    "[WKE=unauthenticated:some-future-reason]",
+])
+def test_is_entitlement_failure_false_for_any_wke_unauthenticated_variant(wke_variant):
+    from run_agent import AIAgent
+
+    assert not AIAgent._is_entitlement_failure(
+        {
+            "code": "The caller does not have permission to execute the specified operation",
+            "error": f"Token rejected. {wke_variant}",
+        },
+        403,
+    )
+
+
+def test_is_entitlement_failure_false_via_oauth2_validation_phrase_alone():
+    """Second disambiguator: the "OAuth2 access token could not be
+    validated" phrase by itself (no WKE suffix) must also route to
+    refresh.  This is a belt-and-braces guard against xAI dropping or
+    reformatting the WKE suffix in a future API revision without
+    changing the human-readable error text."""
+    from run_agent import AIAgent
+
+    assert not AIAgent._is_entitlement_failure(
+        {
+            "code": "The caller does not have permission to execute the specified operation",
+            "error": "The OAuth2 access token could not be validated.",
+        },
+        403,
+    )
+
+
+def test_is_entitlement_failure_wke_signal_overrides_entitlement_keywords():
+    """Defensive: if a future xAI body somehow carries BOTH the WKE
+    suffix AND entitlement language, the WKE signal wins.  Auth is
+    recoverable; entitlement isn't.  If the refreshed token still
+    can't access the resource, the next 403 (without WKE) lands on
+    the entitlement path correctly."""
+    from run_agent import AIAgent
+
+    assert not AIAgent._is_entitlement_failure(
+        {
+            "code": "The caller does not have permission to execute the specified operation",
+            "error": (
+                "do not have an active Grok subscription. "
+                "[WKE=unauthenticated:bad-credentials]"
+            ),
+        },
+        403,
+    )
+
+
+def test_is_entitlement_failure_case_insensitive_wke_match():
+    """Substring match is case-insensitive — the classifier lowercases
+    everything before matching, so a future xAI build that uppercases
+    the prefix wouldn't reintroduce the misclassification."""
+    from run_agent import AIAgent
+
+    assert not AIAgent._is_entitlement_failure(
+        {
+            "code": "The caller does not have permission to execute the specified operation",
+            "error": "[wke=Unauthenticated:Bad-Credentials]",
+        },
+        403,
+    )
+
+
+def test_recover_with_credential_pool_refreshes_on_xai_bad_credentials_403():
+    """End-to-end #29344: a bad-credentials 403 from xai-oauth MUST
+    call ``try_refresh_current()`` so the long-running TUI session
+    recovers without an exit/reopen cycle.
+
+    Mirrors the scaffolding of
+    ``test_recover_with_credential_pool_still_refreshes_genuine_auth_failure``
+    but with the exact 403 body shape xAI ships for stale tokens —
+    the very body that pre-fix tripped the entitlement classifier
+    and short-circuited the refresh path.
+    """
+    from run_agent import AIAgent
+    from agent.error_classifier import FailoverReason
+
+    agent = _make_codex_agent()
+
+    refresh_calls = {"n": 0}
+
+    class _FakePool:
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            entry = MagicMock()
+            entry.id = "entry_refreshed_after_stale"
+            return entry
+
+        def mark_exhausted_and_rotate(self, **_kwargs):
+            return None
+
+        def has_available(self):
+            return False
+
+    agent._credential_pool = _FakePool()
+    agent._swap_credential = MagicMock()
+
+    # Normalised shape that ``_extract_api_error_context`` would
+    # produce for the reporter's wire-level body.
+    error_context = {
+        "reason": (
+            "The caller does not have permission to execute the specified operation"
+        ),
+        "message": (
+            "The OAuth2 access token could not be validated. "
+            "[WKE=unauthenticated:bad-credentials]"
+        ),
+    }
+
+    recovered, _retried_429 = agent._recover_with_credential_pool(
+        status_code=403,
+        has_retried_429=False,
+        classified_reason=FailoverReason.auth,
+        error_context=error_context,
+    )
+
+    assert recovered is True, (
+        "Stale OAuth token (bad-credentials 403) must trigger refresh — "
+        "pre-fix this returned False because the entitlement classifier "
+        "over-matched on the permission-denied code text"
+    )
+    assert refresh_calls["n"] == 1, "try_refresh_current must run exactly once"
+    agent._swap_credential.assert_called_once()
+
+
+def test_recover_with_credential_pool_still_blocks_real_entitlement():
+    """Companion regression guard for the #29344 fix: the original
+    #26847 protection — entitlement 403 must NOT refresh — must
+    survive the new disambiguator.  A real unsubscribed-account body
+    has no WKE suffix and no OAuth2-validation phrase, so the
+    classifier still classifies it as entitlement and short-circuits."""
+    from run_agent import AIAgent
+    from agent.error_classifier import FailoverReason
+
+    agent = _make_codex_agent()
+
+    refresh_calls = {"n": 0}
+
+    class _FakePool:
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            return MagicMock(id="should_not_be_called")
+
+        def mark_exhausted_and_rotate(self, **_kwargs):
+            return None
+
+        def has_available(self):
+            return False
+
+    agent._credential_pool = _FakePool()
+
+    # Pure entitlement body — no WKE suffix, no OAuth2 phrase.
+    error_context = {
+        "reason": (
+            "The caller does not have permission to execute the specified operation"
+        ),
+        "message": (
+            "You have either run out of available resources or do not have an "
+            "active Grok subscription. Manage at https://grok.com"
+        ),
+    }
+
+    recovered, _retried_429 = agent._recover_with_credential_pool(
+        status_code=403,
+        has_retried_429=False,
+        classified_reason=FailoverReason.auth,
+        error_context=error_context,
+    )
+
+    assert recovered is False, "Entitlement 403 must surface, not refresh"
+    assert refresh_calls["n"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Fix E: grok-4.3 context length must be 1M, not 256K
 # ---------------------------------------------------------------------------
 

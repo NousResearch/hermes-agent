@@ -31,6 +31,7 @@ class TestProviderRegistry:
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
+        ("grok-build", "Grok Build CLI", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
@@ -120,6 +121,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["grok-build"].inference_base_url == "grok-cli://local"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
@@ -403,6 +405,21 @@ class TestApiKeyProviderStatus:
         assert status["configured"] is True
         assert status["provider"] == "copilot-acp"
 
+    def test_grok_build_status_detects_local_cli(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GROK_BUILD_COMMAND", "grok")
+        monkeypatch.setenv("HERMES_GROK_BUILD_ARGS", "--no-memory --max-turns 1")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
+
+        status = get_external_process_provider_status("grok-build")
+
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["provider"] == "grok-build"
+        assert status["command"] == "grok"
+        assert status["resolved_command"].endswith("/grok")
+        assert status["args"] == ["--no-memory", "--max-turns", "1"]
+        assert status["base_url"] == "grok-cli://local"
+
     def test_non_api_key_provider(self):
         status = get_api_key_provider_status("nous")
         assert status["configured"] is False
@@ -499,6 +516,20 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["base_url"] == "acp://copilot"
         assert creds["command"] == "/usr/local/bin/copilot"
         assert creds["args"] == ["--acp", "--stdio"]
+        assert creds["source"] == "process"
+
+    def test_resolve_grok_build_with_local_cli(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GROK_BUILD_COMMAND", "grok")
+        monkeypatch.setenv("HERMES_GROK_BUILD_ARGS", "--no-memory --disable-web-search")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        creds = resolve_external_process_provider_credentials("grok-build")
+
+        assert creds["provider"] == "grok-build"
+        assert creds["api_key"] == "grok-build"
+        assert creds["base_url"] == "grok-cli://local"
+        assert creds["command"] == "/usr/local/bin/grok"
+        assert creds["args"] == ["--no-memory", "--disable-web-search"]
         assert creds["source"] == "process"
 
     def test_resolve_kimi_with_key(self, monkeypatch):
@@ -721,6 +752,22 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "acp://copilot"
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
+
+    def test_runtime_grok_build_uses_process_runtime(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GROK_BUILD_COMMAND", "grok")
+        monkeypatch.setenv("HERMES_GROK_BUILD_ARGS", "--no-memory --max-turns 1")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="grok-build")
+
+        assert result["provider"] == "grok-build"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "grok-build"
+        assert result["base_url"] == "grok-cli://local"
+        assert result["command"] == "/usr/local/bin/grok"
+        assert result["args"] == ["--no-memory", "--max-turns", "1"]
 
 
 # =============================================================================

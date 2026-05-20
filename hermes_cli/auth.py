@@ -106,6 +106,7 @@ MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_GROK_BUILD_BASE_URL = "grok-cli://local"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
@@ -236,6 +237,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "grok-build": ProviderConfig(
+        id="grok-build",
+        name="Grok Build CLI",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_GROK_BUILD_BASE_URL,
+        base_url_env_var="HERMES_GROK_BUILD_BASE_URL",
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -1409,6 +1417,8 @@ def resolve_provider(
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
         "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
+        "grok-build": "grok-build", "grokbuild": "grok-build",
+        "grok-cli": "grok-build", "xai-build": "grok-build",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
@@ -5613,27 +5623,22 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command, args = _external_process_command_and_args(provider_id)
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
 
     resolved_command = shutil.which(command) if command else None
+    configured = bool(resolved_command or _external_process_allows_without_command(provider_id, base_url))
     return {
-        "configured": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "configured": configured,
         "provider": provider_id,
         "name": pconfig.name,
         "command": command,
         "args": args,
         "resolved_command": resolved_command,
         "base_url": base_url,
-        "logged_in": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "logged_in": configured,
     }
 
 
@@ -5656,12 +5661,12 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_gemini_oauth_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
+    pconfig = PROVIDER_REGISTRY.get(target)
+    if pconfig and pconfig.auth_type == "external_process":
         return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
     # API-key providers
-    pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
@@ -5796,6 +5801,67 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def _grok_cli_default_command() -> str:
+    """Return a useful default command for the Grok CLI.
+
+    The official installer places binaries under ~/.grok/bin and often adds a
+    ~/.local/bin shim, but non-interactive services do not always inherit that
+    PATH. Prefer explicit installed paths before falling back to PATH lookup.
+    """
+    for candidate in (
+        os.path.expanduser("~/.grok/bin/grok"),
+        os.path.expanduser("~/.local/bin/grok"),
+    ):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return "grok"
+
+
+def _external_process_command_and_args(provider_id: str) -> tuple[str, list[str]]:
+    """Resolve provider-specific subprocess command defaults."""
+    if provider_id == "grok-build":
+        command = (
+            os.getenv("HERMES_GROK_BUILD_COMMAND", "").strip()
+            or os.getenv("GROK_CLI_PATH", "").strip()
+            or _grok_cli_default_command()
+        )
+        raw_args = os.getenv("HERMES_GROK_BUILD_ARGS", "").strip()
+        if raw_args:
+            args = shlex.split(raw_args)
+        else:
+            effort = (
+                os.getenv("HERMES_GROK_BUILD_EFFORT", "").strip()
+                or os.getenv("GROK_BUILD_EFFORT", "").strip()
+                or "xhigh"
+            )
+            args = [
+                "--no-memory",
+                "--disable-web-search",
+                "--max-turns",
+                "1",
+                "--output-format",
+                "plain",
+                "--effort",
+                effort,
+            ]
+        return command, args
+
+    command = (
+        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
+        or os.getenv("COPILOT_CLI_PATH", "").strip()
+        or "copilot"
+    )
+    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
+    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    return command, args
+
+
+def _external_process_allows_without_command(provider_id: str, base_url: str) -> bool:
+    if provider_id == "copilot-acp":
+        return base_url.startswith("acp+tcp://")
+    return False
+
+
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -5810,25 +5876,25 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command, args = _external_process_command_and_args(provider_id)
     resolved_command = shutil.which(command) if command else None
-    if not resolved_command and not base_url.startswith("acp+tcp://"):
+    if not resolved_command and not _external_process_allows_without_command(provider_id, base_url):
+        command_label = "Grok CLI" if provider_id == "grok-build" else "Copilot CLI"
+        env_hint = (
+            "HERMES_GROK_BUILD_COMMAND/GROK_CLI_PATH"
+            if provider_id == "grok-build"
+            else "HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH"
+        )
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the {command_label} command '{command}'. "
+            f"Install the CLI or set {env_hint}.",
             provider=provider_id,
-            code="missing_copilot_cli",
+            code=f"missing_{provider_id.replace('-', '_')}_cli",
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

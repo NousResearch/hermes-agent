@@ -1346,14 +1346,11 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
-            # Use live OAuth-backed discovery so the gateway /model picker
-            # matches what the user's authenticated Codex/Copilot backend
-            # actually serves — including ChatGPT-Pro-only Codex slugs
-            # (e.g. gpt-5.3-codex-spark) that aren't in the static curated
-            # catalog. ``provider_model_ids()`` falls back to the curated
-            # list when the live endpoint is unreachable, so this is safe
-            # for unauthenticated and offline cases too.
+        if hermes_slug in {"openai-codex", "grok-build", "copilot", "copilot-acp"}:
+            # Use provider-aware discovery/fallbacks so the gateway /model
+            # picker matches authenticated backends where possible, while
+            # subprocess-backed providers (ACP/Grok Build) still expose their
+            # curated local model IDs.
             model_ids = provider_model_ids(hermes_slug)
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.

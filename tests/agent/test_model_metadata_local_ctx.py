@@ -519,6 +519,35 @@ class TestQueryLocalContextLengthNetworkError:
 class TestGetModelContextLengthLocalFallback:
     """get_model_context_length uses local server query before falling back to 2M."""
 
+    def test_grok_build_cli_uses_explicit_context_default(self):
+        """grok-cli://local is a CLI marker, not a custom HTTP endpoint."""
+        from agent.model_metadata import get_model_context_length
+
+        with patch("agent.model_metadata.get_cached_context_length") as mock_cache, \
+             patch("agent.model_metadata._resolve_endpoint_context_length") as mock_endpoint:
+            result = get_model_context_length(
+                "grok-build",
+                base_url="grok-cli://local",
+                provider="grok-build",
+            )
+
+        assert result == 512000
+        mock_cache.assert_not_called()
+        mock_endpoint.assert_not_called()
+
+    def test_grok_build_context_config_override_wins(self):
+        """Explicit user config still beats the provider default."""
+        from agent.model_metadata import get_model_context_length
+
+        result = get_model_context_length(
+            "grok-build",
+            base_url="grok-cli://local",
+            provider="grok-build",
+            config_context_length=512000,
+        )
+
+        assert result == 512000
+
     def test_local_endpoint_unknown_model_queries_server(self):
         """Unknown model on local endpoint gets ctx from server, not 2M default."""
         from agent.model_metadata import get_model_context_length

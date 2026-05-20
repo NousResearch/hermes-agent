@@ -201,6 +201,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "openai-codex": _codex_curated_models(),
     "xai-oauth": _xai_curated_models(),
+    "grok-build": [
+        "grok-build",
+    ],
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -930,6 +933,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok Subscription)", "xAI Grok OAuth (SuperGrok Subscription)"),
+    ProviderEntry("grok-build",     "Grok Build CLI",           "Grok Build CLI (uses local `grok` subscription login)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
     ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview — direct API via tokenhub.tencentmaas.com)"),
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
@@ -1049,6 +1053,10 @@ _PROVIDER_ALIASES = {
     "amazon": "bedrock",
     "grok": "xai",
     "grok-oauth": "xai-oauth",
+    "grok-build": "grok-build",
+    "grokbuild": "grok-build",
+    "grok-cli": "grok-build",
+    "xai-build": "grok-build",
     "xai-oauth": "xai-oauth",
     "x-ai-oauth": "xai-oauth",
     "xai-grok-oauth": "xai-oauth",
@@ -2184,6 +2192,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return get_codex_model_ids(access_token=access_token)
     if normalized == "xai-oauth":
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
+    if normalized == "grok-build":
+        return list(_PROVIDER_MODELS.get("grok-build", []))
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -3464,7 +3474,7 @@ def validate_requested_model(
         }
 
     # Providers with non-standard catalog validation — /v1/models probing is not the right path.
-    if normalized in {"openai-codex", "xai-oauth"}:
+    if normalized in {"openai-codex", "xai-oauth", "grok-build"}:
         try:
             catalog_models = provider_model_ids(normalized)
         except Exception:
@@ -3491,7 +3501,7 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
-            provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok Subscription)"
+            provider_label = _PROVIDER_LABELS.get(normalized, normalized)
             return {
                 "accepted": True,
                 "persist": True,

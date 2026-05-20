@@ -163,6 +163,7 @@ class TestNormalizeProvider:
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("step") == "stepfun"
         assert normalize_provider("github-copilot") == "copilot"
+        assert normalize_provider("grok-cli") == "grok-build"
 
     def test_case_insensitive(self):
         assert normalize_provider("OpenRouter") == "openrouter"
@@ -175,6 +176,7 @@ class TestProviderLabel:
         assert provider_label("stepfun") == "StepFun Step Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
+        assert provider_label("grok-build") == "Grok Build CLI"
         assert provider_label("auto") == "Auto"
 
     def test_unknown_provider_preserves_original_name(self):
@@ -221,6 +223,9 @@ class TestProviderModelIds:
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
+
+    def test_grok_build_uses_static_model(self):
+        assert provider_model_ids("grok-build") == ["grok-build"]
 
     def test_copilot_falls_back_to_curated_defaults_without_stale_opus(self):
         with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \

@@ -18,6 +18,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
+| **Grok Build CLI** | `hermes model` (spawns local `grok` CLI; requires an existing Grok Build login) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
@@ -266,11 +267,27 @@ hermes chat --provider copilot-acp --model copilot-acp
 # Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
 ```
 
-**Permanent config:**
+**`grok-build` — Grok Build CLI backend**. Spawns the local Grok CLI in headless mode and sends prompts via a temporary prompt file:
+
+```bash
+hermes chat --provider grok-build --model grok-build
+# Requires the Grok CLI in PATH or ~/.grok/bin and an existing `grok login` session
+```
+
+Hermes auto-detects `~/.grok/bin/grok`, `~/.local/bin/grok`, or `grok` in `PATH`. Override the command with `HERMES_GROK_BUILD_COMMAND` or `GROK_CLI_PATH`. By default Hermes runs Grok Build with `--no-memory --disable-web-search --max-turns 1 --output-format plain --effort xhigh`; override with `HERMES_GROK_BUILD_ARGS` or just the effort with `HERMES_GROK_BUILD_EFFORT`.
+
+**Copilot permanent config:**
 ```yaml
 model:
   provider: "copilot"
   default: "gpt-5.4"
+```
+
+**Grok Build permanent config:**
+```yaml
+model:
+  provider: "grok-build"
+  default: "grok-build"
 ```
 
 | Environment variable | Description |
@@ -278,6 +295,9 @@ model:
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+| `HERMES_GROK_BUILD_COMMAND` / `GROK_CLI_PATH` | Override the Grok CLI binary path |
+| `HERMES_GROK_BUILD_ARGS` | Override Grok CLI args for the `grok-build` provider |
+| `HERMES_GROK_BUILD_EFFORT` | Override the default Grok Build effort when args are not set |
 
 ### First-Class API-Key Providers
 
@@ -1466,7 +1486,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `grok-build`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

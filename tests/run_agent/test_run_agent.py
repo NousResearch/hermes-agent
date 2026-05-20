@@ -4514,6 +4514,36 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
 
 
+def test_aiagent_uses_grok_cli_client():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("agent.grok_cli_client.GrokCliClient") as mock_grok_client,
+    ):
+        grok_client = MagicMock()
+        mock_grok_client.return_value = grok_client
+
+        agent = AIAgent(
+            api_key="grok-build",
+            base_url="grok-cli://local",
+            provider="grok-build",
+            command="/usr/local/bin/grok",
+            args=["--no-memory", "--max-turns", "1"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is grok_client
+    mock_openai.assert_not_called()
+    mock_grok_client.assert_called_once()
+    assert mock_grok_client.call_args.kwargs["base_url"] == "grok-cli://local"
+    assert mock_grok_client.call_args.kwargs["api_key"] == "grok-build"
+    assert mock_grok_client.call_args.kwargs["command"] == "/usr/local/bin/grok"
+    assert mock_grok_client.call_args.kwargs["args"] == ["--no-memory", "--max-turns", "1"]
+
+
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
     agent._print_fn = lambda *_a, **_kw: None
     with patch.object(run_agent.sys.stdout, "isatty", return_value=False):

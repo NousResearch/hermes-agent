@@ -72,6 +72,9 @@ def _supports_same_provider_pool_setup(provider: str) -> bool:
 # Default model lists per provider — used as fallback when the live
 # /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {
+    "grok-build": [
+        "grok-build",
+    ],
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -930,6 +933,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             "nous-api": "Nous Portal API key",
             "copilot": "GitHub Copilot",
             "copilot-acp": "GitHub Copilot ACP",
+            "grok-build": "Grok Build CLI",
             "zai": "Z.AI / GLM",
             "kimi-coding": "Kimi / Moonshot",
             "kimi-coding-cn": "Kimi / Moonshot (China)",

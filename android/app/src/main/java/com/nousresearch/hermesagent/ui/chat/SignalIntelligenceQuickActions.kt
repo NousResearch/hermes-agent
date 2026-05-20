@@ -47,6 +47,13 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
         iconRes = R.drawable.ic_nav_device,
     ),
     SignalIntelligenceQuickAction(
+        id = "wifi_occupancy",
+        label = "Wi-Fi Occupancy",
+        diagnosticAction = "wifi_channel_utilization",
+        prompt = "Run android_device_diagnostics_tool action=wifi_channel_utilization refresh=false",
+        iconRes = R.drawable.ic_action_refresh,
+    ),
+    SignalIntelligenceQuickAction(
         id = "bluetooth_analyzer",
         label = "Bluetooth Analyzer",
         diagnosticAction = "bluetooth_analyzer_report",

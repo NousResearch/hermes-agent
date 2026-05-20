@@ -161,6 +161,48 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesWifiChannelUtilizationRowsForExpandableSignalCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Wi-Fi Channel Utilization")
+                        .put("body", "Observed channel pressure.")
+                        .put("graph_type", "wifi_channel_utilization")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("band", "2.4GHz")
+                                    .put("channel", 1)
+                                    .put("channel_pressure_score", 72)
+                                    .put("utilization_label", "crowded")
+                                    .put("network_count", 2)
+                                    .put("overlap_count", 3)
+                                    .put("strongest_rssi_dbm", -36)
+                                    .put("average_rssi_dbm", -52)
+                                    .put("max_channel_width_mhz", 40)
+                                    .put("security_modes", JSONArray().put("WPA3").put("WPA2"))
+                                    .put("sample_ssids", JSONArray().put("HermesNet"))
+                                    .put("recommendation", "Crowded channel."),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("2.4GHz ch 1", row.label)
+        assertEquals("72% busy crowded", row.valueLabel)
+        assertTrue(row.detail.contains("3 visible overlap"))
+        assertTrue(row.detail.contains("40MHz max width"))
+        assertTrue(row.detail.contains("HermesNet"))
+        assertTrue(row.fraction > 0.7f)
+    }
+
+    @Test
     fun parsesWifiVendorSummaryRowsForExpandableSignalCards() {
         val content = JSONObject()
             .put(

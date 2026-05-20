@@ -63,6 +63,8 @@ object HermesDeviceDiagnosticsBridge {
                 wifiAnalyzerReportJson(appContext, arguments).toString()
             "wifi_channel_rating", "wifi_channels", "channel_rating", "best_wifi_channel", "wifi_congestion" ->
                 wifiScanJson(appContext, arguments, "wifi_channel_rating").toString()
+            "wifi_channel_utilization", "wifi_utilization", "wifi_spectrum", "wifi_interference", "wifi_band_occupancy" ->
+                wifiScanJson(appContext, arguments, "wifi_channel_utilization").toString()
             "wifi_ap_details", "wifi_access_points", "wifi_access_point_details", "wifi_report" ->
                 wifiScanJson(appContext, arguments, "wifi_ap_details").toString()
             "wifi_export", "wifi_analyzer_export", "wifi_access_point_export", "export_wifi" ->
@@ -210,6 +212,7 @@ object HermesDeviceDiagnosticsBridge {
             networks.put(allNetworks.getJSONObject(index))
         }
         val channelRatings = wifiChannelRatingRowsForNetworks(allNetworks)
+        val channelUtilization = wifiChannelUtilizationRowsForNetworks(allNetworks)
         val recommendedChannels = recommendedWifiChannels(channelRatings)
         val bandSummary = wifiBandSummaryJson(allNetworks, channelRatings)
         val vendorSummary = wifiVendorSummaryJson(allNetworks)
@@ -251,6 +254,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("wifi_filter_count", analyzerFilters.length())
             .put("wifi_history_network_count", signalHistory.length())
             .put("wifi_access_point_detail_count", accessPointDetails.length())
+            .put("wifi_channel_utilization_count", channelUtilization.length())
             .put("wifi_security_summary_count", securitySummary.length())
             .put("wifi_width_summary_count", channelWidthSummary.length())
             .put("wifi_standard_summary_count", standardSummary.length())
@@ -265,6 +269,7 @@ object HermesDeviceDiagnosticsBridge {
                 if (exportFormat == "csv" || exportFormat == "both") wifiAccessPointCsv(accessPointDetails) else JSONObject.NULL,
             )
             .put("wifi_channel_ratings", channelRatings)
+            .put("wifi_channel_utilization", channelUtilization)
             .put("recommended_wifi_channels", recommendedChannels)
             .put("wifi_band_summary", bandSummary)
             .put("wifi_vendor_summary", vendorSummary)
@@ -299,6 +304,14 @@ object HermesDeviceDiagnosticsBridge {
                             body = "${channelRatings.length()} channel ratings scored from nearby AP crowding, overlap, RSSI, and width metadata.",
                             graphType = "wifi_channel_rating",
                             rows = channelRatings,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Wi-Fi Channel Utilization",
+                            body = "${channelUtilization.length()} observed channel utilization row(s), inferred from visible AP crowding, overlap, RSSI pressure, width, security, and SSID samples.",
+                            graphType = "wifi_channel_utilization",
+                            rows = channelUtilization,
                         ),
                     )
                     .put(
@@ -359,6 +372,7 @@ object HermesDeviceDiagnosticsBridge {
         val networks = scanResult?.optJSONArray("wifi_networks") ?: JSONArray()
         val accessPointDetails = scanResult?.optJSONArray("wifi_access_point_details") ?: JSONArray()
         val channelRatings = scanResult?.optJSONArray("wifi_channel_ratings") ?: JSONArray()
+        val channelUtilization = scanResult?.optJSONArray("wifi_channel_utilization") ?: JSONArray()
         val recommendedChannels = scanResult?.optJSONArray("recommended_wifi_channels") ?: JSONArray()
         val vendorSummary = scanResult?.optJSONArray("wifi_vendor_summary") ?: JSONArray()
         val filters = scanResult?.optJSONArray("wifi_analyzer_filters") ?: JSONArray()
@@ -383,6 +397,7 @@ object HermesDeviceDiagnosticsBridge {
             returnedNetworkCount = networks.length(),
             accessPointDetailCount = accessPointDetails.length(),
             channelRatingCount = channelRatings.length(),
+            channelUtilizationCount = channelUtilization.length(),
             vendorCount = vendorSummary.length(),
             filterCount = filters.length(),
             historyCount = cachedHistory.length(),
@@ -437,12 +452,13 @@ object HermesDeviceDiagnosticsBridge {
         return result
             .put("success", true)
             .put("action", "wifi_analyzer_report")
-            .put("report_scope", "WiFiAnalyzer-style readiness and routing report for AP discovery, signal/channel graphs, AP history, channel rating, filter facets, OUI/vendor lookup, export, scan throttling, and privacy boundaries.")
+            .put("report_scope", "WiFiAnalyzer-style readiness and routing report for AP discovery, signal/channel graphs, AP history, channel rating, channel utilization/occupancy inference, filter facets, OUI/vendor lookup, export, scan throttling, and privacy boundaries.")
             .put("wifi_scan_permission_status", permissionStatus)
             .put("wifi_scan_status", scanStatus)
             .put("wifi_networks", networks)
             .put("wifi_access_point_details", accessPointDetails)
             .put("wifi_channel_ratings", channelRatings)
+            .put("wifi_channel_utilization", channelUtilization)
             .put("recommended_wifi_channels", recommendedChannels)
             .put("wifi_vendor_summary", vendorSummary)
             .put("wifi_analyzer_filters", filters)
@@ -456,6 +472,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("wifi_analyzer_feature_count", featureRows.length())
             .put("ready_wifi_analyzer_feature_count", countReadyRows(featureRows))
             .put("wifi_analyzer_workflow_route_count", routeRows.length())
+            .put("wifi_channel_utilization_count", channelUtilization.length())
             .put("wifi_scan_policy_count", policyRows.length())
             .put("cards", cards)
     }
@@ -1739,6 +1756,7 @@ object HermesDeviceDiagnosticsBridge {
         vendorCount: Int,
         filterCount: Int,
         historyCount: Int,
+        channelUtilizationCount: Int,
         widthCount: Int,
         standardCount: Int,
         exportReady: Boolean,
@@ -1771,6 +1789,20 @@ object HermesDeviceDiagnosticsBridge {
                     extra = JSONObject()
                         .put("tool_action", "wifi_channel_rating")
                         .put("feature_source", "WiFiAnalyzer channel graph and channel rating"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "wifi_analyzer_parity",
+                    label = "Channel utilization occupancy",
+                    ready = channelUtilizationCount > 0,
+                    valueLabel = "$channelUtilizationCount utilization row(s)",
+                    detail = "Hermes infers channel occupancy from visible AP counts, overlap, RSSI pressure, channel width, security modes, and SSID samples. It does not claim airtime counters that Android scan APIs do not expose.",
+                    recommendation = "Use wifi_channel_utilization when the user asks which Wi-Fi channels look busy, noisy, crowded, or interference-heavy.",
+                    fraction = if (channelUtilizationCount > 0) 0.95f else if (scanReady) 0.6f else 0.35f,
+                    extra = JSONObject()
+                        .put("tool_action", "wifi_channel_utilization")
+                        .put("feature_source", "WiFiAnalyzer channel utilization parity"),
                 ),
             )
             .put(
@@ -3953,6 +3985,101 @@ object HermesDeviceDiagnosticsBridge {
         return wifiChannelRatingRowsForMeasurements(measurements)
     }
 
+    internal fun wifiChannelUtilizationRowsForNetworks(networks: JSONArray): JSONArray {
+        data class ChannelSample(
+            val ssid: String,
+            val channel: Int,
+            val band: String,
+            val rssiDbm: Int,
+            val widthLabel: String,
+            val securityMode: String,
+            val frequencyMhz: Int,
+        )
+
+        val samples = buildList {
+            for (index in 0 until networks.length()) {
+                val row = networks.optJSONObject(index) ?: continue
+                val frequencyMhz = jsonIntOrNull(row, "frequency_mhz") ?: 0
+                val channel = jsonIntOrNull(row, "channel")
+                    ?: channelForFrequencyMhz(frequencyMhz)
+                    ?: continue
+                val rssiDbm = jsonIntOrNull(row, "rssi_dbm") ?: continue
+                val band = canonicalWifiBandLabel(row.optString("band"), frequencyMhz)
+                if (band == "unknown") continue
+                add(
+                    ChannelSample(
+                        ssid = row.optString("display_ssid").ifBlank { row.optString("ssid").ifBlank { "<hidden>" } },
+                        channel = channel,
+                        band = band,
+                        rssiDbm = rssiDbm,
+                        widthLabel = row.optString("channel_width").ifBlank { "20MHz" },
+                        securityMode = row.optString("security_mode").ifBlank { wifiSecurityLabel(row.optString("capabilities")) },
+                        frequencyMhz = frequencyMhz,
+                    ),
+                )
+            }
+        }
+        if (samples.isEmpty()) return JSONArray()
+
+        val rows = samples
+            .map { it.band to it.channel }
+            .distinct()
+            .map { (band, channel) ->
+                val overlapping = samples.filter { sample ->
+                    sample.band == band && wifiChannelOverlapWeight(band, channel, sample.channel) > 0.0
+                }
+                val sameChannel = overlapping.filter { it.channel == channel }
+                val strongestRssi = overlapping.maxOfOrNull { it.rssiDbm }
+                val averageRssi = if (overlapping.isNotEmpty()) {
+                    (overlapping.sumOf { it.rssiDbm }.toDouble() / overlapping.size).roundToInt()
+                } else {
+                    null
+                }
+                val pressureScore = overlapping.sumOf { sample ->
+                    val signalWeight = ((sample.rssiDbm + 100).coerceIn(0, 70)) / 70.0
+                    val overlapWeight = wifiChannelOverlapWeight(band, channel, sample.channel)
+                    signalWeight * overlapWeight * wifiWidthWeight(sample.widthLabel) * 45.0
+                }.roundToInt().coerceIn(0, 100)
+                val maxWidthMhz = overlapping.mapNotNull { channelWidthMhz(it.widthLabel) }.maxOrNull()
+                val wideChannelCount = overlapping.count { (channelWidthMhz(it.widthLabel) ?: 20) >= 80 }
+                val securityModes = overlapping.map { it.securityMode.ifBlank { "unknown" } }.distinct().take(MAX_WIFI_SUMMARY_SAMPLES)
+                val sampleSsids = sameChannel.map { it.ssid }.distinct().take(MAX_WIFI_SUMMARY_SAMPLES)
+                val utilizationLabel = wifiChannelUtilizationLabel(pressureScore)
+                JSONObject()
+                    .put("band", band)
+                    .put("channel", channel)
+                    .put("frequency_hint_mhz", frequencyHintMhzForWifiChannel(band, channel) ?: sameChannel.firstOrNull()?.frequencyMhz ?: JSONObject.NULL)
+                    .put("network_count", sameChannel.size)
+                    .put("overlap_count", overlapping.size)
+                    .put("strongest_rssi_dbm", strongestRssi ?: JSONObject.NULL)
+                    .put("average_rssi_dbm", averageRssi ?: JSONObject.NULL)
+                    .put("channel_pressure_score", pressureScore)
+                    .put("utilization_label", utilizationLabel)
+                    .put("max_channel_width_mhz", maxWidthMhz ?: JSONObject.NULL)
+                    .put("wide_channel_count", wideChannelCount)
+                    .put("security_modes", JSONArray(securityModes))
+                    .put("sample_ssids", JSONArray(sampleSsids))
+                    .put(
+                        "recommendation",
+                        wifiChannelUtilizationRecommendation(
+                            score = pressureScore,
+                            sameChannelCount = sameChannel.size,
+                            overlapCount = overlapping.size,
+                            wideChannelCount = wideChannelCount,
+                            strongestRssi = strongestRssi,
+                        ),
+                    )
+            }
+            .sortedWith(
+                compareBy<JSONObject> { wifiBandSortKey(it.optString("band")) }
+                    .thenByDescending { it.optInt("channel_pressure_score") }
+                    .thenBy { it.optInt("channel") },
+            )
+            .take(MAX_WIFI_CHANNEL_UTILIZATION_ROWS)
+
+        return JSONArray().also { array -> rows.forEach(array::put) }
+    }
+
     internal fun wifiVendorSummaryJson(networks: JSONArray): JSONArray {
         data class VendorAccumulator(
             var networkCount: Int = 0,
@@ -4713,6 +4840,29 @@ object HermesDeviceDiagnosticsBridge {
         }
     }
 
+    private fun wifiChannelUtilizationLabel(score: Int): String = when {
+        score >= 75 -> "heavily_used"
+        score >= 50 -> "crowded"
+        score >= 25 -> "moderate"
+        else -> "quiet"
+    }
+
+    private fun wifiChannelUtilizationRecommendation(
+        score: Int,
+        sameChannelCount: Int,
+        overlapCount: Int,
+        wideChannelCount: Int,
+        strongestRssi: Int?,
+    ): String {
+        return when {
+            overlapCount == 0 || score < 25 -> "Quiet observed channel: little visible AP pressure in the latest Android scan cache."
+            score >= 75 && wideChannelCount > 0 -> "High utilization with wide-channel APs nearby: compare width and channel-rating rows before choosing this channel."
+            score >= 75 || sameChannelCount >= 4 || (strongestRssi ?: -100) > -50 -> "Heavily used channel: strong or repeated AP pressure is visible in the latest scan."
+            score >= 50 -> "Crowded channel: visible overlap exists; prefer a lower-utilization or higher-rated channel when possible."
+            else -> "Moderate channel use: acceptable if its channel rating and security rows also look healthy."
+        }
+    }
+
     private fun recommendedWifiChannels(ratings: JSONArray): JSONArray {
         val byBand = linkedMapOf<String, JSONObject>()
         for (index in 0 until ratings.length()) {
@@ -5208,6 +5358,7 @@ object HermesDeviceDiagnosticsBridge {
         "wifi_scan",
         "wifi_analyzer_report",
         "wifi_channel_rating",
+        "wifi_channel_utilization",
         "wifi_ap_details",
         "wifi_export",
         "bluetooth_analyzer_report",
@@ -5247,6 +5398,7 @@ object HermesDeviceDiagnosticsBridge {
     private const val MAX_LIMIT = 20
     private const val MAX_WIFI_RESULTS = 40
     private const val MAX_WIFI_CHANNEL_RATINGS = 24
+    private const val MAX_WIFI_CHANNEL_UTILIZATION_ROWS = 32
     private const val MAX_WIFI_CANDIDATE_CHANNELS_PER_BAND = 12
     private const val MAX_WIFI_VENDOR_ROWS = 16
     private const val MAX_WIFI_VENDOR_DETAILS = 4

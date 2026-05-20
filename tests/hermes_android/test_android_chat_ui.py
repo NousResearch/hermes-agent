@@ -70,6 +70,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
         "soc_compatibility_report",
         "wifi_analyzer_report",
         "wifi_scan",
+        "wifi_channel_utilization",
         "bluetooth_analyzer_report",
         "sensor_analyzer_report",
         "radio_signal_status",
@@ -83,5 +84,6 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
     assert 'testTag("HermesSignalQuickAction_${action.id}")' in chat_screen
     assert 'id = "wifi_analyzer"' in actions
     assert 'id = "soc_compatibility"' in actions
+    assert 'id = "wifi_occupancy"' in actions
     assert 'id = "bluetooth_analyzer"' in actions
     assert 'id = "sensor_analyzer"' in actions

@@ -62,6 +62,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "wifi_channel_strength" -> wifiRow(row)
                 "wifi_access_point_detail" -> wifiAccessPointDetailRow(row)
                 "wifi_channel_rating" -> wifiChannelRatingRow(row)
+                "wifi_channel_utilization" -> wifiChannelUtilizationRow(row)
                 "wifi_vendor_summary" -> wifiVendorSummaryRow(row)
                 "wifi_security_summary" -> wifiSecuritySummaryRow(row)
                 "wifi_channel_width_summary" -> wifiChannelWidthSummaryRow(row)
@@ -154,6 +155,36 @@ private fun wifiChannelRatingRow(row: JSONObject): DiagnosticGraphRow? {
         label = "$band ch $channel",
         valueLabel = listOfNotNull("$score/100", rating).joinToString(" "),
         detail = detail.ifBlank { "Wi-Fi channel rating" },
+        fraction = (score / 100f).coerceIn(0.05f, 1f),
+    )
+}
+
+private fun wifiChannelUtilizationRow(row: JSONObject): DiagnosticGraphRow? {
+    val channel = row.optNumber("channel")?.toInt() ?: return null
+    val score = row.optNumber("channel_pressure_score")?.toInt()?.coerceIn(0, 100)
+        ?: row.optNumber("score")?.toInt()?.coerceIn(0, 100)
+        ?: return null
+    val band = row.optString("band").ifBlank { "Wi-Fi" }
+    val sameChannelCount = row.optNumber("network_count")?.toInt() ?: 0
+    val overlapCount = row.optNumber("overlap_count")?.toInt() ?: 0
+    val strongestRssi = row.optNumber("strongest_rssi_dbm")?.toInt()
+    val averageRssi = row.optNumber("average_rssi_dbm")?.toInt()
+    val maxWidth = row.optNumber("max_channel_width_mhz")?.toInt()
+    val label = row.optString("utilization_label").takeIf { it.isNotBlank() }
+    val detail = listOfNotNull(
+        "$sameChannelCount same-channel",
+        "$overlapCount visible overlap",
+        strongestRssi?.let { "strongest $it dBm" },
+        averageRssi?.let { "avg $it dBm" },
+        maxWidth?.let { "${it}MHz max width" },
+        joinJsonStrings(row.optJSONArray("security_modes"), 3).takeIf { it.isNotBlank() },
+        joinJsonStrings(row.optJSONArray("sample_ssids"), 3).takeIf { it.isNotBlank() },
+        row.optString("recommendation").takeIf { it.isNotBlank() },
+    ).joinToString(" | ")
+    return DiagnosticGraphRow(
+        label = "$band ch $channel",
+        valueLabel = listOfNotNull("$score% busy", label?.replace('_', ' ')).joinToString(" "),
+        detail = detail.ifBlank { "Wi-Fi channel utilization" },
         fraction = (score / 100f).coerceIn(0.05f, 1f),
     )
 }

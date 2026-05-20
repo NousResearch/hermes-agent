@@ -269,18 +269,25 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     workflow = (REPO_ROOT / ".github/workflows/android.yml").read_text(encoding="utf-8")
 
     assert '"wifi_analyzer_report"' in diagnostics_bridge
+    assert '"wifi_channel_utilization"' in diagnostics_bridge
     assert 'wifiAnalyzerReportJson(appContext' in diagnostics_bridge
     assert 'wifiAnalyzerFeatureRows(' in diagnostics_bridge
+    assert 'wifiChannelUtilizationRowsForNetworks(' in diagnostics_bridge
     assert 'wifiAnalyzerWorkflowRows(' in diagnostics_bridge
     assert 'wifiScanPolicyRows(' in diagnostics_bridge
     assert '"wifi_analyzer_feature_matrix"' in diagnostics_bridge
     assert '"wifi_analyzer_workflow_routes"' in diagnostics_bridge
     assert '"wifi_scan_policy_matrix"' in diagnostics_bridge
+    assert '"wifi_channel_utilization"' in diagnostics_bridge
     assert 'WiFiAnalyzer-style readiness' in diagnostics_bridge
+    assert 'Channel utilization occupancy' in diagnostics_bridge
     assert 'wifi_analyzer_report' in chat_client
+    assert 'wifi_channel_utilization' in chat_client
     assert '"wifi_analyzer_feature_matrix"' in chat_client
+    assert '"wifi_channel_utilization"' in chat_client
     assert '"wifi_analyzer_workflow_routes"' in chat_client
     assert '"wifi_scan_policy_matrix"' in chat_client
+    assert '"wifi_channel_utilization" -> wifiChannelUtilizationRow(row)' in diagnostic_cards
     assert '"wifi_analyzer_feature_matrix", "wifi_analyzer_workflow_routes", "wifi_scan_policy_matrix"' in diagnostic_cards
     assert 'capabilityMatrixRow(row)' in diagnostic_cards
     assert ':app:compileDebugAndroidTestKotlin' in workflow

@@ -52,6 +52,54 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun buildsWifiChannelUtilizationRowsFromVisibleApPressure() {
+        val networks = JSONArray()
+            .put(
+                JSONObject()
+                    .put("ssid", "HermesNet")
+                    .put("display_ssid", "HermesNet")
+                    .put("rssi_dbm", -36)
+                    .put("frequency_mhz", 2412)
+                    .put("channel", 1)
+                    .put("band", "2.4GHz")
+                    .put("channel_width", "40MHz")
+                    .put("security_mode", "WPA3"),
+            )
+            .put(
+                JSONObject()
+                    .put("ssid", "HermesGuest")
+                    .put("rssi_dbm", -55)
+                    .put("frequency_mhz", 2422)
+                    .put("channel", 3)
+                    .put("band", "2.4GHz")
+                    .put("channel_width", "20MHz")
+                    .put("security_mode", "WPA2"),
+            )
+            .put(
+                JSONObject()
+                    .put("ssid", "Lab5G")
+                    .put("rssi_dbm", -70)
+                    .put("frequency_mhz", 5180)
+                    .put("channel", 36)
+                    .put("band", "5GHz")
+                    .put("channel_width", "80MHz")
+                    .put("security_mode", "WPA2"),
+            )
+
+        val rows = HermesDeviceDiagnosticsBridge.wifiChannelUtilizationRowsForNetworks(networks)
+        val first = rows.getJSONObject(0)
+
+        assertTrue(rows.length() >= 2)
+        assertEquals("2.4GHz", first.getString("band"))
+        assertEquals(1, first.getInt("channel"))
+        assertTrue(first.getInt("channel_pressure_score") >= 50)
+        assertEquals("crowded", first.getString("utilization_label"))
+        assertTrue(first.getJSONArray("security_modes").toString().contains("WPA3"))
+        assertTrue(first.getJSONArray("sample_ssids").toString().contains("HermesNet"))
+        assertTrue(first.getString("recommendation").contains("Crowded") || first.getString("recommendation").contains("Heavily"))
+    }
+
+    @Test
     fun enrichesWifiRowsWithVendorSecurityAndFilterFacets() {
         assertEquals("AC:BC:32", HermesDeviceDiagnosticsBridge.wifiBssidOui("ac:bc:32:12:34:56"))
         assertEquals("Apple", HermesDeviceDiagnosticsBridge.wifiOuiVendorLabel("AC:BC:32"))
@@ -420,6 +468,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(names.contains("hindsight_memory_tool"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("top_apps"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_channel_rating"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_channel_utilization"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_ap_details"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_export"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_analyzer_report"))
@@ -496,6 +545,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.has("wifi_scan_status"))
         assertTrue(featureLabels.contains("Identify nearby access points"))
         assertTrue(featureLabels.contains("Channel signal graph"))
+        assertTrue(featureLabels.contains("Channel utilization occupancy"))
         assertTrue(featureLabels.contains("Band, security, signal, and SSID filters"))
         assertTrue(featureLabels.contains("Vendor/OUI lookup"))
         assertTrue(featureLabels.contains("HT/VHT/HE/EHT width and standard metadata"))

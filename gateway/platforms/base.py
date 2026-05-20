@@ -3897,17 +3897,23 @@ class BasePlatformAdapter(ABC):
         # stay valid; chaining them masks the union of both protected regions.
         scan_content = BasePlatformAdapter._mask_protected_spans(content)
         scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
+        # Dedupe on the expanded path (first occurrence wins) so the same file
+        # referenced twice in one response — e.g. a MEDIA tag inline AND in a
+        # summary footer — is uploaded once, not twice (#29131).
+        seen_paths: set = set()
         for match in media_pattern.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if path:
                 try:
-                    media.append((os.path.expanduser(path), has_voice_tag))
+                    expanded = os.path.expanduser(path)
                 except (OSError, RuntimeError, ValueError):
                     # Skip a crafted ~\x00 path rather than aborting extraction
                     # and dropping every other attachment in the response.
                     continue
+                if expanded not in seen_paths:
+                    seen_paths.add(expanded)
+                    media.append((expanded, has_voice_tag))
 
-        seen_paths = {p for p, _ in media}
         for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if not path or not _path_lacks_deliverable_extension(path):

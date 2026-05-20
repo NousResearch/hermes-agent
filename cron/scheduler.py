@@ -57,7 +57,7 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
-def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
+def _resolve_cron_enabled_toolsets(job: dict, cfg: object) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
     Precedence:
@@ -79,13 +79,52 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         return per_job
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
-        return sorted(_get_platform_tools(cfg or {}, "cron"))
+        cfg_dict = cfg if isinstance(cfg, dict) else {}
+        return sorted(_get_platform_tools(cfg_dict, "cron"))
     except Exception as exc:
         logger.warning(
             "Cron toolset resolution failed, falling back to full default toolset: %s",
             exc,
         )
         return None
+
+
+def _cron_needs_memory_tool_store(enabled_toolsets: list[str] | None) -> bool:
+    """Return true when a cron job explicitly enables the built-in memory tool.
+
+    Cron agents intentionally run with ``skip_memory=True`` so MEMORY.md and
+    USER.md are not injected into non-interactive scheduled prompts.  That also
+    leaves ``AIAgent._memory_store`` unset, which makes explicit ``memory`` tool
+    calls fail with "Memory is not available."  Jobs that deliberately include
+    the ``memory`` toolset still need a live store for read/write operations;
+    attach it after construction without enabling prompt injection.
+    """
+    return bool(enabled_toolsets and "memory" in enabled_toolsets)
+
+
+def _attach_cron_memory_tool_store(agent, cfg: object) -> bool:
+    """Attach a MemoryStore for cron memory-tool jobs, without prompt injection."""
+    try:
+        cfg_dict = cfg if isinstance(cfg, dict) else {}
+        mem_config = (cfg_dict.get("memory", {}) or {}) if isinstance(cfg_dict, dict) else {}
+        from tools.memory_tool import MemoryStore
+
+        store = MemoryStore(
+            memory_char_limit=mem_config.get("memory_char_limit", 2200),
+            user_char_limit=mem_config.get("user_char_limit", 1375),
+        )
+        store.load_from_disk()
+        agent._memory_store = store
+        # Keep cron prompt/user-profile injection and nudges disabled. The
+        # store exists only so explicit memory tool calls can mutate/read disk.
+        agent._memory_enabled = False
+        agent._user_profile_enabled = False
+        agent._memory_nudge_interval = 0
+        return True
+    except Exception as exc:
+        logger.warning("Cron memory tool store initialization failed: %s", exc)
+        return False
+
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
@@ -1552,6 +1591,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
+        _enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -1570,7 +1610,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
+            enabled_toolsets=_enabled_toolsets,
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
@@ -1584,6 +1624,9 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+
+        if _cron_needs_memory_tool_store(_enabled_toolsets):
+            _attach_cron_memory_tool_store(agent, _cfg)
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,

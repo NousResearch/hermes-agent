@@ -31,11 +31,15 @@ from __future__ import annotations
 
 import json
 import logging
+import posixpath
 import re
 import time
+from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote, unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +201,11 @@ class GoalState:
     # them into the verdict. Backwards-compatible: defaults to empty so
     # old state_meta rows load unchanged.
     subgoals: List[str] = field(default_factory=list)
+    # Optional GCW Epic supervision contract persisted with the goal. When set,
+    # /goal resume can emit deterministic readback before the normal goal loop
+    # continues. This is candidate/readback state only; GCW validator and
+    # completion guard artifacts remain the closeout authorities.
+    epic_goal_supervision: Optional[Dict[str, Any]] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -208,6 +217,13 @@ class GoalState:
         subgoals: List[str] = []
         if isinstance(raw_subgoals, list):
             subgoals = [str(s).strip() for s in raw_subgoals if str(s).strip()]
+        raw_epic_goal_supervision = data.get("epic_goal_supervision")
+        epic_goal_supervision = None
+        if isinstance(raw_epic_goal_supervision, dict):
+            try:
+                epic_goal_supervision = normalize_epic_goal_supervision(raw_epic_goal_supervision)
+            except Exception as exc:
+                logger.warning("GoalState: ignoring invalid epic_goal_supervision: %s", exc)
         return cls(
             goal=data.get("goal", ""),
             status=data.get("status", "active"),
@@ -220,6 +236,7 @@ class GoalState:
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
             subgoals=subgoals,
+            epic_goal_supervision=epic_goal_supervision,
         )
 
     # --- subgoals helpers -------------------------------------------------
@@ -315,6 +332,449 @@ def clear_goal(session_id: str) -> None:
         return
     state.status = "cleared"
     save_goal(session_id, state)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Epic GCW goal supervision contract
+# ──────────────────────────────────────────────────────────────────────
+
+EPIC_GOAL_SUPERVISION_SCHEMA_VERSION = "epic_goal_supervision.v1"
+GCW_FORMAL_GATES_SCHEMA_VERSION = "gcw-formal-gates.v1"
+
+ALLOWED_GITHUB_EVIDENCE_REPOS = {
+    "wangrenzhu-ola/ai-infra-demand-pool",
+    "wangrenzhu-ola/hermes-agent",
+    "wangrenzhu-ola/infra-hermes-core-skills",
+}
+
+EPIC_SUPERVISOR_DECISIONS = {
+    "continue_current_story",
+    "stop_with_report",
+    "dispatch_next_story",
+    "blocked",
+    "needs_user",
+    "approval_required",
+    "partial",
+    "parent_closeout_candidate",
+}
+
+EPIC_STORY_STATES = {
+    "running",
+    "blocked",
+    "needs_user",
+    "approval_required",
+    "partial",
+    "completed_candidate",
+    "completed",
+}
+
+EVIDENCE_REF_TYPES = {
+    "status_json",
+    "workflow_json",
+    "ledger",
+    "phase_report",
+    "phase_handoff",
+    "worker",
+    "validator",
+    "completion_guard",
+    "pr",
+    "ci",
+    "issue_comment",
+    "active_readback",
+    "formal_gate_export",
+    "hierarchy_readback",
+    "dogfood",
+}
+
+EVIDENCE_REF_STATUSES = {"present", "missing", "stale", "pass", "fail", "unknown"}
+_REQUIRED_STORY_CLOSEOUT_EVIDENCE = {"validator", "completion_guard"}
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_HEADER_BOUNDARY = r"(?=(?:\s+[\"']?\b(?:authorization|cookie|set-cookie)\b[\"']?\s*[:=])|[\r\n,\]\}]|$)"
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)\b(authorization)\b[\"']?\s*[:=]\s*(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|.*?)" + _HEADER_BOUNDARY
+)
+_COOKIE_HEADER_RE = re.compile(
+    r"(?i)\b(cookie|set-cookie)\b[\"']?\s*[:=]\s*(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|.*?)" + _HEADER_BOUNDARY
+)
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|session[_-]?id|password|secret)\b[\"']?"
+    r"\s*[:=]\s*(\"[^\"]*\"|'[^']*'|[^\s,;&\]}]+)"
+)
+_ENV_SECRET_VALUE_RE = re.compile(
+    r"(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|ACCESS[_-]?TOKEN|REFRESH[_-]?TOKEN|TOKEN|SESSION[_-]?ID|PASSWORD|SECRET))\b[\"']?"
+    r"\s*[:=]\s*(\"[^\"]*\"|'[^']*'|[^\s,;&\]}]+)"
+)
+_BARE_AUTH_TOKEN_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}")
+_URL_SECRET_QUERY_RE = re.compile(
+    r"(?i)([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|session[_-]?id|password|secret)=)[^&\s]+"
+)
+
+
+class EpicGoalContractError(ValueError):
+    """Raised when an Epic goal supervision contract is invalid."""
+
+
+def sanitize_evidence_text(value: Any, *, limit: int = 1000) -> str:
+    """Return publication-safe bounded text for evidence refs and reports."""
+    text = "" if value is None else str(value)
+    text = _ANSI_ESCAPE_RE.sub("", text)
+    text = _CONTROL_CHARS_RE.sub("", text)
+    text = _AUTH_HEADER_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+    text = _COOKIE_HEADER_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+    text = _ENV_SECRET_VALUE_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+    text = _SECRET_VALUE_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+    text = _BARE_AUTH_TOKEN_RE.sub(lambda m: f"{m.group(1)} <redacted>", text)
+    text = _URL_SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}<redacted>", text)
+    text = text.replace("```", "`\u200b``")
+    if len(text) > limit:
+        text = text[:limit] + "… [truncated]"
+    return text
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _canonical_repo_from_github_url(url: str) -> Optional[str]:
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc.lower() != "github.com"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    decoded_parts = [unquote(p) for p in parsed.path.split("/") if p]
+    if any(part in {".", ".."} or part.startswith("/") for part in decoded_parts):
+        return None
+    parts = decoded_parts
+    if len(parts) < 2:
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+
+def _validate_issue_url(value: Any, *, field_name: str, repo: Optional[str] = None) -> str:
+    url = sanitize_evidence_text(value, limit=500).strip()
+    parsed = urlparse(url)
+    parts = [p for p in parsed.path.split("/") if p]
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc.lower() != "github.com"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or len(parts) != 4
+        or parts[2] != "issues"
+        or not parts[3].isdigit()
+        or any(unquote(p) in {".", ".."} or unquote(p).startswith("/") for p in parts)
+    ):
+        raise EpicGoalContractError(f"{field_name} must be a canonical GitHub issue URL")
+    actual_repo = f"{parts[0]}/{parts[1]}"
+    if repo and actual_repo != repo:
+        raise EpicGoalContractError(f"{field_name} repo {actual_repo!r} does not match {repo!r}")
+    if actual_repo not in ALLOWED_GITHUB_EVIDENCE_REPOS:
+        raise EpicGoalContractError(f"{field_name} repo {actual_repo!r} is not allowlisted")
+    return url
+
+
+def _normalize_metadata(raw: Any, *, limit: int = 20) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key, value in list(raw.items())[:limit]:
+        clean_key = sanitize_evidence_text(key, limit=80)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            out[clean_key] = sanitize_evidence_text(value, limit=500) if isinstance(value, str) else value
+        elif isinstance(value, list):
+            out[clean_key] = [sanitize_evidence_text(v, limit=200) for v in value[:10]]
+        elif isinstance(value, dict):
+            out[clean_key] = _normalize_metadata(value, limit=10)
+        else:
+            out[clean_key] = sanitize_evidence_text(value, limit=200)
+    return out
+
+
+def _normalize_file_evidence_uri(parsed: Any) -> str:
+    """Return a canonical local file:// evidence URI or raise."""
+    decoded_path = unquote(parsed.path or "")
+    if (
+        parsed.netloc
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or not decoded_path.startswith("/")
+        or decoded_path.startswith("//")
+    ):
+        raise EpicGoalContractError("file evidence refs must use a normalized absolute local file:// path")
+    if ".." in PurePosixPath(decoded_path).parts:
+        raise EpicGoalContractError("file evidence refs must use a normalized absolute local file:// path")
+    normalized_path = posixpath.normpath(decoded_path)
+    if normalized_path != decoded_path:
+        raise EpicGoalContractError("file evidence refs must use a normalized absolute local file:// path")
+    return "file://" + quote(normalized_path, safe="/")
+
+
+def _normalize_parent_terminal_candidate(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    raise EpicGoalContractError("parent_terminal_candidate must be a boolean or null")
+
+
+def normalize_evidence_ref(raw: Any, *, required: bool = False) -> Dict[str, Any]:
+    """Normalize and validate a machine-readable, publication-safe evidence ref."""
+    if not isinstance(raw, dict):
+        raise EpicGoalContractError("evidence ref must be an object")
+    ref_type = sanitize_evidence_text(raw.get("type"), limit=80).strip()
+    if ref_type not in EVIDENCE_REF_TYPES:
+        raise EpicGoalContractError(f"unsupported evidence ref type: {ref_type!r}")
+    uri = sanitize_evidence_text(raw.get("uri"), limit=1000).strip()
+    parsed = urlparse(uri)
+    if parsed.scheme == "https":
+        repo = _canonical_repo_from_github_url(uri)
+        if repo not in ALLOWED_GITHUB_EVIDENCE_REPOS:
+            raise EpicGoalContractError(f"evidence ref GitHub repo {repo!r} is not allowlisted")
+    elif parsed.scheme == "file":
+        uri = _normalize_file_evidence_uri(parsed)
+    else:
+        raise EpicGoalContractError("evidence ref uri must be file:// or allowlisted https://github.com")
+    status = sanitize_evidence_text(raw.get("status") or "unknown", limit=40).strip()
+    if status not in EVIDENCE_REF_STATUSES:
+        raise EpicGoalContractError(f"unsupported evidence ref status: {status!r}")
+    return {
+        "type": ref_type,
+        "uri": uri,
+        "status": status,
+        "required": bool(raw.get("required", required)),
+        "observed_at": sanitize_evidence_text(raw.get("observed_at") or _now_iso(), limit=80),
+        "metadata": _normalize_metadata(raw.get("metadata")),
+    }
+
+
+def normalize_epic_goal_supervision(raw: Any) -> Dict[str, Any]:
+    """Validate and normalize an ``epic_goal_supervision.v1`` contract.
+
+    The returned dict is safe to persist in Goal state, phase handoffs, and
+    human-facing reports. It intentionally emits candidate/decision state only;
+    GCW validator and completion guard remain the closeout authorities.
+    """
+    if not isinstance(raw, dict):
+        raise EpicGoalContractError("Epic goal supervision contract must be an object")
+    if raw.get("schema_version") != EPIC_GOAL_SUPERVISION_SCHEMA_VERSION:
+        raise EpicGoalContractError("unsupported epic goal supervision schema_version")
+    source_repo = sanitize_evidence_text(raw.get("source_repo"), limit=200).strip()
+    if source_repo not in ALLOWED_GITHUB_EVIDENCE_REPOS:
+        raise EpicGoalContractError(f"source_repo {source_repo!r} is not allowlisted")
+
+    parent_epic_issue = _validate_issue_url(raw.get("parent_epic_issue"), field_name="parent_epic_issue", repo=source_repo)
+    goal_issue = _validate_issue_url(raw.get("goal_issue"), field_name="goal_issue", repo=source_repo)
+    feature_issue = _validate_issue_url(raw.get("feature_issue"), field_name="feature_issue", repo=source_repo)
+    ordered_story_issues = [
+        _validate_issue_url(v, field_name="ordered_story_issues[]", repo=source_repo)
+        for v in (raw.get("ordered_story_issues") or [])
+    ]
+    if not ordered_story_issues:
+        raise EpicGoalContractError("ordered_story_issues must be non-empty")
+    active_story_issue = _validate_issue_url(raw.get("active_story_issue"), field_name="active_story_issue", repo=source_repo)
+    if active_story_issue not in ordered_story_issues:
+        raise EpicGoalContractError("active_story_issue must appear in ordered_story_issues")
+    blocked_story_issues = [
+        _validate_issue_url(v, field_name="blocked_story_issues[]", repo=source_repo)
+        for v in (raw.get("blocked_story_issues") or [])
+    ]
+
+    story_statuses: Dict[str, Dict[str, Any]] = {}
+    for key, value in (raw.get("story_statuses") or {}).items():
+        if not isinstance(value, dict):
+            raise EpicGoalContractError("story_statuses values must be objects")
+        story_key = sanitize_evidence_text(key, limit=40).strip()
+        state = sanitize_evidence_text(value.get("state") or "running", limit=40).strip()
+        if state not in EPIC_STORY_STATES:
+            raise EpicGoalContractError(f"unsupported story state: {state!r}")
+        refs = [normalize_evidence_ref(ref) for ref in (value.get("last_evidence_refs") or [])]
+        story_statuses[story_key] = {
+            "state": state,
+            "run_id": sanitize_evidence_text(value.get("run_id"), limit=200),
+            "run_dir": sanitize_evidence_text(value.get("run_dir"), limit=1000),
+            "artifact_base": sanitize_evidence_text(value.get("artifact_base"), limit=1000),
+            "last_evidence_refs": refs,
+            "missing_gates": [sanitize_evidence_text(g, limit=200) for g in (value.get("missing_gates") or [])],
+            "metadata": _normalize_metadata(value.get("metadata")),
+        }
+
+    out = {
+        "schema_version": EPIC_GOAL_SUPERVISION_SCHEMA_VERSION,
+        "parent_epic_issue": parent_epic_issue,
+        "goal_issue": goal_issue,
+        "feature_issue": feature_issue,
+        "source_repo": source_repo,
+        "ordered_story_issues": ordered_story_issues,
+        "active_story_issue": active_story_issue,
+        "blocked_story_issues": blocked_story_issues,
+        "story_statuses": story_statuses,
+        "hierarchy_evidence_refs": [normalize_evidence_ref(ref) for ref in (raw.get("hierarchy_evidence_refs") or [])],
+        "formal_gate_exports": [normalize_evidence_ref(ref) for ref in (raw.get("formal_gate_exports") or [])],
+        "missing_gates": [sanitize_evidence_text(g, limit=200) for g in (raw.get("missing_gates") or [])],
+        "next_allowed_action": sanitize_evidence_text(raw.get("next_allowed_action") or "continue_current_story", limit=80),
+        "parent_terminal_candidate": _normalize_parent_terminal_candidate(raw.get("parent_terminal_candidate")),
+        "resume_readback_required": bool(raw.get("resume_readback_required", True)),
+        "updated_at": sanitize_evidence_text(raw.get("updated_at") or _now_iso(), limit=80),
+        "metadata": _normalize_metadata(raw.get("metadata")),
+    }
+    if out["next_allowed_action"] not in EPIC_SUPERVISOR_DECISIONS:
+        raise EpicGoalContractError("next_allowed_action is not a supported Epic supervisor decision")
+    return out
+
+
+def evaluate_epic_goal_resume_readback(contract: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute the next Epic supervisor action from normalized evidence.
+
+    This is a readback/candidate decision helper. It never marks the parent Epic
+    closed and never treats self-report, PR-only, or local-artifact-only refs as
+    sufficient Story closeout evidence.
+    """
+    c = normalize_epic_goal_supervision(contract)
+    active_url = c["active_story_issue"]
+    active_number = active_url.rstrip("/").split("/")[-1]
+    story = c["story_statuses"].get(active_number) or {}
+    state = story.get("state") or "running"
+    parent_missing_gates = list(c.get("missing_gates") or [])
+    story_missing_gates = list(story.get("missing_gates") or [])
+    refs = story.get("last_evidence_refs") or []
+    passed_required_types = {
+        ref["type"]
+        for ref in refs
+        if ref.get("type") in _REQUIRED_STORY_CLOSEOUT_EVIDENCE and _is_trusted_closeout_ref(ref)
+    }
+    missing_required_evidence = sorted(_REQUIRED_STORY_CLOSEOUT_EVIDENCE - passed_required_types)
+
+    if state in {"blocked", "needs_user", "approval_required", "partial"}:
+        decision = state
+    elif story_missing_gates or missing_required_evidence or state not in {"completed", "completed_candidate"}:
+        decision = "continue_current_story"
+    else:
+        idx = c["ordered_story_issues"].index(active_url)
+        if idx < len(c["ordered_story_issues"]) - 1:
+            decision = "dispatch_next_story"
+        else:
+            decision = "stop_with_report" if parent_missing_gates else "parent_closeout_candidate"
+
+    return {
+        "schema_version": "epic_goal_resume_readback.v1",
+        "decision": decision,
+        "active_story_issue": active_url,
+        "active_story_state": state,
+        "missing_gates": parent_missing_gates + story_missing_gates,
+        "missing_required_evidence": missing_required_evidence,
+        "evidence_refs": refs,
+        "parent_terminal_candidate": decision == "parent_closeout_candidate",
+        "observed_at": _now_iso(),
+    }
+
+
+def _is_trusted_closeout_ref(ref: Dict[str, Any]) -> bool:
+    """Return True only for validator/completion refs backed by closeout authority."""
+    if ref.get("status") != "pass":
+        return False
+    uri = ref.get("uri") or ""
+    parsed = urlparse(uri)
+    if parsed.scheme != "https" or _canonical_repo_from_github_url(uri) not in ALLOWED_GITHUB_EVIDENCE_REPOS:
+        return False
+    parts = [unquote(p) for p in parsed.path.split("/") if p]
+    if len(parts) >= 5 and parts[2:4] == ["actions", "runs"] and parts[4].isdigit():
+        return True
+    if len(parts) >= 4 and parts[2] in {"check-runs", "checks"} and parts[3].isdigit():
+        return True
+    # Trust comes from constrained allowlisted HTTPS closeout-authority
+    # provenance; local files, issue/PR/comment URLs, and arbitrary repo paths
+    # cannot self-assert closeout authority through contract metadata.
+    return False
+
+
+def read_epic_goal_resume_readback_json(path: str) -> Dict[str, Any]:
+    """Load an epic_goal_supervision.v1 JSON file and return readback JSON."""
+    with open(path, "r", encoding="utf-8") as f:
+        return evaluate_epic_goal_resume_readback(json.load(f))
+
+
+def read_epic_goal_supervision_contract_json(path: str) -> Dict[str, Any]:
+    """Load and normalize an epic_goal_supervision.v1 contract for persistence."""
+    with open(path, "r", encoding="utf-8") as f:
+        return normalize_epic_goal_supervision(json.load(f))
+
+
+def format_epic_goal_resume_readback(readback: Dict[str, Any]) -> str:
+    """Render deterministic, sanitized one-screen readback for /goal resume."""
+    decision = sanitize_evidence_text(readback.get("decision"), limit=80)
+    active = sanitize_evidence_text(readback.get("active_story_issue"), limit=300)
+    state = sanitize_evidence_text(readback.get("active_story_state"), limit=80)
+    missing_gates = [sanitize_evidence_text(g, limit=120) for g in (readback.get("missing_gates") or [])]
+    missing_evidence = [
+        sanitize_evidence_text(g, limit=120) for g in (readback.get("missing_required_evidence") or [])
+    ]
+    lines = [
+        "Epic goal resume readback:",
+        f"- decision: {decision}",
+        f"- active_story_issue: {active}",
+        f"- active_story_state: {state}",
+        f"- parent_terminal_candidate: {bool(readback.get('parent_terminal_candidate'))}",
+    ]
+    if missing_gates:
+        lines.append(f"- missing_gates: {', '.join(missing_gates)}")
+    if missing_evidence:
+        lines.append(f"- missing_required_evidence: {', '.join(missing_evidence)}")
+    refs = readback.get("evidence_refs") or []
+    if refs:
+        lines.append("- evidence_refs:")
+        for ref in refs[:8]:
+            if not isinstance(ref, dict):
+                continue
+            ref_type = sanitize_evidence_text(ref.get("type"), limit=80)
+            status = sanitize_evidence_text(ref.get("status"), limit=40)
+            uri = sanitize_evidence_text(ref.get("uri"), limit=300)
+            lines.append(f"  - {ref_type} [{status}] {uri}")
+        if len(refs) > 8:
+            lines.append(f"  - … {len(refs) - 8} more refs")
+    lines.append("Authority boundary: this is readback/candidate state only; GCW validator and completion guard remain closeout authorities.")
+    return "\n".join(lines)
+
+
+def _main(argv: Optional[List[str]] = None) -> int:
+    """Small agent-native CLI for GCW readback probes.
+
+    Usage: python -m hermes_cli.goals epic-readback /path/to/contract.json
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m hermes_cli.goals")
+    sub = parser.add_subparsers(dest="command", required=True)
+    epic = sub.add_parser("epic-readback", help="emit epic_goal_resume_readback.v1 JSON")
+    epic.add_argument("contract_json", help="path to an epic_goal_supervision.v1 JSON contract")
+    args = parser.parse_args(argv)
+    if args.command == "epic-readback":
+        try:
+            payload = read_epic_goal_resume_readback_json(args.contract_json)
+        except (EpicGoalContractError, OSError, json.JSONDecodeError) as exc:
+            import sys
+
+            error_payload = {
+                "schema_version": "epic_goal_resume_readback_error.v1",
+                "error": exc.__class__.__name__,
+                "message": sanitize_evidence_text(str(exc), limit=1000),
+            }
+            print(json.dumps(error_payload, ensure_ascii=False, sort_keys=True), file=sys.stderr)
+            return 1
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 0
+    parser.error(f"unsupported command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -596,15 +1056,42 @@ class GoalManager:
         save_goal(self.session_id, self._state)
         return self._state
 
-    def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
+    def resume(
+        self,
+        *,
+        reset_budget: bool = True,
+        epic_goal_supervision: Optional[Dict[str, Any]] = None,
+    ) -> Optional[GoalState]:
         if not self._state:
             return None
+        if epic_goal_supervision is not None:
+            self._state.epic_goal_supervision = normalize_epic_goal_supervision(epic_goal_supervision)
         self._state.status = "active"
         self._state.paused_reason = None
         if reset_budget:
             self._state.turns_used = 0
         save_goal(self.session_id, self._state)
         return self._state
+
+    def attach_epic_goal_supervision(self, contract: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist a normalized Epic supervision contract on the current goal."""
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        self._state.epic_goal_supervision = normalize_epic_goal_supervision(contract)
+        save_goal(self.session_id, self._state)
+        return self._state.epic_goal_supervision
+
+    def epic_goal_resume_readback(self) -> Optional[Dict[str, Any]]:
+        """Return deterministic Epic readback for the persisted contract, if any."""
+        if not self._state or not self._state.epic_goal_supervision:
+            return None
+        return evaluate_epic_goal_resume_readback(self._state.epic_goal_supervision)
+
+    def formatted_epic_goal_resume_readback(self) -> Optional[str]:
+        readback = self.epic_goal_resume_readback()
+        if readback is None:
+            return None
+        return format_epic_goal_resume_readback(readback)
 
     def clear(self) -> None:
         if self._state is None:
@@ -818,4 +1305,12 @@ __all__ = [
     "save_goal",
     "clear_goal",
     "judge_goal",
+    "EpicGoalContractError",
+    "normalize_evidence_ref",
+    "normalize_epic_goal_supervision",
+    "evaluate_epic_goal_resume_readback",
+    "read_epic_goal_resume_readback_json",
+    "read_epic_goal_supervision_contract_json",
+    "format_epic_goal_resume_readback",
+    "sanitize_evidence_text",
 ]

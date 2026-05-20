@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -790,3 +792,398 @@ class TestStatusLineSubgoalCount:
         mgr.add_subgoal("b")
         line = mgr.status_line()
         assert "2 subgoals" in line
+
+# ──────────────────────────────────────────────────────────────────────
+# Epic GCW goal supervision contract
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _valid_epic_contract(**overrides):
+    base = {
+        "schema_version": "epic_goal_supervision.v1",
+        "parent_epic_issue": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/259",
+        "goal_issue": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/243",
+        "feature_issue": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/235",
+        "source_repo": "wangrenzhu-ola/ai-infra-demand-pool",
+        "ordered_story_issues": [
+            "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/260",
+            "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/273",
+            "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/274",
+        ],
+        "active_story_issue": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/274",
+        "blocked_story_issues": [],
+        "story_statuses": {
+            "274": {
+                "state": "running",
+                "run_id": "gcw-ai-infra-demand-pool-issue-274",
+                "run_dir": "/Users/wangrenzhu/.hermes/runs/gcw/gcw-ai-infra-demand-pool-issue-274",
+                "artifact_base": "/Users/wangrenzhu/.hermes/runs/gcw",
+                "last_evidence_refs": [
+                    {
+                        "type": "status_json",
+                        "uri": "file:///Users/wangrenzhu/.hermes/runs/gcw/gcw-ai-infra-demand-pool-issue-274/status.json",
+                        "status": "present",
+                    }
+                ],
+                "missing_gates": ["validator"],
+            }
+        },
+        "hierarchy_evidence_refs": [
+            {
+                "type": "hierarchy_readback",
+                "uri": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/259",
+                "status": "present",
+            }
+        ],
+        "formal_gate_exports": [],
+        "missing_gates": [],
+        "next_allowed_action": "continue_current_story",
+        "resume_readback_required": True,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestEpicGoalSupervisionContract:
+    def test_valid_contract_normalizes_and_preserves_run_dir(self):
+        from hermes_cli.goals import normalize_epic_goal_supervision
+
+        out = normalize_epic_goal_supervision(_valid_epic_contract())
+        assert out["schema_version"] == "epic_goal_supervision.v1"
+        assert out["active_story_issue"].endswith("/274")
+        assert out["story_statuses"]["274"]["run_dir"].endswith("issue-274")
+        assert out["hierarchy_evidence_refs"][0]["type"] == "hierarchy_readback"
+
+    def test_rejects_wrong_schema_and_noncanonical_issue_url(self):
+        from hermes_cli.goals import EpicGoalContractError, normalize_epic_goal_supervision
+
+        with pytest.raises(EpicGoalContractError):
+            normalize_epic_goal_supervision(_valid_epic_contract(schema_version="v0"))
+        with pytest.raises(EpicGoalContractError):
+            normalize_epic_goal_supervision(_valid_epic_contract(active_story_issue="https://example.com/x"))
+        with pytest.raises(EpicGoalContractError):
+            normalize_epic_goal_supervision(
+                _valid_epic_contract(
+                    active_story_issue="https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/274?token=secret"
+                )
+            )
+
+    def test_rejects_cross_repo_story_and_disallowed_evidence_scheme(self):
+        from hermes_cli.goals import EpicGoalContractError, normalize_epic_goal_supervision
+
+        with pytest.raises(EpicGoalContractError):
+            normalize_epic_goal_supervision(
+                _valid_epic_contract(
+                    ordered_story_issues=["https://github.com/other/repo/issues/1"],
+                    active_story_issue="https://github.com/other/repo/issues/1",
+                )
+            )
+        contract = _valid_epic_contract()
+        contract["story_statuses"]["274"]["last_evidence_refs"] = [
+            {"type": "status_json", "uri": "ssh://host/tmp/status.json", "status": "present"}
+        ]
+        with pytest.raises(EpicGoalContractError):
+            normalize_epic_goal_supervision(contract)
+
+    def test_sanitizes_evidence_text(self):
+        from hermes_cli.goals import sanitize_evidence_text
+
+        clean = sanitize_evidence_text("token=abc123\x1b[31m bad\x00 ``` fence", limit=200)
+        assert "abc123" not in clean
+        assert "\x1b" not in clean
+        assert "\x00" not in clean
+        assert "`\u200b``" in clean
+
+        auth_clean = sanitize_evidence_text("Authorization: Bearer auth-prefix auth-suffix Cookie: sid=secret")
+        assert "auth-prefix" not in auth_clean
+        assert "auth-suffix" not in auth_clean
+        assert "sid=secret" not in auth_clean
+        assert "Authorization=<redacted>" in auth_clean
+
+        json_header_clean = sanitize_evidence_text(
+            '{"Authorization": "Bearer json-auth-token", "Cookie": "sid=json-cookie"}'
+        )
+        assert "json-auth-token" not in json_header_clean
+        assert "json-cookie" not in json_header_clean
+
+        url_clean = sanitize_evidence_text("https://example.test/cb?token=url-token&ok=1")
+        assert "token=url-token" not in url_clean
+        assert "token=<redacted>" in url_clean
+
+        env_clean = sanitize_evidence_text("GITHUB_TOKEN=ghs-secret OPENAI_API_KEY=sk-secret Bearer bare-secret-token")
+        assert "ghs-secret" not in env_clean
+        assert "sk-secret" not in env_clean
+        assert "bare-secret-token" not in env_clean
+
+    def test_file_evidence_refs_must_be_canonical_local_absolute_paths(self):
+        from hermes_cli.goals import EpicGoalContractError, normalize_evidence_ref
+
+        for uri in [
+            "file:relative/status.json",
+            "file://host/tmp/status.json",
+            "file:///tmp/../secret/status.json",
+            "file:///%2Ftmp/status.json",
+            "file:////tmp/status.json",
+            "file:///tmp/status.json?token=abc",
+        ]:
+            with pytest.raises(EpicGoalContractError):
+                normalize_evidence_ref({"type": "status_json", "uri": uri, "status": "present"})
+
+        for uri in [
+            "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/../../evil/repo/issues/1",
+            "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/%2e%2e/%2e%2e/evil/repo/issues/1",
+        ]:
+            with pytest.raises(EpicGoalContractError):
+                normalize_evidence_ref({"type": "status_json", "uri": uri, "status": "present"})
+
+        ref = normalize_evidence_ref({"type": "status_json", "uri": "file:///tmp/status.json", "status": "present"})
+        assert ref["uri"] == "file:///tmp/status.json"
+
+    def test_parent_terminal_candidate_is_strict_bool_or_null(self):
+        from hermes_cli.goals import EpicGoalContractError, normalize_epic_goal_supervision
+
+        assert normalize_epic_goal_supervision(_valid_epic_contract(parent_terminal_candidate=True))[
+            "parent_terminal_candidate"
+        ] is True
+        assert normalize_epic_goal_supervision(_valid_epic_contract(parent_terminal_candidate=None))[
+            "parent_terminal_candidate"
+        ] is None
+        with pytest.raises(EpicGoalContractError):
+            normalize_epic_goal_supervision(_valid_epic_contract(parent_terminal_candidate="yes"))
+
+
+class TestEpicGoalResumeReadback:
+    def test_missing_validator_or_completion_guard_blocks_next_story(self):
+        from hermes_cli.goals import evaluate_epic_goal_resume_readback
+
+        decision = evaluate_epic_goal_resume_readback(_valid_epic_contract())
+        assert decision["decision"] == "continue_current_story"
+        assert "completion_guard" in decision["missing_required_evidence"]
+        assert "validator" in decision["missing_required_evidence"]
+        assert decision["parent_terminal_candidate"] is False
+
+    def test_blocked_partial_needs_user_are_preserved(self):
+        from hermes_cli.goals import evaluate_epic_goal_resume_readback
+
+        for state in ["blocked", "partial", "needs_user", "approval_required"]:
+            contract = _valid_epic_contract()
+            contract["story_statuses"]["274"]["state"] = state
+            contract["story_statuses"]["274"]["missing_gates"] = []
+            assert evaluate_epic_goal_resume_readback(contract)["decision"] == state
+
+    def test_local_file_only_story_evidence_does_not_emit_parent_closeout_candidate(self):
+        from hermes_cli.goals import evaluate_epic_goal_resume_readback
+
+        contract = _valid_epic_contract()
+        contract["story_statuses"]["274"].update(
+            {
+                "state": "completed",
+                "missing_gates": [],
+                "last_evidence_refs": [
+                    {
+                        "type": "validator",
+                        "uri": "file:///Users/wangrenzhu/.hermes/runs/gcw/gcw-ai-infra-demand-pool-issue-274/validator.json",
+                        "status": "pass",
+                        "metadata": {"trusted_closeout_evidence": True},
+                    },
+                    {
+                        "type": "completion_guard",
+                        "uri": "file:///Users/wangrenzhu/.hermes/runs/gcw/gcw-ai-infra-demand-pool-issue-274/completion_guard.json",
+                        "status": "pass",
+                        "metadata": {"authority": "ci"},
+                    },
+                ],
+            }
+        )
+        decision = evaluate_epic_goal_resume_readback(contract)
+        assert decision["decision"] == "continue_current_story"
+        assert decision["parent_terminal_candidate"] is False
+        assert decision["missing_required_evidence"] == ["completion_guard", "validator"]
+
+    def test_issue_or_pr_urls_cannot_self_assert_trusted_closeout_evidence(self):
+        from hermes_cli.goals import EpicGoalContractError, evaluate_epic_goal_resume_readback
+
+        contract = _valid_epic_contract()
+        contract["story_statuses"]["274"].update(
+            {
+                "state": "completed",
+                "missing_gates": [],
+                "last_evidence_refs": [
+                    {
+                        "type": "validator",
+                        "uri": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/274",
+                        "status": "pass",
+                        "metadata": {"trusted_closeout_evidence": True},
+                    },
+                    {
+                        "type": "completion_guard",
+                        "uri": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/pull/274",
+                        "status": "pass",
+                        "metadata": {"authority": "ci"},
+                    },
+                ],
+            }
+        )
+        decision = evaluate_epic_goal_resume_readback(contract)
+        assert decision["decision"] == "continue_current_story"
+        assert decision["parent_terminal_candidate"] is False
+
+        for uri in [
+            "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/../../evil/repo/issues/1",
+            "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/%2e%2e/%2e%2e/evil/repo/issues/1",
+        ]:
+            contract = _valid_epic_contract()
+            contract["story_statuses"]["274"]["last_evidence_refs"] = [
+                {"type": "validator", "uri": uri, "status": "pass"}
+            ]
+            with pytest.raises(EpicGoalContractError):
+                evaluate_epic_goal_resume_readback(contract)
+
+    def test_trusted_story_evidence_passes_emits_parent_closeout_candidate_only(self):
+        from hermes_cli.goals import evaluate_epic_goal_resume_readback
+
+        contract = _valid_epic_contract()
+        contract["story_statuses"]["274"].update(
+            {
+                "state": "completed",
+                "missing_gates": [],
+                "last_evidence_refs": [
+                    {
+                        "type": "validator",
+                        "uri": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/actions/runs/274",
+                        "status": "pass",
+                    },
+                    {
+                        "type": "completion_guard",
+                        "uri": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/actions/runs/274",
+                        "status": "pass",
+                        "metadata": {"trusted_closeout_evidence": True},
+                    },
+                ],
+            }
+        )
+        decision = evaluate_epic_goal_resume_readback(contract)
+        assert decision["decision"] == "parent_closeout_candidate"
+        assert decision["parent_terminal_candidate"] is True
+
+    def test_parent_missing_gate_blocks_parent_closeout_candidate(self):
+        from hermes_cli.goals import evaluate_epic_goal_resume_readback
+
+        contract = _valid_epic_contract(missing_gates=["active_smoke"])
+        contract["story_statuses"]["274"].update(
+            {
+                "state": "completed",
+                "missing_gates": [],
+                "last_evidence_refs": [
+                    {
+                        "type": "validator",
+                        "uri": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/actions/runs/274",
+                        "status": "pass",
+                    },
+                    {
+                        "type": "completion_guard",
+                        "uri": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/actions/runs/274",
+                        "status": "pass",
+                        "metadata": {"trusted_closeout_evidence": True},
+                    },
+                ],
+            }
+        )
+        decision = evaluate_epic_goal_resume_readback(contract)
+        assert decision["decision"] == "stop_with_report"
+        assert decision["parent_terminal_candidate"] is False
+        assert "active_smoke" in decision["missing_gates"]
+
+    def test_goal_manager_resume_persists_and_renders_epic_readback(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="epic-resume-sid")
+        mgr.set("finish GCW https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/274")
+        mgr.pause()
+        state = mgr.resume(epic_goal_supervision=_valid_epic_contract())
+        assert state is not None
+        assert state.epic_goal_supervision is not None
+
+        reloaded = GoalManager(session_id="epic-resume-sid")
+        readback = reloaded.epic_goal_resume_readback()
+        assert readback is not None
+        assert readback["schema_version"] == "epic_goal_resume_readback.v1"
+        assert readback["decision"] == "continue_current_story"
+
+        rendered = reloaded.formatted_epic_goal_resume_readback()
+        assert rendered is not None
+        assert "Epic goal resume readback" in rendered
+        assert "decision: continue_current_story" in rendered
+        assert "completion_guard" in rendered
+        assert "validator" in rendered
+        assert "Authority boundary" in rendered
+
+    def test_goal_manager_resume_rejects_invalid_epic_contract(self, hermes_home):
+        from hermes_cli.goals import EpicGoalContractError, GoalManager
+
+        mgr = GoalManager(session_id="epic-resume-invalid")
+        mgr.set("finish GCW https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/274")
+        invalid = _valid_epic_contract(
+            active_story_issue="https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/274?token=secret"
+        )
+        with pytest.raises(EpicGoalContractError):
+            mgr.resume(epic_goal_supervision=invalid)
+
+
+
+def test_epic_goal_readback_cli_emits_json(tmp_path):
+    contract = _valid_epic_contract()
+    contract["story_statuses"]["274"].update(
+        {
+            "state": "completed",
+            "missing_gates": [],
+            "last_evidence_refs": [
+                {
+                    "type": "validator",
+                    "uri": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/actions/runs/274",
+                    "status": "pass",
+                },
+                {
+                    "type": "completion_guard",
+                    "uri": "https://github.com/wangrenzhu-ola/ai-infra-demand-pool/actions/runs/274",
+                    "status": "pass",
+                },
+            ],
+        }
+    )
+    contract_path = tmp_path / "contract.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.goals", "epic-readback", str(contract_path)],
+        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[2]),
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "epic_goal_resume_readback.v1"
+    assert payload["decision"] == "parent_closeout_candidate"
+
+
+def test_epic_goal_readback_cli_emits_json_error_without_traceback(tmp_path):
+    contract = _valid_epic_contract(
+        active_story_issue="https://github.com/wangrenzhu-ola/ai-infra-demand-pool/issues/274?token=SECRET123"
+    )
+    contract_path = tmp_path / "invalid-contract.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.goals", "epic-readback", str(contract_path)],
+        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[2]),
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "Traceback" not in result.stderr
+    assert "SECRET123" not in result.stderr
+    payload = json.loads(result.stderr)
+    assert payload["schema_version"] == "epic_goal_resume_readback_error.v1"
+    assert payload["error"] == "EpicGoalContractError"

@@ -8777,12 +8777,30 @@ class HermesCLI:
                 _cprint(f"  ⏸ Goal paused: {state.goal}")
             return
 
-        if lower == "resume":
-            state = mgr.resume()
+        if lower == "resume" or lower.startswith("resume "):
+            epic_contract = None
+            if lower.startswith("resume "):
+                contract_path = arg.split(None, 1)[1].strip()
+                try:
+                    from hermes_cli.goals import read_epic_goal_supervision_contract_json
+
+                    epic_contract = read_epic_goal_supervision_contract_json(contract_path)
+                except Exception as exc:
+                    _cprint(f"  /goal resume: invalid Epic supervision contract: {exc}")
+                    return
+            try:
+                state = mgr.resume(epic_goal_supervision=epic_contract)
+            except Exception as exc:
+                _cprint(f"  /goal resume: invalid Epic supervision contract: {exc}")
+                return
             if state is None:
                 _cprint(f"  {_DIM}No goal to resume.{_RST}")
             else:
                 _cprint(f"  ▶ Goal resumed: {state.goal}")
+                readback = mgr.formatted_epic_goal_resume_readback()
+                if readback:
+                    for line in readback.splitlines():
+                        _cprint(f"  {line}")
                 _cprint(
                     f"  {_DIM}Send any message (or press Enter on an empty prompt "
                     f"is a no-op; type 'continue' to kick it off).{_RST}"

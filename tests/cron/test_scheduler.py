@@ -12,6 +12,31 @@ from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
 
+HOME_CHANNEL_ENV_VARS = (
+    "MATRIX_HOME_ROOM",
+    "MATRIX_HOME_CHANNEL",
+    "TELEGRAM_HOME_CHANNEL",
+    "DISCORD_HOME_CHANNEL",
+    "SLACK_HOME_CHANNEL",
+    "SIGNAL_HOME_CHANNEL",
+    "MATTERMOST_HOME_CHANNEL",
+    "SMS_HOME_CHANNEL",
+    "EMAIL_HOME_ADDRESS",
+    "DINGTALK_HOME_CHANNEL",
+    "BLUEBUBBLES_HOME_CHANNEL",
+    "FEISHU_HOME_CHANNEL",
+    "WECOM_HOME_CHANNEL",
+    "WEIXIN_HOME_CHANNEL",
+    "QQBOT_HOME_CHANNEL",
+    "QQ_HOME_CHANNEL",
+)
+
+
+def clear_home_channel_env(monkeypatch):
+    for env_var in HOME_CHANNEL_ENV_VARS:
+        monkeypatch.delenv(env_var, raising=False)
+
+
 class TestResolveOrigin:
     def test_full_origin(self):
         job = {
@@ -105,24 +130,7 @@ class TestResolveDeliveryTarget:
     def test_origin_delivery_without_origin_falls_back_to_supported_home_channels(
         self, monkeypatch, platform, env_var, chat_id
     ):
-        for fallback_env in (
-            "MATRIX_HOME_ROOM",
-            "MATRIX_HOME_CHANNEL",
-            "TELEGRAM_HOME_CHANNEL",
-            "DISCORD_HOME_CHANNEL",
-            "SLACK_HOME_CHANNEL",
-            "SIGNAL_HOME_CHANNEL",
-            "MATTERMOST_HOME_CHANNEL",
-            "SMS_HOME_CHANNEL",
-            "EMAIL_HOME_ADDRESS",
-            "DINGTALK_HOME_CHANNEL",
-            "BLUEBUBBLES_HOME_CHANNEL",
-            "FEISHU_HOME_CHANNEL",
-            "WECOM_HOME_CHANNEL",
-            "WEIXIN_HOME_CHANNEL",
-            "QQ_HOME_CHANNEL",
-        ):
-            monkeypatch.delenv(fallback_env, raising=False)
+        clear_home_channel_env(monkeypatch)
         monkeypatch.setenv(env_var, chat_id)
 
         assert _resolve_delivery_target({"deliver": "origin"}) == {
@@ -405,12 +413,10 @@ class TestRoutingIntents:
         """deliver='all' fans out to every platform with a configured home channel."""
         from cron.scheduler import _resolve_delivery_targets
 
+        clear_home_channel_env(monkeypatch)
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
         monkeypatch.setenv("SLACK_HOME_CHANNEL", "C333")
-        # Sanity: platforms without the env var must NOT appear in the expansion.
-        monkeypatch.delenv("SIGNAL_HOME_CHANNEL", raising=False)
-        monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
 
         targets = _resolve_delivery_targets({"deliver": "all", "origin": None})
         platforms = sorted(t["platform"] for t in targets)
@@ -425,6 +431,7 @@ class TestRoutingIntents:
         """'telegram:-999,all' yields every home channel + the explicit target without dupes."""
         from cron.scheduler import _resolve_delivery_targets
 
+        clear_home_channel_env(monkeypatch)
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
 
@@ -444,12 +451,7 @@ class TestRoutingIntents:
         """deliver='all' with nothing connected returns [] — delivery is recorded as failed upstream."""
         from cron.scheduler import _resolve_delivery_targets
 
-        for var in ("TELEGRAM_HOME_CHANNEL", "DISCORD_HOME_CHANNEL", "SLACK_HOME_CHANNEL",
-                    "SIGNAL_HOME_CHANNEL", "MATRIX_HOME_ROOM", "MATTERMOST_HOME_CHANNEL",
-                    "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL",
-                    "FEISHU_HOME_CHANNEL", "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL",
-                    "BLUEBUBBLES_HOME_CHANNEL", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL"):
-            monkeypatch.delenv(var, raising=False)
+        clear_home_channel_env(monkeypatch)
 
         assert _resolve_delivery_targets({"deliver": "all", "origin": None}) == []
 
@@ -457,6 +459,7 @@ class TestRoutingIntents:
         """'origin,all' delivers to the origin platform plus every other home channel."""
         from cron.scheduler import _resolve_delivery_targets
 
+        clear_home_channel_env(monkeypatch)
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
 
@@ -478,6 +481,7 @@ class TestRoutingIntents:
         """'ALL' / 'All' / 'all' are all recognized."""
         from cron.scheduler import _resolve_delivery_targets
 
+        clear_home_channel_env(monkeypatch)
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
 
@@ -1005,6 +1009,49 @@ class TestRunJobSessionPersistence:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
+
+    def test_run_job_memory_toolset_attaches_store_without_prompt_injection(self, tmp_path):
+        """Cron keeps memory out of the prompt but memory-tool jobs need a store."""
+        (tmp_path / "config.yaml").write_text(
+            "memory:\n  memory_char_limit: 123\n  user_char_limit: 45\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "memory-tool-job",
+            "name": "memory tool",
+            "prompt": "compress memory",
+            "enabled_toolsets": ["file", "memory", "terminal"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        created = []
+
+        class FakeMemoryStore:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.loaded = False
+                created.append(self)
+
+            def load_from_disk(self):
+                self.loaded = True
+
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch("tools.memory_tool.MemoryStore", FakeMemoryStore):
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["skip_memory"] is True
+        assert kwargs["enabled_toolsets"] == ["file", "memory", "terminal"]
+        assert len(created) == 1
+        assert created[0].kwargs == {"memory_char_limit": 123, "user_char_limit": 45}
+        assert created[0].loaded is True
+        assert mock_agent._memory_store is created[0]
+        assert mock_agent._memory_enabled is False
+        assert mock_agent._user_profile_enabled is False
+        assert mock_agent._memory_nudge_interval == 0
 
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now

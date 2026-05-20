@@ -11,6 +11,7 @@ uses to render a system line and fire the kickoff prompt.
 from __future__ import annotations
 
 import importlib
+import json
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -139,6 +140,36 @@ def test_goal_resume_reactivates(server, session):
     from hermes_cli.goals import GoalManager
 
     assert GoalManager(session_key).state.status == "active"
+
+
+def test_goal_resume_with_epic_contract_emits_readback(server, session, tmp_path):
+    from tests.hermes_cli.test_goals import _valid_epic_contract
+
+    sid, session_key, _ = session
+    _call(server, "command.dispatch", name="goal", arg="finish GCW issue 274", session_id=sid)
+    _call(server, "command.dispatch", name="goal", arg="pause", session_id=sid)
+    contract_path = tmp_path / "epic-contract.json"
+    contract_path.write_text(json.dumps(_valid_epic_contract()), encoding="utf-8")
+
+    r = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg=f"resume {contract_path}",
+        session_id=sid,
+    )
+    assert r["result"]["type"] == "exec"
+    output = r["result"]["output"]
+    assert "Epic goal resume readback" in output
+    assert "decision: continue_current_story" in output
+    assert "missing_required_evidence: completion_guard, validator" in output
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_key)
+    readback = mgr.epic_goal_resume_readback()
+    assert readback is not None
+    assert readback["decision"] == "continue_current_story"
 
 
 def test_goal_clear_removes_active_goal(server, session):

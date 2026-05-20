@@ -4756,20 +4756,30 @@ def _(rid, params: dict) -> dict:
             state = mgr.pause(reason="user-paused")
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
             return _ok(rid, {"type": "exec", "output": out})
-        if lower == "resume":
-            state = mgr.resume()
+        if lower == "resume" or lower.startswith("resume "):
+            epic_contract = None
+            if lower.startswith("resume "):
+                contract_path = arg.split(None, 1)[1].strip()
+                try:
+                    from hermes_cli.goals import read_epic_goal_supervision_contract_json
+
+                    epic_contract = read_epic_goal_supervision_contract_json(contract_path)
+                except Exception as exc:
+                    return _err(rid, 4004, f"invalid Epic supervision contract: {exc}")
+            try:
+                state = mgr.resume(epic_goal_supervision=epic_contract)
+            except Exception as exc:
+                return _err(rid, 4004, f"invalid Epic supervision contract: {exc}")
             if state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
-            return _ok(
-                rid,
-                {
-                    "type": "exec",
-                    "output": (
-                        f"▶ Goal resumed: {state.goal}\n"
-                        "Send any message to continue, or wait — I'll take the next step on the next turn."
-                    ),
-                },
+            readback = mgr.formatted_epic_goal_resume_readback()
+            output = (
+                f"▶ Goal resumed: {state.goal}\n"
+                "Send any message to continue, or wait — I'll take the next step on the next turn."
             )
+            if readback:
+                output = f"▶ Goal resumed: {state.goal}\n{readback}\nSend any message to continue, or wait — I'll take the next step on the next turn."
+            return _ok(rid, {"type": "exec", "output": output})
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()

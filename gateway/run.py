@@ -10447,11 +10447,27 @@ class GatewayRunner:
                 logger.debug("goal pause: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal.paused", goal=state.goal)
 
-        if lower == "resume":
-            state = mgr.resume()
+        if lower == "resume" or lower.startswith("resume "):
+            epic_contract = None
+            if lower.startswith("resume "):
+                contract_path = args.split(None, 1)[1].strip()
+                try:
+                    from hermes_cli.goals import read_epic_goal_supervision_contract_json
+
+                    epic_contract = read_epic_goal_supervision_contract_json(contract_path)
+                except Exception as exc:
+                    return f"/goal resume: invalid Epic supervision contract: {exc}"
+            try:
+                state = mgr.resume(epic_goal_supervision=epic_contract)
+            except Exception as exc:
+                return f"/goal resume: invalid Epic supervision contract: {exc}"
             if state is None:
                 return t("gateway.goal.no_resume")
-            return t("gateway.goal.resumed", goal=state.goal)
+            message = t("gateway.goal.resumed", goal=state.goal)
+            readback = mgr.formatted_epic_goal_resume_readback()
+            if readback:
+                message = f"{message}\n{readback}"
+            return message
 
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()

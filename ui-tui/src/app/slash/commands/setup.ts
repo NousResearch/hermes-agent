@@ -1,8 +1,8 @@
 import { withInkSuspended } from '@hermes/ink'
 
+import { translate } from '../../../i18n.js'
 import { launchHermesCommand } from '../../../lib/externalCli.js'
 import { runExternalSetup } from '../../setupHandoff.js'
-import { translate } from '../../../i18n.js'
 import type { SlashCommand } from '../types.js'
 
 export const setupCommands: SlashCommand[] = [
@@ -15,6 +15,7 @@ export const setupCommands: SlashCommand[] = [
         ctx,
         done: translate(ctx.ui.locale, 'setup.complete'),
         launcher: launchHermesCommand,
+        locale: ctx.ui.locale,
         suspend: withInkSuspended
       })
   }

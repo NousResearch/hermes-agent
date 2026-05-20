@@ -10,6 +10,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
+import { useI18n } from '../i18n.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
@@ -63,7 +64,8 @@ export function applyVoiceRecordResponse(
   response: null | VoiceRecordResponse,
   starting: boolean,
   voice: Pick<InputHandlerContext['voice'], 'setProcessing' | 'setRecording'>,
-  sys: (text: string) => void
+  sys: (text: string) => void,
+  busyMessage = 'voice: still transcribing; try again shortly'
 ) {
   if (!starting || response?.status === 'recording') {
     return
@@ -73,7 +75,7 @@ export function applyVoiceRecordResponse(
 
   if (response?.status === 'busy') {
     voice.setProcessing(true)
-    sys('voice: still transcribing; try again shortly')
+    sys(busyMessage)
   } else {
     voice.setProcessing(false)
   }
@@ -81,6 +83,7 @@ export function applyVoiceRecordResponse(
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
+  const { t: ti } = useI18n()
   const { actions: cActions, refs: cRefs, state: cState } = composer
 
   const overlay = useStore($overlayState)
@@ -134,13 +137,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (overlay.sudo) {
       return gateway
         .rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: overlay.sudo.requestId })
-        .then(r => r && (patchOverlayState({ sudo: null }), actions.sys('sudo cancelled')))
+        .then(r => r && (patchOverlayState({ sudo: null }), actions.sys(ti('sys.sudoCancelled'))))
     }
 
     if (overlay.secret) {
       return gateway
         .rpc<SecretRespondResponse>('secret.respond', { request_id: overlay.secret.requestId, value: '' })
-        .then(r => r && (patchOverlayState({ secret: null }), actions.sys('secret entry cancelled')))
+        .then(r => r && (patchOverlayState({ secret: null }), actions.sys(ti('sys.secretCancelled'))))
     }
 
     if (overlay.modelPicker) {
@@ -223,7 +226,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // createGatewayEventHandler turns into UI badges and composer injection.
   const voiceRecordToggle = () => {
     if (!voice.enabled) {
-      return actions.sys('voice: mode is off — enable with /voice on')
+      return actions.sys(ti('sys.voiceModeOff'))
     }
 
     const starting = !voice.recording
@@ -241,14 +244,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     gateway
       .rpc<VoiceRecordResponse>('voice.record', { action, session_id: getUiState().sid })
-      .then(r => applyVoiceRecordResponse(r, starting, voice, actions.sys))
+      .then(r => applyVoiceRecordResponse(r, starting, voice, actions.sys, ti('sys.voiceStillTranscribing')))
       .catch((e: Error) => {
         // Revert optimistic UI on failure.
         if (starting) {
           voice.setRecording(false)
         }
 
-        actions.sys(`voice error: ${e.message}`)
+        actions.sys(ti('sys.voiceError', { message: e.message }))
       })
   }
 
@@ -516,29 +519,29 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // arrives as meta+g across platforms).
     if (ch.toLowerCase() === 'g' && (isAction(key, ch, 'g') || key.meta)) {
       return void cActions.openEditor().catch((err: unknown) => {
-        actions.sys(err instanceof Error ? `failed to open editor: ${err.message}` : 'failed to open editor')
+        actions.sys(err instanceof Error ? ti('sys.editorOpenFailed', { message: err.message }) : ti('sys.editorOpenFailedSimple'))
       })
     }
 
     // shift-tab flips yolo without spending a turn (claude-code parity)
     if (key.shift && key.tab && !cState.completions.length) {
       if (!live.sid) {
-        return void actions.sys('yolo needs an active session')
+        return void actions.sys(ti('sys.yoloNeedsSession'))
       }
 
       // gateway.rpc swallows errors with its own sys() message and resolves to null,
       // so we only speak when it came back with a real shape. null = rpc already spoke.
       return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
         if (r?.value === '1') {
-          return actions.sys('yolo on')
+          return actions.sys(ti('sys.yoloOn'))
         }
 
         if (r?.value === '0') {
-          return actions.sys('yolo off')
+          return actions.sys(ti('sys.yoloOff'))
         }
 
         if (r) {
-          actions.sys('failed to toggle yolo')
+          actions.sys(ti('sys.yoloToggleFailed'))
         }
       })
     }

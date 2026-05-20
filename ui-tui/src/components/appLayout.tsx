@@ -8,6 +8,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
+import { useI18n } from '../i18n.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -27,7 +28,6 @@ import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
-import { useI18n } from '../i18n.js'
 
 const PromptPrefix = memo(function PromptPrefix({
   bold = false,
@@ -233,7 +233,7 @@ const ComposerPane = memo(function ComposerPane({
 
       {ui.bgTasks.size > 0 && (
         <Text color={ui.theme.color.muted}>
-          {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
+          {i18n.t('task.backgroundRunning', { count: String(ui.bgTasks.size), noun: ui.bgTasks.size === 1 ? 'task' : 'tasks' })}
         </Text>
       )}
 

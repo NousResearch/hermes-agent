@@ -1,4 +1,4 @@
-import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -8,7 +8,6 @@ import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
-import { translate, useI18n, type TranslationKey } from '../i18n.js'
 import type {
   ClarifyRespondResponse,
   ClipboardPasteResponse,
@@ -17,6 +16,7 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { translate, type TranslationKey, useI18n } from '../i18n.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
@@ -113,7 +113,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const ui = useStore($uiState)
   const i18n = useI18n()
-  const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(ui.locale, key, vars)
+  const ti = useCallback((key: TranslationKey, vars?: Record<string, string | number>) => translate(ui.locale, key, vars), [ui.locale])
   const overlay = useStore($overlayState)
 
   const turnLiveTailActive = useTurnSelector(state =>
@@ -331,10 +331,10 @@ export function useMainApp(gw: GatewayClient) {
       const warning = (value as { warning?: unknown } | null)?.warning
 
       if (typeof warning === 'string' && warning) {
-        sys(`warning: ${warning}`)
+        sys(ti('common.warning') + `: ${warning}`)
       }
     },
-    [sys]
+    [sys, ti]
   )
 
   const maybeGoodVibes = useCallback((text: string) => {

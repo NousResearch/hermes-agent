@@ -1,7 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 
-import { compactPreview } from '../lib/text.js'
 import { useI18n } from '../i18n.js'
+import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 
 export const QUEUE_WINDOW = 3
@@ -26,9 +26,8 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text color={t.color.muted} dimColor>
-        {`queued (${queued.length})${
-          queueEditIdx !== null ? ti('queue.editHint', { idx: String(queueEditIdx + 1) }) : ''
-        }`}
+        {ti('queue.header', { count: String(queued.length) })}
+        {queueEditIdx !== null ? ti('queue.editHint', { idx: String(queueEditIdx + 1) }) : ''}
       </Text>
 
       {q.showLead && (
@@ -51,7 +50,7 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
 
       {q.showTail && (
         <Text color={t.color.muted} dimColor>
-          {'  '}…and {queued.length - q.end} more
+          {'  '}{ti('queue.more', { count: String(queued.length - q.end) })}
         </Text>
       )}
     </Box>

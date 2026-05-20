@@ -3,7 +3,7 @@ import { forceRedraw } from '@hermes/ink'
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEY_DEFS } from '../../../content/hotkeys.js'
-import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -13,6 +13,7 @@ import type {
   SessionTitleResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
+import { type Locale, translate, type TranslationKey } from '../../../i18n.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
@@ -20,7 +21,6 @@ import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
-import { translate, type Locale, type TranslationKey } from '../../../i18n.js'
 import type { SlashCommand } from '../types.js'
 
 const makeT = (locale: Locale) => (key: TranslationKey, vars?: Record<string, string | number>) => translate(locale, key, vars)
@@ -49,11 +49,6 @@ const flagFromArg = (arg: string, current: boolean): boolean | null => {
 
 const RESET_WORDS = new Set(['reset', 'clear', 'default'])
 const CYCLE_WORDS = new Set(['cycle', 'toggle'])
-
-const DETAILS_USAGE =
-  'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
-
-const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
 
 export const coreCommands: SlashCommand[] = [
   {
@@ -99,7 +94,7 @@ export const coreCommands: SlashCommand[] = [
     help: 'update Hermes Agent to the latest version (exits TUI)',
     name: 'update',
     run: (_arg, ctx) => {
-      ctx.transcript.sys('exiting TUI to run update...')
+      ctx.transcript.sys(translate(ctx.ui.locale, 'sys.updateExiting'))
       // Exit code 42 signals the Python wrapper to exec `hermes update`.
       // Use dieWithCode for proper cleanup (gateway kill + Ink unmount).
       setTimeout(() => ctx.session.dieWithCode(42), 100)
@@ -130,7 +125,7 @@ export const coreCommands: SlashCommand[] = [
     help: 'start a new session',
     name: 'clear',
     run: (arg, ctx, cmd) => {
-      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+      if (ctx.session.guardBusySessionSwitch(translate(ctx.ui.locale, 'action.switchSessions'))) {
         return
       }
 
@@ -139,7 +134,7 @@ export const coreCommands: SlashCommand[] = [
 
       const commit = () => {
         patchUiState({ status: 'forging session…' })
-        ctx.session.newSession(isNew ? 'new session started' : undefined, requestedTitle || undefined)
+        ctx.session.newSession(isNew ? translate(ctx.ui.locale, 'sys.newSessionStarted') : undefined, requestedTitle || undefined)
       }
 
       if (NO_CONFIRM_DESTRUCTIVE) {
@@ -178,7 +173,7 @@ export const coreCommands: SlashCommand[] = [
 
       ctx.gateway
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
-        .then(ctx.guarded<SessionStatusResponse>(r => ctx.transcript.page(r.output || '(no status)', 'Status')))
+        .then(ctx.guarded<SessionStatusResponse>(r => ctx.transcript.page(r.output || translate(ctx.ui.locale, 'sys.noStatus'), translate(ctx.ui.locale, 'section.status'))))
         .catch(ctx.guardedErr)
     }
   },
@@ -228,7 +223,7 @@ export const coreCommands: SlashCommand[] = [
         .then(
           ctx.guarded<SessionTitleResponse>(r => {
             const next = (r?.title ?? title).trim()
-            const suffix = r?.pending ? ' (queued while session initializes)' : ''
+            const suffix = r?.pending ? translate(ctx.ui.locale, 'session.titleQueuedSuffix') : ''
             ctx.transcript.sys(translate(ctx.ui.locale, 'sys.titleSet', { title: next, suffix }))
           })
         )
@@ -275,9 +270,9 @@ export const coreCommands: SlashCommand[] = [
               .map(s => `${s}=${ui.sections[s]}`)
               .join(' ')
 
-            transcript.sys(`details: ${mode}${overrides ? `  (${overrides})` : ''}`)
+            transcript.sys(translate(ctx.ui.locale, 'sys.detailsGlobal', { mode, overrides: overrides ? `  (${overrides})` : '' }))
           })
-          .catch(() => !ctx.stale() && transcript.sys(`details: ${ui.detailsMode}`))
+          .catch(() => !ctx.stale() && transcript.sys(translate(ctx.ui.locale, 'sys.detailsGlobal', { mode: ui.detailsMode, overrides: '' })))
 
         return
       }
@@ -289,7 +284,7 @@ export const coreCommands: SlashCommand[] = [
         const mode = reset ? null : parseDetailsMode(second)
 
         if (!reset && !mode) {
-          return transcript.sys(DETAILS_SECTION_USAGE)
+          return transcript.sys(translate(ctx.ui.locale, 'sys.helpDetailSection'))
         }
 
         const { [first]: _drop, ...rest } = ui.sections
@@ -298,7 +293,7 @@ export const coreCommands: SlashCommand[] = [
         gateway
           .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${first}`, value: mode ?? '' })
           .catch(() => {})
-        transcript.sys(`details ${first}: ${mode ?? 'reset'}`)
+        transcript.sys(translate(ctx.ui.locale, 'sys.detailsSection', { section: first, mode: mode ?? translate(ctx.ui.locale, 'common.reset') }))
 
         return
       }
@@ -306,14 +301,14 @@ export const coreCommands: SlashCommand[] = [
       const next = CYCLE_WORDS.has(first ?? '') ? nextDetailsMode(ui.detailsMode) : parseDetailsMode(first)
 
       if (!next) {
-        return transcript.sys(DETAILS_USAGE)
+        return transcript.sys(translate(ctx.ui.locale, 'sys.helpDetailGlobal'))
       }
 
       const sections = Object.fromEntries(SECTION_NAMES.map(section => [section, next]))
 
       patchUiState({ detailsMode: next, detailsModeCommandOverride: true, sections })
       gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
-      transcript.sys(`details: ${next}`)
+      transcript.sys(translate(ctx.ui.locale, 'sys.detailsGlobal', { mode: next, overrides: '' }))
     }
   },
 
@@ -551,7 +546,7 @@ ctx.transcript.page(lines.join('\n\n'), translate(ctx.ui.locale, 'section.histor
       if (!ctx.ui.busy || !ctx.sid) {
         ctx.composer.enqueue(payload)
         ctx.transcript.sys(
-          `no active turn — queued for next: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
+          translate(ctx.ui.locale, 'sys.steerQueuedNoTurn', { text: `${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}` })
         )
 
         return
@@ -563,10 +558,10 @@ ctx.transcript.page(lines.join('\n\n'), translate(ctx.ui.locale, 'section.histor
           ctx.guarded<SessionSteerResponse>(r => {
             if (r?.status === 'queued') {
               ctx.transcript.sys(
-                `steer queued — arrives after next tool call: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
+                translate(ctx.ui.locale, 'sys.steerQueued', { text: `${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}` })
               )
             } else {
-              ctx.transcript.sys('steer rejected')
+              ctx.transcript.sys(translate(ctx.ui.locale, 'sys.steerRejected'))
             }
           })
         )

@@ -1,6 +1,5 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
-import { translate, type TranslationKey } from '../../../i18n.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -11,6 +10,7 @@ import type {
   SessionUsageResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
+import { translate, type TranslationKey } from '../../../i18n.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
@@ -97,7 +97,7 @@ export const sessionCommands: SlashCommand[] = [
     help: 'browse and resume previous sessions',
     name: 'sessions',
     run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+      if (ctx.session.guardBusySessionSwitch(translate(ctx.ui.locale, 'action.switchSessions'))) {
         return
       }
       if (!arg.trim()) {
@@ -356,7 +356,7 @@ export const sessionCommands: SlashCommand[] = [
           // uses the new style without waiting for the 5s mtime poll
           // to re-apply config.full.
           patchUiState({ indicatorStyle: value as IndicatorStyle })
-          ctx.transcript.sys(`indicator → ${r.value}`)
+          ctx.transcript.sys(translate(ctx.ui.locale, 'sys.indicatorStyle', { value: r.value }))
         })
       )
     }
@@ -368,7 +368,7 @@ export const sessionCommands: SlashCommand[] = [
     run: (_arg, ctx) => {
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: ctx.sid })
-        .then(ctx.guarded<ConfigSetResponse>(r => ctx.transcript.sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)))
+        .then(ctx.guarded<ConfigSetResponse>(r => ctx.transcript.sys(translate(ctx.ui.locale, r.value === '1' ? 'sys.yoloOn' : 'sys.yoloOff'))))
     }
   },
 

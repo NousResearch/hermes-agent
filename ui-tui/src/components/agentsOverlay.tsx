@@ -13,8 +13,8 @@ import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '..
 import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
-import { asRpcResult } from '../lib/rpc.js'
 import { useI18n } from '../i18n.js'
+import { asRpcResult } from '../lib/rpc.js'
 import {
   buildSubagentTree,
   descendantIds,
@@ -42,20 +42,6 @@ type Status = SubagentProgress['status']
 
 const SORT_ORDER: readonly SortMode[] = ['depth-first', 'tools-desc', 'duration-desc', 'status']
 const FILTER_ORDER: readonly FilterMode[] = ['all', 'running', 'failed', 'leaf']
-
-const SORT_LABEL: Record<SortMode, string> = {
-  'depth-first': 'spawn order',
-  'duration-desc': 'slowest',
-  status: 'status',
-  'tools-desc': 'busiest'
-}
-
-const FILTER_LABEL: Record<FilterMode, string> = {
-  all: 'all',
-  failed: 'failed',
-  leaf: 'leaves',
-  running: 'running'
-}
 
 const STATUS_RANK: Record<Status, number> = {
   error: 0,
@@ -770,7 +756,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     if (historyIndex === 0 && prev > 0 && liveSubagents.length === 0 && history.length > 0) {
       setHistoryIndex(1)
       setCursor(0)
-      setFlash('turn finished · inspect freely · q to close')
+      setFlash(ti('agents.turnFinished'))
     }
   }, [history.length, historyIndex, liveSubagents.length])
 
@@ -796,7 +782,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const guardLive = (action: () => void) => {
     if (replayMode) {
-      setFlash('replay mode — controls disabled')
+      setFlash(ti('agents.replayControlsDisabled'))
     } else {
       action()
     }
@@ -809,16 +795,16 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       interrupt(id)
         .then(raw => {
           const r = asRpcResult<SubagentInterruptResponse>(raw)
-          setFlash(r?.found ? `killing ${id}` : `not found: ${id}`)
+          setFlash(r?.found ? ti('agents.killing', { id }) : ti('agents.notFound', { id }))
         })
-        .catch(() => setFlash(`kill failed: ${id}`))
+        .catch(() => setFlash(ti('agents.killFailed', { id })))
     })
 
   const killSubtree = (node: SubagentNode) =>
     guardLive(() => {
       const ids = [node.item.id, ...descendantIds(node)]
       ids.forEach(id => interrupt(id).catch(() => {}))
-      setFlash(`killing subtree · ${ids.length} node${ids.length === 1 ? '' : 's'}`)
+      setFlash(ti('agents.killingSubtree', { count: String(ids.length), noun: ids.length === 1 ? 'node' : 'nodes' }))
     })
 
   const togglePause = () =>
@@ -827,9 +813,9 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         .then(raw => {
           const r = asRpcResult<DelegationPauseResponse>(raw)
           applyDelegationStatus({ paused: r?.paused })
-          setFlash(r?.paused ? 'spawning paused' : 'spawning resumed')
+          setFlash(r?.paused ? ti('agents.spawningPaused') : ti('agents.spawningResumed'))
         })
-        .catch(() => setFlash('pause failed'))
+        .catch(() => setFlash(ti('agents.pauseFailed')))
     })
 
   const stepHistory = (delta: -1 | 1) =>
@@ -838,7 +824,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
       if (next !== idx) {
         setCursor(0)
-        setFlash(next === 0 ? 'live turn' : `replay · ${next}/${history.length}`)
+        setFlash(next === 0 ? ti('agents.liveTurn') : ti('agents.replayStep', { current: String(next), total: String(history.length) }))
       }
 
       return next
@@ -976,16 +962,28 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const title =
     replayMode && effectiveSnapshot
-      ? `${historyIndex > 0 ? `Replay ${historyIndex}/${history.length}` : 'Last turn'} · finished ${new Date(
+      ? `${historyIndex > 0 ? ti('agents.replayTitle', { current: String(historyIndex), total: String(history.length) }) : ti('agents.lastTurn')} · ${ti('agents.finishedAt', { time: new Date(
           effectiveSnapshot.finishedAt
-        ).toLocaleTimeString()}`
-      : `${ti('section.spawnTree')}${delegation.paused ? ' · ⏸ paused' : ''}`
+        ).toLocaleTimeString() })}`
+      : `${ti('section.spawnTree')}${delegation.paused ? ` · ⏸ ${ti('agents.paused')}` : ''}`
 
   const metaLine = [formatSummary(totals), spark, capsLabel, mix ? `· ${mix}` : ''].filter(Boolean).join('  ')
 
   const controlsHint = replayMode
-    ? ' · controls locked'
-    : ` · x kill · X subtree · p ${delegation.paused ? 'resume' : 'pause'}`
+    ? ti('agents.controlsLocked')
+    : ti('agents.controlsLive', { action: delegation.paused ? ti('agents.resume') : ti('agents.pause') })
+  const sortLabel = ti(({
+    'depth-first': 'agents.sort.depthFirst',
+    'duration-desc': 'agents.sort.durationDesc',
+    status: 'agents.sort.status',
+    'tools-desc': 'agents.sort.toolsDesc'
+  } as const)[sort])
+  const filterLabel = ti(({
+    all: 'agents.filter.all',
+    failed: 'agents.filter.failed',
+    leaf: 'agents.filter.leaf',
+    running: 'agents.filter.running'
+  } as const)[filter])
 
   // ── Rendering ──────────────────────────────────────────────────────
 
@@ -1011,7 +1009,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
       {rows.length === 0 ? (
         <Box flexDirection="column" flexGrow={1}>
-          <Text color={t.color.muted}>No subagents this turn. Trigger delegate_task to populate the tree.</Text>
+          <Text color={t.color.muted}>{ti('agents.noSubagents')}</Text>
         </Box>
       ) : mode === 'list' ? (
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
@@ -1050,14 +1048,16 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
         {mode === 'list' ? (
           <Text color={t.color.muted}>
-            ↑↓/jk move · g/G top/bottom · Enter/→ open detail{controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
-            {FILTER_LABEL[filter]}
-            {history.length > 0 ? ` · [ / ] history ${historyIndex}/${history.length}` : ''}
-            {' · q close'}
+            {ti('agents.hintList', {
+              controls: controlsHint,
+              filter: filterLabel,
+              history: history.length > 0 ? ti('agents.historyHint', { current: String(historyIndex), total: String(history.length) }) : '',
+              sort: sortLabel
+            })}
           </Text>
         ) : (
           <Text color={t.color.muted}>
-            ↑↓/jk scroll · PgUp/PgDn page · g/G top/bottom · Esc/← back to list{controlsHint} · q close
+            {ti('agents.hintDetail', { controls: controlsHint })}
           </Text>
         )}
       </Box>

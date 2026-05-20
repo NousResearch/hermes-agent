@@ -35,6 +35,64 @@ const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
 const MULTI_CLICK_MS = 500
 
+// Strip ANSI control / escape sequences that can leak into stdin when the
+// TUI gateway's stdout pipe breaks and rendering bytes get re-routed onto
+// the input stream after auto-restart (#28419). Covers:
+//   - Full CSI sequences:           ESC [ ... final-byte (0x40-0x7e)
+//   - OSC sequences:                ESC ] ... (BEL | ESC \)
+//   - Two-byte ESC introducers:     ESC <0x40-0x5f>  (e.g. ESC O F1-F4)
+//   - Bare ESC / ESC[ / ESC] / ESCO prefix (orphaned, no body)
+//   - Naked C0 / C1 control bytes (keeping \t and \n)
+//   - Orphan CSI tails like "35;104;62m" / "27;3M" left over when the ESC
+//     prefix was consumed earlier in the byte stream (the exact shape of
+//     the garbage in the bug report).
+const CSI_FULL_RE = /\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g
+const OSC_RE = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g
+// ESC O <final> — SS3 sequence used for keypad / F1-F4 keys (3 bytes total)
+const SS3_RE = /\x1bO[\x40-\x7e]/g
+const ESC_TWO_BYTE_RE = /\x1b[\x40-\x5f]/g
+const ESC_BARE_RE = /\x1b\[|\x1b[O\]]|\x1b/g
+const CTRL_RE = /[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]/g
+// Orphan CSI tail: digits+`;` clusters followed by a CSI final byte. The
+// final byte set matches the standard ECMA-48 range (`@`-`~`) but we
+// require a `;`-cluster shape so plain English words like "hello;world"
+// don't get clobbered.
+const ORPHAN_CSI_TAIL_RE = /(?:\d+;)+\d*[\x40-\x7e]|\d+[A-Za-z]/g
+
+export function stripAnsiSequences(input: string): string {
+  if (!input) {
+    return input
+  }
+  let out = input
+    .replace(CSI_FULL_RE, '')
+    .replace(OSC_RE, '')
+    .replace(SS3_RE, '')
+    .replace(ESC_TWO_BYTE_RE, '')
+    .replace(ESC_BARE_RE, '')
+
+  // Aggressive orphan-CSI cleanup. Only triggers when the residue still
+  // contains the unmistakable shape of de-escaped CSI param lists
+  // (multiple `<digits>;<digits>;<digits><letter>` chains) so legitimate
+  // user text like "a; b; c" or "color: red;" is left alone.
+  const looksLikeOrphanCsiFlood =
+    /(?:\d+;){2,}\d*[A-Za-z]/.test(out) || /(?:\d+;\d+[A-Za-z]){2,}/.test(out)
+  if (looksLikeOrphanCsiFlood) {
+    // Loop to convergence — successive passes can expose fresh tails as
+    // earlier ones get collapsed away.
+    for (let i = 0; i < 8; i++) {
+      const next = out
+        .replace(ORPHAN_CSI_TAIL_RE, '')
+        .replace(/(?<![A-Za-z\d]);+(?![A-Za-z\d])/g, '')
+        .replace(/(?<![A-Za-z\d])[A-Za-z](?![A-Za-z\d])/g, '')
+      if (next === out) {
+        break
+      }
+      out = next
+    }
+  }
+  return out.replace(CTRL_RE, '')
+}
+
 const invert = (s: string) => INV + s + INV_OFF
 const dim = (s: string) => DIM + s + DIM_OFF
 
@@ -679,7 +737,7 @@ export function TextInput({
   }
 
   const flushPaste = () => {
-    const text = pasteBuf.current
+    const text = stripAnsiSequences(pasteBuf.current)
     const at = pastePos.current
     const end = pasteEnd.current ?? at
     pasteBuf.current = ''
@@ -745,7 +803,9 @@ export function TextInput({
   const ins = (v: string, c: number, s: string) => v.slice(0, c) + s + v.slice(c)
 
   const pastePlainText = (text: string) => {
-    const cleaned = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    // Same #28419 leak vector: clipboard / OS paste callbacks can also
+    // deliver raw ANSI when the gateway's stdout pipe broke mid-render.
+    const cleaned = stripAnsiSequences(text.replace(/\r\n/g, '\n').replace(/\r/g, '\n'))
 
     if (!cleaned) {
       return
@@ -1018,7 +1078,9 @@ export function TextInput({
         }
       } else if (event.keypress.isPasted || inp.length > 0) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
-        const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+        const text = stripAnsiSequences(
+          inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+        )
 
         if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
           return

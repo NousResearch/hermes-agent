@@ -1,6 +1,6 @@
 # Phase 0: Identity & Tenant Model
 
-**Status**: Complete (code; Neon apply pending — see Step 7 in this file + migration/001_tenants_and_users.sql)
+**Status**: Complete (2026-05-20 — Neon DB live + RLS verified end-to-end)
 **Depends on**: None
 **Blocks**: Phase A, Phase B, Phase D
 
@@ -49,11 +49,11 @@ Migrations for `tenants`, `users`, `conversations`, `messages` tables with RLS p
 - [x] `scope_chain` returns `[personal_scope, team_scope, "global"]` in that order — verified by `tests/test_identity.py::TestScopeChain`
 - [x] Slack gateway constructs a valid `HermesIdentity` from a real Slack event payload — `gateway/platforms/slack.py` + `tests/test_identity.py::TestSlackEventExtraction`
 - [x] `AIAgent` accepts and stores `identity` without breaking existing tests — `run_agent.py` `__init__` + `self.identity`
-- [x] Neon schema: `tenants`, `users`, `conversations`, `messages` tables exist — `migrations/001_tenants_and_users.sql` (NOT yet applied)
-- [x] RLS policy `tenant_isolation_messages` blocks cross-tenant reads when `app.tenant_id` is set — in migration file (NOT yet applied)
+- [x] Neon schema: `tenants`, `users`, `conversations`, `messages` tables exist — applied 2026-05-20 via `psql "$NEON_DSN" -f migrations/001_tenants_and_users.sql`; verified `\dt` returns 4 tables
+- [x] RLS policy `tenant_isolation_messages` blocks cross-tenant reads when `app.tenant_id` is set — verified live: tenant_a's "Alice" user invisible from tenant_b context; unset GUC raises `unrecognized configuration parameter`
 - [x] `pytest tests/test_identity.py -v` — 26/26 passed
 - [x] Zero regressions in existing test suite — confirmed (pre-existing 52 failures unchanged)
-- [ ] **GATED**: Neon provisioning + migration apply (Step 7) — requires Blake's action. See `migrations/001_tenants_and_users.sql` apply instructions.
+- [x] Neon provisioning + migration apply (Step 7) — Complete 2026-05-20. Neon project `hermes-saas` (us-east-1, endpoint `ep-weathered-credit-aqq9kjyf.c-8.us-east-1.aws.neon.tech`). `hermes_app` role created (LOGIN, non-superuser, non-creator). DSN stored in AWS Secrets Manager at `agentic-stack/neon/hermes-saas` (ARN `arn:aws:secretsmanager:us-east-1:162471567408:secret:agentic-stack/neon/hermes-saas-Phb4Cl`).
 
 ## Key Files
 

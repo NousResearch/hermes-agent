@@ -141,6 +141,15 @@ class TestBrowseShape:
         titles = [r.get("title") for r in result["results"]]
         assert any("Modpack" in (t or "") for t in titles)
 
+    def test_browse_returns_deterministic_summary_not_only_preview(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(db=db))
+        hit = next(r for r in result["results"] if r["session_id"] == "s_newest")
+        assert "summary" in hit
+        assert "Goal: Fix the modpack mob spawning" in hit["summary"]
+        assert "Outcome: Shipped commit b850442" in hit["summary"]
+        assert hit["summary"] != hit.get("preview")
+
 
 # =========================================================================
 # Discovery shape (with query)
@@ -162,9 +171,18 @@ class TestDiscoveryShape:
             assert "messages" in hit
             assert "bookend_end" in hit
             assert "match_message_id" in hit
+            assert "summary" in hit
             assert "snippet" in hit
             assert "messages_before" in hit
             assert "messages_after" in hit
+
+    def test_discovery_summary_combines_goal_match_and_outcome(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="alternator", limit=1, db=db))
+        hit = result["results"][0]
+        assert "Modpack Mob Spawn Fix" in hit["summary"]
+        assert "Goal: Fix the modpack mob spawning" in hit["summary"]
+        assert "Outcome: Shipped commit b850442" in hit["summary"]
 
     def test_match_message_id_is_anchor_in_window(self, db):
         _seed_modpack_sessions(db)

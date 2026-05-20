@@ -31,6 +31,7 @@ support.
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
@@ -107,6 +108,108 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
 
 
+def _content_to_text(content: Any) -> str:
+    """Render stored message content to compact plain text for summaries."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text" and item.get("text"):
+                    parts.append(str(item.get("text")))
+            elif isinstance(item, str):
+                parts.append(item)
+        text = " ".join(parts) if parts else "[multimodal content]"
+    else:
+        text = str(content)
+    text = text.replace(">>>", "").replace("<<<", "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _clip(text: str, max_chars: int = 120) -> str:
+    text = _content_to_text(text)
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def _first_message_text(messages: List[Dict[str, Any]], role: str) -> str:
+    for msg in messages:
+        if msg.get("role") == role:
+            text = _content_to_text(msg.get("content"))
+            if text:
+                return text
+    return ""
+
+
+def _last_message_text(messages: List[Dict[str, Any]], role: str) -> str:
+    for msg in reversed(messages):
+        if msg.get("role") == role:
+            text = _content_to_text(msg.get("content"))
+            if text:
+                return text
+    return ""
+
+
+def _build_session_summary(
+    *,
+    title: Optional[str] = None,
+    messages: Optional[List[Dict[str, Any]]] = None,
+    snippet: str = "",
+    preview: str = "",
+) -> str:
+    """Build a deterministic goal→evidence→outcome summary without an LLM.
+
+    ``session_search`` intentionally stays zero-token, but callers still need a
+    better top-level recap than a raw preview. Use the title, first user turn,
+    match snippet, and last assistant turn when available.
+    """
+    messages = messages or []
+    parts: List[str] = []
+    clean_title = _content_to_text(title)
+    goal = _first_message_text(messages, "user") or _content_to_text(preview)
+    match = _content_to_text(snippet)
+    outcome = _last_message_text(messages, "assistant")
+
+    if clean_title:
+        parts.append(clean_title)
+    if goal:
+        parts.append(f"Goal: {_clip(goal, 120)}")
+    if match and match not in goal:
+        parts.append(f"Match: {_clip(match, 100)}")
+    if outcome and outcome != goal:
+        parts.append(f"Outcome: {_clip(outcome, 140)}")
+    if not parts:
+        return ""
+    return " — ".join(parts)
+
+
+def _load_browse_summary_messages(db, session_id: str) -> List[Dict[str, Any]]:
+    """Load only the first user and last assistant turn for browse summaries."""
+    conn = getattr(db, "_conn", None)
+    if conn is None:
+        return [
+            m for m in db.get_messages(session_id)
+            if m.get("role") in ("user", "assistant")
+        ]
+
+    rows = []
+    for role, order in (("user", "ASC"), ("assistant", "DESC")):
+        row = conn.execute(
+            f"SELECT * FROM messages WHERE session_id = ? AND role = ? ORDER BY id {order} LIMIT 1",
+            (session_id, role),
+        ).fetchone()
+        if row:
+            msg = dict(row)
+            if "content" in msg and hasattr(db, "_decode_content"):
+                msg["content"] = db._decode_content(msg["content"])
+            rows.append(msg)
+    return rows
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
@@ -126,6 +229,15 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             # Skip child / delegation sessions
             if s.get("parent_session_id"):
                 continue
+            summary = ""
+            try:
+                summary = _build_session_summary(
+                    title=s.get("title"),
+                    messages=_load_browse_summary_messages(db, sid),
+                    preview=s.get("preview", ""),
+                )
+            except Exception as e:
+                logging.debug("Failed to build browse summary for %s: %s", sid, e, exc_info=True)
             results.append({
                 "session_id": sid,
                 "title": s.get("title") or None,
@@ -133,6 +245,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
                 "started_at": s.get("started_at", ""),
                 "last_active": s.get("last_active", ""),
                 "message_count": s.get("message_count", 0),
+                "summary": summary,
                 "preview": s.get("preview", ""),
             })
             if len(results) >= limit:
@@ -344,6 +457,11 @@ def _discover(
         except Exception:
             session_meta = {}
 
+        shaped_start = [_shape_message(m) for m in (view.get("bookend_start") or [])]
+        shaped_window = [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])]
+        shaped_end = [_shape_message(m) for m in (view.get("bookend_end") or [])]
+        summary_messages = shaped_start + shaped_window + shaped_end
+
         entry = {
             "session_id": hit_sid,
             "when": _format_timestamp(
@@ -354,10 +472,15 @@ def _discover(
             "title": session_meta.get("title") or None,
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
+            "summary": _build_session_summary(
+                title=session_meta.get("title"),
+                messages=summary_messages,
+                snippet=match_info.get("snippet") or "",
+            ),
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
-            "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
-            "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
+            "bookend_start": shaped_start,
+            "messages": shaped_window,
+            "bookend_end": shaped_end,
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
         }
@@ -471,6 +594,7 @@ SESSION_SEARCH_SCHEMA = {
         "     Runs FTS5, dedupes hits by session lineage, returns the top N sessions. "
         "Each result carries:\n"
         "       - session_id, title, when, source\n"
+        "       - summary: deterministic title/goal/match/outcome recap (no LLM)\n"
         "       - snippet: FTS5-highlighted match excerpt\n"
         "       - bookend_start: first 3 user+assistant messages of the session "
         "(the goal / kickoff)\n"
@@ -493,7 +617,7 @@ SESSION_SEARCH_SCHEMA = {
         "start or end of the session.\n\n"
         "  3) BROWSE — no args:\n"
         "     session_search()\n"
-        "     Returns recent sessions chronologically: titles, previews, timestamps. "
+        "     Returns recent sessions chronologically: titles, summaries, previews, timestamps. "
         "Use when the user asks \"what was I working on\" without naming a topic.\n\n"
         "FTS5 SYNTAX\n\n"
         "  AND is the default — multi-word queries require all terms. Use OR explicitly "

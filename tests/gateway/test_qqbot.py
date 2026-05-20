@@ -410,6 +410,33 @@ class TestQQCloseError:
 
 
 # ---------------------------------------------------------------------------
+# _read_events
+# ---------------------------------------------------------------------------
+
+class TestQQReadEvents:
+    """Tests for QQAdapter._read_events()."""
+
+    @pytest.mark.asyncio
+    async def test_raises_on_closed_ws(self):
+        """When self._ws.closed is True, _read_events should raise RuntimeError,
+        preventing the caller from silently resetting backoff_idx."""
+        from gateway.platforms.qqbot import QQAdapter
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        adapter._ws = SimpleNamespace(closed=True)
+        with pytest.raises(RuntimeError, match="WebSocket closed"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_raises_on_missing_ws(self):
+        """When self._ws is None, _read_events should raise RuntimeError."""
+        from gateway.platforms.qqbot import QQAdapter
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        adapter._ws = None
+        with pytest.raises(RuntimeError, match="WebSocket not connected"):
+            await adapter._read_events()
+
+
+# ---------------------------------------------------------------------------
 # _dispatch_payload
 # ---------------------------------------------------------------------------
 

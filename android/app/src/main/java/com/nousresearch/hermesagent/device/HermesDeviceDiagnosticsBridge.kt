@@ -71,6 +71,8 @@ object HermesDeviceDiagnosticsBridge {
                 wifiScanJson(appContext, arguments, "wifi_export").toString()
             "bluetooth_analyzer_report", "bluetooth_readiness_report", "bluetooth_feature_report", "bluetooth_scan_policy", "nearby_bluetooth_report" ->
                 bluetoothAnalyzerReportJson(appContext, arguments).toString()
+            "bluetooth_signal_history", "bluetooth_history", "bluetooth_rssi_history", "bluetooth_trends", "bluetooth_trend" ->
+                bluetoothScanJson(appContext, arguments, "bluetooth_signal_history").toString()
             "bluetooth_scan", "bluetooth_scanner", "nearby_bluetooth", "ble_scan", "bluetooth_signals" ->
                 bluetoothScanJson(appContext, arguments).toString()
             "sensor_analyzer_report", "sensor_readiness_report", "sensor_feature_report", "sensor_sampling_policy", "motion_sensor_report" ->
@@ -477,7 +479,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("cards", cards)
     }
 
-    fun bluetoothScanJson(context: Context, arguments: JSONObject = JSONObject()): JSONObject {
+    fun bluetoothScanJson(context: Context, arguments: JSONObject = JSONObject(), actionName: String = "bluetooth_scan"): JSONObject {
         val appContext = context.applicationContext
         val limit = arguments.optInt("limit", DEFAULT_LIMIT).coerceIn(1, MAX_BLUETOOTH_RESULTS)
         val refresh = arguments.optBoolean("refresh", false)
@@ -488,7 +490,7 @@ object HermesDeviceDiagnosticsBridge {
         if (adapter == null) {
             return JSONObject()
                 .put("success", false)
-                .put("action", "bluetooth_scan")
+                .put("action", actionName)
                 .put("error", "Bluetooth service is unavailable on this device")
                 .put("bluetooth_scan_permission_status", permissionStatus)
         }
@@ -551,9 +553,12 @@ object HermesDeviceDiagnosticsBridge {
         val metadataSummary = bluetoothMetadataSummaryRows(devices)
         val serviceUuidCount = bluetoothDistinctStringCount(devices, "service_uuids")
         val manufacturerIdCount = bluetoothDistinctStringCount(devices, "manufacturer_ids")
+        val observedAtMs = System.currentTimeMillis()
+        val historyStore = updateBluetoothSignalHistory(appContext, devices, observedAtMs)
+        val signalHistory = bluetoothSignalHistoryRowsFromStore(historyStore)
         return JSONObject()
             .put("success", true)
-            .put("action", "bluetooth_scan")
+            .put("action", actionName)
             .put("refresh_requested", refresh)
             .put("refresh_accepted", refreshAccepted)
             .put("scan_error", scanError ?: JSONObject.NULL)
@@ -562,9 +567,11 @@ object HermesDeviceDiagnosticsBridge {
             .put("bluetooth_metadata_count", metadataSummary.length())
             .put("bluetooth_service_uuid_count", serviceUuidCount)
             .put("bluetooth_manufacturer_id_count", manufacturerIdCount)
+            .put("bluetooth_signal_history_count", signalHistory.length())
             .put("bluetooth_scan_permission_status", permissionStatus)
             .put("bluetooth_devices", devices)
             .put("bluetooth_metadata_summary", metadataSummary)
+            .put("bluetooth_signal_history", signalHistory)
             .put(
                 "cards",
                 JSONArray()
@@ -582,6 +589,14 @@ object HermesDeviceDiagnosticsBridge {
                             body = "${metadataSummary.length()} Bluetooth class/service/manufacturer summary row(s) inferred from nearby and paired device metadata.",
                             graphType = "bluetooth_metadata_summary",
                             rows = metadataSummary,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Bluetooth Signal History",
+                            body = "${signalHistory.length()} Bluetooth RSSI history row(s) built from recent BLE scan observations, including average, min/max, trend, and last-seen metadata.",
+                            graphType = "bluetooth_signal_history",
+                            rows = signalHistory,
                         ),
                     ),
             )
@@ -607,6 +622,8 @@ object HermesDeviceDiagnosticsBridge {
         val scanSucceeded = scanResult?.optBoolean("success", false) == true
         val devices = scanResult?.optJSONArray("bluetooth_devices") ?: JSONArray()
         val metadataSummary = scanResult?.optJSONArray("bluetooth_metadata_summary") ?: JSONArray()
+        val cachedHistory = scanResult?.optJSONArray("bluetooth_signal_history")
+            ?: bluetoothSignalHistoryRowsFromStore(readBluetoothSignalHistory(appContext))
         val serviceUuidCount = scanResult?.optInt("bluetooth_service_uuid_count", bluetoothDistinctStringCount(devices, "service_uuids"))
             ?: bluetoothDistinctStringCount(devices, "service_uuids")
         val manufacturerIdCount = scanResult?.optInt("bluetooth_manufacturer_id_count", bluetoothDistinctStringCount(devices, "manufacturer_ids"))
@@ -634,6 +651,7 @@ object HermesDeviceDiagnosticsBridge {
             serviceUuidCount = serviceUuidCount,
             manufacturerIdCount = manufacturerIdCount,
             rssiDeviceCount = rssiDeviceCount,
+            historyCount = cachedHistory.length(),
             categoryCount = bluetoothDistinctCategoryCount(devices),
         )
         val routeRows = bluetoothAnalyzerWorkflowRows(
@@ -642,6 +660,7 @@ object HermesDeviceDiagnosticsBridge {
             serviceUuidCount = serviceUuidCount,
             manufacturerIdCount = manufacturerIdCount,
             rssiDeviceCount = rssiDeviceCount,
+            historyCount = cachedHistory.length(),
         )
         val policyRows = bluetoothScanPolicyRows(
             bluetoothAvailable = bluetoothAvailable,
@@ -656,7 +675,7 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 graphCard(
                     title = "Bluetooth Analyzer Readiness",
-                    body = "${featureRows.length()} feature row(s) covering paired inventory, BLE nearby scans, RSSI proximity, service UUIDs, manufacturer IDs, category hints, card rendering, and safety boundaries.",
+                    body = "${featureRows.length()} feature row(s) covering paired inventory, BLE nearby scans, RSSI proximity/history, service UUIDs, manufacturer IDs, category hints, card rendering, and safety boundaries.",
                     graphType = "bluetooth_analyzer_feature_matrix",
                     rows = featureRows,
                 ),
@@ -677,6 +696,16 @@ object HermesDeviceDiagnosticsBridge {
                     rows = policyRows,
                 ),
             )
+        if (!scanSucceeded && cachedHistory.length() > 0) {
+            cards.put(
+                graphCard(
+                    title = "Bluetooth Signal History",
+                    body = "${cachedHistory.length()} cached Bluetooth RSSI trend row(s), preserving recent scan context for Gemma even when the analyzer report stays passive.",
+                    graphType = "bluetooth_signal_history",
+                    rows = cachedHistory,
+                ),
+            )
+        }
         scanResult?.optJSONArray("cards")?.let { scanCards ->
             for (index in 0 until scanCards.length()) {
                 cards.put(scanCards.getJSONObject(index))
@@ -685,11 +714,12 @@ object HermesDeviceDiagnosticsBridge {
         return result
             .put("success", true)
             .put("action", "bluetooth_analyzer_report")
-            .put("report_scope", "Bluetooth Analyzer readiness and routing report for paired devices, nearby BLE devices, RSSI proximity graphs, service UUIDs, manufacturer IDs, category metadata, scan cadence, permissions, and privacy boundaries.")
+            .put("report_scope", "Bluetooth Analyzer readiness and routing report for paired devices, nearby BLE devices, RSSI proximity graphs, signal history/trends, service UUIDs, manufacturer IDs, category metadata, scan cadence, permissions, and privacy boundaries.")
             .put("bluetooth_scan_permission_status", permissionStatus)
             .put("bluetooth_scan_status", scanStatus)
             .put("bluetooth_devices", devices)
             .put("bluetooth_metadata_summary", metadataSummary)
+            .put("bluetooth_signal_history", cachedHistory)
             .put("bluetooth_analyzer_feature_matrix", featureRows)
             .put("bluetooth_analyzer_workflow_routes", routeRows)
             .put("bluetooth_scan_policy_matrix", policyRows)
@@ -697,6 +727,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("bluetooth_metadata_count", metadataSummary.length())
             .put("bluetooth_service_uuid_count", serviceUuidCount)
             .put("bluetooth_manufacturer_id_count", manufacturerIdCount)
+            .put("bluetooth_signal_history_count", cachedHistory.length())
             .put("bluetooth_analyzer_feature_count", featureRows.length())
             .put("ready_bluetooth_analyzer_feature_count", countReadyRows(featureRows))
             .put("bluetooth_analyzer_workflow_route_count", routeRows.length())
@@ -1057,6 +1088,7 @@ object HermesDeviceDiagnosticsBridge {
         val socProfile = diagnostics.optJSONObject("soc_profile") ?: socProfileJson()
         val availableSensors = diagnostics.optJSONArray("available_sensor_types") ?: JSONArray()
         val cachedWifiHistory = wifiSignalHistoryRowsFromStore(readWifiSignalHistory(appContext))
+        val cachedBluetoothHistory = bluetoothSignalHistoryRowsFromStore(readBluetoothSignalHistory(appContext))
         val awarenessRows = signalAwarenessRows(
             diagnostics = diagnostics,
             signalStatus = signalStatus,
@@ -1065,6 +1097,7 @@ object HermesDeviceDiagnosticsBridge {
             socProfile = socProfile,
             availableSensors = availableSensors,
             cachedWifiHistory = cachedWifiHistory,
+            cachedBluetoothHistory = cachedBluetoothHistory,
         )
         val workflowRows = signalWorkflowRouteRows(
             diagnostics = diagnostics,
@@ -1072,6 +1105,7 @@ object HermesDeviceDiagnosticsBridge {
             preferredModel = preferredModel,
             availableSensors = availableSensors,
             cachedWifiHistory = cachedWifiHistory,
+            cachedBluetoothHistory = cachedBluetoothHistory,
         )
         val constraintRows = signalConstraintRows(diagnostics, signalStatus, radioStatus)
         return JSONObject()
@@ -1086,6 +1120,8 @@ object HermesDeviceDiagnosticsBridge {
             .put("bluetooth_scan_permission_status", diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject())
             .put("cached_wifi_signal_history", cachedWifiHistory)
             .put("cached_wifi_history_network_count", cachedWifiHistory.length())
+            .put("cached_bluetooth_signal_history", cachedBluetoothHistory)
+            .put("cached_bluetooth_history_device_count", cachedBluetoothHistory.length())
             .put("radio_bands", radioStatus.optJSONArray("radio_bands") ?: JSONArray())
             .put("signal_awareness_matrix", awarenessRows)
             .put("signal_workflow_routes", workflowRows)
@@ -1632,6 +1668,7 @@ object HermesDeviceDiagnosticsBridge {
         socProfile: JSONObject,
         availableSensors: JSONArray,
         cachedWifiHistory: JSONArray,
+        cachedBluetoothHistory: JSONArray,
     ): JSONArray {
         val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
         val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
@@ -1674,12 +1711,24 @@ object HermesDeviceDiagnosticsBridge {
                     label = "Bluetooth proximity metadata",
                     ready = bluetoothReady,
                     valueLabel = if (bluetoothReady) "scan or paired metadata ready" else "permission gated",
-                    detail = "Bluetooth rows can expose paired devices, BLE RSSI, proximity, class/category, service UUIDs, manufacturer IDs, and connectable status.",
+                    detail = "${cachedBluetoothHistory.length()} cached trend row(s); Bluetooth rows can expose paired devices, BLE RSSI, proximity, class/category, service UUIDs, manufacturer IDs, and connectable status.",
                     recommendation = "Use bluetooth_scan before reasoning about nearby peripherals, beacons, wearables, audio devices, or service advertisements.",
                     fraction = if (bluetoothReady) 1f else if (diagnostics.optBoolean("bluetooth_supported", false)) 0.55f else 0.1f,
                     extra = JSONObject()
                         .put("tool_action", "bluetooth_scan")
                         .put("permission_gate", "Bluetooth connect/scan access"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "Cached Bluetooth trend memory",
+                    ready = cachedBluetoothHistory.length() > 0,
+                    valueLabel = "${cachedBluetoothHistory.length()} tracked device(s)",
+                    detail = "Hermes keeps bounded Bluetooth RSSI history so Gemma can compare current, average, min/max, trend, proximity, and last-seen metadata after BLE scans.",
+                    recommendation = "Run bluetooth_signal_history after scans when diagnosing moving beacons, wearables, controllers, or audio devices.",
+                    fraction = if (cachedBluetoothHistory.length() > 0) (cachedBluetoothHistory.length() / 8f).coerceIn(0.35f, 1f) else 0.25f,
+                    extra = JSONObject().put("tool_action", "bluetooth_signal_history"),
                 ),
             )
             .put(
@@ -2053,6 +2102,7 @@ object HermesDeviceDiagnosticsBridge {
         serviceUuidCount: Int,
         manufacturerIdCount: Int,
         rssiDeviceCount: Int,
+        historyCount: Int,
         categoryCount: Int,
     ): JSONArray {
         val canReadPaired = permissionStatus.optBoolean("can_read_paired_devices", false)
@@ -2103,6 +2153,20 @@ object HermesDeviceDiagnosticsBridge {
                     extra = JSONObject()
                         .put("feature_source", "BLE RSSI metadata")
                         .put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_parity",
+                    label = "RSSI trend history graph",
+                    ready = historyCount > 0 || (bluetoothLeSupported && canScanNearby),
+                    valueLabel = if (historyCount > 0) "$historyCount tracked device(s)" else "scan route ready",
+                    detail = "Hermes keeps bounded Bluetooth RSSI history from BLE scan observations so Gemma can compare current, average, min/max, trend, and last-seen metadata.",
+                    recommendation = "Use bluetooth_signal_history after scans when the user asks whether nearby Bluetooth devices are approaching, fading, or stable.",
+                    fraction = if (historyCount > 0) (historyCount / 8f).coerceIn(0.45f, 1f) else if (bluetoothLeSupported && canScanNearby) 0.7f else 0.3f,
+                    extra = JSONObject()
+                        .put("feature_source", "bounded BLE RSSI history")
+                        .put("tool_action", "bluetooth_signal_history"),
                 ),
             )
             .put(
@@ -2181,6 +2245,7 @@ object HermesDeviceDiagnosticsBridge {
         serviceUuidCount: Int,
         manufacturerIdCount: Int,
         rssiDeviceCount: Int,
+        historyCount: Int,
     ): JSONArray {
         val canReadPaired = permissionStatus.optBoolean("can_read_paired_devices", false)
         val canScanNearby = permissionStatus.optBoolean("can_scan_nearby_devices", false)
@@ -2219,6 +2284,18 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Explain RSSI as a rough proximity indicator, not a precise location fix.",
                     fraction = if (rssiDeviceCount > 0) 1f else if (canScanNearby) 0.75f else 0.35f,
                     extra = JSONObject().put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_route",
+                    label = "Route Bluetooth signal history",
+                    ready = historyCount > 0 || canScanNearby,
+                    valueLabel = "bluetooth_signal_history",
+                    detail = "Use for RSSI trend, average, min/max, last-seen, and approaching/fading/stable comparisons across recent BLE scan observations.",
+                    recommendation = "Run bluetooth_scan refresh=true first when the history is empty and the user explicitly needs a fresh sample.",
+                    fraction = if (historyCount > 0) 0.9f else if (canScanNearby) 0.7f else 0.35f,
+                    extra = JSONObject().put("tool_action", "bluetooth_signal_history"),
                 ),
             )
             .put(
@@ -2718,6 +2795,7 @@ object HermesDeviceDiagnosticsBridge {
         preferredModel: JSONObject,
         availableSensors: JSONArray,
         cachedWifiHistory: JSONArray,
+        cachedBluetoothHistory: JSONArray,
     ): JSONArray {
         val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
         val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
@@ -2757,6 +2835,18 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Ask for Bluetooth scan/connect permissions when nearby scan rows are not available.",
                     fraction = if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) 1f else if (bluetoothPermission.optBoolean("can_read_paired_devices", false)) 0.75f else 0.45f,
                     extra = JSONObject().put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_route",
+                    label = "Route Bluetooth trend work",
+                    ready = cachedBluetoothHistory.length() > 0 || bluetoothPermission.optBoolean("can_scan_nearby_devices", false),
+                    valueLabel = "bluetooth_signal_history",
+                    detail = "Use cached Bluetooth signal history rows when comparing changing RSSI, proximity, trend, last seen, and nearby-device stability across scans.",
+                    recommendation = "Refresh BLE scans only when the user needs a fresh sample because scan permission and battery policy can gate repeated reads.",
+                    fraction = if (cachedBluetoothHistory.length() > 0) 0.85f else if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) 0.7f else 0.35f,
+                    extra = JSONObject().put("tool_action", "bluetooth_signal_history"),
                 ),
             )
             .put(
@@ -3217,7 +3307,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(toolJson("android_system_tool", "Read phone state and open settings or user-granted Shizuku/Sui actions.", "action, package_name, permission"))
                     .put(toolJson("android_ui_tool", "Inspect and control visible Android UI through accessibility and screenshots.", "action, selectors, coordinates"))
                     .put(toolJson("android_automation_tool", "Run/open/create saved automations, watcher tasks, overlays, notifications, widgets, and Tasker-style triggers.", "action, trigger, data_uri"))
-                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel ratings/AP detail and export rows/vendor OUI/filter facets, Bluetooth nearby devices/service UUIDs/manufacturer/proximity, camera, sensors, SOC compatibility, overlay, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, refresh, sensor_types, timeout_ms"))
+                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel ratings/AP detail and export rows/vendor OUI/filter facets, Bluetooth nearby devices/service UUIDs/manufacturer/proximity/history, camera, sensors, SOC compatibility, overlay, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, refresh, sensor_types, timeout_ms"))
                     .put(toolJson("hindsight_memory_tool", "Retain, recall, reflect, and promote local Hindsight-style memories with tags, entities, keywords, recency, reinforcement, and reusable prompt context.", "action, content, query, tags, category")),
             )
             .put("diagnostics_actions", JSONArray(ACTIONS))
@@ -3733,6 +3823,99 @@ object HermesDeviceDiagnosticsBridge {
                     .thenBy { it.optString("label") },
             )
             .take(MAX_BLUETOOTH_METADATA_SUMMARY_ROWS)
+        return JSONArray().also { array -> rows.forEach(array::put) }
+    }
+
+    internal fun mergeBluetoothSignalHistory(existing: JSONObject, devices: JSONArray, observedAtMs: Long): JSONObject {
+        val records = linkedMapOf<String, JSONObject>()
+        val existingRecords = existing.optJSONArray("devices") ?: JSONArray()
+        for (index in 0 until existingRecords.length()) {
+            val record = existingRecords.optJSONObject(index) ?: continue
+            val key = record.optString("key").ifBlank { bluetoothHistoryKey(record) }
+            if (key.isNotBlank()) {
+                records[key] = record.put("key", key)
+            }
+        }
+        for (index in 0 until minOf(devices.length(), MAX_BLUETOOTH_HISTORY_DEVICES_PER_SCAN)) {
+            val device = devices.optJSONObject(index) ?: continue
+            val rssi = jsonIntOrNull(device, "rssi_dbm") ?: continue
+            val key = bluetoothHistoryKey(device)
+            if (key.isBlank()) continue
+            val record = records.getOrPut(key) { JSONObject().put("key", key) }
+            record
+                .put("device_name", device.optString("device_name").ifBlank { device.optString("advertised_name") }.ifBlank { "<unnamed>" })
+                .put("advertised_name", device.optString("advertised_name"))
+                .put("address", device.optString("address"))
+                .put("device_type", device.optString("device_type").ifBlank { "unknown" })
+                .put("device_category", device.optString("device_category").ifBlank { "unknown" })
+                .put("bond_state", device.optString("bond_state").ifBlank { "unknown" })
+                .put("connectable", device.opt("connectable") ?: JSONObject.NULL)
+                .put("service_uuids", device.optJSONArray("service_uuids") ?: JSONArray())
+                .put("manufacturer_ids", device.optJSONArray("manufacturer_ids") ?: JSONArray())
+            val observations = record.optJSONArray("observations") ?: JSONArray()
+            observations.put(JSONObject().put("observed_at_ms", observedAtMs).put("rssi_dbm", rssi))
+            record.put("observations", trimBluetoothObservations(observations))
+        }
+        val ordered = records.values
+            .filter { record -> (record.optJSONArray("observations")?.length() ?: 0) > 0 }
+            .sortedWith(
+                compareByDescending<JSONObject> { lastBluetoothObservationTime(it) }
+                    .thenByDescending { currentBluetoothRssi(it) ?: Int.MIN_VALUE }
+                    .thenBy { it.optString("device_name") },
+            )
+            .take(MAX_BLUETOOTH_HISTORY_DEVICES)
+        return JSONObject()
+            .put("updated_at_ms", observedAtMs)
+            .put("devices", JSONArray().also { array -> ordered.forEach(array::put) })
+    }
+
+    internal fun bluetoothSignalHistoryRowsFromStore(store: JSONObject, nowMs: Long = System.currentTimeMillis()): JSONArray {
+        val records = store.optJSONArray("devices") ?: JSONArray()
+        val rows = buildList {
+            for (index in 0 until records.length()) {
+                val record = records.optJSONObject(index) ?: continue
+                val observations = record.optJSONArray("observations") ?: continue
+                val rssiValues = buildList {
+                    for (sampleIndex in 0 until observations.length()) {
+                        jsonIntOrNull(observations.optJSONObject(sampleIndex) ?: continue, "rssi_dbm")?.let(::add)
+                    }
+                }
+                if (rssiValues.isEmpty()) continue
+                val firstRssi = rssiValues.first()
+                val currentRssi = rssiValues.last()
+                val averageRssi = (rssiValues.sum().toDouble() / rssiValues.size).roundToInt()
+                val trendDb = currentRssi - firstRssi
+                val lastSeenMs = (nowMs - lastBluetoothObservationTime(record)).coerceAtLeast(0L)
+                add(
+                    JSONObject()
+                        .put("device_name", record.optString("device_name").ifBlank { "<unnamed>" })
+                        .put("advertised_name", record.optString("advertised_name"))
+                        .put("address", record.optString("address"))
+                        .put("device_type", record.optString("device_type").ifBlank { "unknown" })
+                        .put("device_category", record.optString("device_category").ifBlank { "unknown" })
+                        .put("bond_state", record.optString("bond_state").ifBlank { "unknown" })
+                        .put("connectable", record.opt("connectable") ?: JSONObject.NULL)
+                        .put("service_uuids", record.optJSONArray("service_uuids") ?: JSONArray())
+                        .put("manufacturer_ids", record.optJSONArray("manufacturer_ids") ?: JSONArray())
+                        .put("sample_count", rssiValues.size)
+                        .put("current_rssi_dbm", currentRssi)
+                        .put("average_rssi_dbm", averageRssi)
+                        .put("min_rssi_dbm", rssiValues.minOrNull() ?: currentRssi)
+                        .put("max_rssi_dbm", rssiValues.maxOrNull() ?: currentRssi)
+                        .put("trend_db", trendDb)
+                        .put("trend_label", bluetoothSignalTrendLabel(trendDb))
+                        .put("proximity_label", bluetoothProximityLabel(currentRssi))
+                        .put("last_seen_ms", lastSeenMs)
+                        .put("rssi_series", bluetoothObservationSeries(observations)),
+                )
+            }
+        }
+            .sortedWith(
+                compareByDescending<JSONObject> { it.optInt("current_rssi_dbm", Int.MIN_VALUE) }
+                    .thenByDescending { it.optInt("sample_count", 0) }
+                    .thenBy { it.optString("device_name") },
+            )
+            .take(MAX_BLUETOOTH_HISTORY_ROWS)
         return JSONArray().also { array -> rows.forEach(array::put) }
     }
 
@@ -5039,6 +5222,23 @@ object HermesDeviceDiagnosticsBridge {
         }.getOrDefault(JSONObject())
     }
 
+    private fun updateBluetoothSignalHistory(context: Context, devices: JSONArray, observedAtMs: Long): JSONObject {
+        val prefs = context.getSharedPreferences(BLUETOOTH_SIGNAL_HISTORY_PREFS, Context.MODE_PRIVATE)
+        val existing = runCatching {
+            JSONObject(prefs.getString(BLUETOOTH_SIGNAL_HISTORY_KEY, "{}").orEmpty().ifBlank { "{}" })
+        }.getOrDefault(JSONObject())
+        val updated = mergeBluetoothSignalHistory(existing, devices, observedAtMs)
+        prefs.edit().putString(BLUETOOTH_SIGNAL_HISTORY_KEY, updated.toString()).apply()
+        return updated
+    }
+
+    private fun readBluetoothSignalHistory(context: Context): JSONObject {
+        val prefs = context.getSharedPreferences(BLUETOOTH_SIGNAL_HISTORY_PREFS, Context.MODE_PRIVATE)
+        return runCatching {
+            JSONObject(prefs.getString(BLUETOOTH_SIGNAL_HISTORY_KEY, "{}").orEmpty().ifBlank { "{}" })
+        }.getOrDefault(JSONObject())
+    }
+
     private fun wifiHistoryKey(row: JSONObject): String {
         val bssid = row.optString("bssid").trim().lowercase(Locale.US)
         if (bssid.isNotBlank()) return bssid
@@ -5048,8 +5248,31 @@ object HermesDeviceDiagnosticsBridge {
         return listOf(ssid, frequency.toString(), channel).joinToString("|").takeIf { ssid.isNotBlank() }.orEmpty()
     }
 
+    private fun bluetoothHistoryKey(row: JSONObject): String {
+        val address = row.optString("address").trim().lowercase(Locale.US)
+        if (address.isNotBlank()) return address
+        val advertisedName = row.optString("advertised_name").trim().lowercase(Locale.US)
+        val deviceName = row.optString("device_name").trim().lowercase(Locale.US)
+        val serviceFingerprint = jsonStringList(row, "service_uuids").take(2).joinToString(",")
+        val manufacturerFingerprint = jsonStringList(row, "manufacturer_ids").take(2).joinToString(",")
+        val name = advertisedName.ifBlank { deviceName }
+        return listOf(name, serviceFingerprint, manufacturerFingerprint)
+            .joinToString("|")
+            .takeIf { name.isNotBlank() }
+            .orEmpty()
+    }
+
     private fun trimWifiObservations(observations: JSONArray): JSONArray {
         val start = (observations.length() - MAX_WIFI_HISTORY_SAMPLES_PER_NETWORK).coerceAtLeast(0)
+        val trimmed = JSONArray()
+        for (index in start until observations.length()) {
+            observations.optJSONObject(index)?.let(trimmed::put)
+        }
+        return trimmed
+    }
+
+    private fun trimBluetoothObservations(observations: JSONArray): JSONArray {
+        val start = (observations.length() - MAX_BLUETOOTH_HISTORY_SAMPLES_PER_DEVICE).coerceAtLeast(0)
         val trimmed = JSONArray()
         for (index in start until observations.length()) {
             observations.optJSONObject(index)?.let(trimmed::put)
@@ -5066,7 +5289,24 @@ object HermesDeviceDiagnosticsBridge {
         return 0L
     }
 
+    private fun lastBluetoothObservationTime(record: JSONObject): Long {
+        val observations = record.optJSONArray("observations") ?: return 0L
+        for (index in observations.length() - 1 downTo 0) {
+            val time = observations.optJSONObject(index)?.optLong("observed_at_ms", 0L) ?: 0L
+            if (time > 0L) return time
+        }
+        return 0L
+    }
+
     private fun currentWifiRssi(record: JSONObject): Int? {
+        val observations = record.optJSONArray("observations") ?: return null
+        for (index in observations.length() - 1 downTo 0) {
+            jsonIntOrNull(observations.optJSONObject(index) ?: continue, "rssi_dbm")?.let { return it }
+        }
+        return null
+    }
+
+    private fun currentBluetoothRssi(record: JSONObject): Int? {
         val observations = record.optJSONArray("observations") ?: return null
         for (index in observations.length() - 1 downTo 0) {
             jsonIntOrNull(observations.optJSONObject(index) ?: continue, "rssi_dbm")?.let { return it }
@@ -5080,9 +5320,29 @@ object HermesDeviceDiagnosticsBridge {
         else -> "stable"
     }
 
+    private fun bluetoothSignalTrendLabel(trendDb: Int): String = when {
+        trendDb >= 5 -> "approaching"
+        trendDb <= -5 -> "fading"
+        else -> "stable"
+    }
+
     private fun wifiObservationSeries(observations: JSONArray): JSONArray {
         val series = JSONArray()
         val start = (observations.length() - MAX_WIFI_HISTORY_SERIES_POINTS).coerceAtLeast(0)
+        for (index in start until observations.length()) {
+            val observation = observations.optJSONObject(index) ?: continue
+            series.put(
+                JSONObject()
+                    .put("observed_at_ms", observation.optLong("observed_at_ms", 0L))
+                    .put("rssi_dbm", jsonIntOrNull(observation, "rssi_dbm") ?: JSONObject.NULL),
+            )
+        }
+        return series
+    }
+
+    private fun bluetoothObservationSeries(observations: JSONArray): JSONArray {
+        val series = JSONArray()
+        val start = (observations.length() - MAX_BLUETOOTH_HISTORY_SERIES_POINTS).coerceAtLeast(0)
         for (index in start until observations.length()) {
             val observation = observations.optJSONObject(index) ?: continue
             series.put(
@@ -5384,6 +5644,7 @@ object HermesDeviceDiagnosticsBridge {
         "wifi_export",
         "bluetooth_analyzer_report",
         "bluetooth_scan",
+        "bluetooth_signal_history",
         "sensor_analyzer_report",
         "sensor_snapshot",
         "camera_status",
@@ -5437,6 +5698,13 @@ object HermesDeviceDiagnosticsBridge {
     private const val MAX_BLUETOOTH_MANUFACTURER_IDS_PER_DEVICE = 8
     private const val MAX_BLUETOOTH_METADATA_SUMMARY_ROWS = 24
     private const val MAX_BLUETOOTH_SUMMARY_SAMPLES = 4
+    private const val MAX_BLUETOOTH_HISTORY_DEVICES_PER_SCAN = 40
+    private const val MAX_BLUETOOTH_HISTORY_DEVICES = 40
+    private const val MAX_BLUETOOTH_HISTORY_ROWS = 16
+    private const val MAX_BLUETOOTH_HISTORY_SAMPLES_PER_DEVICE = 12
+    private const val MAX_BLUETOOTH_HISTORY_SERIES_POINTS = 8
+    private const val BLUETOOTH_SIGNAL_HISTORY_PREFS = "hermes_bluetooth_signal_history"
+    private const val BLUETOOTH_SIGNAL_HISTORY_KEY = "signal_history"
     private const val MAX_SENSOR_TYPES_PER_SAMPLE = 8
     private const val DEFAULT_SENSOR_TIMEOUT_MS = 800L
     private const val MAX_SENSOR_TIMEOUT_MS = 3_000L

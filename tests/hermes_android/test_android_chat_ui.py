@@ -72,6 +72,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
         "wifi_scan",
         "wifi_channel_utilization",
         "bluetooth_analyzer_report",
+        "bluetooth_signal_history",
         "sensor_analyzer_report",
         "radio_signal_status",
     ]:
@@ -86,4 +87,5 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
     assert 'id = "soc_compatibility"' in actions
     assert 'id = "wifi_occupancy"' in actions
     assert 'id = "bluetooth_analyzer"' in actions
+    assert 'id = "bluetooth_history"' in actions
     assert 'id = "sensor_analyzer"' in actions

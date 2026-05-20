@@ -61,6 +61,13 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
         iconRes = R.drawable.ic_action_cog,
     ),
     SignalIntelligenceQuickAction(
+        id = "bluetooth_history",
+        label = "Bluetooth Trends",
+        diagnosticAction = "bluetooth_signal_history",
+        prompt = "Run android_device_diagnostics_tool action=bluetooth_signal_history refresh=false",
+        iconRes = R.drawable.ic_action_refresh,
+    ),
+    SignalIntelligenceQuickAction(
         id = "sensor_analyzer",
         label = "Sensor Analyzer",
         diagnosticAction = "sensor_analyzer_report",

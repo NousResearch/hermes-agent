@@ -456,6 +456,51 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesBluetoothSignalHistoryRowsForExpandableSignalCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Bluetooth Signal History")
+                        .put("body", "Signal history.")
+                        .put("graph_type", "bluetooth_signal_history")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("device_name", "Heart Strap")
+                                    .put("device_type", "le")
+                                    .put("device_category", "wearable_health")
+                                    .put("proximity_label", "room")
+                                    .put("current_rssi_dbm", -58)
+                                    .put("average_rssi_dbm", -65)
+                                    .put("min_rssi_dbm", -72)
+                                    .put("max_rssi_dbm", -58)
+                                    .put("trend_db", 14)
+                                    .put("trend_label", "approaching")
+                                    .put("sample_count", 2)
+                                    .put("service_uuids", JSONArray().put("0000180d-0000-1000-8000-00805f9b34fb"))
+                                    .put("manufacturer_ids", JSONArray().put("0x004C")),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("Heart Strap", row.label)
+        assertEquals("-58 dBm approaching", row.valueLabel)
+        assertTrue(row.detail.contains("wearable_health"))
+        assertTrue(row.detail.contains("2 samples"))
+        assertTrue(row.detail.contains("avg -65 dBm"))
+        assertTrue(row.detail.contains("approaching +14 dB"))
+        assertTrue(row.detail.contains("manufacturers 0x004C"))
+        assertTrue(row.fraction > 0.5f)
+    }
+
+    @Test
     fun parsesSensorVectorRowsFromMotionSamples() {
         val content = JSONObject()
             .put(

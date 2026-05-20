@@ -87,6 +87,17 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsExplicitBluetoothSignalHistoryDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=bluetooth_signal_history refresh=false",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("bluetooth_signal_history", parsed.getString("action"))
+        assertFalse(parsed.getBoolean("refresh"))
+    }
+
+    @Test
     fun ignoresUnknownExplicitAndroidDiagnosticActions() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=network_intrusion",
@@ -611,6 +622,7 @@ class NativeToolCallingChatClientTest {
             .put("ready_bluetooth_analyzer_feature_count", 9)
             .put("bluetooth_analyzer_workflow_route_count", 1)
             .put("bluetooth_scan_policy_count", 1)
+            .put("bluetooth_signal_history_count", 1)
             .put("bluetooth_analyzer_feature_matrix", features)
             .put(
                 "bluetooth_analyzer_workflow_routes",
@@ -635,6 +647,17 @@ class NativeToolCallingChatClientTest {
                         .put("permission_gate", "Bluetooth connect and scan"),
                 ),
             )
+            .put(
+                "bluetooth_signal_history",
+                JSONArray().put(
+                    JSONObject()
+                        .put("device_name", "Heart Strap")
+                        .put("current_rssi_dbm", -58)
+                        .put("average_rssi_dbm", -65)
+                        .put("trend_label", "approaching")
+                        .put("trend_db", 14),
+                ),
+            )
             .put("cards", JSONArray().put(JSONObject().put("title", "Bluetooth Analyzer Readiness").put("body", "18 rows")))
             .toString()
 
@@ -642,6 +665,7 @@ class NativeToolCallingChatClientTest {
         val featureMatrix = parsed.getJSONObject("bluetooth_analyzer_feature_matrix")
         val routes = parsed.getJSONArray("bluetooth_analyzer_workflow_routes")
         val policies = parsed.getJSONArray("bluetooth_scan_policy_matrix")
+        val history = parsed.getJSONArray("bluetooth_signal_history")
 
         assertTrue(parsed.getBoolean("_hermes_context_compressed"))
         assertEquals(18, parsed.getInt("bluetooth_analyzer_feature_count"))
@@ -654,6 +678,8 @@ class NativeToolCallingChatClientTest {
         assertEquals("Connect and scan permissions", policies.getJSONObject(0).getString("label"))
         assertEquals("permission", policies.getJSONObject(0).getString("constraint_type"))
         assertEquals("Bluetooth connect and scan", policies.getJSONObject(0).getString("permission_gate"))
+        assertEquals("Heart Strap", history.getJSONObject(0).getString("device_name"))
+        assertEquals(1, parsed.getInt("bluetooth_signal_history_count"))
     }
 
     @Test

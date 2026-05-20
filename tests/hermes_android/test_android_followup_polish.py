@@ -299,18 +299,25 @@ def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and
     diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
 
     assert '"bluetooth_analyzer_report"' in diagnostics_bridge
+    assert '"bluetooth_signal_history"' in diagnostics_bridge
+    assert 'mergeBluetoothSignalHistory(' in diagnostics_bridge
+    assert 'bluetoothSignalHistoryRowsFromStore(' in diagnostics_bridge
     assert 'bluetoothAnalyzerReportJson(appContext' in diagnostics_bridge
     assert 'bluetoothAnalyzerFeatureRows(' in diagnostics_bridge
     assert 'bluetoothAnalyzerWorkflowRows(' in diagnostics_bridge
     assert 'bluetoothScanPolicyRows(' in diagnostics_bridge
+    assert '"bluetooth_signal_history"' in diagnostics_bridge
     assert '"bluetooth_analyzer_feature_matrix"' in diagnostics_bridge
     assert '"bluetooth_analyzer_workflow_routes"' in diagnostics_bridge
     assert '"bluetooth_scan_policy_matrix"' in diagnostics_bridge
     assert 'Bluetooth Analyzer readiness' in diagnostics_bridge
     assert 'bluetooth_analyzer_report' in chat_client
+    assert 'bluetooth_signal_history' in chat_client
+    assert '"bluetooth_signal_history"' in chat_client
     assert '"bluetooth_analyzer_feature_matrix"' in chat_client
     assert '"bluetooth_analyzer_workflow_routes"' in chat_client
     assert '"bluetooth_scan_policy_matrix"' in chat_client
+    assert '"bluetooth_signal_history" -> bluetoothSignalHistoryRow(row)' in diagnostic_cards
     assert '"bluetooth_analyzer_feature_matrix", "bluetooth_analyzer_workflow_routes", "bluetooth_scan_policy_matrix"' in diagnostic_cards
     assert 'capabilityMatrixRow(row)' in diagnostic_cards
 

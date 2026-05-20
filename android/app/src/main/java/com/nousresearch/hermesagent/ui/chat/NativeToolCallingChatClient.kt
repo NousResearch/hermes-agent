@@ -1251,13 +1251,13 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service/manufacturer/proximity metadata, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, camera capability, overlay status, SOC/GPU compatibility and backend-policy reports, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service/manufacturer/proximity metadata, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, camera capability, overlay status, SOC/GPU compatibility and backend-policy reports, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_analyzer_report, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, sensor_analyzer_report, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, soc_compatibility_report, signal_awareness_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
+                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_analyzer_report, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, soc_compatibility_report, signal_awareness_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point detail/export rows. Defaults to limit, or the Wi-Fi max for wifi_ap_details/wifi_export."))
                         .put("export_format", stringProp("Wi-Fi export format for wifi_export: json, csv, or both."))
-                        .put("refresh", boolProp("For wifi_scan, wifi_export, wifi_ap_details, or bluetooth_scan, request Android to refresh scan results before reading available results; analyzer reports stay passive."))
+                        .put("refresh", boolProp("For wifi_scan, wifi_export, wifi_ap_details, bluetooth_scan, or bluetooth_signal_history, request Android to refresh scan results before reading available results; analyzer reports stay passive."))
                         .put("include_snapshot", boolProp("For sensor_analyzer_report, include a bounded one-shot sensor snapshot; default is passive readiness and policy rows only."))
                         .put("sensor_types", stringProp("Comma-separated sensor types such as accelerometer, gyroscope, magnetic_field, light, proximity; returned rows include sensor range, resolution, power, FIFO, wake-up, and sampling-rate metadata when Android exposes it."))
                         .put("timeout_ms", intProp("Sensor or Bluetooth sampling timeout in milliseconds."))
@@ -1500,6 +1500,12 @@ class NativeToolCallingChatClient(
                     "bluetooth uuid",
                     "bluetooth manufacturer",
                     "bluetooth proximity",
+                    "bluetooth history",
+                    "bluetooth signal history",
+                    "bluetooth trend",
+                    "bluetooth rssi history",
+                    "ble history",
+                    "rssi trend",
                     "beacon",
                     "sensor",
                     "sensors",
@@ -3033,6 +3039,7 @@ class NativeToolCallingChatClient(
             "wifi_export",
             "bluetooth_scan",
             "bluetooth_analyzer_report",
+            "bluetooth_signal_history",
             "sensor_analyzer_report",
             "sensor_snapshot",
             "camera_status",
@@ -3444,6 +3451,7 @@ internal object NativeToolContextCompressor {
                 "bluetooth_metadata_count",
                 "bluetooth_service_uuid_count",
                 "bluetooth_manufacturer_id_count",
+                "bluetooth_signal_history_count",
                 "bluetooth_analyzer_feature_count",
                 "ready_bluetooth_analyzer_feature_count",
                 "bluetooth_analyzer_workflow_route_count",
@@ -3522,9 +3530,11 @@ internal object NativeToolContextCompressor {
         "soc_backend_policy_routes",
         "soc_backend_constraint_matrix",
         "cached_wifi_signal_history",
+        "cached_bluetooth_signal_history",
         "ai_experience_elevation_plan",
         "bluetooth_devices",
         "bluetooth_metadata_summary",
+        "bluetooth_signal_history",
         "bluetooth_analyzer_feature_matrix",
         "bluetooth_analyzer_workflow_routes",
         "bluetooth_scan_policy_matrix",

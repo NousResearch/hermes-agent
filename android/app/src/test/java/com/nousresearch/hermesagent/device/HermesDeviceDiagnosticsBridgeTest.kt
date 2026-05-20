@@ -319,6 +319,52 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun buildsBluetoothSignalHistoryRowsFromNearbyRssiSamples() {
+        val firstScan = JSONArray().put(
+            JSONObject()
+                .put("device_name", "Heart Strap")
+                .put("advertised_name", "Heart Strap")
+                .put("address", "AA:BB:CC:00:11:22")
+                .put("device_type", "le")
+                .put("device_category", "wearable_health")
+                .put("rssi_dbm", -72)
+                .put("service_uuids", JSONArray().put("0000180d-0000-1000-8000-00805f9b34fb"))
+                .put("manufacturer_ids", JSONArray().put("0x004C")),
+        )
+        val secondScan = JSONArray().put(
+            JSONObject()
+                .put("device_name", "Heart Strap")
+                .put("advertised_name", "Heart Strap")
+                .put("address", "AA:BB:CC:00:11:22")
+                .put("device_type", "le")
+                .put("device_category", "wearable_health")
+                .put("rssi_dbm", -58)
+                .put("service_uuids", JSONArray().put("0000180d-0000-1000-8000-00805f9b34fb"))
+                .put("manufacturer_ids", JSONArray().put("0x004C")),
+        )
+
+        val store = HermesDeviceDiagnosticsBridge.mergeBluetoothSignalHistory(
+            HermesDeviceDiagnosticsBridge.mergeBluetoothSignalHistory(JSONObject(), firstScan, 1_000L),
+            secondScan,
+            2_000L,
+        )
+        val rows = HermesDeviceDiagnosticsBridge.bluetoothSignalHistoryRowsFromStore(store, 2_500L)
+        val row = rows.getJSONObject(0)
+
+        assertEquals("Heart Strap", row.getString("device_name"))
+        assertEquals("wearable_health", row.getString("device_category"))
+        assertEquals(2, row.getInt("sample_count"))
+        assertEquals(-58, row.getInt("current_rssi_dbm"))
+        assertEquals(-65, row.getInt("average_rssi_dbm"))
+        assertEquals(14, row.getInt("trend_db"))
+        assertEquals("approaching", row.getString("trend_label"))
+        assertEquals("room", row.getString("proximity_label"))
+        assertTrue(row.getJSONArray("service_uuids").toString().contains("180d"))
+        assertEquals(2, row.getJSONArray("rssi_series").length())
+        assertEquals(500L, row.getLong("last_seen_ms"))
+    }
+
+    @Test
     fun emulatorDetectionSeparatesVirtualTargetsFromPhysicalPhoneEvidence() {
         assertTrue(
             HermesDeviceDiagnosticsBridge.isLikelyEmulatorDevice(
@@ -595,18 +641,20 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(featureLabels.contains("Identify paired devices"))
         assertTrue(featureLabels.contains("Scan nearby BLE devices"))
         assertTrue(featureLabels.contains("RSSI proximity graph"))
+        assertTrue(featureLabels.contains("RSSI trend history graph"))
         assertTrue(featureLabels.contains("Service UUID metadata"))
         assertTrue(featureLabels.contains("Manufacturer ID metadata"))
         assertTrue(featureLabels.contains("Bluetooth safety boundary"))
         assertTrue(routeLabels.contains("Route nearby Bluetooth scan"))
+        assertTrue(routeLabels.contains("Route Bluetooth signal history"))
         assertTrue(routeLabels.contains("Route service/manufacturer metadata"))
         assertTrue(routeLabels.contains("Route scan policy explanation"))
         assertTrue(policyLabels.contains("Connect and scan permissions"))
         assertTrue(policyLabels.contains("Active scan cadence"))
         assertTrue(policyLabels.contains("Analysis and privacy boundary"))
         assertTrue(result.getJSONArray("cards").toString().contains("Bluetooth Analyzer Readiness"))
-        assertTrue(result.getInt("bluetooth_analyzer_feature_count") >= 8)
-        assertTrue(result.getInt("bluetooth_analyzer_workflow_route_count") >= 5)
+        assertTrue(result.getInt("bluetooth_analyzer_feature_count") >= 9)
+        assertTrue(result.getInt("bluetooth_analyzer_workflow_route_count") >= 6)
         assertTrue(result.getInt("bluetooth_scan_policy_count") >= 6)
     }
 
@@ -631,17 +679,20 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONObject("soc_profile").has("litert_lm_backend_strategy"))
         assertTrue(result.getJSONObject("signal_capability_status").has("requires_external_sdr_for_broad_rf"))
         assertTrue(result.has("cached_wifi_signal_history"))
+        assertTrue(result.has("cached_bluetooth_signal_history"))
         assertTrue(awarenessLabels.contains("Wi-Fi scan surface"))
         assertTrue(awarenessLabels.contains("Bluetooth proximity metadata"))
+        assertTrue(awarenessLabels.contains("Cached Bluetooth trend memory"))
         assertTrue(awarenessLabels.contains("Radio/RF limits"))
         assertTrue(awarenessLabels.contains("SOC backend compatibility"))
         assertTrue(routeLabels.contains("Route Wi-Fi analyzer work"))
         assertTrue(routeLabels.contains("Route Bluetooth proximity work"))
+        assertTrue(routeLabels.contains("Route Bluetooth trend work"))
         assertTrue(constraintLabels.contains("AM/FM tuner public API"))
         assertTrue(constraintLabels.contains("Broad RF and microwave hardware"))
         assertTrue(result.getJSONArray("cards").toString().contains("Signal Awareness"))
-        assertTrue(result.getInt("signal_awareness_count") >= 8)
-        assertTrue(result.getInt("signal_workflow_route_count") >= 6)
+        assertTrue(result.getInt("signal_awareness_count") >= 9)
+        assertTrue(result.getInt("signal_workflow_route_count") >= 7)
         assertTrue(result.getInt("signal_constraint_count") >= 5)
     }
 

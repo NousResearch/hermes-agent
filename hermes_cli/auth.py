@@ -6174,13 +6174,158 @@ def login_command(args) -> None:
     raise SystemExit(0)
 
 
+class _InMemoryOAuthTokenStorage:
+    """Private TokenStorage so oauth-cli-kit doesn't write its shared file.
+
+    oauth-cli-kit's ``login_oauth_interactive`` defaults to a
+    ``FileTokenStorage`` that writes the result to a shared location
+    (platform-specific, e.g. ``~/Library/Application Support/oauth-cli-kit/
+    auth/codex.json``).  We only want the flow helper, not the shared
+    credential store — Hermes persists the tokens into its own
+    ``providers.openai-codex`` the same way device-code login does.
+    Implementing the minimal ``TokenStorage`` protocol keeps the flow
+    in-memory for the duration of the login call.
+    """
+
+    def __init__(self) -> None:
+        self._token: Any = None
+
+    def load(self) -> Any:
+        return self._token
+
+    def save(self, token: Any) -> None:
+        self._token = token
+
+    def get_token_path(self) -> Path:
+        # Required by the protocol; returned path is never written to.
+        return Path(os.devnull)
+
+
+def _codex_browser_oauth_login() -> Dict[str, Any]:
+    """Run oauth-cli-kit's browser OAuth flow for openai-codex.
+
+    Returns a creds dict in the same shape as ``_codex_device_code_login``
+    so the rest of the login plumbing (``_save_codex_tokens`` +
+    ``_update_config_for_provider``) doesn't need to know which flow
+    produced the tokens.  Does NOT write to oauth-cli-kit's shared file:
+    we pass a private in-memory storage so the credential stays under
+    Hermes's ownership, matching the #12360 design (Hermes's refresh
+    token is independent of any cross-tool session).
+
+    Requires an interactive terminal: oauth-cli-kit falls back to
+    ``input()`` when its local-callback server can't bind, which would
+    block forever on a piped stdin.  We surface a clean AuthError up
+    front in that case.  KeyboardInterrupt / EOFError / RuntimeError
+    from inside the flow are also converted to AuthError so callers
+    get a consistent failure shape.
+    """
+    import sys as _sys
+
+    if not (_sys.stdin and _sys.stdin.isatty()):
+        raise AuthError(
+            "Browser-based Codex login requires an interactive terminal "
+            "(stdin is not a TTY). Use `--method device-code` or run "
+            "from an interactive shell.",
+            provider="openai-codex",
+            code="oauth_cli_kit_requires_tty",
+            relogin_required=True,
+        )
+
+    try:
+        from oauth_cli_kit import login_oauth_interactive
+    except ImportError as exc:
+        raise AuthError(
+            "Browser-based Codex login requires oauth-cli-kit. "
+            "Reinstall Hermes or `pip install oauth-cli-kit`.",
+            provider="openai-codex",
+            code="oauth_cli_kit_missing",
+            relogin_required=True,
+        ) from exc
+
+    # oauth-cli-kit emits Rich markup ("[cyan]...[/cyan]", "[dim]...[/dim]")
+    # through its print_fn, so we pass a Rich console. Plain print would
+    # leak the bracket tags into the terminal.
+    from rich.console import Console
+
+    console = Console()
+    try:
+        token = login_oauth_interactive(
+            print_fn=console.print,
+            prompt_fn=lambda s: input(s),
+            storage=_InMemoryOAuthTokenStorage(),
+        )
+    except (KeyboardInterrupt, EOFError) as exc:
+        raise AuthError(
+            "Browser-based Codex login was cancelled.",
+            provider="openai-codex",
+            code="oauth_cli_kit_login_cancelled",
+            relogin_required=True,
+        ) from exc
+    except AuthError:
+        raise
+    except Exception as exc:
+        # oauth-cli-kit raises plain RuntimeError for state mismatch,
+        # missing code, server-start failure, etc.  Wrap into AuthError
+        # so the caller sees a consistent error type and code.
+        raise AuthError(
+            f"Browser-based Codex login failed: {exc}",
+            provider="openai-codex",
+            code="oauth_cli_kit_login_failed",
+            relogin_required=True,
+        ) from exc
+
+    access = str(getattr(token, "access", "") or "").strip()
+    refresh = str(getattr(token, "refresh", "") or "").strip()
+    if not access:
+        raise AuthError(
+            "Browser-based Codex login did not return a usable access token.",
+            provider="openai-codex",
+            code="oauth_cli_kit_login_failed",
+            relogin_required=True,
+        )
+
+    # Honour HERMES_CODEX_BASE_URL the same way `_codex_device_code_login`
+    # does — users with a proxy / custom Codex endpoint expect both
+    # login flows to write that endpoint into config.yaml, not silently
+    # fall back to ChatGPT's default.
+    base_url = (
+        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_CODEX_BASE_URL
+    )
+    return {
+        "tokens": {
+            "access_token": access,
+            "refresh_token": refresh,
+        },
+        "base_url": base_url,
+        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "auth_mode": "chatgpt",
+        "source": "browser",
+    }
+
+
 def _login_openai_codex(
     args,
     pconfig: ProviderConfig,
     *,
     force_new_login: bool = False,
 ) -> None:
-    """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
+    """OpenAI Codex login. Tokens stored in ~/.hermes/auth.json.
+
+    Two login methods are supported, selected via ``args.method``:
+      - ``device-code`` (default): OAuth device code flow.
+      - ``browser``: OAuth browser flow via oauth-cli-kit.  The
+        credential is stored in Hermes's own auth store the same way
+        device-code login does — oauth-cli-kit's shared file is not
+        written (see ``_codex_browser_oauth_login``).
+
+    ``force_new_login=True`` skips the "reuse existing?" prompt and the
+    Codex CLI import prompt, so `hermes model` can force a fresh
+    reauth when the user explicitly asked for one.
+    """
+    method = str(getattr(args, "method", "") or "device-code").strip().lower()
+    if method not in {"device-code", "browser"}:
+        raise SystemExit(f"Unsupported Codex login method: {method!r}")
 
     del args, pconfig  # kept for parity with other provider login helpers
 
@@ -6210,8 +6355,10 @@ def _login_openai_codex(
         except AuthError:
             pass
 
-    # Check for existing Codex CLI tokens we can import
-    if not force_new_login:
+    # Check for existing Codex CLI tokens we can import.  Only relevant
+    # when the user asked for device-code AND didn't explicitly force a
+    # fresh login (`hermes model` reauth skips this for a clean reset).
+    if method == "device-code" and not force_new_login:
         cli_tokens = _import_codex_cli_tokens()
         if cli_tokens:
             print("Found existing Codex CLI credentials at ~/.codex/auth.json")
@@ -6230,13 +6377,19 @@ def _login_openai_codex(
                 print(f"  Config updated: {config_path} (model.provider=openai-codex)")
                 return
 
-    # Run a fresh device code flow — Hermes gets its own OAuth session
+    # Run a fresh login — Hermes gets its own OAuth session regardless of method.
     print()
-    print("Signing in to OpenAI Codex...")
+    if method == "browser":
+        print("Signing in to OpenAI Codex (browser flow)...")
+    else:
+        print("Signing in to OpenAI Codex...")
     print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
     print()
 
-    creds = _codex_device_code_login()
+    if method == "browser":
+        creds = _codex_browser_oauth_login()
+    else:
+        creds = _codex_device_code_login()
 
     # Save tokens to Hermes auth store
     _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))

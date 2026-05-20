@@ -2901,6 +2901,35 @@ def _model_flow_openai_codex(config, current_model=""):
     )
     from hermes_cli.codex_models import get_codex_model_ids
 
+    def _prompt_codex_login_method() -> str | None:
+        """Ask the user to pick device-code vs browser login.
+
+        Returns the chosen method (``"device-code"`` or ``"browser"``)
+        or None if the user cancelled (Ctrl-C / EOF / "q" / "c").
+        Reprompts on invalid input rather than silently defaulting,
+        so a typo like "browser" / "3" / "b" doesn't get mapped to
+        device-code unintentionally.
+        """
+        print("Choose a login method:")
+        print("  1. Device code (default — open a URL, enter a code)")
+        print("  2. Browser (oauth-cli-kit — redirects back to a local callback)")
+        print("  q. Cancel")
+        while True:
+            try:
+                raw = input("  Choice [1]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                print("Login cancelled.")
+                return None
+            if raw in ("", "1"):
+                return "device-code"
+            if raw == "2":
+                return "browser"
+            if raw in ("q", "c", "quit", "cancel"):
+                print("Login cancelled.")
+                return None
+            print(f"  Invalid choice: {raw!r}. Enter 1, 2, or q.")
+
     status = get_codex_auth_status()
     if status.get("logged_in"):
         print("  OpenAI Codex credentials: ✓")
@@ -2915,10 +2944,13 @@ def _model_flow_openai_codex(config, current_model=""):
             choice = "1"
 
         if choice == "2":
+            method = _prompt_codex_login_method()
+            if method is None:
+                return
             print("Starting a fresh OpenAI Codex login...")
             print()
             try:
-                mock_args = argparse.Namespace()
+                mock_args = argparse.Namespace(method=method)
                 _login_openai_codex(
                     mock_args,
                     PROVIDER_REGISTRY["openai-codex"],
@@ -2937,10 +2969,13 @@ def _model_flow_openai_codex(config, current_model=""):
         elif choice == "3":
             return
     else:
-        print("Not logged into OpenAI Codex. Starting login...")
+        print("Not logged into OpenAI Codex.")
         print()
+        method = _prompt_codex_login_method()
+        if method is None:
+            return
         try:
-            mock_args = argparse.Namespace()
+            mock_args = argparse.Namespace(method=method)
             _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
         except SystemExit:
             print("Login cancelled or failed.")
@@ -11025,6 +11060,18 @@ def main():
         help="Disable TLS verification for OAuth login",
     )
     auth_add.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
+    auth_add.add_argument(
+        "--method",
+        choices=["device-code", "browser"],
+        default=None,
+        help=(
+            "OAuth login method.  Supported only for openai-codex; passing it "
+            "to another provider raises an error.  When omitted, openai-codex "
+            "defaults to 'device-code' (open a URL, enter a short code).  "
+            "'browser' runs an oauth-cli-kit browser flow.  Both produce "
+            "Hermes-owned tokens with the same refresh/removal lifecycle."
+        ),
+    )
     auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
     auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
     auth_remove = auth_subparsers.add_parser(

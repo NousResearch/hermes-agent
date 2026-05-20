@@ -155,7 +155,8 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     from hermes_cli.main import _model_flow_openai_codex
 
     captured = {"login_calls": 0}
-    choices = iter(["2"])
+    # First prompt: "2" = reauthenticate.  Second prompt: "1" = device code.
+    choices = iter(["2", "1"])
 
     monkeypatch.setattr("builtins.input", lambda prompt="": next(choices))
     monkeypatch.setattr(
@@ -167,9 +168,10 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
         lambda *args, **kwargs: {"api_key": "fresh-codex-token"},
     )
 
-    def _fake_login(*args, force_new_login=False, **kwargs):
+    def _fake_login(args, provider, *, force_new_login=False, **kwargs):
         captured["login_calls"] += 1
         captured["force_new_login"] = force_new_login
+        captured["method"] = getattr(args, "method", None)
 
     monkeypatch.setattr("hermes_cli.auth._login_openai_codex", _fake_login)
     monkeypatch.setattr(
@@ -187,6 +189,47 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     assert "Use existing credentials" in out
     assert "Reauthenticate (new OAuth login)" in out
     assert captured["login_calls"] == 1
+    assert captured["force_new_login"] is True
+    assert captured["method"] == "device-code"
+
+
+def test_model_command_reauth_routes_browser_method_through(monkeypatch):
+    """Reauth menu → "2" picks browser method, which must be threaded
+    through to _login_openai_codex via args.method.
+    """
+    from hermes_cli.main import _model_flow_openai_codex
+
+    captured = {}
+    # First prompt: "2" = reauthenticate.  Second prompt: "2" = browser.
+    choices = iter(["2", "2"])
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(choices))
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_codex_auth_status",
+        lambda: {"logged_in": True, "source": "hermes-auth-store"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda *args, **kwargs: {"api_key": "fresh-codex-token"},
+    )
+
+    def _fake_login(args, provider, *, force_new_login=False, **kwargs):
+        captured["method"] = getattr(args, "method", None)
+        captured["force_new_login"] = force_new_login
+
+    monkeypatch.setattr("hermes_cli.auth._login_openai_codex", _fake_login)
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.4"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda model_ids, current_model="": None,
+    )
+
+    _model_flow_openai_codex({}, current_model="gpt-5.4")
+
+    assert captured["method"] == "browser"
     assert captured["force_new_login"] is True
 
 
@@ -226,6 +269,104 @@ def test_model_command_uses_existing_codex_session_without_relogin(monkeypatch):
     _model_flow_openai_codex({}, current_model="gpt-5.4")
 
     assert captured["access_token"] == "existing-codex-token"
+
+
+def test_model_command_offers_browser_login_choice_for_codex(monkeypatch):
+    """When the user isn't logged in, `hermes model` prompts for the
+    login method.  Answering "2" routes to the browser flow by passing
+    args.method="browser" to _login_openai_codex.
+    """
+    from hermes_cli.main import _model_flow_openai_codex
+
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_codex_auth_status",
+        lambda: {"logged_in": False},
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": "2")
+    monkeypatch.setattr(
+        "hermes_cli.auth._login_openai_codex",
+        lambda args, provider: captured.setdefault("method", getattr(args, "method", None)),
+    )
+    # Downstream plumbing — not under test here, just don't crash.
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda *args, **kwargs: {"api_key": "codex-access-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.2-codex"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: None,
+    )
+
+    _model_flow_openai_codex({}, current_model="")
+
+    assert captured["method"] == "browser"
+
+
+def test_method_prompt_reprompts_on_invalid_input(monkeypatch, capsys):
+    """Typo or out-of-range input shouldn't silently default to
+    device-code — reprompt until the user picks a valid option.
+    """
+    from hermes_cli.main import _model_flow_openai_codex
+
+    captured = {}
+    # First "browser" / "3" / "b" are all invalid → reprompt.  Final "2"
+    # picks browser.
+    choices = iter(["browser", "3", "b", "2"])
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(choices))
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_codex_auth_status",
+        lambda: {"logged_in": False},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._login_openai_codex",
+        lambda args, provider: captured.setdefault("method", getattr(args, "method", None)),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda *args, **kwargs: {"api_key": "codex-access-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.2-codex"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: None,
+    )
+
+    _model_flow_openai_codex({}, current_model="")
+
+    out = capsys.readouterr().out
+    # Three invalid attempts, each followed by an "Invalid choice" line.
+    assert out.count("Invalid choice") == 3
+    assert captured["method"] == "browser"
+
+
+def test_method_prompt_q_cancels_login(monkeypatch):
+    """Typing 'q' (or 'c'/'cancel'/'quit') at the method prompt must
+    cancel the login cleanly without invoking _login_openai_codex.
+    """
+    from hermes_cli.main import _model_flow_openai_codex
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_codex_auth_status",
+        lambda: {"logged_in": False},
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": "q")
+    monkeypatch.setattr(
+        "hermes_cli.auth._login_openai_codex",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("login must not run when cancelled")),
+    )
+
+    # Should return cleanly, not raise.
+    _model_flow_openai_codex({}, current_model="")
 
 
 # ── Tests for _normalize_model_for_provider ──────────────────────────

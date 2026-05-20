@@ -2521,19 +2521,16 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            text = f"❓ {_html.escape(question)}"
-            thread_id = self._metadata_thread_id(metadata)
+            # Convert basic Markdown bold/italic to HTML so **text** renders correctly
+            import re as _re
+            def _md_to_html(s: str) -> str:
+                s = _html.escape(s)
+                s = _re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', s)
+                s = _re.sub(r'\*(.+?)\*', r'<i>\1</i>', s)
+                return s
 
-            if choices:
-                # Render full option text in the message body so mobile
-                # users can read long choices that would be truncated in
-                # inline button labels.  Buttons keep short numeric labels
-                # (1, 2, …, Other) to avoid Telegram truncation.
-                option_lines = "\n".join(
-                    f"{i + 1}. {_html.escape(str(c))}"
-                    for i, c in enumerate(choices)
-                )
-                text += f"\n\n{option_lines}"
+            text = f"❓ {_md_to_html(question)}"
+            thread_id = self._metadata_thread_id(metadata)
 
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),
@@ -2543,13 +2540,14 @@ class TelegramAdapter(BasePlatformAdapter):
             }
 
             if choices:
-                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
-                # short.
+                # Use choice text directly as button labels (truncated to 64 chars
+                # if needed). callback_data stays short via numeric index.
                 rows = []
-                for idx in range(len(choices)):
+                for idx, c in enumerate(choices):
+                    label = str(c)[:64]
                     rows.append([
                         InlineKeyboardButton(
-                            str(idx + 1),
+                            label,
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])

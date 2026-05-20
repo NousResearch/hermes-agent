@@ -58,13 +58,17 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
     try:
         from tools.skills_tool import SKILLS_DIR, skill_view
+        from agent.skill_utils import get_external_skills_dirs
 
         identifier_path = Path(raw_identifier).expanduser()
         if identifier_path.is_absolute():
-            try:
-                normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
-            except Exception:
-                normalized = raw_identifier
+            normalized = raw_identifier
+            for skills_root in [SKILLS_DIR, *get_external_skills_dirs()]:
+                try:
+                    normalized = str(identifier_path.resolve().relative_to(skills_root.resolve()))
+                    break
+                except Exception:
+                    continue
         else:
             normalized = raw_identifier.lstrip("/")
 

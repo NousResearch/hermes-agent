@@ -460,6 +460,24 @@ Generate some audio.
         assert "test-skill" in msg
         assert "do stuff" in msg
 
+    def test_loads_external_dir_skill_by_stored_absolute_path(self, tmp_path):
+        local_skills = tmp_path / "local-skills"
+        external_skills = tmp_path / "external-skills"
+        local_skills.mkdir()
+        _make_skill(external_skills, "external-skill")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[external_skills]),
+        ):
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/external-skill", "run")
+
+        assert msg is not None
+        assert "[Failed to load skill" not in msg
+        assert "external-skill" in msg
+        assert "run" in msg
+
     def test_returns_none_for_unknown(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()

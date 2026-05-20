@@ -32,7 +32,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, ClassVar, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 try:
@@ -47,6 +47,7 @@ try:
         Metadata,
         NostrSigner,
         PublicKey,
+        RelayStatus,
         RelayUrl,
         Tag,
         Timestamp,
@@ -75,6 +76,30 @@ logger = logging.getLogger(__name__)
 NIP40_TTL_SECONDS = 7 * 24 * 3600  # 1 week default
 # NIP-59 created_at obfuscation window.
 NIP59_MIN_LOOKBACK_MINUTES = 2880
+
+# Watchdog tuning.  The notification loop is a Rust task we can't introspect,
+# so we poll observable health every TICK seconds and bounce the client if
+# either the task died or the relay pool reports zero connectable members.
+WATCHDOG_TICK_SECONDS = 60.0
+# Initial fast-retry ramp on a freshly-detected failure: most blips clear in
+# under a minute, so try those quickly before settling into a slower cadence.
+# Floor of 5s keeps us out of the TIME_WAIT danger zone (~60s on macOS) for
+# outbound TCP — we never reopen a tuple faster than the OS can recycle it.
+WATCHDOG_RECOVERY_DELAYS_INITIAL = (5.0, 15.0, 45.0)
+# Steady-state retry cadence after the initial ramp.  We retry indefinitely
+# (matching every other persistent-loop adapter in this codebase — see
+# yuanbao.py / signal.py / matrix.py / mattermost.py) rather than capitulating,
+# so a long network outage self-heals once connectivity returns.  At 90s
+# cadence × N relays the steady-state TIME_WAIT footprint is ~(N * 60 / 90)
+# sockets, well below any kernel limit.
+WATCHDOG_RECOVERY_DELAY_STEADY = 90.0
+# Re-subscribe lookback on recovery.  Much shorter than NIP59_MIN_LOOKBACK
+# (used on initial connect) because a recovery cycle is a blip — we only
+# need to catch events that arrived during the outage, not replay 48h.
+WATCHDOG_RECOVERY_LOOKBACK_SECONDS = 600
+# Settle delay between disconnect() and connect() during a recovery cycle —
+# lets the Rust pool finish closing sockets before we ask it to open new ones.
+WATCHDOG_RECONNECT_SETTLE_SECONDS = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +168,21 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
 
     platform = Platform.NOSTR
 
+    # Tool-initiated sends (send_message_tool.py) reuse the gateway's connected
+    # adapter instead of spinning up a short-lived one that republishes profile
+    # and relay-list metadata on every call. Mirrors YuanbaoAdapter's pattern.
+    _active_instance: ClassVar[Optional["NostrAdapter"]] = None
+
+    @classmethod
+    def get_active(cls) -> Optional["NostrAdapter"]:
+        """Return the currently connected NostrAdapter, or None."""
+        return cls._active_instance
+
+    @classmethod
+    def set_active(cls, adapter: Optional["NostrAdapter"]) -> None:
+        """Register (or clear) the active adapter instance."""
+        cls._active_instance = adapter
+
     def __init__(self, config: PlatformConfig) -> None:
         super().__init__(config, Platform.NOSTR)
 
@@ -207,8 +247,15 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
         self._nip40_ttl_seconds: int = _minutes * 60
 
         # Allowlist: empty = deny all; * = allow all; otherwise explicit npub/hex list.
+        # NOSTR_ALLOW_ALL_USERS=true is honored as a synonym for NOSTR_ALLOWED_NPUBS=*
+        # so the cross-platform <PLATFORM>_ALLOW_ALL_USERS convention (see
+        # gateway/run.py:_is_user_authorized) actually opens the adapter gate too;
+        # without this an operator who set only the boolean would still be denied
+        # at message-handling time because the gateway gate is downstream of the
+        # adapter's _process_event allowlist check.
         allowed_raw = os.getenv("NOSTR_ALLOWED_NPUBS", "").strip()
-        self._allow_all_npubs: bool = (allowed_raw == "*")
+        allow_all_flag = os.getenv("NOSTR_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}
+        self._allow_all_npubs: bool = allow_all_flag or (allowed_raw == "*")
         self._allowed_pubkeys: Set[str] = set()
         if not self._allow_all_npubs and allowed_raw:
             for entry in allowed_raw.split(","):
@@ -256,6 +303,17 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
         # Internal state
         self._client: Optional[Client] = None
         self._notif_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
+        # Held during a recovery cycle so successive watchdog ticks (or an
+        # operator-initiated disconnect) don't race overlapping reconnects.
+        self._recovery_lock: asyncio.Lock = asyncio.Lock()
+        # Instance-level mirrors of the watchdog constants so tests can shrink
+        # the tick interval / delays without touching module state.
+        self._watchdog_tick_seconds: float = WATCHDOG_TICK_SECONDS
+        self._watchdog_recovery_delays_initial: tuple = WATCHDOG_RECOVERY_DELAYS_INITIAL
+        self._watchdog_recovery_delay_steady: float = WATCHDOG_RECOVERY_DELAY_STEADY
+        self._watchdog_reconnect_settle_seconds: float = WATCHDOG_RECONNECT_SETTLE_SECONDS
+        self._watchdog_recovery_lookback_seconds: int = WATCHDOG_RECOVERY_LOOKBACK_SECONDS
         self._running: bool = False
 
         logger.info(
@@ -286,13 +344,24 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
         self._load_seen_ids()
         self._client = Client(self._signer)
 
+        added = 0
         for url in self._relay_urls:
             try:
                 await self._client.add_relay(RelayUrl.parse(url))
+                added += 1
             except Exception as exc:
                 logger.warning("Nostr: could not add relay %s: %s", url, exc)
+        if added == 0:
+            logger.error(
+                "Nostr: no relays could be added (tried %d) — refusing to "
+                "connect; the bot would be deaf and mute",
+                len(self._relay_urls),
+            )
+            self._client = None
+            return False
+
         await self._client.connect()
-        logger.info("Nostr: connected to %d relay(s)", len(self._relay_urls))
+        logger.info("Nostr: connected to %d/%d relay(s)", added, len(self._relay_urls))
 
         self._running = True
 
@@ -320,11 +389,27 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
         # Run the event handler loop
         self._notif_task = asyncio.create_task(self._client.handle_notifications(self))
 
-        logger.info("Nostr: connected (npub=%s, relays=%d)", self._npub, len(self._relay_urls))
+        # Supervise the notification loop.  Started after the loop so a
+        # never-started loop is never "unhealthy".
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+
+        NostrAdapter.set_active(self)
+
+        logger.info("Nostr: connected (npub=%s, relays=%d)", self._npub, added)
         return True
 
     async def disconnect(self) -> None:
+        # Order matters: stop the watchdog first so it can't start a recovery
+        # cycle while we are tearing the client down.  The notif task and the
+        # client follow, mirroring connect()'s construction order in reverse.
         self._running = False
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._watchdog_task = None
         if self._notif_task:
             self._notif_task.cancel()
             try:
@@ -338,7 +423,190 @@ class NostrAdapter(BasePlatformAdapter, HandleNotification):
             except Exception:
                 pass
             self._client = None
+        if NostrAdapter._active_instance is self:
+            NostrAdapter.set_active(None)
         logger.info("Nostr: disconnected")
+
+    # ------------------------------------------------------------------
+    # Watchdog — supervises the Rust-side notification loop
+    # ------------------------------------------------------------------
+
+    # Relay statuses we treat as "the pool is still trying to deliver".
+    # DISCONNECTED/BANNED/TERMINATED are terminal; SLEEPING is between retry
+    # attempts (the SDK wakes it on its own) so we count it as alive.
+    _CONNECTABLE_RELAY_STATUSES = (
+        ("CONNECTED", "CONNECTING", "PENDING", "INITIALIZED", "SLEEPING")
+        if not _NOSTR_SDK_AVAILABLE
+        else (
+            RelayStatus.CONNECTED,
+            RelayStatus.CONNECTING,
+            RelayStatus.PENDING,
+            RelayStatus.INITIALIZED,
+            RelayStatus.SLEEPING,
+        )
+    )
+
+    async def _is_loop_healthy(self) -> bool:
+        """True when the notif task is alive and ≥1 relay is in a connectable state.
+
+        Returns False on any inspection error — callers treat that as
+        "ambiguously unhealthy" and the watchdog logs+skips that tick rather
+        than triggering recovery off a transient SDK glitch.
+        """
+        if not self._client:
+            return False
+        task = self._notif_task
+        if task is None or task.done():
+            return False
+        relays = await self._client.relays()
+        if not relays:
+            return False
+        for relay in relays.values():
+            try:
+                if relay.status() in self._CONNECTABLE_RELAY_STATUSES:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _watchdog_loop(self) -> None:
+        """Poll loop health every tick; trigger recovery on degradation.
+
+        On recovery failure we do NOT capitulate — _attempt_recovery loops
+        until either the loop is healthy again or _running goes False.  This
+        matches every other persistent-loop adapter in this codebase
+        (signal.py, yuanbao.py, matrix.py, mattermost.py): a long network
+        outage self-heals once connectivity returns instead of permanently
+        silencing the bot.
+        """
+        try:
+            while self._running:
+                try:
+                    await asyncio.sleep(self._watchdog_tick_seconds)
+                except asyncio.CancelledError:
+                    raise
+                if not self._running:
+                    return
+                try:
+                    healthy = await self._is_loop_healthy()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Nostr watchdog: health check raised; skipping this tick"
+                    )
+                    continue
+                if healthy:
+                    continue
+                logger.warning(
+                    "Nostr watchdog: notification loop unhealthy — attempting recovery"
+                )
+                try:
+                    await self._attempt_recovery()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Nostr watchdog: recovery raised unexpectedly")
+                    # Don't break — next tick will try again.
+        except asyncio.CancelledError:
+            raise
+
+    async def _attempt_recovery(self) -> None:
+        """Soft-reconnect until healthy or disconnect() is called.
+
+        Uses the initial fast-ramp delays for the first few attempts, then
+        falls back to the steady-state cadence forever.  The cadence resets
+        the next time the watchdog observes a transition from healthy →
+        unhealthy (a fresh failure event), so each new outage gets the fast
+        ramp; we don't punish a transient blip after a long uptime.
+        """
+        async with self._recovery_lock:
+            initial = self._watchdog_recovery_delays_initial
+            steady = self._watchdog_recovery_delay_steady
+            attempt = 0
+            while self._running:
+                attempt += 1
+                delay = initial[attempt - 1] if attempt <= len(initial) else steady
+                logger.info(
+                    "Nostr watchdog: recovery attempt %d (delay %.1fs)",
+                    attempt, delay,
+                )
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    return
+                if not self._running:
+                    return
+                try:
+                    await self._soft_reconnect_cycle()
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    logger.exception(
+                        "Nostr watchdog: reconnect cycle %d raised", attempt
+                    )
+                    continue
+                try:
+                    if await self._is_loop_healthy():
+                        logger.info(
+                            "Nostr watchdog: recovery succeeded on attempt %d",
+                            attempt,
+                        )
+                        return
+                except Exception:
+                    logger.exception(
+                        "Nostr watchdog: post-recovery health check raised on attempt %d",
+                        attempt,
+                    )
+
+    async def _soft_reconnect_cycle(self) -> None:
+        """Cancel notif task → disconnect client → settle → reconnect → re-subscribe → restart loop.
+
+        Does NOT re-publish Kind 0 / Kind 10050 — relays already hold those
+        events and a reconnect storm must not fan out duplicate metadata.
+        Re-subscribe uses a short lookback (10 min) instead of the full
+        NIP-59 48h window: we only need to backfill what arrived during the
+        outage, not replay history dedup will silently drop anyway.
+        """
+        # Cancel and reap the old loop task so it can't race the new one on
+        # handle()/_process_event mutations of _seen_event_ids.
+        if self._notif_task and not self._notif_task.done():
+            self._notif_task.cancel()
+            try:
+                await self._notif_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._notif_task = None
+        # Tear down the existing client cleanly so the Rust pool drops its
+        # sockets before we ask it to open new ones.
+        if self._client:
+            try:
+                await self._client.disconnect()
+            except Exception:
+                pass
+        # Settle: lets the OS move closed sockets toward TIME_WAIT before
+        # reuse, and gives the Rust pool a moment to finish teardown.
+        try:
+            await asyncio.sleep(self._watchdog_reconnect_settle_seconds)
+        except asyncio.CancelledError:
+            raise
+        if not self._client or not self._running:
+            return
+        await self._client.connect()
+        bot_pk = self._keys.public_key()
+        since_ts = Timestamp.from_secs(
+            max(0, int(time.time()) - self._watchdog_recovery_lookback_seconds)
+        )
+        f = (
+            Filter()
+            .pubkey(bot_pk)
+            .kind(Kind.from_std(KindStandard.GIFT_WRAP))
+            .since(since_ts)
+        )
+        await self._client.subscribe(f)
+        self._notif_task = asyncio.create_task(
+            self._client.handle_notifications(self)
+        )
 
     # ------------------------------------------------------------------
     # nostr-sdk HandleNotification protocol

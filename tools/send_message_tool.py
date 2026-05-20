@@ -158,7 +158,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat), 'nostr' (uses NOSTR_HOME_CHANNEL), 'nostr:npub1abc...' (NIP-19 bech32 recipient), 'nostr:<64-char-hex>' (raw hex pubkey)"
             },
             "message": {
                 "type": "string",
@@ -538,8 +538,23 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         return None, None, False
     if platform_name == "nostr":
         s = target_ref.strip()
-        if s:
+        if not s:
+            return None, None, False
+        # Validate up-front so a bad pubkey surfaces here instead of much
+        # later in send() after relay-connect overhead.  nostr-sdk's
+        # PublicKey.parse accepts both hex (64-char) and npub bech32 forms.
+        try:
+            from nostr_sdk import PublicKey
+            PublicKey.parse(s)
             return s, None, True
+        except ImportError:
+            # nostr-sdk not installed: tool dispatch will fail downstream
+            # with an actionable install hint.  Accept the raw target so
+            # that error path runs instead of misreporting as "not a valid
+            # target".
+            return s, None, True
+        except Exception:
+            return None, None, False
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:

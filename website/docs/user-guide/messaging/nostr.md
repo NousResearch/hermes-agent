@@ -123,12 +123,42 @@ Hermes → NIP-17 encrypted DM → Nostr relay (WSS) → Recipient
 | `NOSTR_BOT_WEBSITE` | No | — | Website URL for the bot's kind-0 profile |
 | `NOSTR_EXPIRATION_MINUTES` | No | `10080` (7 days) | NIP-40 TTL for outbound messages, in minutes |
 | `NOSTR_SEEN_MAX` | No | `1000` | Rolling window size for dedup cache persisted to disk |
+| `NOSTR_LOOKBACK_MINUTES` | No | `2880` (48h) | Max age of gift wraps the subscription will replay on connect — see [Lookback window](#lookback-window) |
+| `NOSTR_ALLOW_ALL_USERS` | No | `false` | Gateway-level authorization override — see [Authorization layers](#authorization-layers) |
+
+### Authorization layers
+
+Nostr has **two** authorization gates, evaluated independently:
+
+1. **Adapter-level** (`NOSTR_ALLOWED_NPUBS`, `NOSTR_ALLOW_ALL_USERS`): consulted inside `NostrAdapter._process_event` before a DM is recorded in the dedup window. Parsed once at adapter init — **changes require a gateway restart**.
+2. **Gateway-level** (`NOSTR_ALLOW_ALL_USERS` and the same `NOSTR_ALLOWED_NPUBS`): consulted by the gateway's `_is_user_authorized()` before a message is dispatched to the agent. Read from env at request time — changes apply on the next message.
+
+For a sender to reach the agent, **both** gates must pass. The adapter gate is the strict security perimeter (silently drops disallowed DMs, never records them in the seen-list — so a flood from blocked senders cannot evict legitimate IDs). The gateway gate is the per-platform override layer used by other adapters (Discord, Slack) and is honored here for consistency.
+
+`NOSTR_ALLOW_ALL_USERS=true` and `NOSTR_ALLOWED_NPUBS=*` are equivalent — either form opens both gates. The boolean exists to match the cross-platform `<PLATFORM>_ALLOW_ALL_USERS` convention used by Discord, Slack, Telegram, and others; use whichever reads better in your env file. Accepted truthy values are `true`, `1`, `yes` (case-insensitive).
 
 ## Lookback window
 
 `NOSTR_LOOKBACK_MINUTES` caps how far back the relay subscription replays gift wraps when the gateway connects, preventing unbounded historical replay on a fresh install or restart.
 
 The default is `2880` minutes (48 hours), which matches NIP-59's `created_at` randomization window. **Setting this lower than 2880 risks dropping legitimate inbound DMs** whose timestamps were randomized further back than your window.
+
+## Health monitoring
+
+The adapter supervises its own notification loop. `nostr-sdk`'s `Client.handle_notifications()` is opaque — it can return silently when the relay pool exhausts its internal retries — so a watchdog task polls observable health every 60 seconds:
+
+- The notification task is alive (not done, not raised).
+- At least one configured relay reports a connectable status (`CONNECTED`, `CONNECTING`, `PENDING`, `INITIALIZED`, or `SLEEPING`).
+
+If either signal fails, the watchdog runs a soft-reconnect cycle: cancel the notification task, disconnect the client, settle for 1 second so the OS can recycle sockets, reconnect, re-subscribe to the gift-wrap filter (using a short 10-minute lookback rather than the full 48 hours — events that arrived during the outage will be backfilled, older events are already in the dedup window), and restart the notification task.
+
+Recovery uses a fast initial ramp (5s, 15s, 45s) for the first three attempts to catch transient blips, then settles into a steady-state cadence of 90 seconds. **The watchdog retries indefinitely**; a long network outage will self-heal once relays are reachable again. Matching log lines to look for:
+
+- `Nostr watchdog: notification loop unhealthy — attempting recovery`
+- `Nostr watchdog: recovery attempt N (delay Xs)`
+- `Nostr watchdog: recovery succeeded on attempt N`
+
+Profile metadata (Kind 0) and the DM relay list (Kind 10050) are **not** republished during recovery — relays already hold those events and a reconnect storm should not fan out duplicate metadata.
 
 ## config.yaml Example
 

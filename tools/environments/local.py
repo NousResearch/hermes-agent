@@ -15,8 +15,57 @@ from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
+_IS_MACOS = platform.system() == "Darwin"
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_macos_keychain_symlink(profile_home: str) -> None:
+    """On macOS, ensure ``$profile_home/Library/Keychains`` resolves to the
+    real user's keychain dir.
+
+    Per-profile HOME isolation (issue #29015) otherwise hides
+    ``~/Library/Keychains/login.keychain-db`` from subprocesses, breaking any
+    CLI that authenticates via the macOS login keychain (``claude``, ``gh``
+    when using OS keychain storage, ``security`` framework callers, …).
+
+    Best-effort: any failure (no real HOME, no keychain dir, EACCES, race
+    with another worker) is silently logged — the only consequence is that
+    keychain-using CLIs in this subprocess will fall back to "not logged in",
+    which is the pre-fix behaviour.
+    """
+    if not _IS_MACOS or not profile_home:
+        return
+    real_home = os.environ.get("HOME")
+    if not real_home or os.path.realpath(real_home) == os.path.realpath(profile_home):
+        return
+    src = os.path.join(real_home, "Library", "Keychains")
+    if not os.path.isdir(src):
+        return
+    dst_parent = os.path.join(profile_home, "Library")
+    dst = os.path.join(dst_parent, "Keychains")
+    try:
+        os.makedirs(dst_parent, exist_ok=True)
+        # Already a symlink to the right place — done.
+        if os.path.islink(dst):
+            try:
+                if os.path.realpath(dst) == os.path.realpath(src):
+                    return
+            except OSError:
+                pass
+            # Wrong target — replace.
+            try:
+                os.unlink(dst)
+            except OSError:
+                return
+        elif os.path.exists(dst):
+            # A real directory (or file) is already there — don't clobber
+            # user data; just leave it.  The subprocess will see whatever
+            # they put there.
+            return
+        os.symlink(src, dst)
+    except OSError as e:
+        logger.debug("could not link %s -> %s: %s", dst, src, e)
 
 
 def _msys_to_windows_path(cwd: str) -> str:
@@ -212,6 +261,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     _profile_home = get_subprocess_home()
     if _profile_home:
         sanitized["HOME"] = _profile_home
+        _ensure_macos_keychain_symlink(_profile_home)
 
     return sanitized
 
@@ -316,6 +366,10 @@ def _make_run_env(env: dict) -> dict:
     _profile_home = get_subprocess_home()
     if _profile_home:
         run_env["HOME"] = _profile_home
+        # macOS: expose the real user's login keychain into the isolated
+        # HOME so CLIs that authenticate via ~/Library/Keychains keep
+        # working from worker subprocesses (issue #29015).
+        _ensure_macos_keychain_symlink(_profile_home)
 
     # Inject ContextVar-based session vars into subprocess env.
     # ContextVars don't propagate to child processes, so we bridge them here.

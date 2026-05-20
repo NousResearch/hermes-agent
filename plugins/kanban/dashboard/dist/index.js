@@ -3240,6 +3240,10 @@
         renderMarkdown: props.renderMarkdown,
         onPatch: props.onPatch,
       }),
+      h(EvidenceSection, {
+        task: t,
+        runs: props.data.runs || [],
+      }),
       h(DependencyEditor, {
         task: t,
         links, allTasks: props.allTasks,
@@ -3316,6 +3320,60 @@
       ),
       h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
       h(RunHistorySection, { runs: props.data.runs || [] }),
+    );
+  }
+
+  function EvidenceSection(props) {
+    const runs = props.runs || [];
+    if (runs.length === 0 && !props.task.latest_summary && !props.task.result) return null;
+
+    const latest = runs.slice().reverse().find(function (run) {
+      return run.summary || run.metadata || run.error;
+    }) || null;
+    const metadata = latest && latest.metadata ? latest.metadata : {};
+    const evidence = metadata.evidence && typeof metadata.evidence === "object"
+      ? metadata.evidence
+      : {};
+    const changedFiles = Array.isArray(metadata.changed_files)
+      ? metadata.changed_files
+      : (Array.isArray(evidence.changed_files) ? evidence.changed_files : []);
+    const testsRun = metadata.tests_run || evidence.tests_run || metadata.tests || evidence.tests || "";
+    const verification = metadata.verification || evidence.verification || "";
+    const summary = (latest && latest.summary) || props.task.latest_summary || props.task.result || "";
+
+    return h("div", { className: "hermes-kanban-section hermes-kanban-evidence" },
+      h("div", { className: "hermes-kanban-section-head" }, "Worker evidence"),
+      summary
+        ? h("div", { className: "hermes-kanban-evidence-row" },
+            h("span", { className: "hermes-kanban-evidence-label" }, "Summary"),
+            h("span", { className: "hermes-kanban-evidence-value" }, summary),
+          )
+        : null,
+      changedFiles.length > 0
+        ? h("div", { className: "hermes-kanban-evidence-row" },
+            h("span", { className: "hermes-kanban-evidence-label" }, "Changed files"),
+            h("span", { className: "hermes-kanban-evidence-value" },
+              changedFiles.slice(0, 8).join(", ") + (changedFiles.length > 8 ? " ..." : "")),
+          )
+        : null,
+      testsRun
+        ? h("div", { className: "hermes-kanban-evidence-row" },
+            h("span", { className: "hermes-kanban-evidence-label" }, "Tests"),
+            h("span", { className: "hermes-kanban-evidence-value" }, String(testsRun)),
+          )
+        : null,
+      verification
+        ? h("div", { className: "hermes-kanban-evidence-row" },
+            h("span", { className: "hermes-kanban-evidence-label" }, "Verification"),
+            h("span", { className: "hermes-kanban-evidence-value" }, String(verification)),
+          )
+        : null,
+      latest && latest.error
+        ? h("div", { className: "hermes-kanban-evidence-row hermes-kanban-evidence-row--error" },
+            h("span", { className: "hermes-kanban-evidence-label" }, "Last error"),
+            h("span", { className: "hermes-kanban-evidence-value" }, latest.error),
+          )
+        : null,
     );
   }
 

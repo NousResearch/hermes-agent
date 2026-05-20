@@ -653,6 +653,36 @@
   color: var(--color-muted-foreground);
 }
 
+/* ---- Worker evidence ------------------------------------------------ */
+
+.hermes-kanban-evidence {
+  border: 1px solid color-mix(in srgb, var(--color-ring) 28%, var(--color-border));
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.55rem;
+  background: color-mix(in srgb, var(--color-ring) 5%, transparent);
+}
+
+.hermes-kanban-evidence-row {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  padding: 0.18rem 0;
+}
+
+.hermes-kanban-evidence-row--error {
+  color: var(--color-destructive, #d14a4a);
+}
+
+.hermes-kanban-evidence-label {
+  color: var(--color-muted-foreground);
+}
+
+.hermes-kanban-evidence-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .hermes-kanban-pre {
   margin: 0;
   padding: 0.5rem 0.6rem;

@@ -1049,6 +1049,19 @@ def test_dashboard_bundle_renders_control_cockpit_panel():
     assert "Fleet roster" in bundle
 
 
+def test_dashboard_bundle_surfaces_worker_evidence_section():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    assert "function EvidenceSection(props)" in bundle
+    assert "Worker evidence" in bundle
+    assert "changed_files" in bundle
+    assert "tests_run" in bundle
+    assert "metadata.evidence" in bundle
+
+
 def test_bulk_archive(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]

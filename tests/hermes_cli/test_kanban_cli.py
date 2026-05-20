@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -233,6 +234,46 @@ def test_kanban_list_json_includes_session_id(kanban_home):
         and row.get("session_id") == "acp-x"
         for row in payload
     )
+
+
+def test_run_slash_misplaced_board_flag_returns_specific_hint(kanban_home):
+    out = kc.run_slash("list --board incoming-knowledge")
+    assert "--board is a global kanban option" in out
+    assert "hermes kanban --board incoming-knowledge list" in out
+
+
+def test_main_misplaced_board_flag_returns_specific_hint(
+    kanban_home,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from hermes_cli import main as main_mod
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "kanban", "list", "--board", "incoming-knowledge"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod.main()
+
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "--board is a global kanban option" in err
+    assert "hermes kanban --board incoming-knowledge list" in err
+
+
+def test_kanban_help_documents_board_flag_placement():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    kanban_parser = kc.build_parser(sub)
+
+    help_text = kanban_parser.format_help()
+
+    assert "--board is a global kanban option" in help_text
+    assert "hermes kanban --board incoming-knowledge list" in help_text
+    assert "hermes kanban list --board incoming-knowledge" in help_text
 
 
 def test_run_slash_usage_error_returns_message(kanban_home):

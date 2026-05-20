@@ -11,6 +11,29 @@ because its dispatch is tightly coupled to module-level ``cmd_*`` functions.
 """
 
 import argparse
+import sys
+
+from hermes_cli.kanban_hints import (
+    BOARD_FLAG_PLACEMENT_HINT,
+    looks_like_misplaced_kanban_board_error,
+)
+
+
+class _HermesArgumentParser(argparse.ArgumentParser):
+    """Top-level parser with focused hints for common nested-command mistakes."""
+
+    def parse_args(self, args=None, namespace=None):
+        self._hermes_current_args = list(args) if args is not None else sys.argv[1:]
+        try:
+            return super().parse_args(args, namespace)
+        finally:
+            self._hermes_current_args = None
+
+    def error(self, message: str) -> None:
+        argv = getattr(self, "_hermes_current_args", None) or sys.argv[1:]
+        if looks_like_misplaced_kanban_board_error(message, argv):
+            message = f"{message}\n{BOARD_FLAG_PLACEMENT_HINT}"
+        super().error(message)
 
 
 # `--profile` / `-p` is consumed by ``main._apply_profile_override`` before
@@ -86,7 +109,7 @@ def build_top_level_parser():
     ``chat_parser.set_defaults(func=cmd_chat)`` and continues registering
     other subparsers via ``subparsers.add_parser(...)``.
     """
-    parser = argparse.ArgumentParser(
+    parser = _HermesArgumentParser(
         prog="hermes",
         description="Hermes Agent - AI assistant with tool-calling capabilities",
         formatter_class=argparse.RawDescriptionHelpFormatter,

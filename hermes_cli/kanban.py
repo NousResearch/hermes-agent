@@ -21,16 +21,24 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
+from hermes_cli.kanban_hints import append_board_flag_placement_hint
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
 
 # ---------------------------------------------------------------------------
 # Small formatting helpers
 # ---------------------------------------------------------------------------
+
+class _KanbanArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser that adds kanban-specific operator hints."""
+
+    def error(self, message: str) -> NoReturn:
+        super().error(append_board_flag_placement_hint(message))
+
 
 _STATUS_ICONS = {
     "todo":     "◻",
@@ -196,6 +204,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     kanban_parser = parent_subparsers.add_parser(
         "kanban",
         help="Multi-profile collaboration board (tasks, links, comments)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Durable SQLite-backed task board shared across Hermes profiles. "
             "Tasks are claimed atomically, can depend on other tasks, and "
@@ -203,7 +212,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "See https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban "
             "or docs/hermes-kanban-v1-spec.pdf for the full design."
         ),
+        epilog=(
+            "Examples:\n"
+            "  hermes kanban --board incoming-knowledge list\n"
+            "  hermes kanban --board incoming-knowledge create 'triage docs'\n"
+            "\n"
+            "Note: --board is a global kanban option, so it must appear before the subcommand.\n"
+            "  Correct:   hermes kanban --board incoming-knowledge list\n"
+            "  Incorrect: hermes kanban list --board incoming-knowledge"
+        ),
     )
+    kanban_parser.__class__ = _KanbanArgumentParser
     # --- global --board flag ---
     # Applies to every subcommand below. When set, scopes all reads and
     # writes to that board's DB. When omitted, resolves via the
@@ -220,7 +239,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "to see all boards."
         ),
     )
-    sub = kanban_parser.add_subparsers(dest="kanban_action")
+    sub = kanban_parser.add_subparsers(
+        dest="kanban_action",
+        parser_class=_KanbanArgumentParser,
+    )
 
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")

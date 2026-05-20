@@ -180,12 +180,26 @@ export function needsAltScreenResizeScrollbackClear(env: NodeJS.ProcessEnv = pro
 // in xterm.js-based terminals like VS Code). tmux is allowlisted because it
 // accepts modifyOtherKeys and doesn't forward the kitty sequence to the outer
 // terminal.
-const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal', 'vscode']
+const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal', 'vscode', 'Tabby']
 
 /** True if this terminal correctly handles extended key reporting
- *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
+ *  (Kitty keyboard protocol + xterm modifyOtherKeys).
+ *
+ *  Also returns true on WSL, native Windows, Windows Terminal, and
+ *  SSH sessions — all terminals on these platforms (Tabby, Windows
+ *  Terminal, etc.) are xterm.js or conhost-based and support both
+ *  protocols. Without this, terminals that don't set TERM_PROGRAM
+ *  (like Tabby) never get extended keys, and Ctrl+Enter/Shift+Enter
+ *  arrive as undifferentiated bytes or not at all. */
 export function supportsExtendedKeys(): boolean {
-  return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
+  if (EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')) return true
+  // WSL / Windows / SSH / Windows Terminal — all terminals here
+  // support the protocols even if they don't self-identify.
+  if (process.platform === 'win32') return true
+  if (process.env.WT_SESSION) return true
+  if (process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY) return true
+  if (process.env.WSL_DISTRO_NAME) return true
+  return false
 }
 
 /** True if the terminal scrolls the viewport when it receives cursor-up

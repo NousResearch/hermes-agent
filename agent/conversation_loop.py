@@ -3938,6 +3938,8 @@ def run_conversation(
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
+    _response_transformed = False
+
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
@@ -3952,9 +3954,11 @@ def run_conversation(
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
+            _response_transformed = False
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:
                     final_response = _hook_result
+                    _response_transformed = True
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
@@ -4005,6 +4009,7 @@ def run_conversation(
         "turn_exit_reason": _turn_exit_reason,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
+        "response_transformed": _response_transformed,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
         "provider": agent.provider,

@@ -2408,6 +2408,247 @@ def _setup_bluebubbles():
     print_info("   Install: https://docs.bluebubbles.app/helper-bundle/installation")
 
 
+_SENDBLUE_DOCS_BASE = (
+    "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/sendblue"
+)
+_SENDBLUE_E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
+
+
+def _validate_e164_list(raw: str) -> list[str]:
+    """Return the E.164-valid entries from a comma-separated list; warn on the rest."""
+    cleaned = []
+    for entry in raw.replace(" ", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if _SENDBLUE_E164_RE.match(entry):
+            cleaned.append(entry)
+        else:
+            print_warning(f"    Skipping invalid E.164 number: {entry}")
+    return cleaned
+
+
+def _validate_sendblue_credentials(api_key_id: str, api_secret: str) -> tuple[bool, str]:
+    """Hit a read-only Sendblue endpoint to verify the keys work.
+
+    Sendblue is fronted by Cloudflare, which rejects requests with the default
+    urllib User-Agent (HTTP 403 error 1010) — the explicit UA header is load-bearing.
+    """
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        "https://api.sendblue.com/accounts/me",
+        headers={
+            "sb-api-key-id": api_key_id,
+            "sb-api-secret-key": api_secret,
+            "User-Agent": "hermes-agent setup",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            return (True, "")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            return (False, "Sendblue rejected the credentials (HTTP 401).")
+        return (False, f"Sendblue returned HTTP {exc.code}.")
+    except (urllib.error.URLError, OSError) as exc:
+        return (False, f"Could not reach Sendblue ({exc}).")
+
+
+def _print_sendblue_tunnel_guidance() -> None:
+    print()
+    print_warning("No URL provided. You need a publicly reachable HTTPS hostname —")
+    print_warning("a raw IP address won't work because Let's Encrypt won't issue")
+    print_warning("TLS certs for bare IPs.")
+    print()
+    print_info("Pick one of these, then re-run `hermes setup gateway`:")
+    print()
+    print_info("  • Cloudflare Tunnel (free, easiest — no domain, no open ports, no static IP)")
+    print_info("    Gives you a *.trycloudflare.com hostname. Works behind CGNAT.")
+    print_info(f"    {_SENDBLUE_DOCS_BASE}/#cloudflare-tunnel")
+    print()
+    print_info("  • Tailscale Funnel (free for personal use, no domain needed)")
+    print_info("    Gives you a *.ts.net hostname. Requires the Tailscale daemon.")
+    print_info(f"    {_SENDBLUE_DOCS_BASE}/#tailscale-funnel")
+    print()
+    print_info("  • DuckDNS + Caddy (free, requires stable public IP + open port 443)")
+    print_info("    Free *.duckdns.org subdomain pointed at your IP; Caddy fetches")
+    print_info("    the Let's Encrypt cert automatically.")
+    print_info(f"    {_SENDBLUE_DOCS_BASE}/#duckdns-caddy")
+    print()
+    print_info("  • ngrok (paid plan required for static URLs)")
+    print_info("    Free tier rotates URLs on restart, which breaks Sendblue's webhook")
+    print_info("    registration.")
+    print_info(f"    {_SENDBLUE_DOCS_BASE}/#ngrok")
+    print()
+    print_info("The webhook path must end in /sendblue-gateway/receive.")
+
+
+def _print_sendblue_reverse_proxy_snippets(public_url: str, port: int) -> None:
+    from urllib.parse import urlparse
+
+    hostname = urlparse(public_url).hostname or "yourdomain.com"
+    print()
+    print_info("═══ Reverse proxy configuration ═══")
+    print_info("Your reverse proxy needs to forward /sendblue-gateway/* to the gateway port.")
+    print()
+    print_info("──── Caddy ────")
+    print(f"  {hostname} {{")
+    print(f"      handle /sendblue-gateway/* {{")
+    print(f"          reverse_proxy 127.0.0.1:{port}")
+    print(f"      }}")
+    print(f"  }}")
+    print()
+    print_info("──── nginx ────")
+    print(f"  location /sendblue-gateway/ {{")
+    print(f"      proxy_pass http://127.0.0.1:{port}/sendblue-gateway/;")
+    print(f"      proxy_set_header Host $host;")
+    print(f"      proxy_set_header X-Forwarded-For $remote_addr;")
+    print(f"  }}")
+    print()
+    print_info("Add this to your reverse proxy config and reload it before continuing.")
+
+
+def _setup_sendblue():
+    """Configure Sendblue iMessage gateway (cloud-relay, no Mac required)."""
+    print_header("Sendblue (iMessage)")
+    existing = get_env_value("SENDBLUE_API_KEY_ID")
+    if existing:
+        print_info("Sendblue: already configured")
+        if not prompt_yes_no("Reconfigure Sendblue?", False):
+            return
+
+    print_info("Connects Hermes to iMessage via Sendblue — a cloud relay that")
+    print_info("delivers iMessages without needing a Mac.")
+    print_info("   Sign up: https://sendblue.com")
+    print_info("   API keys: https://app.sendblue.com/api-keys")
+    print()
+
+    print_info("Sendblue sends inbound iMessages to a webhook URL you control.")
+    print_info("You need a publicly reachable HTTPS URL pointing at this machine.")
+    public_url = prompt(
+        "Webhook public URL (e.g. https://yourdomain.com/sendblue-gateway/receive)"
+    )
+    if not public_url:
+        _print_sendblue_tunnel_guidance()
+        return
+
+    if not public_url.endswith("/sendblue-gateway/receive"):
+        if not public_url.endswith("/"):
+            public_url += "/"
+        public_url += "sendblue-gateway/receive"
+        print_info(f"  Adjusted to: {public_url}")
+    save_env_value("SENDBLUE_WEBHOOK_PUBLIC_URL", public_url)
+
+    port_raw = prompt("Local gateway port (default: 8665)") or "8665"
+    try:
+        port_int = int(port_raw)
+    except ValueError:
+        print_warning("Invalid port, using default 8665")
+        port_int = 8665
+    if port_int != 8665:
+        save_env_value("SENDBLUE_WEBHOOK_PORT", str(port_int))
+
+    _print_sendblue_reverse_proxy_snippets(public_url, port_int)
+    if not prompt_yes_no("Continue with credential setup?", True):
+        print_info("  Stopped before credentials. Re-run setup when ready.")
+        return
+
+    api_key_id = ""
+    api_secret = ""
+    for attempt in range(3):
+        api_key_id = prompt("Sendblue API key ID", password=True)
+        api_secret = prompt("Sendblue API secret", password=True)
+        if not api_key_id or not api_secret:
+            print_warning("Both fields are required — skipping Sendblue setup")
+            return
+        print_info("Validating credentials with Sendblue...")
+        ok, msg = _validate_sendblue_credentials(api_key_id, api_secret)
+        if ok:
+            print_success("Credentials verified")
+            break
+        print_warning(f"  {msg}")
+        if attempt < 2:
+            print_info("  Try again, or press Ctrl+C to abort.")
+    else:
+        print_warning("Three failed attempts. Re-run setup when you have working credentials.")
+        return
+    save_env_value("SENDBLUE_API_KEY_ID", api_key_id)
+    save_env_value("SENDBLUE_API_SECRET", api_secret)
+
+    number = prompt("Your Sendblue phone number (E.164, e.g. +15551234567)")
+    if number:
+        if _SENDBLUE_E164_RE.match(number):
+            save_env_value("SENDBLUE_NUMBER", number)
+        else:
+            print_warning(f"  {number} isn't valid E.164 — saved anyway, but Sendblue may reject it.")
+            save_env_value("SENDBLUE_NUMBER", number)
+
+    secret = prompt("Webhook signing secret (leave empty to auto-generate)", password=True)
+    if not secret:
+        import secrets as _secrets
+
+        secret = _secrets.token_hex(16)
+        print_info(f"  Generated secret: {secret}")
+        print_info("  Paste this into the Sendblue dashboard's webhook signing-secret field.")
+    save_env_value("SENDBLUE_WEBHOOK_SECRET", secret)
+
+    print()
+    print_info("🔒 Security: who can message your bot?")
+    print_info("   E.164 phone numbers, comma-separated (e.g. +15551234567,+15559876543)")
+    allowed_raw = prompt("Allowed phone numbers (empty for access-mode menu)")
+    allowed_first: Optional[str] = None
+    if allowed_raw:
+        cleaned = _validate_e164_list(allowed_raw)
+        if cleaned:
+            save_env_value("SENDBLUE_ALLOWED_USERS", ",".join(cleaned))
+            print_success(f"  Allowlist saved ({len(cleaned)} number{'s' if len(cleaned) != 1 else ''})")
+            allowed_first = cleaned[0]
+        else:
+            print_warning("  No valid E.164 numbers — skipping allowlist")
+    else:
+        access_choices = [
+            "Enable open access (anyone with your number can use the bot — RISKY for SMS)",
+            "Use DM pairing (unknown senders request access, you approve via `hermes pairing approve`)",
+            "Skip (bot denies all until configured)",
+        ]
+        idx = prompt_choice("How should unauthorized users be handled?", access_choices, 1)
+        if idx == 0:
+            save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
+            print_warning(
+                "  Open access enabled — anyone who can iMessage your Sendblue number can use the bot!"
+            )
+        elif idx == 1:
+            print_success("  DM pairing mode")
+        else:
+            print_info("  Skipped")
+
+    print()
+    print_info("📬 Home channel: phone number that receives cron jobs and notifications.")
+    if allowed_first:
+        if prompt_yes_no(f"Use your allowlist entry ({allowed_first}) as the home channel?", True):
+            save_env_value("SENDBLUE_HOME_CHANNEL", allowed_first)
+            print_success(f"  Home channel set to {allowed_first}")
+        else:
+            alt = prompt("Home channel phone number (or empty to set later with /set-home)")
+            if alt:
+                save_env_value("SENDBLUE_HOME_CHANNEL", alt)
+    else:
+        home = prompt("Home channel phone number (or empty to set later with /set-home)")
+        if home:
+            save_env_value("SENDBLUE_HOME_CHANNEL", home)
+
+    print()
+    print_success("📨 Sendblue configured!")
+    print_info("Next steps in the Sendblue dashboard:")
+    print_info("  1. Open https://app.sendblue.com/webhooks")
+    print_info(f"  2. Create a webhook → URL: {public_url}")
+    print_info(f"  3. Signing secret: {secret}")
+    print_info("  4. Save.")
+    print_info("The gateway will register the webhook on first start.")
+
+
 def _setup_qqbot():
     """Configure QQ Bot (Official API v2) via gateway setup."""
     from hermes_cli.gateway import _setup_qqbot as _gateway_setup_qqbot

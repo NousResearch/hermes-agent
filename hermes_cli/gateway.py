@@ -4768,6 +4768,7 @@ def _builtin_setup_fn(key: str):
         "matrix": _s._setup_matrix,
         "mattermost": _s._setup_mattermost,
         "bluebubbles": _s._setup_bluebubbles,
+        "sendblue": _s._setup_sendblue,
         "webhooks": _s._setup_webhooks,
         "signal": _setup_signal,
         "whatsapp": _setup_whatsapp,

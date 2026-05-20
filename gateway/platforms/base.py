@@ -3232,6 +3232,17 @@ class BasePlatformAdapter(ABC):
                         except OSError:
                             pass
 
+                # Log a warning when the extract pipeline stripped a
+                # non-empty response to empty, and fall back to sending
+                # the raw response to prevent silent message loss.
+                if not text_content and response:
+                    logger.warning(
+                        "[%s] Response stripped to empty after extract pipeline "
+                        "(orig=%d chars). Sending raw response as fallback.",
+                        self.name, len(response),
+                    )
+                    text_content = response
+
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)

@@ -85,7 +85,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
 )
 
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
-    r"("  # infrastructure/provider error preambles, not ordinary assistant prose
+    r"^\s*(?:[⚠❌]\ufe0f?\s*)?(?:"  # infrastructure/provider error preambles only
     r"api\s+(?:call\s+)?failed"
     r"|provider\s+authentication\s+failed"
     r"|non-retryable\s+error"

@@ -80,3 +80,15 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+def test_telegram_final_response_keeps_answers_that_mention_old_provider_errors():
+    """Quoting a previous provider error in a normal answer must not trigger replacement."""
+    answer = (
+        "네, 이제 됩니다.\n\n"
+        "정리하면:\n"
+        "- 이전 오류: `Provider authentication failed`\n"
+        "- 현재 상태: 정상"
+    )
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer

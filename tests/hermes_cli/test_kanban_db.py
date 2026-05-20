@@ -245,32 +245,34 @@ def test_recompute_ready_cascades_through_chain(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
-def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
-    """blocked tasks with all parents done should be promoted to ready."""
+def test_recompute_ready_does_not_auto_unblock_worker_blocked_with_done_parents(kanban_home):
+    """worker/operator blocked tasks require explicit unblock even when dependencies are done."""
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent", assignee="a")
         child = kb.create_task(
             conn, title="child", assignee="a", parents=[parent],
         )
-        # Complete the parent
         kb.claim_task(conn, parent)
         kb.complete_task(conn, parent, result="ok")
-        # Manually block the child (simulates a worker that failed
-        # after the parent finished)
-        conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=5, "
-            "last_failure_error='persistent error' WHERE id=?",
-            (child,),
-        )
-        conn.commit()
-        assert kb.get_task(conn, child).status == "blocked"
-        # recompute_ready should promote blocked → ready and reset failures
-        promoted = kb.recompute_ready(conn)
-        assert promoted == 1
+        assert kb.get_task(conn, child).status == "ready"
+
+        assert kb.block_task(conn, child, reason="review required") is True
         task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "blocked"
+
+        # recompute_ready must not promote worker/operator blocked → ready;
+        # otherwise the gateway dispatcher can retry review-required tasks forever.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "blocked"
+
+        assert kb.unblock_task(conn, child) is True
+        task = kb.get_task(conn, child)
+        assert task is not None
         assert task.status == "ready"
-        assert task.consecutive_failures == 0
-        assert task.last_failure_error is None
 
 
 def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):

@@ -2041,19 +2041,17 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
+    """Promote dependency-satisfied tasks to ``ready``.
+
+    ``todo`` tasks are promoted when all parents are ``done`` or ``archived``.
+    ``blocked`` tasks are also considered for promotion so circuit-breaker or
+    direct-DB blocks can recover when dependencies are satisfied, *except* when
+    the latest block/unblock event is a worker/operator ``blocked`` event. Those
+    sticky blocks represent explicit review/input stops and require
+    :func:`unblock_task` to avoid dispatcher retry loops.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
-
-    ``blocked`` tasks are also considered for promotion (so a task
-    blocked purely by a parent dependency unblocks itself when the
-    parent completes), *except* when the most recent block event was a
-    worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).  Without that guard, a
-    ``review-required`` handoff would auto-respawn, the fresh worker
-    would find nothing to do, exit cleanly, get recorded as a protocol
-    violation, and the cycle would repeat indefinitely.
     """
     promoted = 0
     with write_txn(conn):
@@ -2064,10 +2062,9 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
             task_id = row["id"]
             cur_status = row["status"]
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
-                # Worker / operator asked for human review — do not
-                # silently auto-recover.  ``unblock_task`` is the only
-                # legitimate exit (it emits ``"unblocked"`` which flips
-                # this predicate back).
+                # Worker / operator asked for human review — do not silently
+                # auto-recover. ``unblock_task`` emits "unblocked" and is the
+                # only legitimate transition back to runnable work.
                 continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
@@ -2076,9 +2073,6 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
-                # Blocked tasks also get their failure counters reset —
-                # this is effectively an auto-unblock (circuit-breaker
-                # recovery; worker-initiated blocks are skipped above).
                 if cur_status == "blocked":
                     conn.execute(
                         "UPDATE tasks SET status = 'ready', "
@@ -2094,7 +2088,6 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 _append_event(conn, task_id, "promoted", None)
                 promoted += 1
     return promoted
-
 
 # ---------------------------------------------------------------------------
 # Claim / complete / block

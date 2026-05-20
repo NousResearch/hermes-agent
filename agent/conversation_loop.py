@@ -1454,7 +1454,6 @@ def run_conversation(
                                 }
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
-                                agent._save_session_log(messages)
                                 restart_with_length_continuation = True
                                 break
 
@@ -1807,7 +1806,11 @@ def run_conversation(
                         # that survives message/tool sanitization (#6843).
                         _credential_sanitized = False
                         _raw_key = getattr(agent, "api_key", None) or ""
-                        if _raw_key:
+                        # Entra ID bearer providers are callables — their
+                        # minted JWTs are always ASCII, so no sanitization
+                        # is needed (and ``_strip_non_ascii`` would crash
+                        # on a callable input).
+                        if _raw_key and isinstance(_raw_key, str):
                             _clean_key = _strip_non_ascii(_raw_key)
                             if _clean_key != _raw_key:
                                 agent.api_key = _clean_key
@@ -2080,15 +2083,26 @@ def run_conversation(
                 ):
                     anthropic_auth_retry_attempted = True
                     from agent.anthropic_adapter import _is_oauth_token
+                    from agent.azure_identity_adapter import is_token_provider
                     if agent._try_refresh_anthropic_client_credentials():
                         print(f"{agent.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                         continue
                     # Credential refresh didn't help — show diagnostic info
                     key = agent._anthropic_api_key
-                    auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
                     print(f"{agent.log_prefix}🔐 Anthropic 401 — authentication failed.")
-                    print(f"{agent.log_prefix}   Auth method: {auth_method}")
-                    print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
+                    if is_token_provider(key):
+                        # Azure Foundry Entra ID — the bearer token is
+                        # minted per-request by an httpx event hook on a
+                        # custom http_client passed to the SDK. The 401
+                        # means Azure rejected the JWT (RBAC role missing,
+                        # az login expired, IMDS unreachable, etc.).
+                        print(f"{agent.log_prefix}   Auth method: Microsoft Entra ID (httpx event hook)")
+                        print(f"{agent.log_prefix}   Run `hermes doctor` for credential-chain diagnostics, or")
+                        print(f"{agent.log_prefix}   `az login` if your developer session expired.")
+                    else:
+                        auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
+                        print(f"{agent.log_prefix}   Auth method: {auth_method}")
+                        print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
                     print(f"{agent.log_prefix}   Troubleshooting:")
                     from hermes_constants import display_hermes_home as _dhh_fn
                     _dhh = _dhh_fn()
@@ -2317,7 +2331,7 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
                     # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _pool_may_recover_from_rate_limit(
+                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
                         agent._credential_pool,
                         provider=agent.provider,
                         base_url=getattr(agent, "base_url", None),
@@ -3071,7 +3085,6 @@ def run_conversation(
                     if not agent.quiet_mode:
                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
                     agent._session_messages = messages
-                    agent._save_session_log(messages)
                     continue
 
                 agent._codex_incomplete_retries = 0
@@ -3396,7 +3409,6 @@ def run_conversation(
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
-                agent._save_session_log(messages)
                 
                 # Continue loop for next response
                 continue
@@ -3563,7 +3575,6 @@ def run_conversation(
                         interim_msg["_thinking_prefill"] = True
                         messages.append(interim_msg)
                         agent._session_messages = messages
-                        agent._save_session_log(messages)
                         continue
 
                     # ── Empty response retry ──────────────────────
@@ -3697,7 +3708,6 @@ def run_conversation(
                     }
                     messages.append(continue_msg)
                     agent._session_messages = messages
-                    agent._save_session_log(messages)
                     continue
 
                 codex_ack_continuations = 0

@@ -380,3 +380,66 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
             stripped,
         )
     return tools, stripped
+
+
+def strip_slash_enum(tools: list[dict]) -> tuple[list[dict], int]:
+    """Strip ``enum`` keywords whose string values contain a forward slash.
+
+    xAI's ``/v1/responses`` and ``/v1/chat/completions`` endpoints compile
+    tool schemas to a grammar that rejects ``enum`` values containing ``/``
+    (the request fails with HTTP 400 "Invalid arguments passed to the
+    model" before any token is emitted). Most commonly hit by MCP-derived
+    tools whose enum lists HuggingFace model IDs (``Qwen/Qwen3.5-0.8B``,
+    ``openai/gpt-oss-20b``) or owner/name environment IDs. The constraint
+    is purely a prompting hint; dropping it lets the model still see the
+    field description and pick a value, without xAI tripping on the slash.
+
+    Args:
+        tools: OpenAI-format or Responses-format tool list, mutated in
+            place. Callers that need to preserve the original should
+            deep-copy first.
+
+    Returns:
+        ``(tools, stripped_count)`` — same list reference plus a count of
+        how many ``enum`` keywords were removed.
+    """
+    if not tools:
+        return tools, 0
+
+    stripped = 0
+
+    def _walk(node: Any) -> None:
+        nonlocal stripped
+        if isinstance(node, dict):
+            enum_val = node.get("enum")
+            if isinstance(enum_val, list) and any(
+                isinstance(v, str) and "/" in v for v in enum_val
+            ):
+                node.pop("enum", None)
+                stripped += 1
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if isinstance(fn, dict):
+            params = fn.get("parameters")
+            if isinstance(params, dict):
+                _walk(params)
+                continue
+        params = tool.get("parameters")
+        if isinstance(params, dict):
+            _walk(params)
+
+    if stripped:
+        logger.info(
+            "schema_sanitizer: stripped %d enum keyword(s) containing '/' "
+            "from tool schemas (xAI Responses grammar-compile recovery)",
+            stripped,
+        )
+    return tools, stripped

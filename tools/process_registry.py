@@ -1188,15 +1188,28 @@ class ProcessRegistry:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    def list_sessions(self, task_id: str = None) -> list:
-        """List all running and recently-finished processes."""
+    def list_sessions(self, task_id: str = None, session_key: str = None) -> list:
+        """List all running and recently-finished processes.
+
+        When task_id is given, only processes for that task are returned.
+        When session_key is given, processes for all tasks under that gateway
+        session are also included — this surfaces session-scoped background
+        processes that would otherwise be invisible to the agent (issue #29177).
+        """
         with self._lock:
             all_sessions = list(self._running.values()) + list(self._finished.values())
 
         all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
 
-        if task_id:
-            all_sessions = [s for s in all_sessions if s.task_id == task_id]
+        if task_id and not session_key:
+            # Also include session-scoped processes (background: true) that
+            # block gateway reset — the agent must be able to see them.
+            all_sessions = [
+                s for s in all_sessions
+                if s.task_id == task_id or s.session_key == task_id
+            ]
+        elif session_key:
+            all_sessions = [s for s in all_sessions if s.session_key == session_key]
 
         result = []
         for s in all_sessions:

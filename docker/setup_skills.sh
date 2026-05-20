@@ -20,12 +20,15 @@ fi
 CONFIG_FILE="$HERMES_HOME/config.yaml"
 SKILLS_DIR="$HERMES_HOME/skills"
 SOUL_FILE="$HERMES_HOME/SOUL.md"
+MEMORIES_DIR="$HERMES_HOME/memories"
+MEMORY_FILE="$MEMORIES_DIR/MEMORY.md"
 
 echo "HERMES_HOME: $HERMES_HOME"
 echo "AGENT_TOOLKIT_SERVER: $AGENT_TOOLKIT_SERVER"
 echo "CONFIG_FILE: $CONFIG_FILE"
 echo "SKILLS_DIR: $SKILLS_DIR"
 echo "SOUL_FILE: $SOUL_FILE"
+echo "MEMORY_FILE: $MEMORY_FILE"
 echo ""
 
 # 检查配置文件是否存在
@@ -51,12 +54,12 @@ import json
 try:
     with open('$CONFIG_FILE', 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
-    
+
     skills = config.get('skill_templates', [])
     if not skills:
         print('[]', file=sys.stderr)
         sys.exit(0)
-    
+
     # 转换为JSON格式
     print(json.dumps(skills))
 except Exception as e:
@@ -77,77 +80,82 @@ if [ "$SKILLS_COUNT" -eq 0 ]; then
     echo "配置文件中没有skills需要下载"
 else
     echo "发现 $SKILLS_COUNT 个skills需要下载"
-    
+
     # 遍历每个skill
     for i in $(seq 0 $((SKILLS_COUNT - 1))); do
         SKILL_INFO=$(echo "$SKILLS_JSON" | python3 -c "import sys, json; data = json.load(sys.stdin); print(json.dumps(data[$i]))")
         SKILL_ID=$(echo "$SKILL_INFO" | python3 -c "import sys, json; print(json.load(sys.stdin).get('id', ''))")
         SKILL_VERSION=$(echo "$SKILL_INFO" | python3 -c "import sys, json; print(json.load(sys.stdin).get('version', ''))")
-        
+
         if [ -z "$SKILL_ID" ] || [ -z "$SKILL_VERSION" ]; then
             echo "警告: 跳过无效的skill配置 (id=$SKILL_ID, version=$SKILL_VERSION)"
             continue
         fi
-        
+
         echo ""
         echo "正在下载 skill: id=$SKILL_ID, version=$SKILL_VERSION"
-        
+
+        SKILL_DIR_NAME="$SKILL_ID"
+        TARGET_DIR="$SKILLS_DIR/$SKILL_DIR_NAME"
+
+        # 如果已存在则跳过（Agent 运行时可能修改了 skill）
+        if [ -d "$TARGET_DIR" ]; then
+            echo "  skill 已存在，跳过: $TARGET_DIR"
+            continue
+        fi
+
         # 构造下载URL
         DOWNLOAD_URL="${AGENT_TOOLKIT_SERVER}/agent-toolkit/openapi/skills/${SKILL_ID}/download?version=${SKILL_VERSION}"
-        
+
         # 创建临时目录
         TEMP_DIR=$(mktemp -d)
         TEMP_ZIP="$TEMP_DIR/skill.zip"
-        
+
         # 下载skill
         echo "  下载URL: $DOWNLOAD_URL"
         HTTP_CODE=$(curl -s -o "$TEMP_ZIP" -w "%{http_code}" "$DOWNLOAD_URL")
-        
+
         if [ "$HTTP_CODE" != "200" ]; then
             echo "  错误: 下载失败, HTTP状态码: $HTTP_CODE"
             rm -rf "$TEMP_DIR"
             continue
         fi
-        
+
         # 检查下载的文件大小
         if [ ! -s "$TEMP_ZIP" ]; then
             echo "  错误: 下载的文件为空"
             rm -rf "$TEMP_DIR"
             continue
         fi
-        
+
         # 检查文件是否是有效的zip文件（通过检查魔术数字 PK）
         if ! head -c 2 "$TEMP_ZIP" | grep -q "PK"; then
             echo "  错误: 下载的文件不是有效的zip文件"
             rm -rf "$TEMP_DIR"
             continue
         fi
-        
+
         # 解压到临时目录
         echo "  解压skill包..."
         unzip -q -o "$TEMP_ZIP" -d "$TEMP_DIR"
-        
+
         # 查找解压后的目录
         EXTRACTED_DIR=$(find "$TEMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -n 1)
-        
+
         if [ -z "$EXTRACTED_DIR" ]; then
             echo "  错误: 解压后未找到目录"
             rm -rf "$TEMP_DIR"
             continue
         fi
-        
-        # 获取skill目录名
-        SKILL_DIR_NAME=$(basename "$EXTRACTED_DIR")
-        TARGET_DIR="$SKILLS_DIR/$SKILL_DIR_NAME"
-        
+
         # 移动到目标目录
         echo "  安装到: $TARGET_DIR"
         rm -rf "$TARGET_DIR"
         mv "$EXTRACTED_DIR" "$TARGET_DIR"
-        
+
         # 清理临时目录
         rm -rf "$TEMP_DIR"
-        
+
         echo "  ✓ skill安装成功"
     done
 fi
@@ -167,11 +175,11 @@ import sys
 try:
     with open('$CONFIG_FILE', 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
-    
+
     soul = config.get('soul', '')
     if soul is None:
         soul = ''
-    
+
     print(soul)
 except Exception as e:
     print(f'解析配置文件失败: {e}', file=sys.stderr)
@@ -190,11 +198,38 @@ if [ -z "$SOUL_CONTENT" ]; then
     echo "跳过生成soul.md文件"
 else
     echo "发现soul内容，正在生成 $SOUL_FILE ..."
-    
+
     # 写入soul.md文件
     echo "$SOUL_CONTENT" > "$SOUL_FILE"
-    
+
     echo "✓ soul.md文件生成成功"
+fi
+
+echo ""
+
+# 功能3: 生成memory.md文件（环境事实，仅首次创建）
+echo "========================================="
+echo "功能3: 生成memory.md文件"
+echo "========================================="
+
+mkdir -p "$MEMORIES_DIR"
+
+if [ -f "$MEMORY_FILE" ]; then
+    echo "memory.md 已存在，跳过（保留 Agent 运行数据）"
+else
+    MEMORY_CONTENT="# 环境事实
+
+## 浏览器
+- 当前环境已安装 Chrome 浏览器
+- 所有浏览器操作请使用 agent-browser 工具
+- 不要尝试其他浏览器或 Web 自动化方式
+
+## 网络
+- 运行在中国大陆
+- 仅访问中国大陆可达的网站
+- 优先使用国内镜像和 CDN 源"
+    echo "$MEMORY_CONTENT" > "$MEMORY_FILE"
+    echo "✓ memory.md文件生成成功"
 fi
 
 echo ""

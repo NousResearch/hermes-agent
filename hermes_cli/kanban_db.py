@@ -999,6 +999,15 @@ def connect(
             conn.execute("PRAGMA foreign_keys=ON")
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
+                # If the tasks table already exists, run additive column
+                # migrations *before* SCHEMA_SQL so that any indexes in
+                # SCHEMA_SQL referencing columns added in newer releases
+                # (e.g. session_id) don't fail with "no such column" on
+                # pre-existing databases that predate those columns.
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
+                ).fetchone():
+                    _migrate_add_optional_columns(conn)
                 # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
                 # migrations. Cached so subsequent connect() calls in the same
                 # process are cheap. The lock prevents same-process dispatcher

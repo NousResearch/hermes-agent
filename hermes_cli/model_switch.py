@@ -1080,6 +1080,10 @@ def list_authenticated_providers(
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
         get_curated_nous_model_ids,
+        union_with_portal_free_recommendations,
+        union_with_portal_paid_recommendations,
+        check_nous_free_tier,
+        get_pricing_for_provider,
     )
 
     results: List[dict] = []
@@ -1167,6 +1171,36 @@ def list_authenticated_providers(
     # requiring a Hermes release. Falls back to the in-repo
     # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
     curated["nous"] = get_curated_nous_model_ids()
+    # Mirror the interactive ``hermes model`` CLI flow (auth.py
+    # handle_nous_auth): augment the curated list with the Portal's
+    # freeRecommendedModels / paidRecommendedModels so newly-launched
+    # models surface in the gateway /model picker without waiting for a
+    # Hermes release or a model-catalog.json rebuild. Failures degrade
+    # silently to the curated-only list — never block the picker on a
+    # Portal hiccup. Fixes #28886.
+    if curated["nous"]:
+        try:
+            from hermes_cli.auth import get_provider_auth_state
+            _nous_state = get_provider_auth_state("nous") or {}
+            _portal_url = _nous_state.get("portal_base_url", "") if isinstance(_nous_state, dict) else ""
+            try:
+                _nous_pricing = get_pricing_for_provider("nous")
+            except Exception:
+                _nous_pricing = {}
+            try:
+                _is_free = check_nous_free_tier()
+            except Exception:
+                _is_free = False
+            if _is_free:
+                curated["nous"], _ = union_with_portal_free_recommendations(
+                    curated["nous"], _nous_pricing, _portal_url,
+                )
+            else:
+                curated["nous"], _ = union_with_portal_paid_recommendations(
+                    curated["nous"], _nous_pricing, _portal_url,
+                )
+        except Exception:
+            pass
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models

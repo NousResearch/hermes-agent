@@ -3122,6 +3122,7 @@ async def get_usage_analytics(days: int = 30):
                    COUNT(*) as sessions,
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL
+              AND instr(model, char(27)) = 0  -- t_6d086799: drop ANSI-poisoned model rows
             GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, (cutoff,))
         by_model = [dict(r) for r in cur2.fetchall()]
@@ -3188,6 +3189,7 @@ async def get_models_analytics(days: int = 30):
                    MAX(started_at) as last_used_at,
                    AVG(input_tokens + output_tokens) as avg_tokens_per_session
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+              AND instr(model, char(27)) = 0  -- t_6d086799: drop ANSI-poisoned model rows
             GROUP BY model, billing_provider
             ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, (cutoff,))

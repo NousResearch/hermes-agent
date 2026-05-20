@@ -315,6 +315,13 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
     import re as _re
     raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global)', r'--\1', raw_args)
 
+    # Strip ANSI/control characters (anything < 0x20 except tab/newline plus 0x7f).
+    # A stray arrow-key press in the TUI (`\x1b[A`/`\x1b[B`) used to leak through
+    # as the model name and poison sessions.model in state.db — see kanban
+    # t_6d086799. Drop the bytes; let downstream alias resolution fail cleanly
+    # on the remainder rather than silently persisting an unprintable identifier.
+    raw_args = _re.sub(r'\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f]', '', raw_args).strip()
+
     # Extract --global
     if "--global" in raw_args:
         is_global = True

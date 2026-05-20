@@ -17,6 +17,7 @@ Usage:
 """
 
 import json
+import re
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -441,15 +442,35 @@ class InsightsEngine:
                 models_without_pricing.add(display)
 
         # Session duration stats (guard against negative durations from clock drift)
-        durations = []
+        intervals = []
         for s in sessions:
             start = s.get("started_at")
             end = s.get("ended_at")
             if start and end and end > start:
-                durations.append(end - start)
+                intervals.append((start, end))
+        durations = [e - s for s, e in intervals]
 
-        total_hours = sum(durations) / 3600 if durations else 0
+        # "Active time" = wall-clock union of session intervals, NOT the sum.
+        # Summing per-session durations double-counts parallel sessions and can
+        # easily exceed the requested time window (kanban t_86210f57: 33d
+        # reported over a 30d window). Merge overlapping intervals first.
+        merged_seconds = 0.0
+        if intervals:
+            intervals.sort()
+            cur_s, cur_e = intervals[0]
+            for s, e in intervals[1:]:
+                if s <= cur_e:
+                    if e > cur_e:
+                        cur_e = e
+                else:
+                    merged_seconds += cur_e - cur_s
+                    cur_s, cur_e = s, e
+            merged_seconds += cur_e - cur_s
+        total_hours = merged_seconds / 3600
+        # Per-session avg keeps using raw durations (parallel sessions still
+        # took N minutes each from the agent's perspective).
         avg_duration = sum(durations) / len(durations) if durations else 0
+        cumulative_hours = sum(durations) / 3600 if durations else 0
 
         # Earliest and latest session
         started_timestamps = [s["started_at"] for s in sessions if s.get("started_at")]
@@ -468,6 +489,7 @@ class InsightsEngine:
             "estimated_cost": total_cost,
             "actual_cost": actual_cost,
             "total_hours": total_hours,
+            "cumulative_hours": cumulative_hours,
             "avg_session_duration": avg_duration,
             "avg_messages_per_session": total_messages / len(sessions) if sessions else 0,
             "avg_tokens_per_session": total_tokens / len(sessions) if sessions else 0,
@@ -482,6 +504,11 @@ class InsightsEngine:
             "included_cost_sessions": included_cost_sessions,
         }
 
+    # Regex matching ANSI CSI escape sequences (\x1b[...letter) or any C0/DEL
+    # control byte. Used to filter poisoned model names out of breakdowns —
+    # see kanban t_6d086799 for the production incident.
+    _CONTROL_CHAR_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f]')
+
     def _compute_model_breakdown(self, sessions: List[Dict]) -> List[Dict]:
         """Break down usage by model."""
         model_data = defaultdict(lambda: {
@@ -492,6 +519,14 @@ class InsightsEngine:
 
         for s in sessions:
             model = s.get("model") or "unknown"
+            # Drop sessions whose model column was poisoned with ANSI/control
+            # bytes (e.g. an arrow-key press that leaked into /model). These
+            # rows pollute leaderboards with unattributable activity. The
+            # parse_model_flags + _insert_session_row sanitizers prevent new
+            # ones; this guards the display path against any historical rows
+            # that predate the fix or arrive from external imports.
+            if isinstance(model, str) and self._CONTROL_CHAR_RE.search(model):
+                continue
             # Normalize: strip provider prefix for display
             display_model = model.split("/")[-1] if "/" in model else model
             d = model_data[display_model]
@@ -519,10 +554,29 @@ class InsightsEngine:
         result.sort(key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
         return result
 
+    @staticmethod
+    def _is_ghost_session(s: Dict) -> bool:
+        """A 'ghost' session has no messages, no tokens, and no billing metadata.
+
+        These are typically created by session-reset/restart loops, polling
+        glitches, or aborted handshakes (see kanban t_4e906121 for the 72
+        telegram husks from 2026-05-10). They pollute platform leaderboards
+        with session counts that don't represent real user activity.
+        """
+        if (s.get("message_count") or 0) > 0:
+            return False
+        if (s.get("input_tokens") or 0) > 0 or (s.get("output_tokens") or 0) > 0:
+            return False
+        if (s.get("tool_call_count") or 0) > 0:
+            return False
+        if s.get("billing_provider"):
+            return False
+        return True
+
     def _compute_platform_breakdown(self, sessions: List[Dict]) -> List[Dict]:
         """Break down usage by platform/source."""
         platform_data = defaultdict(lambda: {
-            "sessions": 0, "messages": 0, "input_tokens": 0,
+            "sessions": 0, "ghost_sessions": 0, "messages": 0, "input_tokens": 0,
             "output_tokens": 0, "cache_read_tokens": 0,
             "cache_write_tokens": 0, "total_tokens": 0, "tool_calls": 0,
         })
@@ -530,6 +584,11 @@ class InsightsEngine:
         for s in sessions:
             source = s.get("source") or "unknown"
             d = platform_data[source]
+            if self._is_ghost_session(s):
+                # Track separately so operators can still see something happened,
+                # but don't count toward the "sessions" headline number.
+                d["ghost_sessions"] += 1
+                continue
             d["sessions"] += 1
             d["messages"] += s.get("message_count") or 0
             inp = s.get("input_tokens") or 0

@@ -692,6 +692,13 @@ class SessionDB:
         parent_session_id: str = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
+        # Guard against control-character poisoning of sessions.model. A stray
+        # arrow-key press in the TUI could leak `\x1b[A`/`\x1b[B` all the way
+        # through to this insert and pollute downstream analytics. Drop unprintables.
+        if isinstance(model, str) and model:
+            import re as _re
+            _cleaned = _re.sub(r'\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f]', '', model).strip()
+            model = _cleaned if _cleaned else None
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
@@ -711,7 +718,37 @@ class SessionDB:
         self._execute_write(_do)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
-        """Create a new session record. Returns the session_id."""
+        """Create a new session record. Returns the session_id.
+
+        Emits a WARNING via the module logger if a single ``(source, user_id)``
+        pair triggers more than 5 create_session calls within a 10-second
+        window — that pattern produced 72 telegram husks during a gateway
+        restart loop on 2026-05-10 (kanban t_4e906121). The warning is the
+        canary; downstream display layers (InsightsEngine._is_ghost_session)
+        bucket the rows separately so they don't pollute leaderboards.
+        """
+        try:
+            import logging
+            user_id = kwargs.get("user_id") or "_"
+            key = f"{source}:{user_id}"
+            now = time.time()
+            buf = getattr(self, "_create_session_burst_buf", None)
+            if buf is None:
+                buf = {}
+                self._create_session_burst_buf = buf
+            history = [t for t in buf.get(key, []) if now - t < 10.0]
+            history.append(now)
+            buf[key] = history
+            if len(history) >= 6:
+                logging.getLogger(__name__).warning(
+                    "create_session burst detected: %d calls in <10s for %s "
+                    "(possible reset/reconnect loop creating ghost rows)",
+                    len(history), key,
+                )
+                # Only warn once per burst — clear so next warning waits for a fresh burst
+                buf[key] = history[-1:]
+        except Exception:
+            pass  # Telemetry must never break session creation.
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
     def end_session(self, session_id: str, end_reason: str) -> None:

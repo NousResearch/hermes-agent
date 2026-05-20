@@ -2429,16 +2429,25 @@ def _validate_e164_list(raw: str) -> list[str]:
 
 
 def _validate_sendblue_credentials(api_key_id: str, api_secret: str) -> tuple[bool, str]:
-    """Hit a read-only Sendblue endpoint to verify the keys work.
+    """Hit a read-only Sendblue endpoint to verify the API key ID works.
 
-    Sendblue is fronted by Cloudflare, which rejects requests with the default
-    urllib User-Agent (HTTP 403 error 1010) — the explicit UA header is load-bearing.
+    Two known quirks:
+
+    * Sendblue is fronted by Cloudflare, which rejects requests with the
+      default urllib User-Agent (HTTP 403 error 1010) — the explicit UA
+      header below is load-bearing.
+    * Sendblue's GET endpoints only authenticate against the API key ID;
+      any non-empty value in the secret header is accepted. So this call
+      catches a wrong/typo'd key ID, but a wrong secret slips through and
+      only surfaces at runtime when ``_register_webhook`` POSTs at connect
+      time. We still pass both so the call shape matches every other
+      Sendblue API request.
     """
     import urllib.error
     import urllib.request
 
     req = urllib.request.Request(
-        "https://api.sendblue.com/accounts/me",
+        "https://api.sendblue.com/api/account/webhooks",
         headers={
             "sb-api-key-id": api_key_id,
             "sb-api-secret-key": api_secret,
@@ -2563,10 +2572,10 @@ def _setup_sendblue():
         if not api_key_id or not api_secret:
             print_warning("Both fields are required — skipping Sendblue setup")
             return
-        print_info("Validating credentials with Sendblue...")
+        print_info("Validating API key ID with Sendblue...")
         ok, msg = _validate_sendblue_credentials(api_key_id, api_secret)
         if ok:
-            print_success("Credentials verified")
+            print_success("API key ID verified (secret will be checked at first connect)")
             break
         print_warning(f"  {msg}")
         if attempt < 2:

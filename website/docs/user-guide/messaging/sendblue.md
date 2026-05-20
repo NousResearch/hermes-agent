@@ -163,7 +163,10 @@ SENDBLUE_WEBHOOK_PORT=8665
 ## Troubleshooting
 
 **Setup says "Sendblue rejected the credentials (HTTP 401)"**
-Your API key ID or secret is wrong. Re-copy them from [app.sendblue.com/api-keys](https://app.sendblue.com/api-keys). The setup wizard retries up to three times.
+Your API key ID is wrong (Sendblue's read endpoints only authenticate against the key ID, so the wizard's "verified" step proves the ID is valid but cannot detect a wrong secret). Re-copy the key ID from [app.sendblue.com/api-keys](https://app.sendblue.com/api-keys). The setup wizard retries up to three times.
+
+**Setup says credentials verified, but the gateway fails to register the webhook on first start**
+The secret was wrong. Re-copy `SENDBLUE_API_SECRET` from [app.sendblue.com/api-keys](https://app.sendblue.com/api-keys) and restart the gateway — the secret is only validated when the adapter POSTs to Sendblue at connect time.
 
 **Setup says "Could not reach Sendblue"**
 Network/DNS issue between this machine and `api.sendblue.com`. Check that outbound HTTPS works. If you're behind a strict corporate firewall, you may need to allow `api.sendblue.com`.

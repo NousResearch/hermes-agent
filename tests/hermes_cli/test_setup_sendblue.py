@@ -95,13 +95,16 @@ class TestValidateSendblueCredentials:
         assert ok is False
         assert "Could not reach Sendblue" in msg
 
-    def test_sends_required_headers(self):
+    def test_sends_required_headers_and_hits_right_endpoint(self):
         """The User-Agent header is mandatory — Sendblue's Cloudflare layer
-        returns HTTP 403 (error 1010) to the default urllib UA."""
+        returns HTTP 403 (error 1010) to the default urllib UA. Endpoint
+        must be the documented webhook-list path (verified live against
+        api.sendblue.com 2026-05-20)."""
         captured = {}
 
         def fake_urlopen(req, timeout=None):
             captured["headers"] = dict(req.headers)
+            captured["url"] = req.full_url
             resp = MagicMock()
             resp.__enter__ = lambda self: self
             resp.__exit__ = lambda *a: False
@@ -110,7 +113,7 @@ class TestValidateSendblueCredentials:
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             setup_mod._validate_sendblue_credentials("kid-123", "secret-xyz")
 
-        # urllib normalizes header names to title-case.
+        assert captured["url"] == "https://api.sendblue.com/api/account/webhooks"
         headers = {k.lower(): v for k, v in captured["headers"].items()}
         assert headers["sb-api-key-id"] == "kid-123"
         assert headers["sb-api-secret-key"] == "secret-xyz"

@@ -1078,7 +1078,8 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
 
     clean = re.sub(r"\n\s*\n+", " [pause] ", clean)
     clean = re.sub(r"\s*\n\s*", " ", clean)
-    clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
+    if not _XAI_SPEECH_TAG_RE.search(clean):
+        clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
     clean = re.sub(r"\s{2,}", " ", clean).strip()
     return clean
 

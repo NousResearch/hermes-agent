@@ -6,6 +6,7 @@ provider/base_url/api_key empty in AIAgent, causing HTTP 404.
 """
 
 import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -58,6 +59,131 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
+
+
+def test_make_agent_passes_fallback_providers_to_aiagent():
+    """TUI sessions must propagate the list-based fallback provider chain."""
+
+    fallback_providers = [
+        {"provider": "openai", "model": "gpt-4o"},
+        {"provider": "zai", "model": "glm-4.7"},
+    ]
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {
+        "fallback_providers": fallback_providers,
+        "model": {"default": "anthropic/claude-opus-4-6"},
+        "agent": {"system_prompt": "test"},
+    }
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_tool_progress_mode", return_value="compact"),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-fallback-providers", "key-fallback-providers")
+
+        assert mock_agent.call_args.kwargs["fallback_model"] == fallback_providers
+
+
+def test_make_agent_normalizes_legacy_fallback_model_dict():
+    """Legacy fallback_model dict remains accepted by the TUI path."""
+
+    fallback_model = {"provider": "openai", "model": "gpt-4o"}
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {
+        "fallback_model": fallback_model,
+        "model": {"default": "anthropic/claude-opus-4-6"},
+        "agent": {"system_prompt": "test"},
+    }
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_tool_progress_mode", return_value="compact"),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-legacy-fallback", "key-legacy-fallback")
+
+        assert mock_agent.call_args.kwargs["fallback_model"] == [fallback_model]
+
+
+def test_background_agent_kwargs_preserves_fallback_provider_chain():
+    """Background TUI agents should inherit the full fallback chain."""
+
+    fallback_providers = [
+        {"provider": "openai", "model": "gpt-4o"},
+        {"provider": "zai", "model": "glm-4.7"},
+    ]
+    agent = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        api_key="sk-test",
+        provider="openrouter",
+        api_mode="chat_completions",
+        acp_command=None,
+        acp_args=None,
+        model="anthropic/claude-opus-4-6",
+        enabled_toolsets=["web"],
+        ephemeral_system_prompt=None,
+        providers_allowed=None,
+        providers_ignored=None,
+        providers_order=None,
+        provider_sort=None,
+        provider_require_parameters=False,
+        provider_data_collection=None,
+        openrouter_min_coding_score=None,
+        reasoning_config=None,
+        service_tier=None,
+        request_overrides={},
+        _fallback_chain=fallback_providers,
+        _fallback_model=fallback_providers[0],
+    )
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value={}),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+    ):
+        from tui_gateway.server import _background_agent_kwargs
+
+        kwargs = _background_agent_kwargs(agent, "bg-test")
+
+    assert kwargs["fallback_model"] == fallback_providers
 
 
 def test_make_agent_ignores_display_personality_without_system_prompt():

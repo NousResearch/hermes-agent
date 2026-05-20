@@ -1814,6 +1814,18 @@ def _parse_tui_skills_env() -> list[str]:
     return skills
 
 
+def _agent_fallback_model(agent) -> Any:
+    chain = getattr(agent, "_fallback_chain", None)
+    return chain or getattr(agent, "_fallback_model", None)
+
+
+def _cfg_fallback_model(cfg: dict) -> Any:
+    fb = (cfg or {}).get("fallback_providers") or (cfg or {}).get("fallback_model") or []
+    if isinstance(fb, dict):
+        fb = [fb] if fb.get("provider") and fb.get("model") else []
+    return fb or None
+
+
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
 
@@ -1848,7 +1860,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
-        "fallback_model": getattr(agent, "_fallback_model", None),
+        "fallback_model": _agent_fallback_model(agent),
     }
 
 
@@ -1926,6 +1938,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        fallback_model=_cfg_fallback_model(cfg),
         **_agent_cbs(sid),
     )
 

@@ -2,6 +2,9 @@
 
 set -e
 
+# Use venv Python so PyYAML and other packages are available
+export PATH="/opt/hermes/.venv/bin:${PATH}"
+
 echo "========================================="
 echo "Agent Toolkit Setup Script"
 echo "========================================="

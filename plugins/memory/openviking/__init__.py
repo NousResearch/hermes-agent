@@ -589,6 +589,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not user_content:
             return
 
+        # Capture the target session id NOW, not inside the worker. Otherwise
+        # a delayed worker can read self._session_id after on_session_switch
+        # has rotated it (the switch's join on _sync_thread is bounded), and
+        # the OLD turn's content lands in the NEW session.
+        sid = str(session_id or self._session_id).strip()
+        if not sid:
+            return
+
         self._turn_count += 1
 
         def _sync():
@@ -597,7 +605,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     self._endpoint, self._api_key,
                     account=self._account, user=self._user, agent=self._agent,
                 )
-                sid = self._session_id
 
                 # Add user message
                 client.post(f"/api/v1/sessions/{sid}/messages", {
@@ -642,6 +649,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         try:
             self._client.post(f"/api/v1/sessions/{self._session_id}/commit")
             logger.info("OpenViking session %s committed (%d turns)", self._session_id, self._turn_count)
+            # Mark the session clean so a subsequent on_session_switch (fired
+            # by /new and compression right after commit_memory_session) skips
+            # its commit instead of double-committing. On commit failure we
+            # leave the count intact so the switch hook gets a retry.
+            self._turn_count = 0
         except Exception as e:
             logger.warning("OpenViking session commit failed: %s", e)
 

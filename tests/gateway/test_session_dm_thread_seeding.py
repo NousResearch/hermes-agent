@@ -23,12 +23,9 @@ from gateway.session import SessionSource, SessionStore, build_session_key
 
 @pytest.fixture()
 def store(tmp_path):
-    """SessionStore with no SQLite, for fast unit tests."""
+    """SessionStore with SQLite — load_transcript reads from DB only."""
     config = GatewayConfig()
-    with patch("gateway.session.SessionStore._ensure_loaded"):
-        s = SessionStore(sessions_dir=tmp_path, config=config)
-    s._db = None
-    s._loaded = True
+    s = SessionStore(sessions_dir=tmp_path, config=config)
     return s
 
 

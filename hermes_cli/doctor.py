@@ -1103,13 +1103,14 @@ def run_doctor(args):
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
-        ssh_host = os.getenv("TERMINAL_SSH_HOST")
+        from hermes_cli.config import get_env_value as _gev
+        ssh_host = _gev("TERMINAL_SSH_HOST")
         if ssh_host:
-            ssh_user = os.getenv("TERMINAL_SSH_USER")
-            ssh_port = os.getenv("TERMINAL_SSH_PORT")
-            ssh_key = os.getenv("TERMINAL_SSH_KEY")
+            ssh_user = _gev("TERMINAL_SSH_USER")
+            ssh_port = _gev("TERMINAL_SSH_PORT")
+            ssh_key = _gev("TERMINAL_SSH_KEY")
             target = f"{ssh_user}@{ssh_host}" if ssh_user else ssh_host
-            cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+            cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"]
             if ssh_port:
                 cmd += ["-p", ssh_port]
             if ssh_key:

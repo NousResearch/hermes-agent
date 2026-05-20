@@ -2609,10 +2609,26 @@ class HermesCLI:
             pass
 
     def _recover_after_resize(self, app, original_on_resize) -> None:
-        """Recover a resized classic CLI without desynchronizing cursor state."""
-        self._clear_prompt_toolkit_screen(app, rebuild_scrollback=True)
-        _replay_output_history()
-        original_on_resize()
+        """Recover a resized classic CLI without desynchronizing cursor state.
+
+        A real terminal resize already implies the user wants to stay anchored at
+        the live bottom of the transcript. Clearing the whole screen and replaying
+        scrollback from row 0 makes cmux/tmux panes visibly jump to the top and
+        then auto-scroll back down, which feels broken even when the prompt ends
+        up in the right place.
+
+        Let prompt_toolkit process the resize first so it updates its geometry,
+        then run the same non-destructive redraw path used by /redraw and focus
+        recovery. That keeps the prompt at the bottom without rebuilding the
+        visible transcript.
+        """
+        try:
+            original_on_resize()
+        finally:
+            try:
+                self._force_full_redraw()
+            except Exception:
+                pass
 
     def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
         """Debounce resize redraws so footer chrome is not stamped into scrollback."""

@@ -50,6 +50,7 @@ _COMMON_TARGET = {
 }
 
 _LIST_APPS_DESCRIPTION = "List macOS apps/windows available to Computer Use."
+_LAUNCH_APP_DESCRIPTION = "Launch a macOS app by app name or bundle id, then optionally capture its state."
 _GET_APP_STATE_DESCRIPTION = "Get app/window state. Call this before and after every action."
 _CLICK_DESCRIPTION = "Click an element or coordinate in the current app state."
 _PERFORM_SECONDARY_ACTION_DESCRIPTION = "Perform an accessibility secondary action on an element, e.g. show menu."
@@ -68,6 +69,22 @@ registry.register(
     check_fn=check_computer_use_requirements,
     requires_env=[],
     description=_LIST_APPS_DESCRIPTION,
+    override=True,
+)
+
+registry.register(
+    name="computer_use_launch_app",
+    toolset="computer_use",
+    schema=_schema("computer_use_launch_app", _LAUNCH_APP_DESCRIPTION, {
+        "app": {"type": "string", "description": "App name, e.g. Messages, Spotify, Safari."},
+        "bundle_id": {"type": "string", "description": "Bundle id, e.g. com.apple.MobileSMS or com.spotify.client. Preferred when known."},
+        "background": {"type": "boolean", "description": "Launch without stealing foreground focus when supported. Defaults to true."},
+        "capture_after": _COMMON_TARGET["capture_after"],
+    }, []),
+    handler=lambda args, **kw: _handle("launch_app", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_LAUNCH_APP_DESCRIPTION,
     override=True,
 )
 

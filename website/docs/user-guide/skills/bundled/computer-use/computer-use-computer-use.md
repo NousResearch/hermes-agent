@@ -41,6 +41,7 @@ Treat the tool surface as first-class Hermes, not a driver tutorial. Models call
 Use only the small native surface:
 
 - `computer_use_list_apps`
+- `computer_use_launch_app`
 - `computer_use_get_app_state`
 - `computer_use_click`
 - `computer_use_perform_secondary_action`
@@ -55,10 +56,11 @@ Do not use or document a catch-all action-dispatch tool. Greenfield Hermes Compu
 
 ## Canonical Loop
 
-1. **Inspect:** call `computer_use_get_app_state(app=..., mode="som" | "ax" | "vision")`.
-2. **Decide from state:** prefer element indices from the returned app state. Use pixels only for canvas/video/custom surfaces that do not expose useful accessibility elements.
-3. **Act:** call one native action tool.
-4. **Verify:** call `computer_use_get_app_state` again and compare state before claiming success.
+1. **Launch if needed:** call `computer_use_launch_app(app=...)` when the target app is not already running or visible.
+2. **Inspect:** call `computer_use_get_app_state(app=..., mode="som" | "ax" | "vision")`.
+3. **Decide from state:** prefer element indices from the returned app state. Use pixels only for canvas/video/custom surfaces that do not expose useful accessibility elements.
+4. **Act:** call one native action tool.
+5. **Verify:** call `computer_use_get_app_state` again and compare state before claiming success.
 
 That state → action → state rhythm is mandatory. Skipping the second state call is how agents hallucinate success after silent no-ops.
 

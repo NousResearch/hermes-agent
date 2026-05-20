@@ -9,6 +9,7 @@ Use it when browser/CDP, terminal, filesystem tools, or an app-specific API cann
 The `computer_use` toolset exposes explicit first-class tools:
 
 - `computer_use_list_apps`
+- `computer_use_launch_app`
 - `computer_use_get_app_state`
 - `computer_use_click`
 - `computer_use_perform_secondary_action`
@@ -25,6 +26,7 @@ There is no catch-all action-dispatch Computer Use tool in the greenfield path. 
 
 The rule is strict: **state → action → state**.
 
+0. `computer_use_launch_app(app="Mail")` if Mail is not already available
 1. `computer_use_get_app_state(app="Mail", mode="som")`
 2. `computer_use_click(app="Mail", element=14)`
 3. `computer_use_get_app_state(app="Mail", mode="som")` again to verify

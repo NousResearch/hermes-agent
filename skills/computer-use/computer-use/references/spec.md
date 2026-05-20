@@ -7,6 +7,7 @@ This reference tracks Hermes' first-class Computer Use implementation shape. The
 Expose explicit Hermes tools only:
 
 - `computer_use_list_apps`
+- `computer_use_launch_app`
 - `computer_use_get_app_state`
 - `computer_use_click`
 - `computer_use_perform_secondary_action`
@@ -23,11 +24,12 @@ Expose explicit greenfield Hermes tools only. Tool names should encode intent so
 
 Models must be trained and prompted around:
 
+0. optionally `computer_use_launch_app(app=...)` when the target app is not already available
 1. `computer_use_get_app_state(app=..., mode=...)`
 2. one action tool using state-derived targets and the same `app`
 3. `computer_use_get_app_state(app=...)` again for verification
 
-State calls are read-only. Mutating calls go through policy.
+State calls and known-app launch calls are setup/read-only. Mutating calls go through policy.
 
 ## Policy Layer
 
@@ -35,7 +37,7 @@ Policy should live in a dedicated module, not scattered through tool handlers.
 
 Rules:
 
-- read-only: list apps, get app state
+- read-only/setup: list apps, launch known apps, get app state
 - mutating: click, secondary action, scroll, drag, type text, set value, press key, select text
 - scope approvals by app/window/action where possible
 - support once/session/always/deny

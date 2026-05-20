@@ -36,6 +36,7 @@ MUTATING_ACTIONS = frozenset({
     "set_value",
     "select_text",
     "focus_app",
+    "launch_app",
 })
 
 

@@ -375,6 +375,8 @@ COMPUTER_USE_GUIDANCE = (
     "focus, or Space. You and the user can share the same Mac at the same "
     "time.\n\n"
     "## Preferred workflow\n"
+    "0. If the target app is not already available, call "
+    "`computer_use_launch_app(app='Messages')` or pass a known bundle id.\n"
     "1. Call `computer_use_get_app_state(app=..., mode='som')` before every "
     "interaction. You get a screenshot with numbered overlays on every "
     "interactable element plus an AX-tree index listing role, label, and "

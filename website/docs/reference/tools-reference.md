@@ -104,6 +104,7 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `computer_use_list_apps` | List apps/windows available to Computer Use. | Computer Use installed/enabled on macOS. |
+| `computer_use_launch_app` | Launch a macOS app by app name or bundle id before inspecting it. | Computer Use installed/enabled on macOS. |
 | `computer_use_get_app_state` | Read app/window state (`ax`, `som`, or `vision`). Call before and after actions. | Computer Use installed/enabled on macOS. |
 | `computer_use_click` | Click an element index or coordinate in the current app state. | Computer Use installed/enabled on macOS. |
 | `computer_use_perform_secondary_action` | Perform an accessibility secondary action such as showing a menu. | Computer Use installed/enabled on macOS. |

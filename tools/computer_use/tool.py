@@ -67,8 +67,8 @@ def set_approval_callback(cb) -> None:
     _approval_callback = cb
 
 
-# Actions that read, not mutate. Always allowed.
-_SAFE_ACTIONS = frozenset({"capture", "get_app_state", "wait", "list_apps"})
+# Actions that read or perform low-impact setup. Always allowed.
+_SAFE_ACTIONS = frozenset({"capture", "get_app_state", "wait", "list_apps", "launch_app"})
 
 # Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
@@ -114,7 +114,16 @@ def _is_blocked_type(text: str) -> Optional[str]:
     return None
 
 
+def _launch_requires_approval(args: Dict[str, Any]) -> bool:
+    app = str(args.get("app") or "").strip()
+    if not app:
+        return False
+    expanded = os.path.expanduser(app)
+    return expanded.endswith(".app") or os.path.sep in expanded
+
+
 # ---------------------------------------------------------------------------
+
 # Backend selection — env-swappable for tests
 # ---------------------------------------------------------------------------
 
@@ -195,6 +204,10 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("list_apps", {}))
         return []
 
+    def launch_app(self, app: str = "", bundle_id: str = "", background: bool = True) -> ActionResult:
+        self.calls.append(("launch_app", {"app": app, "bundle_id": bundle_id, "background": background}))
+        return ActionResult(ok=True, action="launch_app")
+
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
@@ -266,8 +279,9 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                     "hint": "Destructive system shortcuts are hard-blocked.",
                 })
 
-    # Approval gate (destructive actions only).
-    if action in _DESTRUCTIVE_ACTIONS:
+    # Approval gate. Known-app launch is setup; path-based app launch can run
+    # newly downloaded software and must be confirmed at action time.
+    if action in _DESTRUCTIVE_ACTIONS or (action == "launch_app" and _launch_requires_approval(args)):
         err = _request_approval(action, args)
         if err is not None:
             return err
@@ -407,6 +421,15 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
     if action == "list_apps":
         apps = backend.list_apps()
         return json.dumps({"apps": apps, "count": len(apps)})
+
+    if action == "launch_app":
+        app = str(args.get("app") or "")
+        bundle_id = str(args.get("bundle_id") or "")
+        if not app and not bundle_id:
+            return json.dumps({"error": "launch_app requires `app` or `bundle_id`"})
+        res = backend.launch_app(app=app, bundle_id=bundle_id, background=bool(args.get("background", True)))
+        target = str(res.meta.get("app") or app or bundle_id) if getattr(res, "meta", None) else (app or bundle_id)
+        return _maybe_follow_capture(backend, res, capture_after, app=target)
 
     if action == "focus_app":
         app = args.get("app")

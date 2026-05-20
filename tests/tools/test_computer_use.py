@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -41,6 +42,7 @@ def noop_backend():
 class TestRegistration:
     EXPECTED = {
         "computer_use_list_apps",
+        "computer_use_launch_app",
         "computer_use_get_app_state",
         "computer_use_click",
         "computer_use_perform_secondary_action",
@@ -719,6 +721,51 @@ class TestCodexParityImprovements:
         assert registry._tools["computer_use_perform_secondary_action"].schema["parameters"]["required"] == ["app", "element"]
         assert registry._tools["computer_use_select_text"].schema["parameters"]["required"] == ["app", "element"]
 
+    def test_launch_app_schema_accepts_app_or_bundle_id(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+
+        schema = registry._tools["computer_use_launch_app"].schema["parameters"]
+        assert schema["required"] == []
+        assert {"app", "bundle_id", "background", "capture_after"} <= set(schema["properties"])
+
+    def test_launch_app_routes_to_backend_without_prior_window(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({"action": "launch_app", "bundle_id": "com.apple.MobileSMS", "background": True})
+        parsed = json.loads(out)
+
+        assert parsed["ok"] is True
+        assert noop_backend.calls[0] == ("launch_app", {"app": "", "bundle_id": "com.apple.MobileSMS", "background": True})
+
+    def test_launch_app_capture_after_targets_launched_app(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult, CaptureResult
+
+        class FakeBackend:
+            def __init__(self): self.calls = []
+            def launch_app(self, app="", bundle_id="", background=True):
+                self.calls.append(("launch_app", app, bundle_id, background)); return ActionResult(ok=True, action="launch_app")
+            def capture(self, mode="som", app=None):
+                self.calls.append(("capture", app)); return CaptureResult(mode=mode, width=1, height=1, app=app or "")
+            def list_apps(self): return []
+            def focus_app(self, app, raise_window=False): return ActionResult(ok=True, action="focus_app")
+            def click(self, **kw): return ActionResult(ok=True, action="click")
+            def drag(self, **kw): return ActionResult(ok=True, action="drag")
+            def scroll(self, **kw): return ActionResult(ok=True, action="scroll")
+            def type_text(self, text): return ActionResult(ok=True, action="type")
+            def key(self, keys): return ActionResult(ok=True, action="key")
+
+        fake = FakeBackend()
+        with patch.object(cu_tool, "_get_backend", return_value=fake):
+            out = cu_tool.handle_computer_use({"action": "launch_app", "app": "Messages", "capture_after": True})
+
+        assert ("launch_app", "Messages", "", True) in fake.calls
+        assert ("capture", "Messages") in fake.calls
+        parsed = json.loads(out) if isinstance(out, str) else out
+        if isinstance(parsed, dict) and not parsed.get("_multimodal"):
+            assert parsed["app"] == "Messages"
+
     def test_app_scoped_action_targets_app_before_clicking(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
 
@@ -811,6 +858,120 @@ class TestCodexParityImprovements:
         assert backend.click(element=1, button="middle").ok is False
         assert backend.click(element=1, click_count=3).ok is False
 
+    def test_cua_launch_app_resolves_app_name_to_bundle_id(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        calls = []
+        backend._app_cache = [{"name": "Messages", "bundle_id": "com.apple.MobileSMS"}]
+        backend._app_cache_at = 10**9
+        backend._select_window = lambda app=None: None  # type: ignore[method-assign]
+        def fake_action(name, args):
+            calls.append((name, args))
+            from tools.computer_use.backend import ActionResult
+            return ActionResult(ok=True, action=name)
+        backend._action = fake_action  # type: ignore[method-assign]
+
+        res = backend.launch_app(app="Messages")
+
+        assert res.ok is True
+        assert calls == [("launch_app", {"bundle_id": "com.apple.MobileSMS"})]
+        assert res.meta["bundle_id"] == "com.apple.MobileSMS"
+
+    def test_cua_launch_app_returns_error_when_name_unknown(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._app_cache = []
+        backend._app_cache_at = 10**9
+
+        res = backend.launch_app(app="Definitely Missing")
+
+        assert res.ok is False
+        assert "No bundle id" in res.message
+
+    def test_cua_launch_app_resolves_full_app_path(self, tmp_path):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        app_dir = tmp_path / "Demo.app"
+        contents = app_dir / "Contents"
+        contents.mkdir(parents=True)
+        with open(contents / "Info.plist", "wb") as fh:
+            plistlib.dump({"CFBundleIdentifier": "com.example.Demo"}, fh)
+        backend = CuaDriverBackend()
+        backend._select_window = lambda app=None: None  # type: ignore[method-assign]
+        calls = []
+        def fake_action(name, args):
+            calls.append((name, args))
+            from tools.computer_use.backend import ActionResult
+            return ActionResult(ok=True, action=name)
+        backend._action = fake_action  # type: ignore[method-assign]
+
+        res = backend.launch_app(app=str(app_dir))
+
+        assert res.ok is True
+        assert calls == [("launch_app", {"bundle_id": "com.example.Demo"})]
+        assert res.meta["app"] == "Demo"
+
+    def test_select_window_matches_bundle_id_and_preserves_metadata(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._call = lambda name, args, timeout=30.0: {  # type: ignore[method-assign]
+            "data": {"windows": [{
+                "app_name": "Messages", "bundle_id": "com.apple.MobileSMS",
+                "pid": 123, "window_id": 456, "is_on_screen": True,
+            }]},
+            "structuredContent": None,
+            "images": [],
+            "isError": False,
+        }
+
+        target = backend._select_window("com.apple.MobileSMS")
+
+        assert target is not None
+        assert target["bundle_id"] == "com.apple.MobileSMS"
+        assert backend._active_pid == 123
+        assert backend._active_window_id == 456
+
+    def test_windows_avoids_app_catalog_when_app_name_present(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        calls = []
+        def fake_call(name, args, timeout=30.0):
+            calls.append(name)
+            assert name == "list_windows"
+            return {
+                "data": {"windows": [{
+                    "app_name": "Messages", "bundle_id": "com.apple.MobileSMS",
+                    "pid": 123, "window_id": 456, "is_on_screen": True,
+                }]},
+                "structuredContent": None,
+                "images": [],
+                "isError": False,
+            }
+        backend._call = fake_call  # type: ignore[method-assign]
+
+        windows = backend._windows()
+
+        assert windows[0]["app_name"] == "Messages"
+        assert calls == ["list_windows"]
+
+    def test_app_catalog_uses_short_ttl_cache(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        calls = []
+        def fake_call(name, args, timeout=30.0):
+            calls.append(name)
+            return {"data": {"apps": [{"name": "Messages", "bundle_id": "com.apple.MobileSMS"}]}, "structuredContent": None, "images": [], "isError": False}
+        backend._call = fake_call  # type: ignore[method-assign]
+
+        assert backend._app_catalog() == backend._app_catalog()
+
+        assert calls == ["list_apps"]
+
 
 class TestComputerUsePolicy:
     def test_mutating_actions_fail_closed_in_gateway_without_callback(self, noop_backend):
@@ -821,6 +982,25 @@ class TestComputerUsePolicy:
         assert "error" in parsed
         assert "approval" in parsed["error"].lower()
         assert not any(name == "click" for name, _ in noop_backend.calls)
+
+    def test_known_bundle_launch_does_not_require_approval(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        with patch.dict(os.environ, {"HERMES_GATEWAY_SESSION": "1", "HERMES_SESSION_KEY": "cu-test"}, clear=False):
+            out = handle_computer_use({"action": "launch_app", "bundle_id": "com.apple.Safari"})
+        parsed = json.loads(out)
+        assert parsed["ok"] is True
+        assert noop_backend.calls[0] == ("launch_app", {"app": "", "bundle_id": "com.apple.Safari", "background": True})
+
+    def test_path_launch_requires_approval_in_gateway(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        with patch.dict(os.environ, {"HERMES_GATEWAY_SESSION": "1", "HERMES_SESSION_KEY": "cu-test"}, clear=False):
+            out = handle_computer_use({"action": "launch_app", "app": "/Users/kamell/Downloads/Sketchy.app"})
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "approval" in parsed["error"].lower()
+        assert not noop_backend.calls
 
     def test_policy_grants_session_scope_after_approval(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use, set_approval_callback

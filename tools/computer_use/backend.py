@@ -158,6 +158,9 @@ class ComputerUseBackend(ABC):
     def list_apps(self) -> List[Dict[str, Any]]:
         """Return running apps with bundle IDs, PIDs, window counts."""
 
+    def launch_app(self, app: str = "", bundle_id: str = "", background: bool = True) -> ActionResult:
+        return ActionResult(ok=False, action="launch_app", message="backend does not support launch_app")
+
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Route input to `app` (by name or bundle ID). Default: focus without raise."""

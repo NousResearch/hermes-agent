@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import platform
+import plistlib
 import re
 import shutil
 import subprocess
@@ -199,12 +200,15 @@ class CuaDriverBackend(ComputerUseBackend):
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
         self._active_app: str = ""
+        self._app_cache: List[Dict[str, Any]] = []
+        self._app_cache_at: float = 0.0
 
     def start(self) -> None:
         if not cua_driver_binary_available():
             raise RuntimeError(cua_driver_install_hint())
         if _is_macos():
-            subprocess.run(["open", "-n", "-g", "-a", "CuaDriver", "--args", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            open_bin = shutil.which("open") or "/usr/bin/open"
+            subprocess.run([open_bin, "-n", "-g", "-a", "CuaDriver", "--args", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
 
     def stop(self) -> None:
         pass
@@ -236,6 +240,35 @@ class CuaDriverBackend(ComputerUseBackend):
             data = parsed.get("data", parsed.get("text", parsed))
         return {"data": data, "images": images, "structuredContent": structured, "isError": False}
 
+    def _app_catalog(self, ttl: float = 5.0) -> List[Dict[str, Any]]:
+        now = time.monotonic()
+        if self._app_cache and now - self._app_cache_at < ttl:
+            return self._app_cache
+        out = self._call("list_apps", {})
+        data = out["data"]
+        if isinstance(data, dict):
+            apps = data.get("apps", [])
+        elif isinstance(data, list):
+            apps = data
+        elif isinstance(data, str):
+            apps = []
+            for line in data.splitlines():
+                m = re.search(r'(.+?)\s+\(pid\s+(\d+)\)', line)
+                if m:
+                    apps.append({"name": m.group(1).strip(), "pid": int(m.group(2))})
+        else:
+            apps = []
+        self._app_cache = apps
+        self._app_cache_at = now
+        return apps
+
+    def _app_names_by_bundle(self) -> Dict[str, str]:
+        return {
+            str(app.get("bundle_id") or app.get("bundleId") or "").lower(): str(app.get("name") or "")
+            for app in self._app_catalog()
+            if app.get("bundle_id") or app.get("bundleId")
+        }
+
     def _windows(self) -> List[Dict[str, Any]]:
         out = self._call("list_windows", {"on_screen_only": True})
         data = out.get("data")
@@ -247,9 +280,17 @@ class CuaDriverBackend(ComputerUseBackend):
             raw_windows = data.get("windows")
         if raw_windows:
             windows = []
+            apps_by_bundle: Dict[str, str] = {}
             for w in raw_windows:
+                app_name = w.get("app_name") or w.get("app") or w.get("name") or ""
+                bundle = str(w.get("bundle_id") or w.get("bundleId") or "")
+                if bundle and (not app_name or app_name == bundle):
+                    if not apps_by_bundle:
+                        apps_by_bundle = self._app_names_by_bundle()
+                    app_name = apps_by_bundle.get(bundle.lower(), app_name)
                 windows.append({
-                    "app_name": w.get("app_name") or w.get("app") or w.get("name") or "",
+                    "app_name": app_name,
+                    "bundle_id": bundle,
                     "pid": int(w.get("pid") or 0),
                     "window_id": int(w.get("window_id") or w.get("windowId") or 0),
                     "off_screen": not w.get("is_on_screen", True),
@@ -266,7 +307,14 @@ class CuaDriverBackend(ComputerUseBackend):
         windows = self._windows()
         if app:
             needle = app.lower()
-            matched = [w for w in windows if needle in (w.get("app_name", "") + " " + w.get("title", "")).lower()]
+            def matches(w: Dict[str, Any]) -> bool:
+                haystack = " ".join([
+                    str(w.get("app_name") or ""),
+                    str(w.get("title") or ""),
+                    str(w.get("bundle_id") or ""),
+                ]).lower()
+                return needle in haystack
+            matched = [w for w in windows if matches(w)]
             if not matched:
                 return None
             windows = matched
@@ -444,23 +492,68 @@ class CuaDriverBackend(ComputerUseBackend):
         return self._action("select_text", args)
 
     def list_apps(self) -> List[Dict[str, Any]]:
-        out = self._call("list_apps", {})
-        data = out["data"]
-        if isinstance(data, dict):
-            return data.get("apps", [])
-        if isinstance(data, list):
-            return data
-        if isinstance(data, str):
-            apps = []
-            for line in data.splitlines():
-                m = re.search(r'(.+?)\s+\(pid\s+(\d+)\)', line)
-                if m:
-                    apps.append({"name": m.group(1).strip(), "pid": int(m.group(2))})
-            return apps
-        return []
+        return self._app_catalog(ttl=0.0)
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         target = self._select_window(app)
         if target:
             return ActionResult(ok=True, action="focus_app", message=f"Targeted {target.get('app_name')} (pid {self._active_pid}, window {self._active_window_id}) without raising window.")
         return ActionResult(ok=False, action="focus_app", message=f"No on-screen window found for app {app!r}.")
+
+    def _resolve_launch_bundle_id(self, app: str = "", bundle_id: str = "") -> Tuple[str, str, Optional[str]]:
+        if bundle_id:
+            return bundle_id.strip(), app.strip() or bundle_id.strip(), None
+        target = app.strip()
+        if not target:
+            return "", "", "launch_app requires app or bundle_id"
+        expanded = os.path.expanduser(target)
+        if expanded.endswith(".app") or os.path.sep in expanded:
+            info_plist = os.path.join(expanded, "Contents", "Info.plist")
+            try:
+                with open(info_plist, "rb") as fh:
+                    info = plistlib.load(fh)
+                resolved = str(info.get("CFBundleIdentifier") or "").strip()
+            except Exception as e:
+                return "", target, f"Could not read bundle id from {expanded!r}: {e}"
+            if not resolved:
+                return "", target, f"No CFBundleIdentifier found in {info_plist!r}."
+            return resolved, os.path.basename(expanded).removesuffix(".app"), None
+
+        needle = target.lower()
+        apps = self._app_catalog()
+        exact = []
+        fuzzy = []
+        for candidate in apps:
+            name = str(candidate.get("name") or "").strip()
+            candidate_bundle = str(candidate.get("bundle_id") or candidate.get("bundleId") or "").strip()
+            if not candidate_bundle:
+                continue
+            if needle in {name.lower(), candidate_bundle.lower()}:
+                exact.append((candidate_bundle, name or candidate_bundle))
+            elif needle in name.lower():
+                fuzzy.append((candidate_bundle, name or candidate_bundle))
+        matches = exact or fuzzy
+        unique: Dict[str, str] = {bundle: name for bundle, name in matches}
+        if len(unique) == 1:
+            bundle, name = next(iter(unique.items()))
+            return bundle, name, None
+        if len(unique) > 1:
+            choices = ", ".join(f"{name} ({bundle})" for bundle, name in list(unique.items())[:5])
+            return "", target, f"Ambiguous app name {target!r}; use a bundle_id. Matches: {choices}"
+        return "", target, f"No bundle id found for app {target!r}; call computer_use_list_apps to inspect installed apps."
+
+    def launch_app(self, app: str = "", bundle_id: str = "", background: bool = True) -> ActionResult:
+        target, display, error = self._resolve_launch_bundle_id(app=app, bundle_id=bundle_id)
+        if error:
+            return ActionResult(ok=False, action="launch_app", message=error)
+
+        res = self._action("launch_app", {"bundle_id": target})
+        if res.ok:
+            # Refresh the target window/pid if the launched app has a window. Some
+            # menu-bar/background apps launch successfully without a layer-0 window.
+            self._app_cache_at = 0.0
+            launched_name = str(res.meta.get("name") or display or target)
+            self._select_window(target) or self._select_window(launched_name)
+            res.message = res.message or f"Launched {launched_name or target}."
+            res.meta = {**res.meta, "app": launched_name, "bundle_id": target, "background": background}
+        return res

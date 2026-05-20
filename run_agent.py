@@ -6730,12 +6730,25 @@ class AIAgent:
             import socket as _socket
 
             _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
+            # "Idle before first probe" — Linux exposes this as TCP_KEEPIDLE,
+            # macOS uses TCP_KEEPALIVE for the same knob.  Pick whichever is
+            # available so both platforms land on the same 30 s warm-up.
             if hasattr(_socket, "TCP_KEEPIDLE"):
                 _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
             elif hasattr(_socket, "TCP_KEEPALIVE"):
                 _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+            # Probe interval + retry count are independent of the idle
+            # constant's name; macOS exposes them under the same TCP_*
+            # symbols as Linux on Python ≥3.10.  Setting them on the macOS
+            # branch too keeps dead-peer detection bounded at ~60 s on both
+            # platforms — without it, macOS falls back to the kernel default
+            # of 75 s × 8 ≈ 10 min and idle provider sockets silently
+            # zombify between requests, freezing the next tool call after a
+            # 2-3 minute pause (#28834).
+            if hasattr(_socket, "TCP_KEEPINTVL"):
+                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
+            if hasattr(_socket, "TCP_KEEPCNT"):
+                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
             # When a custom transport is provided, httpx won't auto-read proxy
             # from env vars (allow_env_proxies = trust_env and transport is None).
             # Explicitly read proxy settings while still honoring NO_PROXY for

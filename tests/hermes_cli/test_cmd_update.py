@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli.main import cmd_update, PROJECT_ROOT, _git_cmd_for_update
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -32,6 +32,13 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     return side_effect
+
+
+def test_git_cmd_for_update_resolves_and_strips_quoted_git(monkeypatch):
+    """Regression: update must not try to exec a literal `git\"` token."""
+    monkeypatch.setattr("shutil.which", lambda name: '/usr/bin/git"' if name == "git" else None)
+
+    assert _git_cmd_for_update()[0] == "/usr/bin/git"
 
 
 @pytest.fixture

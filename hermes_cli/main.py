@@ -8077,6 +8077,21 @@ def _finalize_update_output(state):
             pass
 
 
+def _git_cmd_for_update() -> list[str]:
+    """Return a robust git command vector for update/check paths.
+
+    Some shell/env setups can leak a quoted git token (``git\"``) into update
+    plumbing. Resolve to an absolute executable up front so ``subprocess`` never
+    tries to exec the literal bad token.
+    """
+    git_exe = shutil.which("git") or "git"
+    git_exe = git_exe.strip().strip('"').strip("'")
+    git_cmd = [git_exe]
+    if sys.platform == "win32":
+        git_cmd = [git_exe, "-c", "windows.appendAtomically=false"]
+    return git_cmd
+
+
 def _cmd_update_check():
     """Implement ``hermes update --check``: fetch and report without installing."""
     from hermes_cli.config import detect_install_method
@@ -8100,9 +8115,7 @@ def _cmd_update_check():
         print("✗ Not a git repository — cannot check for updates.")
         sys.exit(1)
 
-    git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    git_cmd = _git_cmd_for_update()
 
     # Fetch both origin and upstream; prefer upstream as the canonical reference
     print("→ Fetching from upstream...")
@@ -8462,9 +8475,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
     # Build git command once — reused for fork detection and the update itself.
-    git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    git_cmd = _git_cmd_for_update()
 
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)

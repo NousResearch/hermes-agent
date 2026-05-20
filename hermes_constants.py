@@ -342,4 +342,10 @@ def apply_ipv4_preference(force: bool = False) -> None:
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 
+# ── TokenJuice constants ───────────────────────────────────────────────────
+# Tool outputs shorter than this (chars) are never summarised.
+TOKENJUICE_PASSTHROUGH_BYTES = 240
+# Compressed text shorter than this fraction of original is discarded.
+TOKENJUICE_MIN_COMPRESSION_RATIO = 0.95
+
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"

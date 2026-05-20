@@ -31,6 +31,10 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.token_juice import (
+    should_passthrough as _tokenjuice_passthrough,
+    compression_safe_to_apply as _tokenjuice_ratio_ok,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -549,6 +553,7 @@ class ContextCompressor(ContextEngine):
             MINIMUM_CONTEXT_LENGTH,
         )
         self.compression_count = 0
+        self._last_tokenjuice_reject_time: float = 0.0
 
         # Derive token budgets: ratio is relative to the threshold, not total context
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
@@ -756,11 +761,14 @@ class ContextCompressor(ContextEngine):
             # Skip already-deduplicated or previously-summarized results
             if content.startswith("[Duplicate tool output"):
                 continue
+            # TokenJuice Gate 1 & 2: tiny outputs & file-read commands
+            _call_id = msg.get("tool_call_id", "")
+            _tn, _ta = call_id_to_tool.get(_call_id, ("unknown", ""))
+            if _tokenjuice_passthrough(msg, tool_name=_tn, tool_args=_ta):
+                continue
             # Only prune if the content is substantial (>200 chars)
             if len(content) > 200:
-                call_id = msg.get("tool_call_id", "")
-                tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
-                summary = _summarize_tool_result(tool_name, tool_args, content)
+                summary = _summarize_tool_result(_tn, _ta, content)
                 result[i] = {**msg, "content": summary}
                 pruned += 1
 
@@ -1579,6 +1587,27 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+
+        # TokenJuice Gate 3: discard summaries that didn't actually compress
+        if summary and turns_to_summarize:
+            _orig_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+            _sum_tokens = estimate_messages_tokens_rough(
+                [{"role": "user", "content": summary}]
+            )
+            if not _tokenjuice_ratio_ok(_orig_tokens, _sum_tokens):
+                if not self.quiet_mode:
+                    logger.debug(
+                        "TokenJuice: summary ratio too high (%.0f%%), keeping original %d messages",
+                        (_sum_tokens / max(_orig_tokens, 1)) * 100,
+                        len(turns_to_summarize),
+                    )
+                # Cooldown: don't reject again within the failure cooldown window
+                _now = time.time()
+                if _now - self._last_tokenjuice_reject_time < _SUMMARY_FAILURE_COOLDOWN_SECONDS:
+                    logger.debug("TokenJuice: in cooldown, accepting summary to break loop")
+                else:
+                    self._last_tokenjuice_reject_time = _now
+                    return messages
 
         # Phase 4: Assemble compressed message list
         compressed = []

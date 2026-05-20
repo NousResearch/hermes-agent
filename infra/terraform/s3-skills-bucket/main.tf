@@ -206,6 +206,18 @@ data "aws_iam_policy_document" "skills_rw" {
       values   = ["hermes-skills/*"]
     }
   }
+
+  # HeadBucket health check: gateway/health.py calls s3.head_bucket() to verify
+  # the bucket exists. AWS evaluates this against s3:ListBucket without a prefix
+  # argument, so the prefix-conditioned statement above denies. Grant unconditional
+  # ListBucket-on-bucket here (the bucket-level only; key-listing still goes
+  # through the conditioned statement above).
+  statement {
+    sid       = "HermesSkillsHeadBucket"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.skills.arn]
+  }
 }
 
 # Create the IAM policy as a managed policy so it can be attached to the role.

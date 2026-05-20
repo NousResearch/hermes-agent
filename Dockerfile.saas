@@ -67,6 +67,10 @@ RUN uv sync --frozen --no-install-project \
     --extra anthropic \
     --extra mcp \
     --no-dev
+# asyncpg is required by hermes_storage.neon_backend (Plan 001-D) but isn't in
+# any existing extra (matrix extra has it but pulls heavy mautrix deps). Add
+# it directly via uv. If asyncpg ever joins a dedicated `saas` extra, this can drop.
+RUN uv pip install --no-cache-dir asyncpg==0.31.0 --python /build/.venv/bin/python
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime image
@@ -151,4 +155,4 @@ COPY --chown=hermes:hermes docker/entrypoint.saas.sh /app/docker/entrypoint.saas
 RUN chmod +x /app/docker/entrypoint.saas.sh
 
 ENTRYPOINT ["/app/docker/entrypoint.saas.sh"]
-CMD ["gateway", "--platform", "slack"]
+CMD ["gateway", "run"]

@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_state import apply_wal_with_fallback
@@ -411,6 +412,34 @@ def stamp_usage_metadata(metadata: Optional[dict[str, Any]], session_id: Optiona
     out["worker_session_id"] = str(session_id)
     out["usage_snapshot"] = session_usage_snapshot(str(session_id))
     return out
+
+
+def stamp_worker_usage_metadata(
+    task_id: str,
+    metadata: Optional[dict[str, Any]],
+    *,
+    on_error: Optional[Callable[[Exception], None]] = None,
+) -> Optional[dict[str, Any]]:
+    """Best-effort usage metadata stamping for the active worker task.
+
+    Both the human/CLI Kanban path and native Kanban tool path close task runs.
+    Keep task completion/blocking reliable even when usage state is absent,
+    locked, or corrupt by falling back to the trusted worker_session_id only.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return metadata
+    session_id = os.environ.get("HERMES_SESSION_ID")
+    if not session_id:
+        return metadata
+    try:
+        return stamp_usage_metadata(metadata, session_id)
+    except Exception as exc:
+        if on_error is not None:
+            on_error(exc)
+        fallback = dict(metadata or {})
+        fallback["worker_session_id"] = str(session_id)
+        return fallback
+
 
 def _totals_where(board: Optional[str] = None, task_id: Optional[str] = None) -> tuple[str, list[Any]]:
     clauses: list[str] = []

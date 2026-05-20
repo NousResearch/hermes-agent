@@ -125,8 +125,8 @@ def _stamp_worker_session_metadata(
     if not session_id:
         return metadata
     try:
-        from hermes_cli.project_usage_ledger import stamp_usage_metadata
-        return stamp_usage_metadata(metadata, session_id)
+        from hermes_cli.project_usage_ledger import stamp_worker_usage_metadata
+        return stamp_worker_usage_metadata(task_id, metadata)
     except Exception:
         stamped = dict(metadata or {})
         stamped["worker_session_id"] = session_id

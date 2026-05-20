@@ -1879,9 +1879,12 @@ def _stamp_worker_usage_metadata(task_id: str, metadata: Optional[dict[str, Any]
         return metadata
     try:
         from hermes_cli import project_usage_ledger
-        return project_usage_ledger.stamp_usage_metadata(
+        return project_usage_ledger.stamp_worker_usage_metadata(
+            task_id,
             metadata,
-            os.environ.get("HERMES_SESSION_ID"),
+            on_error=lambda exc: print(
+                f"kanban: usage metadata unavailable: {exc}", file=sys.stderr
+            ),
         )
     except Exception as exc:
         print(f"kanban: usage metadata unavailable: {exc}", file=sys.stderr)

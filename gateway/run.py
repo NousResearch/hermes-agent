@@ -3457,17 +3457,21 @@ class GatewayRunner:
             f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
             f"{cmd} gateway restart"
         )
+        # Do not rely on PATH here. Gateway tool execution can temporarily inherit
+        # sparse or user-mutated environments, and a missing /bin caused /restart
+        # to shut Hazel down without respawning.
+        bash_bin = shutil.which("bash") or "/bin/bash"
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
             subprocess.Popen(
-                [setsid_bin, "bash", "-lc", shell_cmd],
+                [setsid_bin, bash_bin, "-lc", shell_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
         else:
             subprocess.Popen(
-                ["bash", "-lc", shell_cmd],
+                [bash_bin, "-lc", shell_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,

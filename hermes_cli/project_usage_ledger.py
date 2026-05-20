@@ -236,9 +236,10 @@ def backfill(*, ledger_conn: Optional[sqlite3.Connection] = None) -> dict[str, A
             lconn.close()
         return {"session_entries": 0, "run_entries": 0, "boards": 0, "ledger_path": str(ledger_path())}
 
-    sconn = sqlite3.connect(str(state_path), timeout=30)
-    sconn.row_factory = sqlite3.Row
+    sconn: Optional[sqlite3.Connection] = None
     try:
+        sconn = sqlite3.connect(str(state_path), timeout=30)
+        sconn.row_factory = sqlite3.Row
         # First materialize all board/task/run usage entries.  A run can link
         # to a worker session via task_runs.metadata.worker_session_id or to an
         # originating session via tasks.session_id.
@@ -364,7 +365,8 @@ def backfill(*, ledger_conn: Optional[sqlite3.Connection] = None) -> dict[str, A
             "ledger_path": str(ledger_path()),
         }
     finally:
-        sconn.close()
+        if sconn is not None:
+            sconn.close()
         if owns_conn:
             lconn.close()
 

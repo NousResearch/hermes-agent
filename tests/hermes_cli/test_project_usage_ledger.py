@@ -172,6 +172,32 @@ def test_get_task_rollups_finds_specific_task_beyond_summary_limit(usage_home):
 
 
 
+
+def test_backfill_closes_owned_ledger_when_state_open_fails(usage_home, monkeypatch):
+    class FakeLedgerConn:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    fake_ledger = FakeLedgerConn()
+    usage.state_db_path().touch()
+    real_sqlite_connect = usage.sqlite3.connect
+
+    def fake_sqlite_connect(path, *args, **kwargs):
+        if str(path).endswith("state.db"):
+            raise sqlite3.OperationalError("state open failed")
+        return real_sqlite_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(usage, "connect", lambda: fake_ledger)
+    monkeypatch.setattr(usage.sqlite3, "connect", fake_sqlite_connect)
+
+    with pytest.raises(sqlite3.OperationalError, match="state open failed"):
+        usage.backfill()
+
+    assert fake_ledger.closed is True
+
 def test_backfill_records_board_query_error_without_aborting(usage_home, monkeypatch):
     _seed_session(usage_home, "sess-board-error", in_tok=21, out_tok=8, cost=0.004)
     _seed_completed_run("sess-board-error")

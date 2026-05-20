@@ -168,6 +168,7 @@ from agent.tool_result_classification import (
     file_mutation_result_landed,
 )
 from agent.trajectory import (
+    convert_scratchpad_to_think,
     save_trajectory as _save_trajectory_to_file,
 )
 from agent.message_sanitization import (
@@ -1175,6 +1176,7 @@ class AIAgent:
         self._drop_trailing_empty_response_scaffolding(messages)
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
+        self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
@@ -1503,6 +1505,93 @@ class AIAgent:
         """Forwarder — see ``agent.agent_runtime_helpers.dump_api_request_debug``."""
         from agent.agent_runtime_helpers import dump_api_request_debug
         return dump_api_request_debug(self, api_kwargs, reason=reason, error=error)
+
+    @staticmethod
+    def _clean_session_content(content: str) -> str:
+        """Convert REASONING_SCRATCHPAD to think tags and clean up whitespace."""
+        if not content:
+            return content
+        content = convert_scratchpad_to_think(content)
+        content = re.sub(r'\n+(<think>)', r'\n\1', content)
+        content = re.sub(r'(</think>)\n+', r'\1\n', content)
+        return content.strip()
+
+    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+        """Optional per-session JSON snapshot writer.
+
+        Gated by ``sessions.write_json_snapshots`` (default False).  state.db
+        is the canonical message store; this writer exists only for users
+        whose external tooling consumes ``~/.hermes/sessions/session_{sid}.json``
+        directly.  When the flag is off this is a fast no-op.
+
+        When enabled, rewrites the snapshot after every persistence point with
+        the full message list (assistant content normalized via
+        ``_clean_session_content`` to convert REASONING_SCRATCHPAD to think
+        tags).  The truncation guard ("don't overwrite a larger log with
+        fewer messages") is preserved so resume + branch don't clobber a
+        fuller existing snapshot.
+        """
+        if not getattr(self, "_session_json_enabled", False):
+            return
+        messages = messages or self._session_messages
+        if not messages:
+            return
+
+        # Re-derive the target path each call so /branch and /compress
+        # session-id changes land in the right file without any re-point
+        # bookkeeping at the call sites.
+        try:
+            log_file = self.logs_dir / f"session_{self.session_id}.json"
+        except Exception:
+            return
+
+        try:
+            cleaned = []
+            for msg in messages:
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    msg = dict(msg)
+                    msg["content"] = self._clean_session_content(msg["content"])
+                cleaned.append(msg)
+
+            # Guard: never overwrite a larger session log with fewer messages.
+            # Protects against data loss when a resumed agent starts with
+            # partial history and would otherwise clobber the full JSON log.
+            if log_file.exists():
+                try:
+                    existing = json.loads(log_file.read_text(encoding="utf-8"))
+                    existing_count = existing.get("message_count", len(existing.get("messages", [])))
+                    if existing_count > len(cleaned):
+                        logging.debug(
+                            "Skipping session log overwrite: existing has %d messages, current has %d",
+                            existing_count, len(cleaned),
+                        )
+                        return
+                except Exception:
+                    pass  # corrupted existing file — allow the overwrite
+
+            entry = {
+                "session_id": self.session_id,
+                "model": self.model,
+                "base_url": self.base_url,
+                "platform": self.platform,
+                "session_start": self.session_start.isoformat(),
+                "last_updated": datetime.now().isoformat(),
+                "system_prompt": self._cached_system_prompt or "",
+                "tools": self.tools or [],
+                "message_count": len(cleaned),
+                "messages": cleaned,
+            }
+
+            atomic_json_write(
+                log_file,
+                entry,
+                indent=2,
+                default=str,
+            )
+
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to save session log: {e}")
 
 
     def interrupt(self, message: str = None) -> None:

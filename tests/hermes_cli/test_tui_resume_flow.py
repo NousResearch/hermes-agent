@@ -283,6 +283,151 @@ def test_fast_tui_launch_is_termux_only(monkeypatch, main_mod):
     assert main_mod._try_termux_fast_tui_launch() is False
 
 
+def test_termux_fast_cli_launch_chat_uses_light_parser(monkeypatch, main_mod):
+    captured = {}
+    prepared = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(
+        sys, "argv", ["hermes", "chat", "-q", "hello", "--toolsets", "web,terminal"]
+    )
+    monkeypatch.setattr(
+        main_mod, "_prepare_agent_startup", lambda args: prepared.append(args.command)
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "cmd_chat",
+        lambda args: captured.update(
+            {"query": args.query, "toolsets": args.toolsets, "command": args.command}
+        ),
+    )
+
+    assert main_mod._try_termux_fast_cli_launch() is True
+    assert prepared == ["chat"]
+    assert captured == {
+        "query": "hello",
+        "toolsets": "web,terminal",
+        "command": "chat",
+    }
+
+
+def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod):
+    captured = {}
+    prepared = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "-z", "hello", "--model", "gpt-test", "--provider", "openai"],
+    )
+    monkeypatch.setattr(
+        main_mod, "_prepare_agent_startup", lambda args: prepared.append(args.command)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 17
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._try_termux_fast_cli_launch()
+
+    assert exc.value.code == 17
+    assert prepared == [None]
+    assert captured == {
+        "prompt": "hello",
+        "model": "gpt-test",
+        "provider": "openai",
+        "toolsets": None,
+    }
+
+
+def test_termux_fast_cli_launch_version_skips_update_check(monkeypatch, main_mod):
+    captured = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "version"])
+    monkeypatch.setattr(
+        main_mod, "_print_version_info", lambda *, check_updates: captured.append(check_updates)
+    )
+
+    assert main_mod._try_termux_fast_cli_launch() is True
+    assert captured == [False]
+
+
+def test_termux_fast_cli_launch_skips_help(monkeypatch, main_mod):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "chat", "--help"])
+
+    assert main_mod._try_termux_fast_cli_launch() is False
+
+
+def test_termux_fast_cli_launch_can_be_disabled(monkeypatch, main_mod):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setenv("HERMES_TERMUX_DISABLE_FAST_CLI", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "version"])
+
+    assert main_mod._try_termux_fast_cli_launch() is False
+
+
+def test_termux_bundled_skills_stamp_controls_sync(monkeypatch, tmp_path, main_mod):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(main_mod, "_termux_bundled_skills_fingerprint", lambda: "fp1")
+
+    assert main_mod._termux_bundled_skills_sync_needed() is True
+    main_mod._mark_termux_bundled_skills_synced()
+    assert main_mod._termux_bundled_skills_sync_needed() is False
+
+    monkeypatch.setenv("HERMES_TERMUX_FORCE_SKILLS_SYNC", "1")
+    assert main_mod._termux_bundled_skills_sync_needed() is True
+
+
+def test_termux_skips_bundled_skill_sync_when_stamp_fresh(monkeypatch, tmp_path, main_mod):
+    calls = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(main_mod, "_termux_bundled_skills_fingerprint", lambda: "fp1")
+    main_mod._mark_termux_bundled_skills_synced()
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.skills_sync",
+        types.SimpleNamespace(sync_skills=lambda quiet: calls.append(quiet)),
+    )
+
+    assert main_mod._sync_bundled_skills_for_startup() is False
+    assert calls == []
+
+
+def test_termux_forced_bundled_skill_sync_runs(monkeypatch, tmp_path, main_mod):
+    calls = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setenv("HERMES_TERMUX_FORCE_SKILLS_SYNC", "1")
+    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(main_mod, "_termux_bundled_skills_fingerprint", lambda: "fp1")
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.skills_sync",
+        types.SimpleNamespace(sync_skills=lambda quiet: calls.append(quiet)),
+    )
+
+    assert main_mod._sync_bundled_skills_for_startup() is True
+    assert calls == [True]
+
+
 def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
     captured = {}
 

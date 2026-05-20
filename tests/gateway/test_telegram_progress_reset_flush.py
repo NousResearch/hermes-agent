@@ -18,13 +18,22 @@ Mirrors the simulation pattern used in test_telegram_progress_edit_transient.py.
 
 from __future__ import annotations
 
+import asyncio
+from typing import Awaitable, Callable, Optional
 from unittest.mock import AsyncMock
 
 import pytest
 
+EditFn = Callable[[str, str], Awaitable[object]]
 
-async def _simulate_reset_handler(*, can_edit: bool, progress_lines: list,
-                                  progress_msg_id, edit_fn) -> tuple[list, object]:
+
+async def _simulate_reset_handler(
+    *,
+    can_edit: bool,
+    progress_lines: list[str],
+    progress_msg_id: Optional[str],
+    edit_fn: EditFn,
+) -> tuple[list[str], Optional[str]]:
     """Mirror the hot-loop __reset__ handler from send_progress_messages.
 
     Returns the (progress_lines, progress_msg_id) state after the handler
@@ -33,6 +42,8 @@ async def _simulate_reset_handler(*, can_edit: bool, progress_lines: list,
     if can_edit and progress_lines and progress_msg_id:
         try:
             await edit_fn(progress_msg_id, "\n".join(progress_lines))
+        except asyncio.CancelledError:
+            raise
         except Exception:
             pass
     return [], None

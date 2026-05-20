@@ -16260,6 +16260,8 @@ class GatewayRunner:
                                 await _edit_progress_message(
                                     progress_msg_id, _progress_text(progress_lines)
                                 )
+                            except asyncio.CancelledError:
+                                raise
                             except Exception:
                                 pass
                         progress_msg_id = None

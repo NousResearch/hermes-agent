@@ -1073,6 +1073,8 @@ AUTHOR_MAP = {
     # Azure Foundry salvage (PRs #9029, #4599, #10086, #8766)
     "tech@smartlogics.net": "TechPrototyper",
     "637186+HangGlidersRule@users.noreply.github.com": "HangGlidersRule",
+    # inference.sh provider plugins
+    "omerkarisman@gmail.com": "okaris",
     "pein892@gmail.com": "pein892",
     "dean.kerr@gmail.com": "deankerr",
     "socrates1024@gmail.com": "socrates1024",

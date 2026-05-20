@@ -1,5 +1,5 @@
 ---
-name: inference-sh
+name: belt-creative
 description: "Generate images, video, audio, avatars, and music via the inference.sh CLI (belt). 250+ cloud AI models with one API key. Use when the user asks to generate images (FLUX, Seedream, GPT-Image-2, Gemini, Grok Imagine, Reve), create video (Veo, Seedance, Wan, HappyHorse), make avatars (P-Video-Avatar, OmniHuman, Fabric, PixVerse), generate speech or music (ElevenLabs, Inworld TTS, Kokoro, DIA), upscale media, remove backgrounds, or add sound effects to video."
 version: 2.0.0
 author: okaris
@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [image-generation, video-generation, text-to-speech, avatars, music, ai-media, FLUX, Veo, Seedance, Seedream, ElevenLabs, inference-sh]
-    related_skills: [inference-sh-workflows, comfyui, songwriting-and-ai-music]
+    related_skills: [belt-productive, comfyui, songwriting-and-ai-music]
     requires_toolsets: [terminal]
 required_environment_variables:
   - name: INFERENCE_API_KEY

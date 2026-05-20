@@ -1,5 +1,5 @@
 ---
-name: inference-sh-workflows
+name: belt-productive
 description: "Automate AI workflows, web search, LLM routing, and Twitter/X posts via inference.sh CLI (belt). Route prompts to Claude, Gemini, Kimi K2, GLM-4.6 via OpenRouter. Search the web with Tavily and Exa. Post tweets, threads, and DMs. Chain AI operations into batch, sequential, or scheduled pipelines. Use when the user wants AI-powered search, needs to call an LLM from the terminal, wants to post to Twitter/X, or build multi-step AI automation."
 version: 1.0.0
 author: okaris
@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [automation, search, twitter, llm-routing, workflows, tavily, exa, openrouter, inference-sh]
-    related_skills: [inference-sh, xurl]
+    related_skills: [belt-creative, xurl]
     requires_toolsets: [terminal]
 required_environment_variables:
   - name: INFERENCE_API_KEY

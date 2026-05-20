@@ -201,7 +201,7 @@ def approval_callback(cli, command: str, description: str) -> str:
 
     with lock:
         from cli import CLI_CONFIG
-        timeout = CLI_CONFIG.get("approvals", {}).get("timeout", 60)
+        timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
         response_queue = queue.Queue()
         choices = ["once", "session", "always", "deny"]
         if len(command) > 70:
@@ -214,7 +214,14 @@ def approval_callback(cli, command: str, description: str) -> str:
             "selected": 0,
             "response_queue": response_queue,
         }
-        cli._approval_deadline = _time.monotonic() + timeout
+        # timeout=0 means "wait indefinitely" — no deadline.
+        # Mirror of cli.py:_approval_deadline assignment so this callback
+        # path honors the same `approvals.timeout: 0` config the main CLI
+        # path does. Without this guard, timeout=0 was setting the deadline
+        # to NOW and the first loop iteration immediately denied the
+        # command. See user-preference: "I don't want to see this again:
+        # Timeout — denying command".
+        cli._approval_deadline = 0 if not timeout else _time.monotonic() + timeout
 
         if hasattr(cli, "_app") and cli._app:
             cli._app.invalidate()
@@ -228,9 +235,11 @@ def approval_callback(cli, command: str, description: str) -> str:
                     cli._app.invalidate()
                 return result
             except queue.Empty:
-                remaining = cli._approval_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
+                # No deadline (timeout=0) → loop forever waiting for the user.
+                if cli._approval_deadline:
+                    remaining = cli._approval_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
                 if hasattr(cli, "_app") and cli._app:
                     cli._app.invalidate()
 

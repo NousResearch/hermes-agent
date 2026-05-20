@@ -554,7 +554,18 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            # Resolve custom_headers + verify from custom_providers config
+            # via the shared helper so APIM-style gateways (subscription
+            # keys, self-signed certs) work uniformly across init,
+            # fallback activation, and request-client rebuild.
+            from hermes_cli.runtime_provider import resolve_custom_gateway_headers
+            _custom_default_headers, _verify_override = resolve_custom_gateway_headers(base_url)
+            _custom_verify = True if _verify_override is None else _verify_override
+            agent._anthropic_client = build_anthropic_client(
+                effective_key, base_url, timeout=_provider_timeout,
+                default_headers=_custom_default_headers,
+                verify=_custom_verify,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
@@ -655,6 +666,20 @@ def init_agent(
                         client_kwargs["default_headers"] = dict(_ph.default_headers)
                 except Exception:
                     pass
+            # Resolve custom_headers + verify from custom_providers config
+            # via the shared helper. Without this mirror on the OpenAI-wire
+            # path, APIM-style gateways (e.g. AMD LLM Gateway's
+            # Ocp-Apim-Subscription-Key) silently 401 because the outbound
+            # request only carries the Bearer token the gateway doesn't
+            # recognise.
+            if "default_headers" not in client_kwargs:
+                from hermes_cli.runtime_provider import resolve_custom_gateway_headers
+                _ch, _verify = resolve_custom_gateway_headers(base_url)
+                if _ch:
+                    client_kwargs["default_headers"] = _ch
+                if _verify is False:
+                    import httpx as _httpx_local
+                    client_kwargs["http_client"] = _httpx_local.Client(verify=False)
         else:
             # No explicit creds — use the centralized provider router
             from agent.auxiliary_client import resolve_provider_client

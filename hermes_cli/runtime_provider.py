@@ -5,12 +5,69 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
+
+
+def resolve_custom_gateway_headers(
+    base_url: str,
+) -> Tuple[Optional[Dict[str, str]], Optional[bool]]:
+    """Look up custom_headers + verify for ``base_url`` in custom_providers.
+
+    Returns ``(headers, verify)``:
+
+    * ``headers`` is a copy of the matched provider's ``custom_headers``
+      dict, or ``None`` if no entry matches.
+    * ``verify`` is the matched provider's ``verify`` flag (``True``/``False``)
+      or ``None`` if the entry omits it.
+
+    The match is case-insensitive on ``base_url`` with a trailing-slash
+    strip on both sides — runtime URLs sometimes carry a trailing slash,
+    config entries usually don't.
+
+    This is the single source of truth for "what extra headers does this
+    gateway need". Call sites that build a real client (init_agent,
+    fallback activation, request-client rebuild, auxiliary client) MUST
+    consult this helper before constructing the SDK client so APIM-style
+    subscription keys (Ocp-Apim-Subscription-Key, api-key, etc.) survive
+    the round-trip. See PR #28790 upstream.
+    """
+    if not base_url:
+        return None, None
+    my_base = base_url.rstrip("/").lower()
+    try:
+        from hermes_cli.config import load_config as _load_cp_cfg
+        cfg = _load_cp_cfg()
+        cp_list = cfg.get("custom_providers", [])
+        if not isinstance(cp_list, list):
+            return None, None
+        for cp in cp_list:
+            if not isinstance(cp, dict):
+                continue
+            cp_base = (cp.get("base_url") or "").rstrip("/").lower()
+            if cp_base and cp_base == my_base:
+                headers = (
+                    dict(cp["custom_headers"])
+                    if isinstance(cp.get("custom_headers"), dict)
+                    and cp["custom_headers"]
+                    else None
+                )
+                verify = cp.get("verify") if isinstance(cp.get("verify"), bool) else None
+                return headers, verify
+    except Exception:
+        logger.debug(
+            "resolve_custom_gateway_headers: lookup raised for base_url=%s; "
+            "treating as 'no headers'",
+            base_url,
+            exc_info=True,
+        )
+    return None, None
+
+
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,

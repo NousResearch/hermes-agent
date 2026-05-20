@@ -814,16 +814,29 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_api_mode == "anthropic_messages":
             # Build native Anthropic client instead of using OpenAI client
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
+            from hermes_cli.runtime_provider import resolve_custom_gateway_headers
             effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = fb_base_url
+            # Forward custom_headers + verify for APIM-style fallback gateways
+            # (e.g. AMD LLM Gateway). Without this, the fallback chain 401s
+            # on every Anthropic-wire gateway entry because the subscription
+            # key is dropped during client construction. See PR #28790.
+            _fb_headers, _fb_verify = resolve_custom_gateway_headers(fb_base_url)
+            _fb_verify_resolved = True if _fb_verify is None else _fb_verify
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
+                default_headers=_fb_headers,
+                verify=_fb_verify_resolved,
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
             agent.client = None
             agent._client_kwargs = {}
+            # Store headers in _client_kwargs so auxiliary clients (vision,
+            # title generation, compression) re-use them on this provider.
+            if _fb_headers:
+                agent._client_kwargs["default_headers"] = _fb_headers
         else:
             # Swap OpenAI client and config in-place
             agent.api_key = fb_client.api_key

@@ -17694,6 +17694,11 @@ class GatewayRunner:
             # after streaming finished — when the response was transformed, always
             # send the final version so the appended content reaches the client.
             _transformed = bool(response.get("response_transformed"))
+            logger.warning(
+                "TRACE: final-send check transformed=%s streamed=%s previewed=%s content_delivered=%s final_len=%s",
+                _transformed, _streamed, _previewed, _content_delivered,
+                len(response.get("final_response") or ""),
+            )
             if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _content_delivered):
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",

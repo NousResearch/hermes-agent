@@ -4897,3 +4897,20 @@ async def async_call_llm(
                 logger.debug("Auxiliary (async): cache eviction after connection error failed",
                              exc_info=True)
         raise
+
+
+def get_cheapest_available_model(tier: str = "light") -> Optional[str]:
+    """Return the cheapest known model matching a cost tier.
+
+    Used by delegate_tool for automatic model selection when a subagent
+    profile has ``cost_tier`` set but no explicit ``model_preference``.
+
+    Args:
+        tier: 'light' | 'medium' | 'heavy'
+
+    Returns:
+        Model name string, or None if no known model matches.
+    """
+    from agent.model_metadata import resolve_model_by_cost_tier
+    result = resolve_model_by_cost_tier(tier, "")
+    return result if result else None

@@ -1825,3 +1825,65 @@ def estimate_request_tokens_rough(
     if tools:
         total += (len(str(tools)) + 3) // 4
     return total
+
+# ═══════════════════════════════════════════════════════════════════
+#  Model cost table — USD per 1K tokens (input / output).
+#  Sources: official pricing pages, last updated 2026-05.
+# ═══════════════════════════════════════════════════════════════════
+MODEL_COST_PER_1K: Dict[str, Dict[str, float]] = {
+    "deepseek-chat":              {"input": 0.00027, "output": 0.0011},
+    "deepseek-v4-pro":            {"input": 0.00055, "output": 0.0022},
+    "deepseek-v4-flash":          {"input": 0.00027, "output": 0.0011},
+    "deepseek-reasoner":          {"input": 0.00055, "output": 0.0022},
+    "gpt-4o":                     {"input": 0.0025,  "output": 0.01},
+    "gpt-4o-mini":                {"input": 0.00015, "output": 0.0006},
+    "claude-sonnet-4-20250514":   {"input": 0.003,   "output": 0.015},
+    "claude-haiku-4.5":           {"input": 0.0008,  "output": 0.004},
+    "gemini-2.5-flash":           {"input": 0.00015, "output": 0.0006},
+    "moonshotai/Kimi-K2-Thinking": {"input": 0.0004, "output": 0.0016},
+    "zai-org/GLM-5":              {"input": 0.0004,  "output": 0.0016},
+}
+
+
+def get_model_cost_tier(model_name: str) -> str:
+    """Return cost tier for a model: 'light' | 'medium' | 'heavy'.
+
+    Falls back to 'medium' for unknown models.
+    """
+    cost = MODEL_COST_PER_1K.get(model_name)
+    if not cost:
+        return "medium"
+    avg = (cost.get("input", 0) + cost.get("output", 0)) / 2
+    if avg < 0.0005:
+        return "light"
+    if avg < 0.003:
+        return "medium"
+    return "heavy"
+
+
+def resolve_model_by_cost_tier(
+    tier: str,
+    parent_model: str,
+) -> str:
+    """Pick the cheapest model at or above the given cost tier.
+
+    Args:
+        tier: 'light' | 'medium' | 'heavy'
+        parent_model: fallback if no match found
+
+    Returns the cheapest known model matching the tier, or parent_model.
+    """
+    tier_order = {"light": 0, "medium": 1, "heavy": 2}
+    target = tier_order.get(tier, 1)
+
+    candidates = []
+    for name, cost in MODEL_COST_PER_1K.items():
+        avg = (cost["input"] + cost["output"]) / 2
+        model_tier = get_model_cost_tier(name)
+        if tier_order.get(model_tier, 1) >= target:
+            candidates.append((avg, name))
+
+    if not candidates:
+        return parent_model
+    candidates.sort()
+    return candidates[0][1]

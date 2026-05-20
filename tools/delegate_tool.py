@@ -1885,12 +1885,31 @@ def _build_child_agent(
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
-    # Resolve the child's effective model early so it can ride on every event.
-    effective_model_for_cb = model or getattr(parent_agent, "model", None)
+    # Resolve effective credentials: config override > profile > parent inherit
+    _profile_model = None
+    _cost_tier = None
+    if profile is not None:
+        _pm = profile.get("model")
+        if _pm and _pm != "default":
+            _profile_model = _pm
+        _cost_tier = profile.get("cost_tier")
+    effective_model = model or _profile_model or parent_agent.model
+
+    # Cost-tier routing: when profile has cost_tier but no explicit model,
+    # auto-select the cheapest model at that tier.
+    if not _profile_model and _cost_tier:
+        try:
+            from agent.auxiliary_client import get_cheapest_available_model
+            _cheap = get_cheapest_available_model(_cost_tier)
+            if _cheap:
+                effective_model = _cheap
+        except Exception:
+            pass  # fall through to parent_agent.model
 
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
     # TUI can reconstruct the spawn tree and route per-branch controls.
+    effective_model_for_cb = effective_model
     child_progress_cb = _build_child_progress_callback(
         task_index,
         goal,
@@ -1920,9 +1939,6 @@ def _build_child_agent(
                 logger.debug("Child thinking callback relay failed: %s", e)
 
         child_thinking_cb = _child_thinking
-
-    # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key

@@ -51,6 +51,14 @@ def _print_cancelled_setup() -> None:
     print("\n  Cancelled. No changes saved.\n")
 
 
+def _clear_interactive_transition() -> None:
+    """Clear stale curses content before entering a follow-up setup screen."""
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
+
+
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
     """Prompt for a value with optional default and secret masking."""
     suffix = f" [{default}]" if default else ""
@@ -275,6 +283,8 @@ def cmd_setup(args) -> None:
         return
 
     name, _, provider = providers[selected]
+
+    _clear_interactive_transition()
 
     # Install pip dependencies if declared in plugin.yaml
     _install_dependencies(name)

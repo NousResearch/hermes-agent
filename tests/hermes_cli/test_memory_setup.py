@@ -76,6 +76,25 @@ def test_cmd_setup_builtin_selection_still_saves_builtin(monkeypatch):
     save_config.assert_called_once_with(config)
 
 
+def test_cmd_setup_clears_interactive_picker_before_provider_post_setup(monkeypatch):
+    events = []
+
+    class PostSetupProvider:
+        def post_setup(self, hermes_home, config):
+            events.append("post_setup")
+
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [("openviking", "local", PostSetupProvider())])
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: events.append("select") or 0)
+    monkeypatch.setattr(memory_setup, "_clear_interactive_transition", lambda: events.append("clear"), raising=False)
+    monkeypatch.setattr(memory_setup, "_install_dependencies", lambda name: events.append("install"))
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: "/tmp/hermes-test")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    assert events == ["select", "clear", "install", "post_setup"]
+
+
 def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
     class ChoiceProvider:
         def __init__(self):

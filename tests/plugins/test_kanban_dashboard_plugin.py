@@ -2255,21 +2255,48 @@ def test_board_usage_rollup_does_not_refresh_when_ledger_exists(monkeypatch):
     class FakeUsage:
         def get_task_rollups(self, *, board=None, task_ids=None, refresh=True):
             refresh_calls.append(refresh)
-            return [{
-                "task_id": "t1",
-                "runs": 1,
-                "sessions": 1,
-                "input_tokens": 3,
-                "output_tokens": 5,
-                "reasoning_tokens": 0,
-                "estimated_cost_usd": 0.01,
-                "actual_cost_usd": 0.0,
-            }]
+            return []
+
+        def get_summary(self, *, board=None, refresh=True):
+            refresh_calls.append(refresh)
+            return {"last_backfill_at": 123.0}
 
     monkeypatch.setattr(hermes_cli, "project_usage_ledger", FakeUsage(), raising=False)
+    monkeypatch.setattr(mod, "_usage_from_run_snapshots", lambda board, ids: {})
 
-    assert mod._usage_by_task("default", ["t1"])["t1"]["input_tokens"] == 3
-    assert refresh_calls == [False]
+    assert mod._usage_by_task("default", ["t1"]) == {}
+    assert refresh_calls == [False, False]
+
+
+def test_board_usage_rollup_reads_fresh_task_run_snapshots(client, kanban_home):
+    """Newly completed cards can show stamped usage without a ledger backfill."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="usage snapshot badge", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="done",
+            metadata={
+                "worker_session_id": "sess-snapshot-card",
+                "usage_snapshot": {
+                    "session_id": "sess-snapshot-card",
+                    "input_tokens": 55,
+                    "output_tokens": 89,
+                    "reasoning_tokens": 13,
+                    "estimated_cost_usd": 0.015,
+                },
+            },
+        )
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+    tasks = [task for col in r.json()["columns"] for task in col["tasks"]]
+    card = next(t for t in tasks if t["id"] == tid)
+    assert card["usage"]["input_tokens"] == 55
+    assert card["usage"]["output_tokens"] == 89
+    assert card["usage"]["reasoning_tokens"] == 13
+    assert card["usage"]["estimated_cost_usd"] == pytest.approx(0.015)
 
 
 def test_usage_route_returns_board_filtered_summary(client, kanban_home):

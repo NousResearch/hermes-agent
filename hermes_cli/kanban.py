@@ -1884,7 +1884,12 @@ def _stamp_worker_usage_metadata(task_id: str, metadata: Optional[dict[str, Any]
         )
     except Exception as exc:
         print(f"kanban: usage metadata unavailable: {exc}", file=sys.stderr)
-        return metadata
+        session_id = os.environ.get("HERMES_SESSION_ID")
+        if not session_id:
+            return metadata
+        fallback = dict(metadata or {})
+        fallback["worker_session_id"] = str(session_id)
+        return fallback
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:

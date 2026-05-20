@@ -186,19 +186,90 @@ def _comment_dict(c: kanban_db.Comment) -> dict[str, Any]:
     }
 
 
+def _usage_from_run_snapshots(board_slug: Optional[str], task_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Build per-task card usage from task_run metadata snapshots.
+
+    Worker terminal events stamp a usage_snapshot when they complete/block.
+    Reading those rows is board-local and cheap, so card badges can update for
+    newly completed tasks without running a full cross-board project ledger
+    backfill on every board poll.
+    """
+    if not task_ids:
+        return {}
+    wanted = set(task_ids)
+    placeholders = ", ".join(["?"] * len(task_ids))
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        conn = kanban_db.connect(board=board_slug)
+    except Exception as exc:
+        log.debug("kanban usage snapshot lookup unavailable: %s", exc)
+        return {}
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT task_id, metadata
+            FROM task_runs
+            WHERE task_id IN ({placeholders})
+            """,
+            list(task_ids),
+        ).fetchall()
+    except Exception as exc:
+        log.debug("kanban usage snapshot lookup failed: %s", exc)
+        return {}
+    finally:
+        conn.close()
+    for row in rows:
+        tid = str(row["task_id"])
+        if tid not in wanted:
+            continue
+        try:
+            meta = json.loads(row["metadata"] or "{}")
+        except Exception:
+            continue
+        snapshot = meta.get("usage_snapshot") if isinstance(meta, dict) else None
+        if not isinstance(snapshot, dict):
+            continue
+        agg = out.setdefault(tid, {
+            "runs": 0,
+            "sessions": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+            "estimated_cost_usd": 0.0,
+            "actual_cost_usd": 0.0,
+            "_session_ids": set(),
+        })
+        agg["runs"] += 1
+        sid = snapshot.get("session_id") or meta.get("worker_session_id")
+        if sid:
+            agg["_session_ids"].add(str(sid))
+        for key in ("input_tokens", "output_tokens", "reasoning_tokens"):
+            agg[key] += int(snapshot.get(key) or 0)
+        for key in ("estimated_cost_usd", "actual_cost_usd"):
+            agg[key] += float(snapshot.get(key) or 0.0)
+    for agg in out.values():
+        agg["sessions"] = len(agg.pop("_session_ids"))
+    return out
+
+
 def _usage_by_task(board_slug: Optional[str], task_ids: list[str]) -> dict[str, dict[str, Any]]:
     if not task_ids:
         return {}
+    out = _usage_from_run_snapshots(board_slug, task_ids)
+    missing = [tid for tid in task_ids if tid not in out]
+    if not missing:
+        return out
     try:
         from hermes_cli import project_usage_ledger as usage
-        rows = usage.get_task_rollups(board=board_slug, task_ids=task_ids, refresh=False)
+        rows = usage.get_task_rollups(board=board_slug, task_ids=missing, refresh=False)
         if not rows:
-            rows = usage.get_task_rollups(board=board_slug, task_ids=task_ids, refresh=True)
+            summary = usage.get_summary(board=board_slug, refresh=False)
+            if summary.get("last_backfill_at") is None:
+                rows = usage.get_task_rollups(board=board_slug, task_ids=missing, refresh=True)
     except Exception as exc:
         log.debug("kanban usage rollup unavailable: %s", exc)
-        return {}
-    wanted = set(task_ids)
-    out: dict[str, dict[str, Any]] = {}
+        return out
+    wanted = set(missing)
     for row in rows:
         tid = row.get("task_id")
         if tid in wanted:

@@ -192,7 +192,10 @@ def test_cli_worker_usage_metadata_stamping_is_best_effort(usage_home, monkeypat
     import sqlite3
     monkeypatch.setattr(usage, "stamp_usage_metadata", boom)
 
-    assert kc._stamp_worker_usage_metadata("t-safe", {"keep": True}) == {"keep": True}
+    assert kc._stamp_worker_usage_metadata("t-safe", {"keep": True}) == {
+        "keep": True,
+        "worker_session_id": "sess-safe",
+    }
     assert "usage metadata unavailable" in capsys.readouterr().err
 
 

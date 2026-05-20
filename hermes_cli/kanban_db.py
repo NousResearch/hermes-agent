@@ -2519,6 +2519,12 @@ def complete_task(
                     },
                     run_id=run_id,
                 )
+    worktree_finalization = _finalize_completed_worktree(conn, task_id)
+    if worktree_finalization:
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "worktree_finalized", worktree_finalization, run_id=run_id,
+            )
     # Successful completion — wipe the consecutive-failures counter.
     # Failure history stays on the event log for audit; the counter
     # just tracks "is there a current pathology the breaker should
@@ -2830,9 +2836,9 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
       resolves against the dispatcher's CWD instead of a meaningful
       root.  Users who want a kanban-root-relative workspace should
       compute the absolute path themselves.
-    - ``worktree``: a git worktree at ``workspace_path``.  Not created
-      automatically in v1 -- the kanban-worker skill documents
-      ``git worktree add`` as a worker-side step.  Returns the intended path.
+    - ``worktree``: a git worktree at ``workspace_path``. Created on first
+      resolution under ``<repo>/.worktrees/task_<id>`` when no explicit path
+      is set. Each task receives its own branch.
 
     Persist the resolved path back to the task row via ``set_workspace_path``
     so subsequent runs reuse the same directory.
@@ -2935,6 +2941,93 @@ def set_workspace_path(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
         )
+
+
+def _git_repo_root_for_worktree_path(path: Path) -> Path:
+    return Path(
+        subprocess.check_output(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+    )
+
+
+def _finalize_completed_worktree(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
+    """Commit and remove a completed task's git worktree."""
+    row = conn.execute(
+        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if not row or row["workspace_kind"] != "worktree" or not row["workspace_path"]:
+        return None
+
+    worktree_path = Path(row["workspace_path"]).expanduser()
+    if not worktree_path.exists():
+        return {"worktree_path": str(worktree_path), "removed": False, "reason": "missing"}
+
+    try:
+        repo_root = _git_repo_root_for_worktree_path(worktree_path)
+        status = subprocess.check_output(
+            ["git", "-C", str(worktree_path), "status", "--porcelain"],
+            text=True,
+        )
+        committed = False
+        if status.strip():
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "add", "-A"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "commit", "-m", f"kanban: complete {task_id}"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            committed = True
+        subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "remove", str(worktree_path)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return {"worktree_path": str(worktree_path), "committed": committed, "removed": True}
+    except subprocess.CalledProcessError as e:
+        raise ValueError(
+            f"Failed to finalize git worktree for task {task_id} at {worktree_path}: {e.stderr or e}"
+        ) from e
+
+
+def prune_orphaned_worktrees(conn: sqlite3.Connection) -> list[str]:
+    """Remove completed/archived kanban worktrees left behind by older runs."""
+    rows = conn.execute(
+        "SELECT id, workspace_path FROM tasks "
+        "WHERE workspace_kind = 'worktree' "
+        "AND workspace_path IS NOT NULL "
+        "AND status IN ('done', 'archived')"
+    ).fetchall()
+    removed: list[str] = []
+    for row in rows:
+        path = Path(row["workspace_path"]).expanduser()
+        if not path.exists():
+            continue
+        try:
+            repo_root = _git_repo_root_for_worktree_path(path)
+            subprocess.run(
+                ["git", "-C", str(repo_root), "worktree", "remove", str(path)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            removed.append(str(path))
+        except subprocess.CalledProcessError:
+            continue
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -3800,6 +3893,8 @@ def dispatch_once(
                 _record_worker_exit(_pid, _status)
         except Exception:
             pass
+
+    prune_orphaned_worktrees(conn)
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)

@@ -821,6 +821,75 @@ def test_worktree_workspace_allows_two_concurrent_tasks(kanban_home, tmp_path, m
     assert f"branch refs/heads/kanban/task_{t2}" in branches
 
 
+def test_worktree_completion_commits_changes_and_removes_worktree(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ship", workspace_kind="worktree")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        (ws / "change.txt").write_text("worker output\n", encoding="utf-8")
+
+        assert kb.complete_task(conn, t, result="ok")
+
+    assert not ws.exists()
+    log = subprocess.check_output(["git", "-C", str(repo), "log", "--oneline", f"kanban/task_{t}", "-1"], text=True)
+    assert f"kanban: complete {t}" in log
+
+
+def test_worktree_failure_preserves_worktree(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ship", workspace_kind="worktree")
+        ws = kb.resolve_workspace(kb.get_task(conn, t))
+        kb.set_workspace_path(conn, t, ws)
+        kb.claim_task(conn, t, worker_pid=999999)
+        crashed = kb.detect_crashed_workers(conn)
+
+    assert t in crashed
+    assert ws.exists()
+
+
+def test_prune_orphaned_kanban_worktrees_removes_done_worktrees(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ship", workspace_kind="worktree")
+        ws = kb.resolve_workspace(kb.get_task(conn, t))
+        kb.set_workspace_path(conn, t, ws)
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (t,))
+        removed = kb.prune_orphaned_worktrees(conn)
+
+    assert str(ws) in removed
+    assert not ws.exists()
+
+
 # ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------

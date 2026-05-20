@@ -169,9 +169,12 @@ class ChatCompletionsTransport(ProviderTransport):
         for msg in sanitized:
             if not isinstance(msg, dict):
                 continue
+            # Internal DB/search metadata. OpenAI-compatible wire payloads
+            # use ``name`` / ``tool_call_id`` for tool messages; providers
+            # such as Groq reject the extra ``tool_name`` field.
+            msg.pop("tool_name", None)
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
-            msg.pop("tool_name", None)
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.

@@ -62,7 +62,7 @@ class TestCancelledErrorPropagation:
                 return "clean_return"
 
         outcome = asyncio.run(drive())
-        assert outcome in ("cancelled_cleanly", "clean_return"), (
+        assert outcome in {"cancelled_cleanly", "clean_return"}, (
             f"MCPServerTask.run wedged on cancel (outcome={outcome}) — "
             f"#9930 regression"
         )

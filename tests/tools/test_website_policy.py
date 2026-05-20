@@ -350,11 +350,16 @@ def test_browser_navigate_allows_when_shared_file_missing(monkeypatch, tmp_path)
 @pytest.mark.asyncio
 async def test_web_extract_short_circuits_blocked_url(monkeypatch):
     from tools import web_tools
+    from plugins.web.firecrawl import provider as firecrawl_provider
 
     # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+    # The per-URL website-policy gate moved into the firecrawl plugin's
+    # extract() during the web-provider migration. Patch it at the new
+    # location; the dispatcher-level gate (used by web_crawl_tool's
+    # pre-flight) still lives on tools.web_tools.
     monkeypatch.setattr(
-        web_tools,
+        firecrawl_provider,
         "check_website_access",
         lambda url: {
             "host": "blocked.test",
@@ -364,11 +369,13 @@ async def test_web_extract_short_circuits_blocked_url(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        web_tools,
+        firecrawl_provider,
         "_get_firecrawl_client",
         lambda: pytest.fail("firecrawl should not run for blocked URL"),
     )
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    # Force the firecrawl plugin to be the active extract provider.
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
     result = json.loads(await web_tools.web_extract_tool(["https://blocked.test"], use_llm_processing=False))
 
@@ -398,6 +405,7 @@ def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_web_extract_blocks_redirected_final_url(monkeypatch):
     from tools import web_tools
+    from plugins.web.firecrawl import provider as firecrawl_provider
 
     # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
@@ -424,9 +432,12 @@ async def test_web_extract_blocks_redirected_final_url(monkeypatch):
                 },
             }
 
-    monkeypatch.setattr(web_tools, "check_website_access", fake_check)
-    monkeypatch.setattr(web_tools, "_get_firecrawl_client", lambda: FakeFirecrawlClient())
+    # After the web-provider migration, the per-URL gate + firecrawl client
+    # live in the plugin. Patch both at the plugin location.
+    monkeypatch.setattr(firecrawl_provider, "check_website_access", fake_check)
+    monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: FakeFirecrawlClient())
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
     result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"], use_llm_processing=False))
 
@@ -443,6 +454,9 @@ async def test_web_crawl_short_circuits_blocked_url(monkeypatch):
     monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
     # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+    # The dispatcher-level (seed-URL) policy gate still lives on web_tools.
+    # No per-page gate runs in this test because the dispatcher returns
+    # immediately when the seed is blocked, before delegating to the plugin.
     monkeypatch.setattr(
         web_tools,
         "check_website_access",
@@ -453,10 +467,13 @@ async def test_web_crawl_short_circuits_blocked_url(monkeypatch):
             "message": "Blocked by website policy",
         },
     )
+    # If the dispatcher ever reaches the firecrawl plugin's crawl(), the test
+    # fails — pin the plugin module's client lookup so we'd notice.
+    from plugins.web.firecrawl import provider as firecrawl_provider
     monkeypatch.setattr(
-        web_tools,
+        firecrawl_provider,
         "_get_firecrawl_client",
-        lambda: pytest.fail("firecrawl should not run for blocked crawl URL"),
+        lambda: pytest.fail("firecrawl plugin should not run for blocked crawl URL"),
     )
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
 
@@ -469,13 +486,17 @@ async def test_web_crawl_short_circuits_blocked_url(monkeypatch):
 @pytest.mark.asyncio
 async def test_web_crawl_blocks_redirected_final_url(monkeypatch):
     from tools import web_tools
+    from plugins.web.firecrawl import provider as firecrawl_provider
 
-    # web_crawl_tool checks for Firecrawl env before website policy
+    # Force the firecrawl plugin to be the active crawl provider.
     monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
     # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
 
     def fake_check(url):
+        # Dispatcher seed-URL gate (web_tools.check_website_access call)
+        # and plugin per-page gate (firecrawl_provider.check_website_access
+        # call) both flow through this single fake_check.
         if url == "https://allowed.test":
             return None
         if url == "https://blocked.test/final":
@@ -501,8 +522,13 @@ async def test_web_crawl_blocks_redirected_final_url(monkeypatch):
                 ]
             }
 
+    # After PR #25182 follow-up: per-page policy gate lives in
+    # plugins.web.firecrawl.provider.crawl(). Patch the gate + client at
+    # the plugin location. The dispatcher-level (seed) gate also reads
+    # web_tools.check_website_access — patch both.
     monkeypatch.setattr(web_tools, "check_website_access", fake_check)
-    monkeypatch.setattr(web_tools, "_get_firecrawl_client", lambda: FakeCrawlClient())
+    monkeypatch.setattr(firecrawl_provider, "check_website_access", fake_check)
+    monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: FakeCrawlClient())
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
 
     result = json.loads(await web_tools.web_crawl_tool("https://allowed.test", use_llm_processing=False))

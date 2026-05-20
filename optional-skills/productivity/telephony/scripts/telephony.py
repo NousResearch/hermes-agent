@@ -109,7 +109,7 @@ def _config_lookup(*paths: tuple[str, ...], default: str = "") -> str:
                 node = None
                 break
             node = node.get(key)
-        if node not in (None, "") and not isinstance(node, dict):
+        if node not in {None, ""} and not isinstance(node, dict):
             return str(node)
     return default
 

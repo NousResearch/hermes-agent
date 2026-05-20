@@ -42,6 +42,8 @@ const stdoutOnly = (diff: ReturnType<LogUpdate['render']>) =>
     .map(p => (p as { type: 'stdout'; content: string }).content)
     .join('')
 
+const hasDecstbm = (text: string) => /\x1b\[\d+;\d+r/.test(text)
+
 describe('LogUpdate.render diff contract', () => {
   it('emits only changed cells when most rows match', () => {
     const w = 20
@@ -153,5 +155,45 @@ describe('LogUpdate.render diff contract', () => {
 
     expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
     expect(stdoutOnly(diff)).toContain('timer2s')
+  })
+
+  it('keeps DECSTBM fast-path when scroll region stays above bottom row', () => {
+    const w = 12
+    const h = 6
+    const prev = mkScreen(w, h)
+    const next = mkScreen(w, h)
+
+    paint(prev, 1, 'row one')
+    paint(next, 1, 'row one')
+
+    const prevFrame = mkFrame(prev, w, h)
+    const nextFrame: Frame = {
+      ...mkFrame(next, w, h),
+      scrollHint: { top: 1, bottom: 4, delta: 1 }
+    }
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(prevFrame, nextFrame, true, true)
+
+    expect(hasDecstbm(stdoutOnly(diff))).toBe(true)
+  })
+
+  it('skips DECSTBM when scroll region touches the bottom row', () => {
+    const w = 12
+    const h = 6
+    const prev = mkScreen(w, h)
+    const next = mkScreen(w, h)
+
+    paint(prev, 1, 'row one')
+    paint(next, 1, 'row one')
+
+    const prevFrame = mkFrame(prev, w, h)
+    const nextFrame: Frame = {
+      ...mkFrame(next, w, h),
+      scrollHint: { top: 1, bottom: 5, delta: 1 }
+    }
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(prevFrame, nextFrame, true, true)
+
+    expect(hasDecstbm(stdoutOnly(diff))).toBe(false)
   })
 })

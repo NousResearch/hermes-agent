@@ -467,3 +467,59 @@ class TestCancellationHandlerDeliveryConfirmation:
             final_response_sent = True
 
         assert final_response_sent is True  # the bug: partial promoted to final
+
+
+class TestFinalContentDeliveredSuppression:
+    """When stream consumer delivered the final content but the cosmetic
+    final edit (cursor removal) failed, the gateway must suppress the
+    fallback send to prevent duplicate messages.
+
+    Covers the scenario not handled by final_response_sent alone:
+    content reached the user via _send_or_edit, but the subsequent edit
+    that clears a typing cursor or streaming marker failed, leaving
+    final_response_sent=False even though the user already saw the text.
+    """
+
+    def test_content_delivered_but_final_edit_failed_suppresses(self):
+        """final_content_delivered=True + final_response_sent=False
+        must suppress (content already visible to user)."""
+        sc = SimpleNamespace(
+            already_sent=True,
+            final_response_sent=False,
+            final_content_delivered=True,
+        )
+        response = {"final_response": "Hello!", "response_previewed": False}
+
+        _streamed = bool(getattr(sc, "final_response_sent", False))
+        _previewed = bool(response.get("response_previewed"))
+        _content_delivered = bool(getattr(sc, "final_content_delivered", False))
+        _is_empty_sentinel = (
+            not response.get("final_response")
+            or response.get("final_response") == "(empty)"
+        )
+        if not _is_empty_sentinel and (_streamed or _previewed or _content_delivered):
+            response["already_sent"] = True
+
+        assert response.get("already_sent") is True
+
+    def test_intermediate_text_only_does_not_suppress(self):
+        """already_sent=True from intermediate text + final_content_delivered=False
+        must NOT suppress (user still needs the real final answer)."""
+        sc = SimpleNamespace(
+            already_sent=True,
+            final_response_sent=False,
+            final_content_delivered=False,
+        )
+        response = {"final_response": "Real answer", "response_previewed": False}
+
+        _streamed = bool(getattr(sc, "final_response_sent", False))
+        _previewed = bool(response.get("response_previewed"))
+        _content_delivered = bool(getattr(sc, "final_content_delivered", False))
+        _is_empty_sentinel = (
+            not response.get("final_response")
+            or response.get("final_response") == "(empty)"
+        )
+        if not _is_empty_sentinel and (_streamed or _previewed or _content_delivered):
+            response["already_sent"] = True
+
+        assert "already_sent" not in response

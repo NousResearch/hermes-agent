@@ -692,8 +692,96 @@ class TestSendVideo:
 
 
 # ---------------------------------------------------------------------------
+# TestBangPrefixCommands
+# ---------------------------------------------------------------------------
+
+
+class TestBangPrefixCommands:
+    """``!cmd`` is rewritten to ``/cmd`` so commands work inside Slack threads.
+
+    Slack natively rejects slash commands invoked from a thread reply
+    ("/queue is not supported in threads. Sorry!"). Typing ``!queue`` as a
+    plain text reply hits the message event pipeline instead, and the
+    adapter rewrites the leading ``!`` to ``/`` for any known gateway
+    command before downstream processing.
+    """
+
+    def _make_event(self, text, thread_ts=None, channel_type="im", channel="D123"):
+        evt = {
+            "text": text,
+            "user": "U_USER",
+            "channel": channel,
+            "channel_type": channel_type,
+            "ts": "1234567890.000001",
+        }
+        if thread_ts:
+            evt["thread_ts"] = thread_ts
+        return evt
+
+    @pytest.mark.asyncio
+    async def test_bang_known_command_is_rewritten_to_slash(self, adapter):
+        """``!queue`` → ``/queue`` and tagged as COMMAND."""
+        await adapter._handle_slack_message(self._make_event("!queue"))
+
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/queue")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_command_with_args_preserved(self, adapter):
+        """``!model gpt-5.4`` → ``/model gpt-5.4``."""
+        await adapter._handle_slack_message(self._make_event("!model gpt-5.4"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/model gpt-5.4")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_works_inside_thread(self, adapter):
+        """The whole point: ``!stop`` inside a thread reply dispatches."""
+        evt = self._make_event("!stop", thread_ts="1111111111.000001")
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/stop")
+        assert msg_event.message_type == MessageType.COMMAND
+        # thread_id is preserved on the source so the reply lands in the
+        # same thread.
+        assert msg_event.source.thread_id == "1111111111.000001"
+
+    @pytest.mark.asyncio
+    async def test_bang_unknown_token_passes_through_unchanged(self, adapter):
+        """``!nice work`` is just a casual message — must NOT be rewritten."""
+        await adapter._handle_slack_message(self._make_event("!nice work"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "!nice work"
+        assert msg_event.message_type != MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_with_bot_suffix_resolves(self, adapter):
+        """``!stop@hermes`` matches the get_command() ``@suffix`` stripping."""
+        await adapter._handle_slack_message(self._make_event("!stop@hermes"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/stop@hermes")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_plain_slash_still_works(self, adapter):
+        """Sanity check — ``/queue`` (top-level channel/DM) still dispatches."""
+        await adapter._handle_slack_message(self._make_event("/queue"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/queue")
+        assert msg_event.message_type == MessageType.COMMAND
+
+
+# ---------------------------------------------------------------------------
 # TestIncomingDocumentHandling
 # ---------------------------------------------------------------------------
+
 
 class TestIncomingDocumentHandling:
     def _make_event(self, files=None, text="hello", channel_type="im", blocks=None, attachments=None):

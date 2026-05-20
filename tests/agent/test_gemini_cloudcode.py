@@ -913,6 +913,35 @@ class TestTranslateStreamEvent:
         assert chunks[-1].choices[0].finish_reason == "tool_calls"
 
 
+class TestMakeStreamChunk:
+    def test_reasoning_only_chunk_has_content_none(self):
+        from agent.gemini_cloudcode_adapter import _make_stream_chunk
+
+        chunk = _make_stream_chunk(model="m", reasoning="think")
+        delta = chunk.choices[0].delta
+        assert delta.content is None
+        assert delta.reasoning == "think"
+
+    def test_content_only_chunk_has_reasoning_none(self):
+        from agent.gemini_cloudcode_adapter import _make_stream_chunk
+
+        chunk = _make_stream_chunk(model="m", content="hello")
+        delta = chunk.choices[0].delta
+        assert delta.content == "hello"
+        assert delta.reasoning is None
+        assert delta.tool_calls is None
+
+    def test_finish_only_chunk_has_all_fields_none(self):
+        from agent.gemini_cloudcode_adapter import _make_stream_chunk
+
+        chunk = _make_stream_chunk(model="m", finish_reason="stop")
+        delta = chunk.choices[0].delta
+        assert delta.content is None
+        assert delta.reasoning is None
+        assert delta.tool_calls is None
+        assert chunk.choices[0].finish_reason == "stop"
+
+
 class TestGeminiCloudCodeClient:
     def test_client_exposes_openai_interface(self):
         from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient

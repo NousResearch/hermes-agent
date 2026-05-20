@@ -182,6 +182,20 @@ def test_project_usage_summary_keeps_unassigned_sessions_visible(usage_home):
     assert data["totals"]["output_tokens"] == 22
 
 
+def test_backfill_removes_stale_unassigned_row_after_session_links_to_task(usage_home):
+    _seed_session(usage_home, "sess-later-linked", in_tok=11, out_tok=22, cost=0.003)
+    first = usage.get_summary(refresh=True)
+    assert any(b["board_slug"] == "__unassigned__" for b in first["boards"])
+
+    tid = _seed_completed_run("sess-later-linked")
+    linked = usage.get_summary(board="default", task_id=tid, refresh=True)
+    all_data = usage.get_summary(refresh=False)
+
+    assert linked["totals"]["input_tokens"] == 11
+    assert not any(b["board_slug"] == "__unassigned__" for b in all_data["boards"])
+    assert all_data["totals"]["input_tokens"] == 11
+
+
 def test_stamp_usage_metadata_embeds_worker_session_snapshot(usage_home):
     _seed_session(usage_home, "sess-snapshot", in_tok=5, out_tok=6, cost=0.0009)
 

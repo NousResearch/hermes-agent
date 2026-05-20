@@ -306,6 +306,16 @@ def backfill(*, ledger_conn: Optional[sqlite3.Connection] = None) -> dict[str, A
             finally:
                 kconn.close()
 
+        # Remove stale unassigned rows for sessions that are now attributable to
+        # board task_runs. Backfill is idempotent and sessions can become linked
+        # after an earlier pass materialized them as source_type='session'.
+        if linked_sessions:
+            placeholders = ", ".join(["?"] * len(linked_sessions))
+            lconn.execute(
+                f"DELETE FROM usage_entries WHERE source_type = 'session' AND source_id IN ({placeholders})",
+                tuple(linked_sessions),
+            )
+
         # Also materialize raw sessions that were not attributable to a board.
         for row in sconn.execute("SELECT * FROM sessions ORDER BY started_at"):
             if row["id"] in linked_sessions:

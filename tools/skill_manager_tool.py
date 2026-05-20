@@ -872,6 +872,7 @@ def skill_manage(
     replace_all: bool = False,
     absorbed_into: str = None,
     target_scope: str = None,
+    identity=None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -881,12 +882,26 @@ def skill_manage(
     This prevents two concurrent agent turns from colliding on the same skill
     file.  Read actions (promote) do not need the lock.
 
+    In SaaS mode (HERMES_MODE=saas) with a valid identity, team-scope writes
+    additionally acquire a DynamoDB distributed lock before touching S3.  This
+    prevents two workers on different machines from corrupting the same team skill.
+    Personal-scope writes are always lock-free (isolated per user).
+
     After a successful write to a registry that has a ``remote`` configured,
     an auto-push (git add + commit + push) is attempted.  Push failure is
     logged as a warning; the skill write itself always succeeds locally first.
 
+    Parameters
+    ----------
+    identity : HermesIdentity or None
+        Caller identity for SaaS-mode routing.  None = fall through to local
+        filesystem path (backwards-compatible with non-SaaS deployments).
+
     Returns JSON string with results.
     """
+    import contextlib
+    import uuid as _uuid
+
     # Determine registry path for locking — best-effort, falls back to SKILLS_DIR
     def _get_lock_path() -> Path:
         existing = _find_skill(name)
@@ -897,6 +912,104 @@ def skill_manage(
 
     _WRITE_ACTIONS = {"create", "edit", "patch", "delete", "write_file", "remove_file"}
 
+    # -------------------------------------------------------------------------
+    # SaaS mode with identity: route team-scope writes through the distributed
+    # DynamoDB lock + S3 path.  Only team-scope writes require the lock;
+    # personal writes are isolated per user and never collide.
+    # -------------------------------------------------------------------------
+    if _is_saas_mode() and identity is not None and action in {"create", "edit"}:
+        # Resolve the effective scope for this write.
+        # Phase A convention: default scope is "personal" unless the caller
+        # passes scope="team" (via target_scope or a future scope param).
+        # For create/edit actions in SaaS mode, we write to personal scope by
+        # default.  Team writes require explicit scope="team" via target_scope.
+        write_scope = "team" if target_scope == "team" else "personal"
+
+        try:
+            from tools.skills_scoped import write_skill as _saas_write_skill
+        except ImportError as exc:
+            logger.error("skills_scoped unavailable in SaaS mode: %s", exc)
+            return json.dumps({"success": False, "error": str(exc)})
+
+        if write_scope == "team":
+            # Team-scope write: acquire distributed lock first.
+            skill_key = f"{identity.team_scope}/skills/{name}"
+            worker_id = str(_uuid.uuid4())
+            try:
+                from tools.skill_locks import acquire_skill_lock, release_skill_lock
+            except ImportError as exc:
+                logger.error("skill_locks unavailable in SaaS mode: %s", exc)
+                return json.dumps({"success": False, "error": str(exc)})
+
+            acquired = False
+            try:
+                acquired = acquire_skill_lock(skill_key, worker_id)
+            except Exception as exc:
+                logger.error(
+                    "DynamoDB lock error for skill %r: %s — refusing team write",
+                    name, exc,
+                )
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"Skill '{name}' lock service unavailable. "
+                        "Cannot safely write to team scope. "
+                        f"Cause: {exc}"
+                    ),
+                })
+
+            if not acquired:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"Skill '{name}' is currently being edited by another agent. "
+                        "Please retry in a moment."
+                    ),
+                })
+
+            try:
+                _saas_write_skill(name, content, scope="team", identity=identity)
+                logger.info(
+                    "skill_manage(saas/team): wrote skill %r for %s (worker=%s)",
+                    name, identity.team_scope, worker_id,
+                )
+                return json.dumps({
+                    "success": True,
+                    "message": f"Skill '{name}' written to team S3 scope.",
+                    "scope": "team",
+                    "s3_prefix": f"{identity.team_scope}/skills/{name}",
+                })
+            except PermissionError as exc:
+                return json.dumps({"success": False, "error": str(exc)})
+            except Exception as exc:
+                logger.error("SaaS team skill write failed for %r: %s", name, exc)
+                return json.dumps({"success": False, "error": str(exc)})
+            finally:
+                release_skill_lock(skill_key, worker_id)
+
+        else:
+            # Personal-scope write: no lock needed (isolated per user).
+            try:
+                _saas_write_skill(name, content, scope="personal", identity=identity)
+                logger.info(
+                    "skill_manage(saas/personal): wrote skill %r for %s",
+                    name, identity.personal_scope,
+                )
+                return json.dumps({
+                    "success": True,
+                    "message": f"Skill '{name}' written to personal S3 scope.",
+                    "scope": "personal",
+                    "s3_prefix": f"{identity.personal_scope}/skills/{name}",
+                })
+            except PermissionError as exc:
+                return json.dumps({"success": False, "error": str(exc)})
+            except Exception as exc:
+                logger.error("SaaS personal skill write failed for %r: %s", name, exc)
+                return json.dumps({"success": False, "error": str(exc)})
+
+    # -------------------------------------------------------------------------
+    # Local mode (or SaaS mode without identity): filesystem + flock path.
+    # -------------------------------------------------------------------------
     if action in _WRITE_ACTIONS:
         try:
             from tools.skill_lock import skill_write_lock
@@ -904,10 +1017,8 @@ def skill_manage(
             _lock_ctx = skill_write_lock(name, _lock_path)
         except Exception:
             # Lock unavailable (platform or import issue) — proceed without it.
-            import contextlib
             _lock_ctx = contextlib.nullcontext()
     else:
-        import contextlib
         _lock_ctx = contextlib.nullcontext()
 
     with _lock_ctx:

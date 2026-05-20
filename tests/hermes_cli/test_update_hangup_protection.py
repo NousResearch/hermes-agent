@@ -213,8 +213,21 @@ class TestInstallHangupProtection:
         try:
             # On Windows (no SIGHUP) we still wrap stdio and create the log.
             assert state["installed"] is True
-            assert isinstance(sys.stdout, _UpdateOutputStream)
-            assert isinstance(sys.stderr, _UpdateOutputStream)
+            # A handful of other tests in the suite (e.g.
+            # ``test_env_loader.test_main_import_applies_user_env_over_shell_values``
+            # and ``test_skills_subparser``) pop ``hermes_cli.main`` from
+            # ``sys.modules`` and re-import it.  When xdist's load scheduler
+            # dispatches one of those before this test on the same worker,
+            # the ``_UpdateOutputStream`` bound at module-import time can
+            # become a different class object from the one
+            # ``_install_hangup_protection`` wraps with — same qualified name,
+            # distinct identity, so ``isinstance`` returns False. Compare
+            # qualified names; the behavioural check below is what actually
+            # exercises the wrap.
+            assert type(sys.stdout).__module__ == "hermes_cli.main"
+            assert type(sys.stdout).__name__ == "_UpdateOutputStream"
+            assert type(sys.stderr).__module__ == "hermes_cli.main"
+            assert type(sys.stderr).__name__ == "_UpdateOutputStream"
             assert state["log_file"] is not None
 
             sys.stdout.write("checking mirror\n")

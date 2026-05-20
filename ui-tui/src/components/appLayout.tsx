@@ -99,6 +99,10 @@ const TranscriptPane = memo(function TranscriptPane({
         ref={transcript.scrollRef}
         stickyScroll
       >
+        {/* Spacer pins messages to the bottom when content is shorter than
+            the viewport. flexGrow takes remaining free space; when content
+            overflows (no free space), it collapses to 0 automatically. */}
+        <Box flexGrow={1} />
         <Box flexDirection="column" paddingX={1}>
           {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 

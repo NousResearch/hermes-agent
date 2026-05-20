@@ -3290,6 +3290,12 @@ except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
+# If the PTY produces no output for this many seconds, send a SIGWINCH to
+# the child process.  Ink's handleResize cancels stale throttle/drain timers
+# and forces a full repaint — this "shakes loose" a render pipeline that
+# has gone silent due to backpressure stall (stdout.write returning false,
+# drain callback never firing) or throttle trailing-edge suppression.
+_PTY_WATCHDOG_SECONDS = 30
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
 # loopback so tests don't need to rewrite request scope.
@@ -3461,7 +3467,16 @@ async def pty_ws(ws: WebSocket) -> None:
     loop = asyncio.get_running_loop()
 
     # --- reader task: PTY master → WebSocket ----------------------------
+    # Track the last time the PTY produced output.  If the Ink TUI's render
+    # pipeline silently stalls (backpressure on stdout.write, lost drain
+    # callback, or throttle trailing-edge suppression), no bytes flow from
+    # the PTY for an extended period.  A SIGWINCH forces Ink's handleResize
+    # which cancels stale timers and forces a full repaint — recovering the
+    # stuck render without the user having to resize the browser window.
+    _last_pty_output = time.monotonic()
+
     async def pump_pty_to_ws() -> None:
+        nonlocal _last_pty_output
         while True:
             chunk = await loop.run_in_executor(
                 None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
@@ -3469,8 +3484,24 @@ async def pty_ws(ws: WebSocket) -> None:
             if chunk is None:  # EOF
                 return
             if not chunk:  # no data this tick; yield control and retry
+                # --- Watchdog: if no output for > _PTY_WATCHDOG_SECONDS,
+                # send a SIGWINCH to nudge Ink into a repaint.  Unlike
+                # TIOCSWINSZ (which only signals on dimension change),
+                # SIGWINCH is delivered unconditionally — Ink's handleResize
+                # cancels stale throttle/drain timers and forces a full
+                # repaint, recovering a stalled render pipeline.
+                if (time.monotonic() - _last_pty_output) > _PTY_WATCHDOG_SECONDS:
+                    _log.debug(
+                        "PTY watchdog: no output for %.0fs, sending SIGWINCH "
+                        "to pid %d to recover stalled render",
+                        time.monotonic() - _last_pty_output,
+                        bridge.pid,
+                    )
+                    _last_pty_output = time.monotonic()  # reset to avoid rapid re-fire
+                    bridge.sigwinch()
                 await asyncio.sleep(0)
                 continue
+            _last_pty_output = time.monotonic()
             try:
                 await ws.send_bytes(chunk)
             except Exception:

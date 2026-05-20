@@ -199,6 +199,22 @@ class PtyBridge:
         except OSError:
             pass
 
+    def sigwinch(self) -> None:
+        """Send SIGWINCH to the child process (foreground process group).
+
+        Unlike :meth:`resize`, this delivers the signal unconditionally
+        regardless of whether the terminal dimensions have changed.  Used
+        by the PTY watchdog to recover a stalled Ink render pipeline —
+        Ink's ``handleResize`` cancels stale throttle/drain timers and
+        forces a full repaint on SIGWINCH.
+        """
+        if self._closed:
+            return
+        try:
+            os.kill(self._proc.pid, signal.SIGWINCH)
+        except (OSError, ProcessLookupError):
+            pass
+
     # -- teardown ---------------------------------------------------------
 
     def close(self) -> None:

@@ -1128,6 +1128,15 @@ export default class Ink {
     // 250fps self-oscillator that locked the event loop after resize.
     if (frame.scrollDrainPending) {
       this.drainTimer = setTimeout(() => this.onRender(), FRAME_INTERVAL_MS >> 2)
+    } else if (backpressure && this.drainTimer === null) {
+      // Backpressure recovery: when stdout.write() returns false (pipe
+      // buffer full), the drain callback may never fire — the PTY/WebSocket
+      // bridge can stall, or the Node write queue can buffer indefinitely.
+      // Without a follow-up render, the throttle sees no new state changes
+      // and the pipeline goes permanently silent. Schedule a watchdog render
+      // to ensure the TUI recovers once the pipe drains or the PTY watchdog
+      // (SIGWINCH) forces a repaint.
+      this.drainTimer = setTimeout(() => this.onRender(), FRAME_INTERVAL_MS * 4)
     }
 
     const yogaMs = getLastYogaMs()

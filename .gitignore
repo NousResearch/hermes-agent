@@ -75,3 +75,10 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+docs/superpowers/**.oryx-avior.ts.net.*
+
+# Kapy CLI config and TLS certs (local only)
+.kapy/
+*.crt
+*.key
+

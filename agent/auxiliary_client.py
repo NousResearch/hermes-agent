@@ -4344,7 +4344,17 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
-    """Return the config dict for auxiliary.<task>, or {} when unavailable."""
+    """Return the config dict for auxiliary.<task>, or {} when unavailable.
+
+    For plugin-registered auxiliary tasks (see
+    :meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`) the
+    plugin's declared *defaults* are layered underneath the user's config
+    so an unconfigured plugin task still works:
+
+        plugin defaults  ←  config.yaml auxiliary.<task>  (user wins)
+
+    Built-in tasks ignore this path (their defaults live in DEFAULT_CONFIG).
+    """
     if not task:
         return {}
     try:
@@ -4354,7 +4364,27 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
         return {}
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-    return task_config if isinstance(task_config, dict) else {}
+    if not isinstance(task_config, dict):
+        task_config = {}
+
+    # Layer plugin-declared defaults underneath user config so
+    # ctx.register_auxiliary_task(defaults={...}) takes effect without
+    # forcing the user to write config.yaml entries.
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        for _entry in get_plugin_auxiliary_tasks():
+            if _entry.get("key") == task:
+                _defaults = _entry.get("defaults") or {}
+                if isinstance(_defaults, dict):
+                    merged = dict(_defaults)
+                    merged.update(task_config)
+                    return merged
+                break
+    except Exception:
+        # Plugin discovery failure must not break aux task config reads.
+        pass
+
+    return task_config
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:

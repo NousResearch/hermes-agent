@@ -1193,6 +1193,47 @@ class PluginContext:
         self._manager._middleware.setdefault(kind, []).append(callback)
         logger.debug("Plugin %s registered middleware: %s", self.manifest.name, kind)
 
+    # -- API server registration --------------------------------------------
+
+    def register_api_server_route(
+        self,
+        method: str,
+        path: str,
+        handler: Callable,
+        *,
+        name: str | None = None,
+    ) -> None:
+        """Register an aiohttp route contribution for the API server adapter."""
+        if not callable(handler):
+            raise TypeError("API server route handler must be callable")
+        self._manager._api_server_routes.append(
+            {
+                "method": str(method or "").upper(),
+                "path": path,
+                "handler": handler,
+                "name": name,
+                "plugin": self.manifest.name,
+            }
+        )
+        logger.debug(
+            "Plugin %s registered API server route: %s %s",
+            self.manifest.name,
+            str(method or "").upper(),
+            path,
+        )
+
+    def register_api_server_capability(self, provider: Callable) -> None:
+        """Register a provider callback for /v1/capabilities extensions."""
+        if not callable(provider):
+            raise TypeError("API server capability provider must be callable")
+        self._manager._api_server_capability_providers.append(
+            {
+                "plugin": self.manifest.name,
+                "provider": provider,
+            }
+        )
+        logger.debug("Plugin %s registered API server capability provider", self.manifest.name)
+
     # -- skill registration -------------------------------------------------
 
     def register_skill(
@@ -1271,6 +1312,8 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        self._api_server_routes: List[Dict[str, Any]] = []
+        self._api_server_capability_providers: List[Dict[str, Any]] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -1300,6 +1343,8 @@ class PluginManager:
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
+            self._api_server_routes.clear()
+            self._api_server_capability_providers.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
@@ -1998,6 +2043,38 @@ class PluginManager:
                 }
             )
         return result
+
+    def get_api_server_routes(self) -> List[Dict[str, Any]]:
+        """Return plugin-contributed API server routes in registration order."""
+        return list(self._api_server_routes)
+
+    def get_api_server_capabilities(self, *, adapter: Any = None, request: Any = None) -> List[Dict[str, Any]]:
+        """Resolve plugin capability contributions for /v1/capabilities."""
+        results: List[Dict[str, Any]] = []
+        for entry in self._api_server_capability_providers:
+            plugin_name = entry.get("plugin", "unknown")
+            provider = entry.get("provider")
+            if not callable(provider):
+                continue
+            try:
+                payload = provider(adapter=adapter, request=request)
+            except Exception as exc:
+                logger.warning(
+                    "Plugin '%s' API server capability provider failed: %s",
+                    plugin_name,
+                    exc,
+                )
+                continue
+            if payload is None:
+                continue
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "Plugin '%s' API server capability provider returned non-dict payload; skipping",
+                    plugin_name,
+                )
+                continue
+            results.append({"plugin": plugin_name, "capabilities": payload})
+        return results
 
     # -----------------------------------------------------------------------
     # Plugin skill lookups

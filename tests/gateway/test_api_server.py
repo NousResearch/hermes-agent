@@ -1018,6 +1018,172 @@ class TestCapabilitiesEndpoint:
             data = await authed.json()
             assert data["auth"]["required"] is True
 
+    @pytest.mark.asyncio
+    async def test_capabilities_include_plugin_extension_payload(self, adapter):
+        class _PluginManager:
+            def get_api_server_capabilities(self, *, adapter=None, request=None):
+                return [
+                    {"plugin": "alpha", "capabilities": {"alpha_flag": True}},
+                    {"plugin": "beta", "capabilities": {"beta_count": 2}},
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["extensions"]["plugins"] == {
+                "alpha": {"alpha_flag": True},
+                "beta": {"beta_count": 2},
+            }
+
+
+class TestPluginApiServerRoutes:
+    def test_mount_plugin_routes_after_core_routes(self, adapter):
+        async def _plugin_handler(request):
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/test-ping",
+                        "handler": _plugin_handler,
+                        "name": "test_ping",
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        adapter._mount_plugin_api_routes(app.router)
+        paths = [res.canonical for res in app.router.resources()]
+        assert "/v1/models" in paths
+        assert "/v1/plugins/test-ping" in paths
+        assert paths.index("/v1/plugins/test-ping") > paths.index("/v1/models")
+
+    @pytest.mark.asyncio
+    async def test_plugin_route_uses_api_server_auth(self, auth_adapter):
+        called = 0
+
+        async def _plugin_handler(request):
+            nonlocal called
+            called += 1
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/secure-ping",
+                        "handler": _plugin_handler,
+                        "name": "secure_ping",
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        auth_adapter._plugin_manager = _PluginManager()
+        app = _create_app(auth_adapter)
+        auth_adapter._mount_plugin_api_routes(app.router)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/plugins/secure-ping")
+            assert resp.status == 401
+            assert called == 0
+
+            authed = await cli.get(
+                "/v1/plugins/secure-ping",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert authed.status == 200
+            assert await authed.json() == {"ok": True}
+            assert called == 1
+
+    def test_plugin_route_registration_failure_is_isolated(self, adapter, caplog):
+        async def _plugin_handler(request):
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "NOPE",
+                        "path": "/v1/plugins/bad",
+                        "handler": _plugin_handler,
+                        "name": "bad",
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING"):
+            adapter._mount_plugin_api_routes(app.router)
+        paths = [res.canonical for res in app.router.resources()]
+        assert "/v1/models" in paths
+        assert "/v1/plugins/bad" not in paths
+        assert "plugin route" in caplog.text.lower()
+
+    def test_plugin_route_must_use_plugin_namespace(self, adapter, caplog):
+        async def _plugin_handler(request):
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/models",
+                        "handler": _plugin_handler,
+                        "name": "models",
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING"):
+            adapter._mount_plugin_api_routes(app.router)
+
+        matching = [res for res in app.router.resources() if res.canonical == "/v1/models"]
+        assert len(matching) == 1
+        assert "under /v1/plugins" in caplog.text.lower()
+
+    def test_duplicate_plugin_route_is_rejected(self, adapter, caplog):
+        async def _plugin_handler(request):
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/dup",
+                        "handler": _plugin_handler,
+                        "name": "dup_one",
+                        "plugin": "plugin-a",
+                    },
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/dup",
+                        "handler": _plugin_handler,
+                        "name": "dup_two",
+                        "plugin": "plugin-b",
+                    },
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING"):
+            adapter._mount_plugin_api_routes(app.router)
+
+        matching = [res for res in app.router.resources() if res.canonical == "/v1/plugins/dup"]
+        assert len(matching) == 1
+        assert "route already registered" in caplog.text.lower()
+
 
 # ---------------------------------------------------------------------------
 # /v1/skills and /v1/toolsets endpoints

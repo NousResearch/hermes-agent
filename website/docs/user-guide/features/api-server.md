@@ -221,6 +221,18 @@ Returns a machine-readable description of the API server's stable surface for ex
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
+Enabled plugins may add metadata under `extensions.plugins.<plugin-name>`.
+Each value is supplied by that plugin's capability provider; clients should
+treat unknown plugin keys as optional extension data.
+
+Plugins may also register HTTP handlers under `/v1/plugins/<name>`. These
+routes use the same `API_SERVER_KEY` bearer authentication as core API-server
+routes. Plugin handlers receive the native `aiohttp.web.Request` and must
+return an `aiohttp.web.Response` (synchronously or asynchronously). Hermes
+rejects non-callable handlers/providers during plugin registration, refuses
+paths outside `/v1/plugins/`, and does not allow plugin routes to replace a
+core route.
+
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.

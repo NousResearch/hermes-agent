@@ -14,6 +14,7 @@ import hmac
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import secrets
 import subprocess
@@ -74,6 +75,25 @@ except ImportError:
         )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
+
+
+def _register_dashboard_asset_mime_types() -> None:
+    """Pin MIME types for browser-executed dashboard assets.
+
+    Python's ``mimetypes`` module can load OS registry associations on
+    Windows. Some machines map ``.js`` to ``text/plain``, which makes
+    Starlette's ``StaticFiles`` serve Vite bundles with a non-JavaScript
+    Content-Type. Browsers reject module scripts in that state, leaving the
+    dashboard blank. Register the web asset MIME types explicitly so bundled
+    dashboard files are served consistently across platforms.
+    """
+
+    mimetypes.add_type("application/javascript", ".js")
+    mimetypes.add_type("text/css", ".css")
+    mimetypes.add_type("application/wasm", ".wasm")
+
+
+_register_dashboard_asset_mime_types()
 _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)

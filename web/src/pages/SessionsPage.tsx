@@ -83,7 +83,7 @@ function SnippetHighlight({ snippet }: { snippet: string }) {
     parts.push(snippet.slice(last));
   }
   return (
-    <p className="text-xs text-muted-foreground/80 truncate max-w-lg mt-0.5">
+    <p className="mt-0.5 min-w-0 max-w-full truncate text-xs text-muted-foreground/80">
       {parts}
     </p>
   );
@@ -296,24 +296,24 @@ function SessionRow({
 
   return (
     <div
-      className={`border overflow-hidden transition-colors ${
+      className={`max-w-full min-w-0 overflow-hidden border transition-colors ${
         session.is_active
           ? "border-success/30 bg-success/[0.03]"
           : "border-border"
       }`}
     >
       <div
-        className="flex items-center justify-between p-3 cursor-pointer hover:bg-secondary/30 transition-colors"
+        className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
         onClick={onToggle}
       >
-        <div className="flex items-center gap-3 min-w-0 flex-1">
-          <div className={`shrink-0 ${sourceInfo.color}`}>
-            <SourceIcon className="h-4 w-4" />
-          </div>
-          <div className="flex flex-col gap-0.5 min-w-0">
-            <div className="flex items-center gap-2">
+        <div className={`shrink-0 pt-0.5 ${sourceInfo.color}`}>
+          <SourceIcon className="h-4 w-4" />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex min-w-0 items-center gap-2">
               <span
-                className={`text-sm truncate pr-2 ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+                className={`min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
               >
                 {hasTitle
                   ? session.title
@@ -322,71 +322,70 @@ function SessionRow({
                     : t.sessions.untitledSession}
               </span>
               {session.is_active && (
-                <Badge tone="success" className="text-[10px] shrink-0">
+                <Badge tone="success" className="shrink-0 text-[10px]">
                   <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                   {t.common.live}
                 </Badge>
               )}
             </div>
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="truncate max-w-[120px] sm:max-w-[180px]">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+              <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
                 {(session.model ?? t.common.unknown).split("/").pop()}
               </span>
               <span className="text-border">&#183;</span>
-              <span>
+              <span className="shrink-0">
                 {session.message_count} {t.common.msgs}
               </span>
               {session.tool_call_count > 0 && (
                 <>
                   <span className="text-border">&#183;</span>
-                  <span>
+                  <span className="shrink-0">
                     {session.tool_call_count} {t.common.tools}
                   </span>
                 </>
               )}
               <span className="text-border">&#183;</span>
-              <span>{timeAgo(session.last_active)}</span>
+              <span className="shrink-0">{timeAgo(session.last_active)}</span>
             </div>
-            {snippet && <SnippetHighlight snippet={snippet} />}
           </div>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          <Badge tone="outline" className="text-[10px]">
-            {session.source ?? "local"}
-          </Badge>
-          {resumeInChatEnabled && (
+          {snippet && <SnippetHighlight snippet={snippet} />}
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="outline" className="text-[10px]">
+              {session.source ?? "local"}
+            </Badge>
+            {resumeInChatEnabled && (
+              <Button
+                ghost
+                size="icon"
+                className="text-muted-foreground hover:text-success"
+                aria-label={t.sessions.resumeInChat}
+                title={t.sessions.resumeInChat}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+                }}
+              >
+                <Play />
+              </Button>
+            )}
             <Button
               ghost
+              destructive
               size="icon"
-              className="text-muted-foreground hover:text-success"
-              aria-label={t.sessions.resumeInChat}
-              title={t.sessions.resumeInChat}
+              aria-label={t.sessions.deleteSession}
               onClick={(e) => {
                 e.stopPropagation();
-                navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+                onDelete();
               }}
             >
-              <Play />
+              <Trash2 />
             </Button>
-          )}
-          <Button
-            ghost
-            destructive
-            size="icon"
-            aria-label={t.sessions.deleteSession}
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-          >
-            <Trash2 />
-          </Button>
+          </div>
         </div>
       </div>
 
       {isExpanded && (
-        <div className="border-t border-border bg-background/50 p-4">
+        <div className="min-w-0 border-t border-border bg-background/50 p-4">
           {loading && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="text-xl text-primary" />
@@ -624,7 +623,7 @@ export default function SessionsPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-w-0 w-full max-w-full flex-col gap-4">
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
 
@@ -732,28 +731,28 @@ export default function SessionsPage() {
       )}
 
       {recentSessions.length > 0 && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Clock className="h-5 w-5 text-muted-foreground" />
-              <CardTitle className="text-base">
+        <Card className="min-w-0 max-w-full overflow-hidden">
+          <CardHeader className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
+              <CardTitle className="min-w-0 truncate text-base">
                 {t.status.recentSessions}
               </CardTitle>
             </div>
           </CardHeader>
 
-          <CardContent className="grid gap-3">
+          <CardContent className="grid min-w-0 gap-3">
             {recentSessions.map((s) => (
               <div
                 key={s.id}
-                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border border-border p-3 w-full"
+                className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
               >
-                <div className="flex flex-col gap-1 min-w-0 w-full">
-                  <span className="font-medium text-sm truncate">
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <span className="min-w-0 truncate text-sm font-medium">
                     {s.title ?? t.common.untitled}
                   </span>
 
-                  <span className="text-xs text-muted-foreground truncate">
+                  <span className="min-w-0 break-words text-xs text-muted-foreground">
                     <span className="font-mono-ui">
                       {(s.model ?? t.common.unknown).split("/").pop()}
                     </span>{" "}
@@ -762,15 +761,15 @@ export default function SessionsPage() {
                   </span>
 
                   {s.preview && (
-                    <span className="text-xs text-muted-foreground/70 truncate">
+                    <p className="min-w-0 max-w-full text-xs leading-snug text-muted-foreground/70 [overflow-wrap:anywhere]">
                       {s.preview}
-                    </span>
+                    </p>
                   )}
                 </div>
 
                 <Badge
                   tone="outline"
-                  className="text-[10px] shrink-0 self-start sm:self-center"
+                  className="shrink-0 self-start text-[10px] sm:self-center"
                 >
                   <Database className="mr-1 h-3 w-3" />
                   {s.source ?? "local"}
@@ -795,7 +794,7 @@ export default function SessionsPage() {
         </div>
       ) : (
         <>
-          <div className="flex flex-col gap-1.5">
+          <div className="flex min-w-0 flex-col gap-1.5">
             {filtered.map((s) => (
               <SessionRow
                 key={s.id}

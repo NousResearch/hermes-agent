@@ -707,6 +707,21 @@ class _CodexCompletionsAdapter:
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")
         if tools:
+            # xAI's Responses endpoint rejects ``pattern`` and ``format`` JSON Schema
+            # keywords (HTTP 400). Strip them here to match the parity guarantee that
+            # chat_completion_helpers.py provides for the main-agent xAI path.
+            try:
+                from tools.schema_sanitizer import (
+                    strip_pattern_and_format,
+                    strip_slash_enum,
+                )
+                tools, _ = strip_pattern_and_format(list(tools))
+                tools, _ = strip_slash_enum(tools)
+            except Exception as exc:
+                logger.warning(
+                    "Auxiliary client: failed to sanitize tool schemas for "
+                    "Codex/xAI Responses path: %s", exc,
+                )
             converted = []
             for t in tools:
                 fn = t.get("function", {}) if isinstance(t, dict) else {}
@@ -1292,7 +1307,10 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     with xAI Grok OAuth.
     """
     try:
-        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+        from hermes_cli.auth import (
+            DEFAULT_XAI_OAUTH_BASE_URL,
+            _xai_validate_inference_base_url,
+        )
 
         pool = load_pool("xai-oauth")
         if pool and pool.has_credentials():
@@ -1303,13 +1321,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                     or getattr(entry, "access_token", "")
                     or ""
                 ).strip()
-                base_url = str(
+                base_url = _xai_validate_inference_base_url(
                     os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
                     or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
-                    or getattr(entry, "runtime_base_url", None)
-                    or getattr(entry, "base_url", None)
-                    or DEFAULT_XAI_OAUTH_BASE_URL
-                ).strip().rstrip("/")
+                    or str(getattr(entry, "runtime_base_url", None) or "").strip().rstrip("/")
+                    or str(getattr(entry, "base_url", None) or "").strip().rstrip("/"),
+                    fallback=DEFAULT_XAI_OAUTH_BASE_URL,
+                )
                 if api_key and base_url:
                     return api_key, base_url
     except Exception as exc:
@@ -1891,6 +1909,120 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _try_azure_foundry(
+    *,
+    model: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    api_mode: Optional[str] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Resolve an Azure Foundry auxiliary client via the runtime resolver.
+
+    Mirrors the ``_try_anthropic`` / ``_try_nous`` shape but delegates to
+    :func:`hermes_cli.runtime_provider._resolve_azure_foundry_runtime` —
+    the same resolver the main agent uses — so:
+
+    * ``auth_mode: api_key`` (default) gets the static
+      ``AZURE_FOUNDRY_API_KEY`` string.
+    * ``auth_mode: entra_id`` gets a callable bearer-token provider
+      (``Callable[[], str]`` from
+      :mod:`agent.azure_identity_adapter`).
+    * Per-model ``api_mode`` auto-routing for GPT-5.x / o-series /
+      codex models works.
+    * ``model.entra.{tenant_id,client_id,authority,scope}`` config
+      fields propagate.
+    * Non-default ``model.base_url`` overrides are honored.
+
+    The OpenAI SDK accepts both shapes for ``api_key`` so the caller
+    can forward the result without coercion.
+
+    Returns ``(client, model)`` or ``(None, None)`` on failure.
+    """
+    try:
+        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+        from hermes_cli.auth import AuthError
+        from hermes_cli.config import load_config
+    except ImportError:
+        return None, None
+
+    try:
+        cfg = load_config()
+        model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+    except Exception:
+        model_cfg = {}
+
+    try:
+        runtime = _resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=model_cfg,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+            target_model=model,
+        )
+    except AuthError as exc:
+        logger.debug("Auxiliary azure-foundry: %s", exc)
+        return None, None
+    except Exception as exc:
+        logger.debug("Auxiliary azure-foundry runtime error: %s", exc)
+        return None, None
+
+    api_key = runtime.get("api_key")
+    base_url = str(runtime.get("base_url", "") or "")
+    runtime_api_mode = api_mode or runtime.get("api_mode") or "chat_completions"
+
+    # Empty-string check on api_key here would be wrong for callable
+    # token providers (callables are truthy and non-empty by definition).
+    # Bail only when api_key is None / empty string.
+    _has_key = bool(api_key) if not callable(api_key) else True
+    if not _has_key or not base_url:
+        return None, None
+
+    final_model = _normalize_resolved_model(
+        model or str(model_cfg.get("default") or ""),
+        "azure-foundry",
+    )
+    if not final_model:
+        # No fallback aux model for Azure — the user must have a
+        # deployment name. Surface that as "no client" so the auto
+        # chain falls through to the next provider rather than 404ing.
+        logger.debug(
+            "Auxiliary azure-foundry: no model resolved (model=%r, default=%r)",
+            model, model_cfg.get("default"),
+        )
+        return None, None
+
+    # Azure pre-v1 endpoints sometimes carry api-version query params
+    # in the base URL; the OpenAI SDK drops them when joining paths,
+    # so lift them out and pass via default_query.
+    extra: Dict[str, Any] = {}
+    _clean_base, _dq = _extract_url_query_params(base_url)
+    if _dq:
+        extra["default_query"] = _dq
+
+    client = OpenAI(api_key=api_key, base_url=_clean_base, **extra)
+
+    if runtime_api_mode == "codex_responses":
+        # GPT-5.x / o-series / codex models on Azure Foundry are
+        # Responses-API-only — wrap so chat.completions.create() is
+        # translated to /responses behind the scenes.
+        return CodexAuxiliaryClient(client, final_model), final_model
+
+    if runtime_api_mode == "anthropic_messages":
+        # Forward ``api_key`` verbatim — for static keys it's a string,
+        # for Entra ID it's a callable. ``_maybe_wrap_anthropic`` →
+        # ``build_anthropic_client`` detects the callable and installs
+        # the bearer-injecting httpx hook.
+        return _maybe_wrap_anthropic(
+            client, final_model, api_key,
+            base_url, runtime_api_mode,
+        ), final_model
+
+    # chat_completions — return the plain OpenAI client.
+    return client, final_model
+
+
 def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -1946,20 +2078,31 @@ _AUTO_PROVIDER_LABELS = {
     "_resolve_api_key_provider": "api-key",
 }
 
-_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode")
+_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
 
 
-def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, str]:
-    """Return a sanitized copy of a live main-runtime override."""
+def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return a sanitized copy of a live main-runtime override.
+
+    Most fields are stripped strings. ``api_key`` may legitimately be a
+    zero-arg callable (Azure Foundry Entra ID token provider) — preserve
+    those as-is so auxiliary clients inherit the same authentication
+    surface as the main agent. The OpenAI SDK accepts ``Callable[[], str]``
+    for ``api_key`` and calls it before every request.
+    """
     if not isinstance(main_runtime, dict):
         return {}
-    normalized: Dict[str, str] = {}
+    normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_FIELDS:
         value = main_runtime.get(field)
+        # Preserve a callable api_key (Entra ID bearer provider) unchanged.
+        if field == "api_key" and callable(value) and not isinstance(value, str):
+            normalized[field] = value
+            continue
         if isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
     provider = normalized.get("provider")
-    if provider:
+    if isinstance(provider, str):
         normalized["provider"] = provider.lower()
     return normalized
 
@@ -2751,10 +2894,10 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
     runtime = _normalize_main_runtime(main_runtime)
     runtime_provider = runtime.get("provider", "")
-    runtime_model = runtime.get("model", "")
-    runtime_base_url = runtime.get("base_url", "")
+    runtime_model = str(runtime.get("model") or "")
+    runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
-    runtime_api_mode = runtime.get("api_mode", "")
+    runtime_api_mode = str(runtime.get("api_mode") or "")
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -2782,8 +2925,8 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     # on aggregators (OpenRouter, Nous) who previously got routed to a
     # cheap provider-side default.  Explicit per-task overrides set via
     # config.yaml (auxiliary.<task>.provider) still win over this.
-    main_provider = runtime_provider or _read_main_provider()
-    main_model = runtime_model or _read_main_model()
+    main_provider = str(runtime_provider or _read_main_provider() or "")
+    main_model = str(runtime_model or _read_main_model() or "")
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
@@ -3177,7 +3320,11 @@ def resolve_provider_client(
             if client is not None:
                 final_model = _normalize_resolved_model(model or default, provider)
                 _cbase = str(getattr(client, "base_url", "") or "")
-                _ckey = str(getattr(client, "api_key", "") or "")
+                # ``client.api_key`` may be a callable (Azure Foundry Entra
+                # bearer provider). Pass empty string for the wrapper-detection
+                # path — wrapping decisions are based on base_url + api_mode.
+                _raw_ckey = getattr(client, "api_key", "")
+                _ckey = "" if (callable(_raw_ckey) and not isinstance(_raw_ckey, str)) else str(_raw_ckey or "")
                 client = _wrap_if_needed(client, final_model, _cbase, _ckey)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
@@ -3288,6 +3435,40 @@ def resolve_provider_client(
             return None, None
     except ImportError:
         pass
+
+    # ── Azure Foundry (delegates to runtime resolver for auth_mode-aware routing) ─
+    #
+    # The generic PROVIDER_REGISTRY path below uses
+    # ``resolve_api_key_provider_credentials`` which only knows about the
+    # static ``AZURE_FOUNDRY_API_KEY`` env var. That misses two important
+    # cases for the ``azure-foundry`` provider:
+    #
+    #   1. ``model.auth_mode: entra_id`` — no static key exists; we need
+    #      a callable bearer-token provider from ``azure_identity_adapter``.
+    #   2. Non-default ``model.base_url`` (Foundry projects path) — the
+    #      env-var-only resolver doesn't apply config-yaml-driven URL
+    #      overrides.
+    #
+    # Delegate to the same runtime resolver the main agent uses so
+    # auxiliary tasks (title generation, compression, vision, embedding,
+    # session search) inherit the user's full Azure config.
+    if provider == "azure-foundry":
+        client, default_model = _try_azure_foundry(
+            model=model,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+            api_mode=api_mode,
+        )
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: azure-foundry requested but "
+                "runtime resolution failed (run: hermes doctor for "
+                "diagnostics)"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:

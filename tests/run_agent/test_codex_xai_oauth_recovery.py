@@ -225,6 +225,62 @@ def test_summarize_api_error_passes_through_unrelated_errors():
 
 
 # ---------------------------------------------------------------------------
+# Fix D: _StreamErrorEvent xAI entitlement classified as auth, not retryable
+#
+# run_codex_create_stream_fallback raises _StreamErrorEvent (status_code=None)
+# when the Responses stream emits a ``type=error`` SSE frame.  Before this
+# fix, classify_api_error had no match for "grok subscription" in its pattern
+# lists, so it returned FailoverReason.unknown (retryable=True) — burning
+# max_retries before the agent stopped.  _is_entitlement_failure was never
+# called because it only runs when FailoverReason.auth is returned.
+# ---------------------------------------------------------------------------
+
+
+def test_classify_api_error_stream_event_grok_subscription_is_auth():
+    """_StreamErrorEvent with xAI subscription message classifies as auth/non-retryable.
+
+    The SSE error path has status_code=None, so _classify_by_status is
+    skipped.  The explicit pattern added at step 1 must fire first and
+    return auth/non-retryable so _is_entitlement_failure can stop the loop.
+    """
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent(
+        "You have either run out of available resources or do not have an "
+        "active Grok subscription. Manage subscriptions at https://grok.com",
+        code="The caller does not have permission to execute the specified operation",
+    )
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason == FailoverReason.auth
+    assert result.retryable is False
+    assert result.should_fallback is True
+
+
+def test_classify_api_error_stream_event_resources_exhausted_grok_is_auth():
+    """'out of available resources' + 'grok' variant also classifies as auth."""
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent(
+        "You have run out of available resources for Grok.",
+    )
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason == FailoverReason.auth
+    assert result.retryable is False
+
+
+def test_classify_api_error_stream_event_unrelated_not_reclassified():
+    """An unrelated _StreamErrorEvent must not be caught by the xAI guard."""
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent("Internal server error — try again later")
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason != FailoverReason.auth
+
+
+# ---------------------------------------------------------------------------
 # Fix C: reasoning replay gating for xai-oauth
 # ---------------------------------------------------------------------------
 
@@ -454,6 +510,56 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
 
     assert recovered is False, "Entitlement 403 must surface, not silently recover"
     assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on entitlement 403"
+
+
+def test_recover_with_credential_pool_skips_refresh_on_bare_403_for_xai_oauth():
+    """A bare HTTP 403 from ``xai-oauth`` (no keyword match) must NOT loop refresh.
+
+    Regression for #26847 — xAI's backend has been seen to 403 standard
+    SuperGrok subscribers with a terser body that doesn't contain any of
+    the existing entitlement keywords ("do not have an active Grok
+    subscription", etc.). Before the defense-in-depth guard, the recovery
+    path would happily mint a fresh token, get a fresh 403, and spin.
+    """
+    from run_agent import AIAgent
+    from agent.error_classifier import FailoverReason
+
+    agent = _make_codex_agent()
+    assert agent.provider == "xai-oauth"
+
+    refresh_calls = {"n": 0}
+
+    class _FakePool:
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            return MagicMock(id="should_not_be_called")
+
+        def mark_exhausted_and_rotate(self, **_kwargs):
+            return None
+
+        def has_available(self):
+            return False
+
+    agent._credential_pool = _FakePool()
+
+    error_context = {
+        "reason": "forbidden",
+        "message": "Forbidden",
+    }
+    assert not AIAgent._is_entitlement_failure(error_context, 403), (
+        "Pre-condition: bare 'Forbidden' body must NOT match the keyword "
+        "heuristic — otherwise this test isn't covering the defense-in-depth path."
+    )
+
+    recovered, _retried_429 = agent._recover_with_credential_pool(
+        status_code=403,
+        has_retried_429=False,
+        classified_reason=FailoverReason.auth,
+        error_context=error_context,
+    )
+
+    assert recovered is False, "Bare 403 on xai-oauth must surface, not refresh-loop"
+    assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on xai-oauth 403"
 
 
 def test_recover_with_credential_pool_still_refreshes_genuine_auth_failure():

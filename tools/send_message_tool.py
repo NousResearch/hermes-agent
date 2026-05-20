@@ -27,7 +27,7 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 # because the API requires a conversation ID. To DM a user you must first call
 # conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
 # through to channel-name resolution, which only matches by name and fails.
-_SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
+_SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
 # Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
@@ -275,6 +275,28 @@ def _handle_send(args):
     if duplicate_skip:
         return json.dumps(duplicate_skip)
 
+    # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
+    if platform_name == "slack" and chat_id and chat_id.startswith("U"):
+        try:
+            import aiohttp
+            async def _open_slack_dm(token, user_id):
+                url = "https://slack.com/api/conversations.open"
+                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                    async with session.post(url, headers=headers, json={"users": [user_id]}) as resp:
+                        data = await resp.json()
+                        if data.get("ok"):
+                            return data["channel"]["id"]
+                        return None
+            from model_tools import _run_async
+            dm_channel = _run_async(_open_slack_dm(pconfig.token, chat_id))
+            if dm_channel:
+                chat_id = dm_channel
+            else:
+                return json.dumps({"error": f"Could not open DM with Slack user {chat_id}. Check bot permissions (im:write)."})
+        except Exception as e:
+            return json.dumps({"error": f"Failed to open Slack DM: {e}"})
+
     try:
         from model_tools import _run_async
         result = _run_async(
@@ -337,7 +359,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return match.group(1), match.group(2), True
         match = _SLACK_TARGET_RE.fullmatch(target_ref)
         if match:
-            return match.group(1), None, True
+            chat_id = match.group(1)
+            # Slack user IDs (U...) and workspace IDs (W...) are NOT valid
+            # explicit send targets — chat.postMessage rejects them. A DM
+            # must be opened first via conversations.open to get a D...
+            # conversation ID. Caller still gets the chat_id so the U→D
+            # resolution path in send_message() can run.
+            is_explicit = chat_id[0] not in {"U", "W"}
+            return chat_id, None, is_explicit
     if platform_name == "matrix":
         trimmed = target_ref.strip()
         split_idx = trimmed.rfind(":$")
@@ -764,6 +793,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
+def _is_telegram_thread_not_found(error: Exception) -> bool:
+    """Check if a Telegram error is a thread-not-found failure.
+
+    Matches the gateway adapter's ``_is_thread_not_found_error`` for
+    the standalone ``_send_telegram`` path (issue #27012).
+    """
+    return "thread not found" in str(error).lower()
+
+
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
@@ -794,7 +832,30 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
-        bot = Bot(token=token)
+        # Honour a configured proxy (telegram.proxy_url in config.yaml, exported
+        # as TELEGRAM_PROXY env var by load_gateway_config). Without this, the
+        # standalone send path bypasses the proxy and times out in regions
+        # where api.telegram.org is blocked. The in-gateway adapter does the
+        # same thing in gateway/platforms/telegram.py.
+        try:
+            from gateway.platforms.base import resolve_proxy_url
+            _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
+        except Exception:
+            _tg_proxy = None
+        if _tg_proxy:
+            try:
+                from telegram.request import HTTPXRequest
+                logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
+                bot = Bot(
+                    token=token,
+                    request=HTTPXRequest(proxy=_tg_proxy),
+                    get_updates_request=HTTPXRequest(proxy=_tg_proxy),
+                )
+            except Exception as _proxy_err:
+                logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
+                bot = Bot(token=token)
+        else:
+            bot = Bot(token=token)
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}
@@ -820,8 +881,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 )
             if effective_thread_id is not None:
                 thread_kwargs["message_thread_id"] = effective_thread_id
+        # disable_web_page_preview is only valid for send_message, not
+        # send_photo/send_video/etc.  Keep it separate so media sends
+        # don't inherit an invalid parameter (issue #27012).
+        text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
-            thread_kwargs["disable_web_page_preview"] = True
+            text_kwargs["disable_web_page_preview"] = True
 
         last_msg = None
         warnings = []
@@ -831,11 +896,24 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 last_msg = await _send_telegram_message_with_retry(
                     bot,
                     chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **thread_kwargs
+                    parse_mode=send_parse_mode, **text_kwargs
                 )
             except Exception as md_error:
-                # Parse failed, fall back to plain text
-                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
+                # Thread not found — retry without message_thread_id so the
+                # message still delivers (matching the gateway adapter's
+                # fallback behaviour, issue #27012).
+                if _is_telegram_thread_not_found(md_error) and thread_kwargs:
+                    logger.warning(
+                        "Thread %s not found in _send_telegram, retrying without message_thread_id",
+                        thread_kwargs.get("message_thread_id"),
+                    )
+                    text_kwargs.pop("message_thread_id", None)
+                    last_msg = await _send_telegram_message_with_retry(
+                        bot,
+                        chat_id=int_chat_id, text=formatted,
+                        parse_mode=send_parse_mode, **text_kwargs
+                    )
+                elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
                     logger.warning(
                         "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
                         send_parse_mode,
@@ -852,7 +930,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
                         chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **thread_kwargs
+                        parse_mode=None, **text_kwargs
                     )
                 else:
                     raise
@@ -867,26 +945,61 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             ext = os.path.splitext(media_path)[1].lower()
             try:
                 with open(media_path, "rb") as f:
-                    if ext in _IMAGE_EXTS and not force_document:
-                        last_msg = await bot.send_photo(
-                            chat_id=int_chat_id, photo=f, **thread_kwargs
-                        )
-                    elif ext in _VIDEO_EXTS:
-                        last_msg = await bot.send_video(
-                            chat_id=int_chat_id, video=f, **thread_kwargs
-                        )
-                    elif ext in _VOICE_EXTS and is_voice:
-                        last_msg = await bot.send_voice(
-                            chat_id=int_chat_id, voice=f, **thread_kwargs
-                        )
-                    elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
-                        last_msg = await bot.send_audio(
-                            chat_id=int_chat_id, audio=f, **thread_kwargs
-                        )
-                    else:
-                        last_msg = await bot.send_document(
-                            chat_id=int_chat_id, document=f, **thread_kwargs
-                        )
+                    media_kwargs = dict(thread_kwargs)
+                    try:
+                        if ext in _IMAGE_EXTS and not force_document:
+                            last_msg = await bot.send_photo(
+                                chat_id=int_chat_id, photo=f, **media_kwargs
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            last_msg = await bot.send_video(
+                                chat_id=int_chat_id, video=f, **media_kwargs
+                            )
+                        elif ext in _VOICE_EXTS and is_voice:
+                            last_msg = await bot.send_voice(
+                                chat_id=int_chat_id, voice=f, **media_kwargs
+                            )
+                        elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
+                            last_msg = await bot.send_audio(
+                                chat_id=int_chat_id, audio=f, **media_kwargs
+                            )
+                        else:
+                            last_msg = await bot.send_document(
+                                chat_id=int_chat_id, document=f, **media_kwargs
+                            )
+                    except Exception as media_err:
+                        if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
+                            # Thread not found for media — retry without
+                            # message_thread_id (issue #27012).
+                            logger.warning(
+                                "Thread %s not found for media send, retrying without message_thread_id",
+                                media_kwargs["message_thread_id"],
+                            )
+                            # Re-seek the file since the first attempt consumed it
+                            f.seek(0)
+                            media_kwargs.pop("message_thread_id", None)
+                            if ext in _IMAGE_EXTS and not force_document:
+                                last_msg = await bot.send_photo(
+                                    chat_id=int_chat_id, photo=f, **media_kwargs
+                                )
+                            elif ext in _VIDEO_EXTS:
+                                last_msg = await bot.send_video(
+                                    chat_id=int_chat_id, video=f, **media_kwargs
+                                )
+                            elif ext in _VOICE_EXTS and is_voice:
+                                last_msg = await bot.send_voice(
+                                    chat_id=int_chat_id, voice=f, **media_kwargs
+                                )
+                            elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
+                                last_msg = await bot.send_audio(
+                                    chat_id=int_chat_id, audio=f, **media_kwargs
+                                )
+                            else:
+                                last_msg = await bot.send_document(
+                                    chat_id=int_chat_id, document=f, **media_kwargs
+                                )
+                        else:
+                            raise
             except Exception as e:
                 warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
                 logger.error(warning)

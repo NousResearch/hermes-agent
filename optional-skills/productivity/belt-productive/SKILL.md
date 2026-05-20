@@ -1,13 +1,13 @@
 ---
 name: belt-productive
-description: "Automate AI workflows, web search, LLM routing, and Twitter/X posts via inference.sh CLI (belt). Route prompts to Claude, Gemini, Kimi K2, GLM-4.6 via OpenRouter. Search the web with Tavily and Exa. Post tweets, threads, and DMs. Chain AI operations into batch, sequential, or scheduled pipelines. Use when the user wants AI-powered search, needs to call an LLM from the terminal, wants to post to Twitter/X, or build multi-step AI automation."
+description: "Automate AI workflows, web search, LLM routing, Twitter/X posts, video rendering, and browser automation via inference.sh CLI (belt). Route prompts to Claude, Gemini, Kimi K2, GLM-4.6 via OpenRouter. Search the web with Tavily and Exa. Render videos from React/Remotion or HyperFrames compositions. Automate browsers for scraping and testing. Use when the user wants AI-powered search, LLM calls from the terminal, Twitter/X automation, programmatic video rendering, or browser agents."
 version: 1.0.0
 author: okaris
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [automation, search, twitter, llm-routing, workflows, tavily, exa, openrouter, inference-sh]
+    tags: [automation, search, twitter, llm-routing, workflows, tavily, exa, openrouter, remotion, hyperframes, browser, inference-sh]
     related_skills: [belt-creative, xurl]
     requires_toolsets: [terminal]
 required_environment_variables:
@@ -28,6 +28,8 @@ All commands use the `terminal` tool to run `belt` (the inference.sh CLI).
 - User wants to call an LLM from the terminal (Claude, Gemini, Kimi K2, GLM-4.6)
 - User asks for AI-powered web search or research (Tavily, Exa)
 - User wants to post tweets, threads, DMs, or automate Twitter/X
+- User wants to render video from React/Remotion components or HyperFrames compositions
+- User needs browser automation — scraping, navigation, form filling, testing
 - User wants to chain multiple AI operations into a pipeline
 - User needs batch processing across multiple inputs
 - User wants to schedule recurring AI tasks
@@ -108,6 +110,46 @@ belt app run twitter/post-tweet --input '{"text": "Hello from my AI agent!"}'
 
 # Post with AI-generated image (combine with belt-creative skill)
 belt app run twitter/post-create --input '{"text": "Generated this with AI", "media": "output.png"}'
+```
+
+## Video Rendering
+
+Render videos programmatically from code — no video editor needed.
+
+| Tool | App ID | Best For |
+|------|--------|----------|
+| Remotion Render | `infsh/remotion-render` | React/Remotion components to MP4 |
+| HyperFrames Render | `infsh/hyperframes-render` | HyperFrames compositions to video |
+| HTML to Video | `infsh/html-to-video` | HTML/CSS/JS animations to video |
+
+```bash
+# Render a Remotion project
+belt app run infsh/remotion-render --input '{"repo_url": "https://github.com/user/remotion-project", "composition": "Main"}'
+
+# Render HyperFrames composition
+belt app run infsh/hyperframes-render --input '{"composition_url": "https://example.com/comp.json"}'
+
+# Render HTML animation to video
+belt app run infsh/html-to-video --input '{"html": "<div style=\"animation: fade 2s\">Hello</div>", "duration": 5}'
+```
+
+## Browser Automation
+
+Automate browser interactions — scrape pages, fill forms, take screenshots, run test flows.
+
+| Tool | App ID | Best For |
+|------|--------|----------|
+| Agent Browser | `infsh/agent-browser` | AI-driven browser navigation and scraping |
+
+```bash
+# Navigate and extract content
+belt app run infsh/agent-browser --input '{"url": "https://example.com", "task": "extract the main article text and all image URLs"}'
+
+# Take a screenshot
+belt app run infsh/agent-browser --input '{"url": "https://example.com", "task": "take a full page screenshot"}'
+
+# Fill a form
+belt app run infsh/agent-browser --input '{"url": "https://example.com/signup", "task": "fill the registration form with test data"}'
 ```
 
 ## Workflow Patterns

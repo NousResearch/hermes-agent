@@ -207,14 +207,25 @@ class TestInstallHangupProtection:
         if hasattr(_cfg, "_HERMES_HOME_CACHE"):
             _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
 
+        # Re-import all three symbols fresh: test_env_loader.py removes
+        # hermes_cli.main from sys.modules and re-imports it, creating a NEW
+        # module object with a NEW __dict__.  Module-level imports in this file
+        # still bind to the OLD module's __dict__, so _install_hangup_protection
+        # would create instances of the OLD _UpdateOutputStream while _UOS would
+        # be the NEW class, causing isinstance() to return False.
+        import hermes_cli.main as _hm
+        _UOS = _hm._UpdateOutputStream
+        _install_hp = _hm._install_hangup_protection
+        _finalize_hp = _hm._finalize_update_output
+
         prev_out, prev_err = sys.stdout, sys.stderr
-        state = _install_hangup_protection(gateway_mode=False)
+        state = _install_hp(gateway_mode=False)
 
         try:
             # On Windows (no SIGHUP) we still wrap stdio and create the log.
             assert state["installed"] is True
-            assert isinstance(sys.stdout, _UpdateOutputStream)
-            assert isinstance(sys.stderr, _UpdateOutputStream)
+            assert isinstance(sys.stdout, _UOS)
+            assert isinstance(sys.stderr, _UOS)
             assert state["log_file"] is not None
 
             sys.stdout.write("checking mirror\n")
@@ -226,7 +237,7 @@ class TestInstallHangupProtection:
             assert "checking mirror" in contents
             assert "hermes update started" in contents
         finally:
-            _finalize_update_output(state)
+            _finalize_hp(state)
             # Sanity-check restoration
             assert sys.stdout is prev_out
             assert sys.stderr is prev_err

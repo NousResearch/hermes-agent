@@ -24,7 +24,10 @@ class ResponsesApiTransport(ProviderTransport):
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
-        return _chat_messages_to_responses_input(messages)
+        return _chat_messages_to_responses_input(
+            messages,
+            is_xai_responses=bool(kwargs.get("is_xai_responses")),
+        )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Responses API function definitions."""
@@ -89,24 +92,38 @@ class ResponsesApiTransport(ProviderTransport):
         _effort_clamp = {"minimal": "low"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
+        response_tools = _responses_tools(tools)
         kwargs = {
             "model": model,
             "instructions": instructions,
-            "input": _chat_messages_to_responses_input(payload_messages),
-            "tools": _responses_tools(tools),
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
+            "input": _chat_messages_to_responses_input(
+                payload_messages,
+                is_xai_responses=is_xai_responses,
+            ),
+            "tools": response_tools,
             "store": False,
         }
+        if response_tools:
+            kwargs["tool_choice"] = "auto"
+            kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")
-        if not is_github_responses and session_id:
+        # xAI Responses takes prompt_cache_key in extra_body (set further
+        # down); GitHub Models opts out of cache-key routing entirely.
+        if not is_github_responses and not is_xai_responses and session_id:
             kwargs["prompt_cache_key"] = session_id
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
 
-            kwargs["include"] = ["reasoning.encrypted_content"]
+            # NOTE: Hermes does NOT ask xAI to return ``reasoning.encrypted_content``
+            # any more.  xAI's OAuth/SuperGrok ``/v1/responses`` surface rejects
+            # replayed encrypted reasoning items on turn 2+ — see
+            # _chat_messages_to_responses_input docstring.  Requesting the field
+            # back would just have us cache something we then must strip.  Grok
+            # still reasons natively each turn; coherence across turns rides on
+            # the visible message text alone.
+            kwargs["include"] = []
             # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
             # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
             # those models reason natively. Only send the effort dial when
@@ -164,6 +181,17 @@ class ResponsesApiTransport(ProviderTransport):
                 )
             merged_extra_headers["x-grok-conv-id"] = session_id
             kwargs["extra_headers"] = merged_extra_headers
+
+            # xAI Responses cache-routing — body-level field per
+            # https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits.
+            # Sent via extra_body (not the typed kwarg) so it survives openai
+            # SDK builds whose Responses.stream() signature has dropped the field.
+            existing_extra_body = kwargs.get("extra_body")
+            merged_extra_body: Dict[str, Any] = {}
+            if isinstance(existing_extra_body, dict):
+                merged_extra_body.update(existing_extra_body)
+            merged_extra_body.setdefault("prompt_cache_key", session_id)
+            kwargs["extra_body"] = merged_extra_body
 
         return kwargs
 

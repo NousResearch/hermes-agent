@@ -106,9 +106,9 @@ class TestContinuationLogicBranching:
     def test_all_three_api_modes_hit_continuation_branch(self, api_mode):
         # The guard in run_agent.py is:
         #   if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
-        assert api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages")
+        assert api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}
 
     def test_codex_responses_still_excluded(self):
         # codex_responses has its own truncation path (not continuation-based)
         # and should NOT be routed through the shared block.
-        assert "codex_responses" not in ("chat_completions", "bedrock_converse", "anthropic_messages")
+        assert "codex_responses" not in {"chat_completions", "bedrock_converse", "anthropic_messages"}

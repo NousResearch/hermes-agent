@@ -17,6 +17,8 @@ export interface ActivityItem {
   tone: 'error' | 'info' | 'warn'
 }
 
+export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
+
 export interface SubagentProgress {
   apiCalls?: number
   costUsd?: number
@@ -36,7 +38,7 @@ export interface SubagentProgress {
   parentId: null | string
   reasoningTokens?: number
   startedAt?: number
-  status: 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
+  status: SubagentStatus
   summary?: string
   taskCount: number
   thinking: string[]
@@ -146,6 +148,7 @@ export interface SessionInfo {
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  profile_name?: string
   reasoning_effort?: string
   release_date?: string
   service_tier?: string

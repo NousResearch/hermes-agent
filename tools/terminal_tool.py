@@ -47,6 +47,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from utils import env_var_enabled
+
 logger = logging.getLogger(__name__)
 
 
@@ -360,7 +362,7 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     
     Returns enhanced output if sudo failed in messaging context, else original.
     """
-    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
+    is_gateway = env_var_enabled("HERMES_GATEWAY_SESSION")
     
     if not is_gateway:
         return output
@@ -868,7 +870,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
         return command, None
 
-    if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
+    if not has_configured_password and not sudo_password and env_var_enabled("HERMES_INTERACTIVE"):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
             _set_cached_sudo_password(sudo_password)
@@ -1861,12 +1863,13 @@ def terminal_tool(
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
-                if approval.get("status") == "approval_required":
+                if approval.get("status") == "pending_approval":
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
-                        "error": approval.get("message", "Waiting for user approval"),
-                        "status": "approval_required",
+                        "error": "",
+                        "status": "pending_approval",
+                        "approval_pending": True,
                         "command": approval.get("command", command),
                         "description": approval.get("description", "command flagged"),
                         "pattern_key": approval.get("pattern_key", ""),
@@ -1967,11 +1970,13 @@ def terminal_tool(
                         _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
                         _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
                         _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
+                        _gw_message_id = _gse("HERMES_SESSION_MESSAGE_ID", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
                         proc_session.watcher_user_id = _gw_user_id
                         proc_session.watcher_user_name = _gw_user_name
                         proc_session.watcher_thread_id = _gw_thread_id
+                        proc_session.watcher_message_id = _gw_message_id
 
                 # Mutual exclusion: if both notify_on_complete and watch_patterns
                 # are set, drop watch_patterns. The combination produces duplicate
@@ -2008,6 +2013,7 @@ def terminal_tool(
                             "user_id": proc_session.watcher_user_id,
                             "user_name": proc_session.watcher_user_name,
                             "thread_id": proc_session.watcher_thread_id,
+                            "message_id": proc_session.watcher_message_id,
                             "notify_on_complete": True,
                         })
 

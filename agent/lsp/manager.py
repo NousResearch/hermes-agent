@@ -107,9 +107,14 @@ class _BackgroundLoop:
 
         Returns the coroutine's result, or raises its exception.
         """
+        from agent.async_utils import safe_schedule_threadsafe
         if self._loop is None:
+            if asyncio.iscoroutine(coro):
+                coro.close()
             raise RuntimeError("background loop not started")
-        fut: ConcurrentFuture = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        fut = safe_schedule_threadsafe(coro, self._loop)
+        if fut is None:
+            raise RuntimeError("background loop not running")
         try:
             return fut.result(timeout=timeout)
         except Exception:
@@ -157,7 +162,7 @@ class LSPService:
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
     ) -> None:
         self._enabled = enabled
-        self._wait_mode = wait_mode if wait_mode in ("document", "full") else "document"
+        self._wait_mode = wait_mode if wait_mode in {"document", "full"} else "document"
         self._wait_timeout = wait_timeout
         self._install_strategy = install_strategy
         self._binary_overrides = binary_overrides or {}

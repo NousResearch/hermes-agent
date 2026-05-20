@@ -64,7 +64,14 @@ class _SuccessfulAdapter(BasePlatformAdapter):
 
 
 @pytest.mark.asyncio
-async def test_runner_returns_failure_for_retryable_startup_errors(monkeypatch, tmp_path):
+async def test_runner_stays_alive_for_retryable_startup_errors(monkeypatch, tmp_path):
+    """Retryable startup errors should leave the gateway running in
+    degraded mode so the reconnect watcher can recover the platform when
+    the underlying problem clears.  Previously this returned False from
+    ``start()`` and exited the process, which converted a single broken
+    platform (e.g. unpaired WhatsApp, DNS blip on Telegram) into a
+    systemd restart loop and killed cron jobs in the meantime.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = GatewayConfig(
         platforms={
@@ -78,11 +85,13 @@ async def test_runner_returns_failure_for_retryable_startup_errors(monkeypatch, 
 
     ok = await runner.start()
 
-    assert ok is False
+    # Gateway stays alive in degraded mode; reconnect watcher takes over.
+    assert ok is True
     assert runner.should_exit_cleanly is False
     state = read_runtime_status()
-    assert state["gateway_state"] == "startup_failed"
-    assert "temporary DNS resolution failure" in state["exit_reason"]
+    assert state["gateway_state"] in {"degraded", "running"}
+    # Telegram was queued for retry, not given up on.
+    assert Platform.TELEGRAM in runner._failed_platforms
     assert state["platforms"]["telegram"]["state"] == "retrying"
     assert state["platforms"]["telegram"]["error_code"] == "telegram_connect_error"
 

@@ -336,7 +336,9 @@ function ModelCard({
     )?.task ?? null;
 
   return (
-    <Card className={isMain ? "ring-1 ring-primary/40" : undefined}>
+    <Card
+      className={`min-w-0 max-w-full overflow-hidden${isMain ? " ring-1 ring-primary/40" : ""}`}
+    >
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
@@ -666,22 +668,20 @@ function ModelSettingsPanel({
   ).length ?? 0;
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
-            <Settings2 className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-sm">Model Settings</CardTitle>
-            <span className="text-[10px] text-muted-foreground">
-              applies to new sessions
-            </span>
-          </div>
+    <Card className="min-w-0 max-w-full overflow-hidden">
+      <CardHeader className="min-w-0 pb-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <CardTitle className="text-sm">Model Settings</CardTitle>
+          <span className="max-w-full min-w-0 text-[10px] text-muted-foreground [overflow-wrap:anywhere]">
+            applies to new sessions
+          </span>
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-3 pt-3">
+      <CardContent className="min-w-0 space-y-3 pt-3">
         {/* Main row */}
-        <div className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2">
+        <div className="flex min-w-0 flex-col gap-2 bg-muted/20 border border-border/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
               <Star className="h-3 w-3 text-primary" />
@@ -698,14 +698,14 @@ function ModelSettingsPanel({
           <Button
             size="sm"
             onClick={() => setPicker({ kind: "main" })}
-            className="text-xs"
+            className="shrink-0 self-start text-xs sm:self-center"
           >
             Change
           </Button>
         </div>
 
         {/* Auxiliary tasks summary + open modal */}
-        <div className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2">
+        <div className="flex min-w-0 flex-col gap-2 bg-muted/20 border border-border/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
               <Cpu className="h-3 w-3 text-muted-foreground" />
@@ -723,7 +723,7 @@ function ModelSettingsPanel({
             size="sm"
             outlined
             onClick={() => setAuxModalOpen(true)}
-            className="text-xs"
+            className="shrink-0 self-start text-xs sm:self-center"
           >
             Configure
           </Button>
@@ -827,7 +827,7 @@ export default function ModelsPage() {
       </span>,
     );
     setEnd(
-      <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-2">
+      <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           {PERIODS.map((p) => (
             <Button
@@ -864,10 +864,10 @@ export default function ModelsPage() {
   }, [load]);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-w-0 max-w-full flex-col gap-6">
       <PluginSlot name="models:top" />
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid min-w-0 gap-6 lg:grid-cols-2">
         <ModelSettingsPanel
           aux={aux}
           refreshKey={saveKey}
@@ -875,10 +875,12 @@ export default function ModelsPage() {
         />
 
         {data && (
-          <Card>
-            <CardContent className="py-6">
-              <Stats
-                items={
+          <Card className="min-w-0 max-w-full overflow-hidden">
+            <CardContent className="min-w-0 py-6">
+              <div className="min-w-0 max-w-full [&_div.grid]:grid-cols-[auto_minmax(0,1fr)_auto]">
+                <Stats
+                  className="min-w-0"
+                  items={
                   showTokens
                     ? [
                         {
@@ -920,6 +922,7 @@ export default function ModelsPage() {
                       ]
                 }
               />
+              </div>
               {!showTokens && (
                 <p className="mt-4 text-[10px] text-muted-foreground/70 leading-relaxed">
                   Token & cost analytics are hidden because the local counts
@@ -953,7 +956,7 @@ export default function ModelsPage() {
       {data && (
         <>
           {data.models.length > 0 ? (
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-3">
               {data.models.map((m, i) => (
                 <ModelCard
                   key={`${m.model}:${m.provider}`}

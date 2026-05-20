@@ -743,10 +743,22 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
+        group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
+        thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
+        try:
+            from gateway.zero_token_mirror import resolve_gateway_session_key
+            return resolve_gateway_session_key(
+                getattr(self.config, "deterministic_mirrors", {}),
+                source,
+                group_sessions_per_user=group_sessions_per_user,
+                thread_sessions_per_user=thread_sessions_per_user,
+            )
+        except Exception:
+            logger.debug("Failed to resolve deterministic mirror session key", exc_info=True)
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:

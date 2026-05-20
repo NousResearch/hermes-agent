@@ -361,6 +361,61 @@ class TestTelegramApprovalCallback:
         assert "Approved once" in edit_kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_resolves_approval_even_if_callback_ack_times_out(self):
+        adapter = _make_adapter()
+        adapter._approval_state[4] = "agent:main:telegram:group:12345:99"
+
+        query = AsyncMock()
+        query.data = "ea:always:4"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Norbert"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock(side_effect=RuntimeError("telegram timeout"))
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_called_once_with("agent:main:telegram:group:12345:99", "always")
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        assert 4 not in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_resolve_failure_does_not_show_success_or_clear_state(self):
+        adapter = _make_adapter()
+        adapter._approval_state[5] = "agent:main:telegram:group:12345:99"
+
+        query = AsyncMock()
+        query.data = "ea:once:5"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Norbert"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", side_effect=RuntimeError("boom")):
+                await adapter._handle_callback_query(update, context)
+
+        assert adapter._approval_state[5] == "agent:main:telegram:group:12345:99"
+        assert "failed" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_deny_button(self):
         adapter = _make_adapter()
         adapter._approval_state[2] = "some-session"

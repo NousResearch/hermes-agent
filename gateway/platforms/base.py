@@ -2876,11 +2876,21 @@ class BasePlatformAdapter(ABC):
 
         coerce_plaintext_gateway_command(event)
         
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        try:
+            from gateway.zero_token_mirror import resolve_gateway_session_key
+            session_key = resolve_gateway_session_key(
+                self.config.extra.get("deterministic_mirrors", {}),
+                event.source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
+        except Exception:
+            logger.debug("[%s] Failed to resolve deterministic mirror session key", self.name, exc_info=True)
+            session_key = build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
@@ -3255,6 +3265,14 @@ class BasePlatformAdapter(ABC):
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)
+                    if result.success and not event.get_command():
+                        try:
+                            runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+                            if runner is not None:
+                                from gateway.zero_token_mirror import mirror_assistant_message
+                                await mirror_assistant_message(runner, event.source, text_content)
+                        except Exception:
+                            logger.debug("[%s] zero-token outbound mirror failed", self.name, exc_info=True)
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors

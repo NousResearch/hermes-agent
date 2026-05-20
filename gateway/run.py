@@ -1612,6 +1612,11 @@ class GatewayRunner:
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
+    @staticmethod
+    def _load_config() -> dict:
+        """Return raw config.yaml data for deterministic gateway helpers."""
+        return _load_gateway_config()
+
 
     def _wire_teams_pipeline_runtime(self) -> None:
         """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
@@ -5888,6 +5893,10 @@ class GatewayRunner:
                 "thread_sessions_per_user",
                 getattr(self.config, "thread_sessions_per_user", False),
             )
+            config.extra.setdefault(
+                "deterministic_mirrors",
+                getattr(self.config, "deterministic_mirrors", {}),
+            )
 
         # ── Plugin-registered platforms (checked first) ───────────────────
         try:
@@ -6523,6 +6532,15 @@ class GatewayRunner:
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        # Zero-token deterministic mirroring: copy authorized user input to
+        # paired platforms before any LLM work.  Errors are non-fatal.
+        if not is_internal and not event.get_command():
+            try:
+                from gateway.zero_token_mirror import mirror_user_message
+                await mirror_user_message(self, source, event.text or "")
+            except Exception:
+                logger.debug("zero-token inbound mirror failed", exc_info=True)
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher

@@ -2948,7 +2948,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
+                session_key = self._approval_state.get(approval_id)
                 if not session_key:
                     await query.answer(text="This approval has already been resolved.")
                     return
@@ -2963,7 +2963,30 @@ class TelegramAdapter(BasePlatformAdapter):
                 user_display = getattr(query.from_user, "first_name", "User")
                 label = label_map.get(choice, "Resolved")
 
-                await query.answer(text=label)
+                # Resolve the approval before making any Telegram API calls.
+                # Telegram callback acknowledgements can time out; that must not
+                # prevent the waiting agent thread from being unblocked.
+                try:
+                    from tools.approval import resolve_gateway_approval
+                    count = resolve_gateway_approval(session_key, choice)
+                    self._approval_state.pop(approval_id, None)
+                    logger.info(
+                        "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                        count, session_key, choice, user_display,
+                    )
+                except Exception as exc:
+                    logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+                    failure_label = "⚠️ Approval failed; please try again."
+                    try:
+                        await query.answer(text=failure_label)
+                    except Exception as answer_exc:
+                        logger.warning("Telegram approval failure callback answer failed: %s", answer_exc)
+                    return
+
+                try:
+                    await query.answer(text=label)
+                except Exception as exc:
+                    logger.warning("Telegram approval callback answer failed: %s", exc)
 
                 # Edit message to show decision, remove buttons
                 try:
@@ -2975,23 +2998,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception:
                     pass  # non-fatal if edit fails
 
-                # Resolve the approval — unblocks the agent thread
-                try:
-                    from tools.approval import resolve_gateway_approval
-                    count = resolve_gateway_approval(session_key, choice)
-                    logger.info(
-                        "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                        count, session_key, choice, user_display,
-                    )
-                except Exception as exc:
-                    logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
-                    count = 0
-
                 # Resume the typing indicator — paused when the approval was
-                # sent (gateway/run.py).  The text /approve and /deny paths
-                # call resume_typing_for_chat here too; without it, typing
-                # stays paused for the rest of the turn after an inline
-                # button click.
+                # sent (gateway/run.py). The approval was already resolved
+                # above before Telegram API calls, so do not resolve twice.
                 if count and query_chat_id is not None:
                     self.resume_typing_for_chat(str(query_chat_id))
             return

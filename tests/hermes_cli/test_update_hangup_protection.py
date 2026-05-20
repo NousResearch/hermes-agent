@@ -9,6 +9,7 @@ that ``hermes update`` survives a terminal disconnect mid-install
 from __future__ import annotations
 
 import io
+import importlib
 import signal
 import sys
 
@@ -19,6 +20,31 @@ from hermes_cli.main import (
     _finalize_update_output,
     _install_hangup_protection,
 )
+
+
+@pytest.fixture(autouse=True)
+def _refresh_bindings_against_live_module():
+    """Keep imported update helpers aligned with the live ``hermes_cli.main``.
+
+    Some sibling tests reload or remove ``hermes_cli.main`` from
+    ``sys.modules``.  When this file is imported before that happens, the
+    top-level ``from hermes_cli.main import ...`` bindings can point at stale
+    function/class objects while later patch targets resolve against the live
+    module.  Refresh the bindings for each test so type checks and globals
+    stay consistent with the module currently installed in ``sys.modules``.
+    """
+    global _UpdateOutputStream
+    global _finalize_update_output
+    global _install_hangup_protection
+
+    live = sys.modules.get("hermes_cli.main")
+    if live is None:
+        live = importlib.import_module("hermes_cli.main")
+
+    _UpdateOutputStream = live._UpdateOutputStream
+    _finalize_update_output = live._finalize_update_output
+    _install_hangup_protection = live._install_hangup_protection
+    yield
 
 
 # -----------------------------------------------------------------------------

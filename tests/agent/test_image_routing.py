@@ -124,6 +124,160 @@ class TestDecideImageInputMode:
         with patch("agent.models_dev.fetch_models_dev", return_value=registry):
             assert decide_image_input_mode("xiaomi", "mimo-v2.5-pro", {}) == "text"
 
+    # ── custom provider fallback (enterprise LLM gateways) ──────────────────
+    # Bug repro: ``custom:my-gateway`` running ``claude-opus-4-7`` over the
+    # ``anthropic_messages`` protocol used to fall through to ``"text"`` and
+    # then explode because no aux vision provider was configured.
+
+    def _my_gateway_cfg(self, api_mode="anthropic_messages"):
+        return {
+            "custom_providers": [
+                {
+                    "name": "my-gateway",
+                    "base_url": "https://my-gateway.example",
+                    "api_key": "sk-x",
+                    "api_mode": api_mode,
+                },
+            ],
+        }
+
+    def test_custom_provider_anthropic_protocol_claude_opus_is_native(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert (
+                decide_image_input_mode(
+                    "custom:my-gateway", "claude-opus-4-7", self._my_gateway_cfg()
+                )
+                == "native"
+            )
+
+    def test_custom_provider_anthropic_protocol_haiku_is_native(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert (
+                decide_image_input_mode(
+                    "custom:my-gateway",
+                    "claude-haiku-4-5-20251001",
+                    self._my_gateway_cfg(),
+                )
+                == "native"
+            )
+
+    def test_custom_provider_chat_completions_gpt5_is_native(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert (
+                decide_image_input_mode(
+                    "custom:my-gateway",
+                    "gpt-5.4",
+                    self._my_gateway_cfg(api_mode="chat_completions"),
+                )
+                == "native"
+            )
+
+    def test_custom_provider_text_only_model_falls_back_to_text(self):
+        """Text-only model behind a vision-capable protocol must NOT go native."""
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert (
+                decide_image_input_mode(
+                    "custom:my-gateway",
+                    "deepseek-r1-text",
+                    self._my_gateway_cfg(),
+                )
+                == "text"
+            )
+
+    def test_custom_provider_unknown_api_mode_falls_back_to_text(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert (
+                decide_image_input_mode(
+                    "custom:my-gateway",
+                    "claude-opus-4-7",
+                    self._my_gateway_cfg(api_mode="responses"),
+                )
+                == "text"
+            )
+
+    def test_custom_provider_not_declared_in_config_falls_back_to_text(self):
+        """If user types custom:foo but never declared it, don't guess."""
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert (
+                decide_image_input_mode("custom:foo", "claude-opus-4-7", {})
+                == "text"
+            )
+
+    def test_custom_provider_caps_known_takes_priority_over_fallback(self):
+        """If models.dev DOES know the provider, trust it (don't double-guess)."""
+        # models.dev says supports_vision=False for this model — fallback must
+        # not override. Even with a vision-capable name pattern.
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert (
+                decide_image_input_mode(
+                    "custom:my-gateway",
+                    "claude-opus-4-7",
+                    self._my_gateway_cfg(),
+                )
+                == "text"
+            )
+
+    def test_custom_provider_aux_vision_override_still_wins(self):
+        """User explicitly configured aux vision → respect it, don't bypass."""
+        cfg: dict = self._my_gateway_cfg()
+        cfg["auxiliary"] = {
+            "vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert (
+                decide_image_input_mode("custom:my-gateway", "claude-opus-4-7", cfg)
+                == "text"
+            )
+
+    # ── bare "custom" runtime form (AIAgent strips :namespace at init) ───────
+
+    def _my_gateway_cfg_with_model(self, api_mode="anthropic_messages"):
+        """Cfg as it actually appears at runtime: model.provider=custom:my-gateway."""
+        return {
+            "model": {
+                "default": "claude-opus-4-7",
+                "provider": "custom:my-gateway",
+            },
+            "custom_providers": [
+                {
+                    "name": "my-gateway",
+                    "base_url": "https://my-gateway.example",
+                    "api_key": "sk-x",
+                    "api_mode": api_mode,
+                },
+            ],
+        }
+
+    def test_bare_custom_recovers_namespace_from_model_config(self):
+        """AIAgent passes provider='custom' (no :my-gateway) at runtime — must still resolve."""
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert (
+                decide_image_input_mode(
+                    "custom", "claude-opus-4-7", self._my_gateway_cfg_with_model()
+                )
+                == "native"
+            )
+
+    def test_bare_custom_without_model_config_falls_back_to_text(self):
+        """If model.provider isn't a custom:* form, can't recover → text."""
+        cfg = {
+            "custom_providers": [
+                {"name": "my-gateway", "api_mode": "anthropic_messages"},
+            ],
+            # No model.provider, or it's not custom:*
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert decide_image_input_mode("custom", "claude-opus-4-7", cfg) == "text"
+
+    def test_bare_custom_text_only_model_falls_back(self):
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert (
+                decide_image_input_mode(
+                    "custom", "deepseek-r1-text", self._my_gateway_cfg_with_model()
+                )
+                == "text"
+            )
+
 
 # ─── build_native_content_parts ──────────────────────────────────────────────
 

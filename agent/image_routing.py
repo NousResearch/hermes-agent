@@ -96,6 +96,115 @@ def _lookup_supports_vision(provider: str, model: str) -> Optional[bool]:
     return bool(caps.supports_vision)
 
 
+# Model-name patterns that strongly indicate vision support across providers.
+# Used as a fallback when the active provider isn't in the models.dev catalogue
+# (e.g. ``custom:*`` providers like enterprise LLM gateways). Patterns are
+# matched case-insensitively against the bare model slug. Conservative on
+# purpose — text-only siblings of these families are rare; the cost of a
+# false positive is one HTTP 400 from the provider, the cost of a false
+# negative is the user's image silently dropped to a text description path.
+_VISION_CAPABLE_MODEL_PATTERNS = (
+    "claude-3",      # claude-3-opus / sonnet / haiku — all see images
+    "claude-sonnet", # claude-sonnet-4-* and beyond
+    "claude-opus",   # claude-opus-4-* and beyond
+    "claude-haiku",  # claude-haiku-4-* and beyond
+    "gpt-4o",        # gpt-4o, gpt-4o-mini
+    "gpt-4.1",       # gpt-4.1 family
+    "gpt-4-turbo",   # gpt-4-turbo with vision
+    "gpt-4-vision",  # explicit vision variant
+    "gpt-5",         # gpt-5 / gpt-5.x family — multimodal
+    "gemini-1.5",
+    "gemini-2",
+    "gemini-3",
+    "llama-3.2-vision",
+    "llama-4",       # Llama 4 family is multimodal
+    "qwen-vl",
+    "qwen2-vl",
+    "qwen2.5-vl",
+    "qwen3-vl",
+    "pixtral",
+    "molmo",
+    "internvl",
+)
+
+
+def _custom_provider_likely_supports_vision(
+    provider: str,
+    model: str,
+    cfg: Optional[Dict[str, Any]],
+) -> bool:
+    """Heuristic: does this ``custom:*`` provider's model likely accept images?
+
+    Used only when ``models.dev`` doesn't know the provider (the common case
+    for enterprise LLM gateways routed through ``custom_providers``). We check
+    two signals:
+      1. The provider must be declared in ``custom_providers`` with an
+         ``api_mode`` that supports image content blocks
+         (``anthropic_messages`` or ``chat_completions``).
+      2. The model slug must match a known vision-capable family pattern.
+
+    Both signals together avoid both false positives (text-only model on a
+    vision-capable protocol) and false negatives (vision model behind an
+    unfamiliar provider name).
+
+    Provider name handling: callers may pass either the full namespaced form
+    ``"custom:my-gateway"`` (as written in config.yaml) or the bare ``"custom"``
+    that AIAgent uses at runtime after the namespace is stripped. When given
+    ``"custom"``, we recover the full name from ``cfg["model"]["provider"]``
+    so the lookup against ``custom_providers`` still works.
+    """
+    if not model:
+        return False
+    if not isinstance(cfg, dict):
+        return False
+
+    p_lower = provider.strip().lower() if isinstance(provider, str) else ""
+
+    if p_lower.startswith("custom:"):
+        custom_name = p_lower.split(":", 1)[1].strip()
+    elif p_lower == "custom":
+        # Bare ``"custom"`` — AIAgent strips the ``:my-gateway`` namespace at
+        # runtime. Recover it from the config's model.provider string,
+        # which preserves the full form.
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict):
+            cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+            if cfg_provider.startswith("custom:"):
+                custom_name = cfg_provider.split(":", 1)[1].strip()
+            else:
+                return False
+        else:
+            return False
+    else:
+        return False
+
+    if not custom_name:
+        return False
+
+    custom_providers = cfg.get("custom_providers")
+    if not isinstance(custom_providers, list):
+        return False
+
+    matched = None
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("name", "")).strip().lower() == custom_name:
+            matched = entry
+            break
+    if matched is None:
+        return False
+
+    api_mode = str(matched.get("api_mode") or "").strip().lower()
+    # Both protocols can carry image parts. Other modes (e.g. plain
+    # text-completion APIs) cannot reliably forward images.
+    if api_mode not in {"anthropic_messages", "chat_completions"}:
+        return False
+
+    model_lower = model.lower()
+    return any(pat in model_lower for pat in _VISION_CAPABLE_MODEL_PATTERNS)
+
+
 def decide_image_input_mode(
     provider: str,
     model: str,
@@ -125,6 +234,11 @@ def decide_image_input_mode(
 
     supports = _lookup_supports_vision(provider, model)
     if supports is True:
+        return "native"
+    if supports is None and _custom_provider_likely_supports_vision(provider, model, cfg):
+        # Custom provider not in models.dev catalogue, but its declared
+        # api_mode + model name strongly suggest vision support. Trust it
+        # and fall back to text-pipeline only if the provider rejects.
         return "native"
     return "text"
 

@@ -3196,9 +3196,23 @@ class AIAgent:
             if not provider or not model:
                 return False
             caps = get_model_capabilities(provider, model)
-            if caps is None:
+            if caps is not None:
+                return bool(caps.supports_vision)
+            # Caps lookup returned None — provider isn't in the models.dev
+            # catalogue. For ``custom:*`` / bare ``custom`` providers
+            # (enterprise LLM gateways), fall back to the same heuristic
+            # used by image_routing: api_mode + model-name family check.
+            # This keeps the three vision-capability gates in sync —
+            # decide_image_input_mode (gateway-side image routing),
+            # _supports_media_in_tool_results (vision_analyze fast path),
+            # and _model_supports_vision (run_agent tool-result delivery).
+            try:
+                from agent.image_routing import _custom_provider_likely_supports_vision
+                from hermes_cli.config import load_config
+                cfg = load_config()
+                return _custom_provider_likely_supports_vision(provider, model, cfg)
+            except Exception:
                 return False
-            return bool(caps.supports_vision)
         except Exception:
             return False
 

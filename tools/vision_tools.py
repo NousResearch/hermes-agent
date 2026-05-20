@@ -416,7 +416,11 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 # ---------------------------------------------------------------------------
 
 
-def _supports_media_in_tool_results(provider: str, model: str) -> bool:
+def _supports_media_in_tool_results(
+    provider: str,
+    model: str,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> bool:
     """Whether the given provider+model combination accepts image content
     inside a tool-result message.
 
@@ -431,6 +435,11 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         accepts an array of ``input_text``/``input_image`` items.
       * Gemini 3 (and proxied via aggregators): supports multimodal tool
         results. Older Gemini does NOT.
+      * ``custom:*`` providers (enterprise LLM gateways): supported when
+        the gateway's declared ``api_mode`` is ``anthropic_messages`` or
+        ``chat_completions`` AND the model name matches a vision-capable
+        family. Mirrors the ``decide_image_input_mode`` fallback so users
+        on private gateways aren't silently downgraded to the text path.
 
     For unknown / legacy providers we conservatively return False — the
     caller falls back to the legacy aux-LLM text path.
@@ -469,6 +478,19 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         if "gemini-3" in m or "gemini-pro-3" in m or "gemini-flash-3" in m:
             return True
         return False
+
+    # Custom providers (enterprise LLM gateways, e.g. ``custom:my-gateway``).
+    # Reuse the same heuristic as image routing: trust the fast path when
+    # the user declared an ``api_mode`` that carries images and the model
+    # name matches a known vision-capable family. Accepts both the full
+    # ``custom:my-gateway`` form and the bare ``custom`` runtime form
+    # (AIAgent strips the namespace prefix when initializing self.provider).
+    if p.startswith("custom:") or p == "custom":
+        try:
+            from agent.image_routing import _custom_provider_likely_supports_vision
+        except Exception:  # pragma: no cover - defensive
+            return False
+        return _custom_provider_likely_supports_vision(p, model, cfg)
 
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result
@@ -1029,7 +1051,7 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         _model = _read_main_model()
         _cfg = load_config()
         _mode = decide_image_input_mode(_provider, _model, _cfg)
-        if _mode == "native" and _supports_media_in_tool_results(_provider, _model):
+        if _mode == "native" and _supports_media_in_tool_results(_provider, _model, _cfg):
             logger.info(
                 "vision_analyze: native fast path (provider=%s, model=%s)",
                 _provider, _model,

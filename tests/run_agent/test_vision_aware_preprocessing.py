@@ -168,3 +168,34 @@ class TestModelSupportsVision:
         agent = _make_agent()
         with patch("agent.models_dev.get_model_capabilities", side_effect=RuntimeError("boom")):
             assert agent._model_supports_vision() is False
+
+    def test_none_caps_with_custom_provider_falls_back_to_heuristic(self):
+        """When caps lookup returns None for a custom: provider, the helper
+        from agent.image_routing should resolve api_mode + model name."""
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.model = "claude-opus-4-7"
+        cfg = {
+            "model": {"provider": "custom:my-gateway"},
+            "custom_providers": [
+                {"name": "my-gateway", "api_mode": "anthropic_messages"},
+            ],
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("hermes_cli.config.load_config", return_value=cfg):
+            assert agent._model_supports_vision() is True
+
+    def test_none_caps_with_custom_provider_text_only_model_returns_false(self):
+        """Heuristic fallback must reject text-only models behind a vision protocol."""
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.model = "deepseek-r1-text"
+        cfg = {
+            "model": {"provider": "custom:my-gateway"},
+            "custom_providers": [
+                {"name": "my-gateway", "api_mode": "anthropic_messages"},
+            ],
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("hermes_cli.config.load_config", return_value=cfg):
+            assert agent._model_supports_vision() is False

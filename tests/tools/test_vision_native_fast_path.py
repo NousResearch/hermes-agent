@@ -58,6 +58,51 @@ class TestSupportsMediaInToolResults:
     def test_unknown_provider_conservative_no(self):
         assert _supports_media_in_tool_results("brand-new-provider", "any-model") is False
 
+    # ── custom: provider fallback ────────────────────────────────────────────
+
+    def _my_gateway_cfg(self, api_mode="anthropic_messages"):
+        return {
+            "custom_providers": [
+                {"name": "my-gateway", "base_url": "https://x", "api_key": "k", "api_mode": api_mode},
+            ],
+        }
+
+    def test_custom_my_gateway_claude_opus_yes(self):
+        assert (
+            _supports_media_in_tool_results(
+                "custom:my-gateway", "claude-opus-4-7", self._my_gateway_cfg()
+            )
+            is True
+        )
+
+    def test_custom_my_gateway_haiku_yes(self):
+        assert (
+            _supports_media_in_tool_results(
+                "custom:my-gateway", "claude-haiku-4-5-20251001", self._my_gateway_cfg()
+            )
+            is True
+        )
+
+    def test_custom_my_gateway_gpt5_chat_completions_yes(self):
+        assert (
+            _supports_media_in_tool_results(
+                "custom:my-gateway", "gpt-5.4", self._my_gateway_cfg(api_mode="chat_completions")
+            )
+            is True
+        )
+
+    def test_custom_my_gateway_text_only_model_no(self):
+        assert (
+            _supports_media_in_tool_results(
+                "custom:my-gateway", "deepseek-r1-text", self._my_gateway_cfg()
+            )
+            is False
+        )
+
+    def test_custom_provider_no_cfg_no(self):
+        """No cfg means we can't verify api_mode → conservative no."""
+        assert _supports_media_in_tool_results("custom:my-gateway", "claude-opus-4-7") is False
+
     def test_empty_provider_no(self):
         assert _supports_media_in_tool_results("", "anything") is False
         assert _supports_media_in_tool_results(None, "anything") is False  # type: ignore[arg-type]

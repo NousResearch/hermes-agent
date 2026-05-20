@@ -1866,6 +1866,27 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _stamp_worker_usage_metadata(task_id: str, metadata: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Best-effort usage metadata stamping for worker terminal events.
+
+    Completing/blocking a Kanban task must remain reliable even if the optional
+    usage ledger path is unavailable or state.db is temporarily locked/corrupt.
+    The native kanban tools already treat usage stamping as best-effort; keep
+    the CLI path equally defensive.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return metadata
+    try:
+        from hermes_cli import project_usage_ledger
+        return project_usage_ledger.stamp_usage_metadata(
+            metadata,
+            os.environ.get("HERMES_SESSION_ID"),
+        )
+    except Exception as exc:
+        print(f"kanban: usage metadata unavailable: {exc}", file=sys.stderr)
+        return metadata
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -1901,11 +1922,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 conn, tid,
                 result=args.result,
                 summary=summary,
-                metadata=(
-                    __import__("hermes_cli.project_usage_ledger", fromlist=["stamp_usage_metadata"])
-                    .stamp_usage_metadata(metadata, os.environ.get("HERMES_SESSION_ID"))
-                    if os.environ.get("HERMES_KANBAN_TASK") == tid else metadata
-                ),
+                metadata=_stamp_worker_usage_metadata(tid, metadata),
                 expected_run_id=_worker_run_id_for(tid),
             ):
                 failed.append(tid)
@@ -1957,11 +1974,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 tid,
                 reason=reason,
                 expected_run_id=_worker_run_id_for(tid),
-                metadata=(
-                    __import__("hermes_cli.project_usage_ledger", fromlist=["stamp_usage_metadata"])
-                    .stamp_usage_metadata(None, os.environ.get("HERMES_SESSION_ID"))
-                    if os.environ.get("HERMES_KANBAN_TASK") == tid else None
-                ),
+                metadata=_stamp_worker_usage_metadata(tid, None),
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)

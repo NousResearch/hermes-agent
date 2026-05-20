@@ -401,6 +401,54 @@ def _totals_where(board: Optional[str] = None, task_id: Optional[str] = None) ->
     return ("WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
+def get_task_rollups(
+    *,
+    board: Optional[str] = None,
+    task_ids: Optional[list[str]] = None,
+    refresh: bool = True,
+) -> list[dict[str, Any]]:
+    """Return usage rollups for specific task ids without the dashboard top-N cap."""
+    if not task_ids:
+        return []
+    conn = connect()
+    try:
+        if refresh:
+            backfill(ledger_conn=conn)
+        placeholders = ", ".join(["?"] * len(task_ids))
+        where = f"WHERE task_id IN ({placeholders})"
+        params: list[Any] = list(task_ids)
+        if board:
+            where += " AND board_slug = ?"
+            params.append(board)
+        rows = conn.execute(
+            f"""
+            SELECT
+                board_slug,
+                board_name,
+                task_id,
+                MAX(task_title) AS task_title,
+                MAX(task_status) AS task_status,
+                COUNT(*) AS runs,
+                COUNT(DISTINCT session_id) AS sessions,
+                COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                COALESCE(SUM(estimated_cost_usd), 0.0) AS estimated_cost_usd,
+                COALESCE(SUM(actual_cost_usd), 0.0) AS actual_cost_usd,
+                MIN(started_at) AS first_started_at,
+                MAX(ended_at) AS last_ended_at
+            FROM usage_entries
+            {where}
+            GROUP BY board_slug, board_name, task_id
+            ORDER BY estimated_cost_usd DESC, input_tokens + output_tokens DESC
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def get_summary(*, board: Optional[str] = None, task_id: Optional[str] = None, refresh: bool = True) -> dict[str, Any]:
     """Return dashboard-ready per-board totals and task drilldown rows."""
     conn = connect()

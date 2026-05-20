@@ -2253,21 +2253,18 @@ def test_board_usage_rollup_does_not_refresh_when_ledger_exists(monkeypatch):
     refresh_calls: list[bool] = []
 
     class FakeUsage:
-        def get_summary(self, *, board=None, refresh=True):
+        def get_task_rollups(self, *, board=None, task_ids=None, refresh=True):
             refresh_calls.append(refresh)
-            return {
-                "last_backfill_at": 123.0,
-                "tasks": [{
-                    "task_id": "t1",
-                    "runs": 1,
-                    "sessions": 1,
-                    "input_tokens": 3,
-                    "output_tokens": 5,
-                    "reasoning_tokens": 0,
-                    "estimated_cost_usd": 0.01,
-                    "actual_cost_usd": 0.0,
-                }],
-            }
+            return [{
+                "task_id": "t1",
+                "runs": 1,
+                "sessions": 1,
+                "input_tokens": 3,
+                "output_tokens": 5,
+                "reasoning_tokens": 0,
+                "estimated_cost_usd": 0.01,
+                "actual_cost_usd": 0.0,
+            }]
 
     monkeypatch.setattr(hermes_cli, "project_usage_ledger", FakeUsage(), raising=False)
 

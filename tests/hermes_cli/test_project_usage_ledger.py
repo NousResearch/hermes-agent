@@ -109,6 +109,55 @@ def test_project_usage_backfill_counts_session_usage_once_across_runs(usage_home
     assert data["tasks"][0]["input_tokens"] == 100
 
 
+def test_get_task_rollups_finds_specific_task_beyond_summary_limit(usage_home):
+    conn = usage.connect()
+    try:
+        now = 123.0
+        for idx in range(501):
+            usage._upsert_entry(conn, {
+                "source_type": "task_run",
+                "source_id": f"default:{idx}",
+                "board_slug": "default",
+                "board_name": "Default",
+                "task_id": f"t-{idx}",
+                "task_title": f"task {idx}",
+                "task_status": "done",
+                "run_id": idx,
+                "run_status": "completed",
+                "run_outcome": "done",
+                "session_id": f"sess-{idx}",
+                "session_title": None,
+                "session_source": "kanban",
+                "user_id": None,
+                "model": "gpt-test",
+                "billing_provider": "test",
+                "billing_mode": "api",
+                "input_tokens": idx + 1,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "api_call_count": 0,
+                "tool_call_count": 0,
+                "estimated_cost_usd": float(idx + 1),
+                "actual_cost_usd": 0.0,
+                "cost_status": None,
+                "started_at": now + idx,
+                "ended_at": now + idx,
+                "metadata": None,
+                "backfilled_at": now,
+            })
+    finally:
+        conn.close()
+
+    summary = usage.get_summary(board="default", refresh=False)
+    assert "t-0" not in {row["task_id"] for row in summary["tasks"]}
+
+    rows = usage.get_task_rollups(board="default", task_ids=["t-0"], refresh=False)
+    assert rows[0]["task_id"] == "t-0"
+    assert rows[0]["input_tokens"] == 1
+
+
 def test_project_usage_summary_keeps_unassigned_sessions_visible(usage_home):
     _seed_session(usage_home, "sess-unassigned", in_tok=11, out_tok=22, cost=0.003)
 
@@ -131,6 +180,20 @@ def test_stamp_usage_metadata_embeds_worker_session_snapshot(usage_home):
     assert stamped["usage_snapshot"]["input_tokens"] == 5
     assert stamped["usage_snapshot"]["output_tokens"] == 6
     assert stamped["usage_snapshot"]["estimated_cost_usd"] == pytest.approx(0.0009)
+
+
+def test_cli_worker_usage_metadata_stamping_is_best_effort(usage_home, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t-safe")
+    monkeypatch.setenv("HERMES_SESSION_ID", "sess-safe")
+
+    def boom(metadata, session_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    import sqlite3
+    monkeypatch.setattr(usage, "stamp_usage_metadata", boom)
+
+    assert kc._stamp_worker_usage_metadata("t-safe", {"keep": True}) == {"keep": True}
+    assert "usage metadata unavailable" in capsys.readouterr().err
 
 
 def test_kanban_usage_cli_outputs_json_summary(usage_home):

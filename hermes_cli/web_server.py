@@ -159,6 +159,18 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _additional_accepted_hosts() -> set[str]:
+    """Extra hostnames the dashboard accepts beyond the bound interface.
+
+    Set HERMES_DASHBOARD_ADDITIONAL_HOSTS to a comma-separated list of
+    hostnames (e.g. tailnet MagicDNS names) when exposing the
+    loopback-bound dashboard via tailscale serve. The bound-loopback
+    default still rejects DNS rebinding from unrelated hostnames.
+    """
+    raw = os.environ.get("HERMES_DASHBOARD_ADDITIONAL_HOSTS", "")
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
@@ -197,6 +209,9 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # Loopback bind: accept the loopback names
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
+        extras = _additional_accepted_hosts()
+        if extras and host_only in extras:
+            return True
         return host_only in _LOOPBACK_HOST_VALUES
 
     # Explicit non-loopback bind: require exact host match

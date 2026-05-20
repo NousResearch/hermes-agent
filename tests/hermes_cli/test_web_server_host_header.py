@@ -84,6 +84,108 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
 
+class TestHostHeaderAdditionalHosts:
+    """HERMES_DASHBOARD_ADDITIONAL_HOSTS lets operators add proxy hostnames
+    (e.g. tailnet MagicDNS names) to the accept list on a loopback bind,
+    without resorting to --insecure / all-interfaces. The DNS-rebinding
+    defence must still hold for any host NOT in the list."""
+
+    def test_loopback_bind_accepts_listed_host(self, monkeypatch):
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ADDITIONAL_HOSTS", "magic.tailnet.ts.net"
+        )
+        for bound in ("127.0.0.1", "localhost", "::1"):
+            assert _is_accepted_host("magic.tailnet.ts.net", bound)
+            assert _is_accepted_host("magic.tailnet.ts.net:9119", bound)
+
+    def test_loopback_bind_still_rejects_attacker_hosts_with_env_set(
+        self, monkeypatch
+    ):
+        """Core safety property: adding one trusted host MUST NOT widen
+        the accept list to any other attacker-controlled hostname that
+        TTL-flips to 127.0.0.1."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ADDITIONAL_HOSTS", "magic.tailnet.ts.net"
+        )
+        for attacker in (
+            "evil.example",
+            "evil.example:9119",
+            "magic.tailnet.ts.net.attacker.test",  # suffix attack
+            "attacker.magic.tailnet.ts.net",       # subdomain ≠ listed exact
+        ):
+            assert not _is_accepted_host(attacker, "127.0.0.1"), (
+                f"attacker host {attacker!r} must still be rejected"
+            )
+
+    def test_case_insensitive_match_against_env_entries(self, monkeypatch):
+        """Env entries are normalized to lowercase; Host headers are
+        compared case-insensitively per RFC 7230."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ADDITIONAL_HOSTS", "Magic.Tailnet.TS.NET"
+        )
+        assert _is_accepted_host("magic.tailnet.ts.net", "127.0.0.1")
+        assert _is_accepted_host("MAGIC.TAILNET.TS.NET", "127.0.0.1")
+
+    def test_comma_separated_list_accepts_each_entry(self, monkeypatch):
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ADDITIONAL_HOSTS",
+            "a.example, b.example ,  c.example",
+        )
+        assert _is_accepted_host("a.example", "127.0.0.1")
+        assert _is_accepted_host("b.example", "127.0.0.1")
+        assert _is_accepted_host("c.example", "127.0.0.1")
+        assert not _is_accepted_host("d.example", "127.0.0.1")
+
+    def test_empty_env_var_is_no_op(self, monkeypatch):
+        """An unset or empty env var must not change existing behaviour."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.delenv("HERMES_DASHBOARD_ADDITIONAL_HOSTS", raising=False)
+        assert _is_accepted_host("localhost", "127.0.0.1")
+        assert not _is_accepted_host("evil.example", "127.0.0.1")
+
+        monkeypatch.setenv("HERMES_DASHBOARD_ADDITIONAL_HOSTS", "   ,  , ")
+        assert _is_accepted_host("localhost", "127.0.0.1")
+        assert not _is_accepted_host("evil.example", "127.0.0.1")
+
+    def test_additional_hosts_not_consulted_on_non_loopback_bind(
+        self, monkeypatch
+    ):
+        """When the operator bound to a specific non-loopback hostname,
+        the validator requires exact bound-host match — the additional
+        hosts list is a loopback-bind-only convenience and must not
+        weaken explicit non-loopback binds."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ADDITIONAL_HOSTS", "magic.tailnet.ts.net"
+        )
+        assert not _is_accepted_host(
+            "magic.tailnet.ts.net", "my-server.corp.net"
+        )
+        assert _is_accepted_host("my-server.corp.net", "my-server.corp.net")
+
+    def test_zero_zero_bind_still_accepts_anything(self, monkeypatch):
+        """0.0.0.0 (--insecure) accepts everything regardless of
+        HERMES_DASHBOARD_ADDITIONAL_HOSTS — the env var is meaningful
+        only on loopback binds."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ADDITIONAL_HOSTS", "magic.tailnet.ts.net"
+        )
+        assert _is_accepted_host("anything.example", "0.0.0.0")
+        assert _is_accepted_host("magic.tailnet.ts.net", "0.0.0.0")
+
+
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware
     rejects bad Host headers with 400."""

@@ -508,6 +508,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 90) |
 | `HERMES_INFERENCE_MODEL` | Override model name at process level (takes priority over `config.yaml` for the session). Also settable via `-m`/`--model` flag. |
 | `HERMES_YOLO_MODE` | Set to `1` to bypass dangerous-command approval prompts. Equivalent to `--yolo`. |
+| `HERMES_HEADLESS_APPROVE` | Set to `1` to opt a headless process (e.g. `batch_runner.py`, scripted `AIAgent` embeds) into permissive execution of dangerous commands. Without this — or `HERMES_YOLO_MODE` — headless callers fail closed when a flagged command has no interactive approval channel available (GHSA-7gp4-gfvg-4mpj). Hardline patterns (`rm -rf /`, `mkfs`, fork bombs, …) still block under both. |
 | `HERMES_ACCEPT_HOOKS` | Auto-approve any unseen shell hooks declared in `config.yaml` without a TTY prompt. Equivalent to `--accept-hooks` or `hooks_auto_accept: true`. |
 | `HERMES_IGNORE_USER_CONFIG` | Skip `~/.hermes/config.yaml` and use built-in defaults (credentials in `.env` still load). Equivalent to `--ignore-user-config`. |
 | `HERMES_IGNORE_RULES` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, memory, and preloaded skills. Equivalent to `--ignore-rules`. |

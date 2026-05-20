@@ -9,6 +9,10 @@ metadata:
   hermes:
     tags: [planning, design, implementation, workflow, documentation]
     related_skills: [subagent-driven-development, test-driven-development, requesting-code-review]
+    # Plan 003-E: writing-plans produces a plan that execute-plan then executes.
+    # This call graph entry replaces the inline Stage 2/3 description that
+    # used to duplicate the execute-plan command's own instructions.
+    calls: [execute-plan]
 ---
 
 # Writing Implementation Plans

@@ -872,128 +872,109 @@ def skill_manage(
     replace_all: bool = False,
     absorbed_into: str = None,
     target_scope: str = None,
-    # Optional: HermesIdentity passed through from agent context in SaaS mode.
-    # Must be keyword-only to avoid breaking existing callers (Phase 0 contract).
-    identity=None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
 
-    In SaaS mode (HERMES_MODE=saas) write operations route through S3 via
-    tools.skills_scoped.  Read operations remain filesystem-based for now
-    (Phase D adds full cloud storage).  Local mode behaviour is completely
-    unchanged — no S3 calls are made.
+    Write actions (create, edit, patch, delete, write_file, remove_file) acquire
+    an advisory flock lock keyed on *name* within the skill's registry path.
+    This prevents two concurrent agent turns from colliding on the same skill
+    file.  Read actions (promote) do not need the lock.
+
+    After a successful write to a registry that has a ``remote`` configured,
+    an auto-push (git add + commit + push) is attempted.  Push failure is
+    logged as a warning; the skill write itself always succeeds locally first.
 
     Returns JSON string with results.
     """
-    # ------------------------------------------------------------------
-    # SaaS mode: route create / edit to scoped S3 storage.
-    # Other actions (patch, write_file, remove_file) still operate on the
-    # local filesystem — S3-only paths land in Phase D.
-    # ------------------------------------------------------------------
-    if _is_saas_mode() and identity is not None:
-        from tools.skills_scoped import write_skill, resolve_skill
+    # Determine registry path for locking — best-effort, falls back to SKILLS_DIR
+    def _get_lock_path() -> Path:
+        existing = _find_skill(name)
+        if existing:
+            from tools.skill_manager_tool import _containing_skills_root
+            return _containing_skills_root(existing["path"])
+        return SKILLS_DIR
 
+    _WRITE_ACTIONS = {"create", "edit", "patch", "delete", "write_file", "remove_file"}
+
+    if action in _WRITE_ACTIONS:
+        try:
+            from tools.skill_lock import skill_write_lock
+            _lock_path = _get_lock_path()
+            _lock_ctx = skill_write_lock(name, _lock_path)
+        except Exception:
+            # Lock unavailable (platform or import issue) — proceed without it.
+            import contextlib
+            _lock_ctx = contextlib.nullcontext()
+    else:
+        import contextlib
+        _lock_ctx = contextlib.nullcontext()
+
+    with _lock_ctx:
         if action == "create":
             if not content:
-                return tool_error(
-                    "content is required for 'create'. Provide the full SKILL.md text.",
-                    success=False,
-                )
-            err = _validate_name(name)
-            if err:
-                return tool_error(err, success=False)
-            err = _validate_frontmatter(content)
-            if err:
-                return tool_error(err, success=False)
-            err = _validate_content_size(content)
-            if err:
-                return tool_error(err, success=False)
-            try:
-                write_skill(name, content, scope="personal", identity=identity)
-            except Exception as exc:
-                return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
-            return json.dumps(
-                {
-                    "success": True,
-                    "message": f"Skill '{name}' created in personal S3 scope.",
-                    "scope": "personal",
-                    "s3_prefix": identity.personal_scope,
-                },
-                ensure_ascii=False,
-            )
+                return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
+            result = _create_skill(name, content, category)
 
-        if action == "edit":
+        elif action == "edit":
             if not content:
-                return tool_error(
-                    "content is required for 'edit'. Provide the full updated SKILL.md text.",
-                    success=False,
-                )
-            err = _validate_frontmatter(content)
-            if err:
-                return tool_error(err, success=False)
-            err = _validate_content_size(content)
-            if err:
-                return tool_error(err, success=False)
-            existing = resolve_skill(name, identity)
-            if existing is None:
-                return json.dumps(
-                    {"success": False, "error": f"Skill '{name}' not found in any scope."},
-                    ensure_ascii=False,
-                )
-            try:
-                write_skill(name, content, scope="personal", identity=identity)
-            except Exception as exc:
-                return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
-            return json.dumps(
-                {
-                    "success": True,
-                    "message": f"Skill '{name}' updated in personal S3 scope.",
-                    "scope": "personal",
-                },
-                ensure_ascii=False,
-            )
+                return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
+            result = _edit_skill(name, content)
 
-    # ------------------------------------------------------------------
-    # Local mode (or saas mode without identity): original filesystem path.
-    # ------------------------------------------------------------------
-    if action == "create":
-        if not content:
-            return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
+        elif action == "patch":
+            if not old_string:
+                return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
+            if new_string is None:
+                return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+            result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
-    elif action == "edit":
-        if not content:
-            return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
-        result = _edit_skill(name, content)
+        elif action == "delete":
+            result = _delete_skill(name, absorbed_into=absorbed_into)
 
-    elif action == "patch":
-        if not old_string:
-            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
-        if new_string is None:
-            return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
-        result = _patch_skill(name, old_string, new_string, file_path, replace_all)
+        elif action == "write_file":
+            if not file_path:
+                return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
+            if file_content is None:
+                return tool_error("file_content is required for 'write_file'.", success=False)
+            result = _write_file(name, file_path, file_content)
 
-    elif action == "delete":
-        result = _delete_skill(name, absorbed_into=absorbed_into)
+        elif action == "remove_file":
+            if not file_path:
+                return tool_error("file_path is required for 'remove_file'.", success=False)
+            result = _remove_file(name, file_path)
 
-    elif action == "write_file":
-        if not file_path:
-            return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
-        if file_content is None:
-            return tool_error("file_content is required for 'write_file'.", success=False)
-        result = _write_file(name, file_path, file_content)
+        elif action == "promote":
+            result = _promote_skill(name, target_scope or "team")
 
-    elif action == "remove_file":
-        if not file_path:
-            return tool_error("file_path is required for 'remove_file'.", success=False)
-        result = _remove_file(name, file_path)
+        else:
+            result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file, promote"}
 
-    elif action == "promote":
-        result = _promote_skill(name, target_scope or "team")
-
-    else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file, promote"}
+    # Auto-push after a successful write to a registry with a remote configured.
+    # Best-effort: push failure is a warning, not an error.
+    if result.get("success") and action in _WRITE_ACTIONS and action != "delete":
+        try:
+            from agent.skill_utils import get_skill_registry_for_path
+            skill_info = _find_skill(name)
+            if skill_info:
+                reg = get_skill_registry_for_path(skill_info["path"])
+                if reg and reg.remote:
+                    import subprocess as _sp
+                    skill_rel = str(skill_info["path"].relative_to(reg.path))
+                    for cmd, lbl in [
+                        (["git", "-C", str(reg.path), "add", skill_rel], "add"),
+                        (["git", "-C", str(reg.path), "commit", "-m",
+                          f"skill({reg.scope}): {action} {name}"], "commit"),
+                        (["git", "-C", str(reg.path), "push", "origin", "HEAD"], "push"),
+                    ]:
+                        r = _sp.run(cmd, timeout=30, capture_output=True)
+                        if r.returncode != 0:
+                            logger.warning(
+                                "Auto-push git %s failed for skill '%s' in %s (rc=%d)",
+                                lbl, name, reg.name, r.returncode,
+                            )
+                            break
+        except Exception as _push_exc:
+            logger.warning("Auto-push check failed for skill '%s': %s", name, _push_exc)
 
     if result.get("success"):
         try:
@@ -1160,7 +1141,6 @@ registry.register(
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
         absorbed_into=args.get("absorbed_into"),
-        # Pass HermesIdentity from agent context kwargs if available (SaaS mode).
-        identity=kw.get("identity")),
+        target_scope=args.get("target_scope")),
     emoji="📝",
 )

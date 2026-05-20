@@ -556,21 +556,26 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             filters out disabled skills.
 
     Returns:
-        List of skill metadata dicts (name, description, category).
+        List of skill metadata dicts: name, description, category, scope,
+        shadowing (list of lower-priority scopes hidden by this entry).
+        scope is one of "personal", "team", "global", or "unknown".
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import (
+        get_all_skills_dirs,
+        get_skill_scope_for_path,
+        iter_skill_index_files,
+    )
 
     skills = []
-    seen_names: set = set()
+    # name -> scope; used to detect which lower scopes are shadowed.
+    seen_names: Dict[str, str] = {}
 
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
-    dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
+    # get_all_skills_dirs() returns personal -> team -> global -> legacy order.
+    # First-found-wins gives CSS-like scope precedence.
+    dirs_to_scan = [d for d in get_all_skills_dirs() if d.exists()]
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -587,9 +592,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     continue
 
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
-                if name in seen_names:
-                    continue
                 if name in disabled:
+                    continue
+
+                effective_scope = get_skill_scope_for_path(skill_dir)
+
+                if name in seen_names:
+                    # Higher-priority entry already claimed this name.
+                    for existing in skills:
+                        if existing["name"] == name:
+                            if effective_scope not in existing["shadowing"]:
+                                existing["shadowing"].append(effective_scope)
                     continue
 
                 description = frontmatter.get("description", "")
@@ -605,11 +618,13 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 category = _get_category_from_path(skill_md)
 
-                seen_names.add(name)
+                seen_names[name] = effective_scope
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
+                    "scope": effective_scope,
+                    "shadowing": [],
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:

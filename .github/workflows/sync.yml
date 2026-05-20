@@ -1,4 +1,4 @@
-name: Auto Sync from Upstream
+name: Auto Sync from Upstream (Native Git)
 
 on:
   schedule:
@@ -20,20 +20,31 @@ jobs:
 
       # 1. 检出当前 Fork 的仓库代码
       - name: Checkout my repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0 
+          # 注意：这里不需要 token，因为后面我们会用 token clone
 
-      # 2. 同步上游官方仓库的最新代码
-      - name: Sync from Upstream
-        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
-        with:
-          upstream_sync_repo: NousResearch/hermes-agent
-          upstream_sync_branch: main
-          target_sync_branch: main
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
-          # ⚠️ 关键修复：添加 merge_args 解决 modify/delete 冲突
-          merge_args: '--strategy-option=theirs'
+      # 2. 【核心改动】使用原生 Git 命令同步上游代码
+      - name: Sync via Native Git (Force Strategy)
+        run: |
+          # 设置用户名和邮箱（必须）
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 添加上游仓库（官方）
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          
+          # 获取上游代码
+          git fetch upstream
+          
+          # 【关键命令】强制合并：当发生冲突时，无条件采用上游（官方）的版本
+          # 这里的 -X theirs 就是我们解决冲突的关键
+          git merge upstream/main -m "Merge upstream/main" -X theirs
+          
+          # 推送到 origin/main
+          # 这里的 token 使用了默认的 GITHUB_TOKEN，它有读写权限
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git main
 
       # 3. 【核心防御】将官方带过来的干扰文件移入 disabled 目录
       - name: Disable Official Workflows
@@ -43,6 +54,7 @@ jobs:
           
           mkdir -p "$DISABLED_DIR"
           
+          # 查找并移动所有非 sync.yml 的 yml/yaml 文件
           for file in $(find "$WORKFLOW_DIR" -maxdepth 1 -type f \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null || echo ""); do
             filename=$(basename "$file")
             if [[ "$filename" != "sync.yml" ]]; then
@@ -51,6 +63,7 @@ jobs:
             fi
           done
           
+          # 如果有文件变动，自动提交
           if [ -n "$(git status --porcelain)" ]; then
             git config --global user.name "Auto-Cleaner"
             git config --global user.email "action@noreply.github.com"

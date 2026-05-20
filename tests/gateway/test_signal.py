@@ -757,6 +757,47 @@ class TestSignalMediaExtraction:
         assert media[0][0] == "/tmp/reply.ogg"
         assert media[0][1] is True  # is_voice flag
 
+    @pytest.mark.parametrize(
+        "content,expected_path",
+        [
+            # Windows drive letter with forward slashes (common in cross-platform code)
+            ("Here is the chart.\nMEDIA:C:/Users/gizmo/image.jpg", "C:/Users/gizmo/image.jpg"),
+            # Windows drive letter with backslashes (native Windows path style)
+            ("Here is the chart.\nMEDIA:C:\\Users\\gizmo\\image.jpg", "C:\\Users\\gizmo\\image.jpg"),
+            # Non-C: drive letter
+            ("MEDIA:D:/data/clip.mp4", "D:/data/clip.mp4"),
+            # Lowercase drive letter
+            ("MEDIA:e:/audio/track.mp3", "e:/audio/track.mp3"),
+        ],
+    )
+    def test_extract_media_recognizes_windows_paths(self, content, expected_path):
+        """extract_media() must recognize Windows drive-letter paths (issue #28989).
+
+        Prior to the fix, the regex anchor was (?:~/|/) which only matched Unix
+        absolute/home paths. On Windows, MEDIA:C:/... tags were not extracted and
+        the raw text was sent to messaging platforms instead of the actual file.
+        """
+        from gateway.platforms.base import BasePlatformAdapter
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1, f"Windows path not extracted from {content!r}"
+        # extract_media runs os.path.expanduser; for a Windows-style absolute
+        # path there is no leading ~ to expand, so the path is unchanged.
+        assert media[0][0] == expected_path
+        assert "MEDIA:" not in cleaned
+
+    def test_extract_media_still_rejects_relative_paths(self):
+        """Regression guard: relative tokens after MEDIA: must not be captured.
+
+        The earlier \\S+ fallback that captured plain words was removed in
+        ea49b3862; this verifies the Windows-path widening did not re-introduce
+        the same false positive.
+        """
+        from gateway.platforms.base import BasePlatformAdapter
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:description")
+        assert media == []
+        media2, _ = BasePlatformAdapter.extract_media("MEDIA:relative/path.png")
+        assert media2 == []
+
     def test_signal_has_all_media_methods(self, monkeypatch):
         """SignalAdapter must override all media send methods used by gateway."""
         adapter = _make_signal_adapter(monkeypatch)

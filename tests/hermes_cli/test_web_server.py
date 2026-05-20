@@ -1858,17 +1858,16 @@ class TestPluginAPIAuth:
 
         Use ``/api/plugins/hermes-achievements/scan-status`` — a stable,
         side-effect-free GET that reads in-process scan state with no DB or
-        external dependencies. With a valid token the middleware should
-        allow access (non-401); without one it should 401 before handler
-        dispatch.
+        external dependencies. With a valid token the handler should run
+        (200); without one the middleware should 401 before the handler.
         """
         # Without auth: middleware blocks before reaching the handler.
         resp = self.client.get("/api/plugins/hermes-achievements/scan-status")
         assert resp.status_code == 401
 
-        # With auth: middleware permits request through.
+        # With auth: handler runs.
         resp = self.auth_client.get("/api/plugins/hermes-achievements/scan-status")
-        assert resp.status_code != 401
+        assert resp.status_code == 200
 
     def test_plugin_post_requires_auth(self):
         """Plugin POST routes should return 401 without a valid session token."""

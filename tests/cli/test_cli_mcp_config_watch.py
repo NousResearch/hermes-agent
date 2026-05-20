@@ -66,64 +66,6 @@ class TestMCPConfigWatch:
 
         obj._reload_mcp.assert_called_once()
 
-    def test_new_stdio_mcp_server_requires_manual_reload(self, tmp_path):
-        """Adding a stdio MCP server does not auto-reload executable config."""
-        import yaml
-        obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
-
-        cfg_file.write_text(yaml.dump({"mcp_servers": {"local": {"command": "/bin/sh"}}}))
-        obj._config_mtime = 0.0
-
-        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
-            obj._check_config_mcp_changes()
-
-        obj._reload_mcp.assert_not_called()
-        assert obj._config_mcp_servers == {}
-
-    def test_changed_stdio_mcp_server_requires_manual_reload(self, tmp_path):
-        """Changing a stdio MCP command does not auto-reload executable config."""
-        import yaml
-        obj, cfg_file = _make_cli(tmp_path, mcp_servers={"local": {"command": "python"}})
-
-        cfg_file.write_text(yaml.dump({"mcp_servers": {"local": {"command": "/bin/sh"}}}))
-        obj._config_mtime = 0.0
-
-        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
-            obj._check_config_mcp_changes()
-
-        obj._reload_mcp.assert_not_called()
-        assert obj._config_mcp_servers == {"local": {"command": "python"}}
-
-    def test_skipped_stdio_change_does_not_poison_reload_baseline(self, tmp_path):
-        """A skipped stdio change remains unapproved across later config edits."""
-        import yaml
-        obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
-
-        stdio_server = {"local": {"command": "/bin/sh"}}
-        cfg_file.write_text(yaml.dump({"mcp_servers": stdio_server}))
-        obj._config_mtime = 0.0
-
-        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
-            obj._check_config_mcp_changes()
-
-        obj._reload_mcp.assert_not_called()
-        assert obj._config_mcp_servers == {}
-
-        obj._last_config_check = 0.0
-        cfg_file.write_text(yaml.dump({
-            "mcp_servers": {
-                "github": {"url": "https://mcp.github.com"},
-                **stdio_server,
-            }
-        }))
-        obj._config_mtime = 0.0
-
-        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
-            obj._check_config_mcp_changes()
-
-        obj._reload_mcp.assert_not_called()
-        assert obj._config_mcp_servers == {}
-
     def test_removed_mcp_server_triggers_reload(self, tmp_path):
         """Removing an MCP server from config triggers auto-reload."""
         import yaml

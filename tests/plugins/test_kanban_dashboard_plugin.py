@@ -8,6 +8,7 @@ REST surface without spinning up the whole dashboard.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import time
@@ -2287,6 +2288,33 @@ def test_board_usage_rollup_reads_fresh_task_run_snapshots(client, kanban_home):
                     "estimated_cost_usd": 0.015,
                 },
             },
+        )
+        conn.execute(
+            """
+            INSERT INTO task_runs(
+                task_id, profile, status, started_at, ended_at, outcome,
+                summary, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tid,
+                "worker",
+                "completed",
+                10,
+                20,
+                "retry",
+                "duplicate cumulative snapshot",
+                json.dumps({
+                    "worker_session_id": "sess-snapshot-card",
+                    "usage_snapshot": {
+                        "session_id": "sess-snapshot-card",
+                        "input_tokens": 55,
+                        "output_tokens": 89,
+                        "reasoning_tokens": 13,
+                        "estimated_cost_usd": 0.015,
+                    },
+                }),
+            ),
         )
 
     r = client.get("/api/plugins/kanban/board")

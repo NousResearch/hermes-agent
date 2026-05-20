@@ -32,6 +32,101 @@ class _BrokenStdout:
         return None
 
 
+def test_make_agent_passes_configured_fallback_chain(monkeypatch):
+    captured = {}
+    fallback_chain = [
+        {"provider": "openai-codex", "model": "gpt-5.5"},
+        {"provider": "huggingface", "model": "zai-org/GLM-5.1"},
+    ]
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import hermes_cli.runtime_provider as runtime_provider
+    import run_agent
+
+    monkeypatch.setattr(run_agent, "AIAgent", FakeAgent)
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda requested=None, target_model=None: {
+            "provider": "custom:bigdeep",
+            "base_url": "http://127.0.0.1:6226/v1",
+            "api_key": "dummy-key",
+        },
+    )
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "model": {"provider": "custom:bigdeep", "model": "gpt-oss-120b"},
+            "fallback_providers": fallback_chain,
+        },
+    )
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: [])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_agent_cbs", lambda sid: {})
+
+    server._make_agent("sid", "session-key")
+
+    assert captured["fallback_model"] == fallback_chain
+
+
+def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
+    fallback_chain = [
+        {"provider": "openai-codex", "model": "gpt-5.5"},
+        {"provider": "huggingface", "model": "zai-org/GLM-5.1"},
+    ]
+    agent = types.SimpleNamespace(
+        model="primary/model",
+        _fallback_chain=fallback_chain,
+        _fallback_model=fallback_chain[0],
+    )
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: [])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "bg_123")
+
+    assert kwargs["fallback_model"] == fallback_chain
+
+
+def test_fallback_status_refreshes_session_info(monkeypatch):
+    events = []
+    agent = types.SimpleNamespace(
+        model="zai-org/GLM-5.1",
+        reasoning_config=None,
+        service_tier="",
+        tools=[],
+    )
+    monkeypatch.setitem(server._sessions, "sid", {"agent": agent})
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: events.append((event, sid, payload)))
+    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+
+    server._status_update(
+        "sid",
+        "lifecycle",
+        "🔄 Primary model failed — switching to fallback: zai-org/GLM-5.1 via huggingface",
+    )
+
+    assert events[0] == (
+        "status.update",
+        "sid",
+        {
+            "kind": "lifecycle",
+            "text": "🔄 Primary model failed — switching to fallback: zai-org/GLM-5.1 via huggingface",
+        },
+    )
+    assert events[1][0] == "session.info"
+    assert events[1][1] == "sid"
+    assert events[1][2]["model"] == "zai-org/GLM-5.1"
+
+    server._sessions.pop("sid", None)
+
+
 def test_write_json_serializes_concurrent_writes(monkeypatch):
     out = _ChunkyStdout()
     monkeypatch.setattr(server, "_real_stdout", out)

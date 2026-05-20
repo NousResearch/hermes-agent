@@ -8443,6 +8443,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print(f"  {origin_url}")
         print()
 
+        # Sync fork from upstream before fetching — ensures origin (fork)
+        # is current so the fetch/pull below gets real upstream updates.
+        _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
         _update_via_zip(args)
@@ -8671,10 +8675,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
-
-        # Fork upstream sync logic (only for main branch on forks)
-        if is_fork and branch == "main":
-            _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras

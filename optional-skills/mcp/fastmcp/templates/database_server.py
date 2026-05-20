@@ -12,6 +12,8 @@ mcp = FastMCP("__SERVER_NAME__")
 
 DATABASE_PATH = os.getenv("SQLITE_PATH", "./app.db")
 MAX_ROWS = int(os.getenv("SQLITE_MAX_ROWS", "200"))
+MAX_PROGRESS_CALLS = int(os.getenv("SQLITE_MAX_PROGRESS_CALLS", "1000"))
+PROGRESS_GRANULARITY = int(os.getenv("SQLITE_PROGRESS_GRANULARITY", "1000"))
 TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -29,6 +31,17 @@ def _validate_table_name(table_name: str) -> str:
     if not TABLE_NAME_RE.fullmatch(table_name):
         raise ValueError("Invalid table name")
     return table_name
+
+
+def _progress_budget(max_calls: int):
+    remaining_calls = max(1, max_calls)
+
+    def _handler() -> int:
+        nonlocal remaining_calls
+        remaining_calls -= 1
+        return 1 if remaining_calls < 0 else 0
+
+    return _handler
 
 
 @mcp.tool
@@ -65,11 +78,18 @@ def query(sql: str, limit: int = 50) -> dict[str, Any]:
     """Run a read-only SELECT query and return rows plus column names."""
     _reject_mutation(sql)
     safe_limit = max(0, min(limit, MAX_ROWS))
-    wrapped_sql = f"SELECT * FROM ({sql.strip().rstrip(';')}) LIMIT {safe_limit}"
     with _connect() as conn:
-        cursor = conn.execute(wrapped_sql)
-        columns = [column[0] for column in cursor.description or []]
-        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        conn.set_progress_handler(_progress_budget(MAX_PROGRESS_CALLS), PROGRESS_GRANULARITY)
+        try:
+            cursor = conn.execute(sql)
+            columns = [column[0] for column in cursor.description or []]
+            rows = [dict(zip(columns, row)) for row in cursor.fetchmany(safe_limit)]
+        except sqlite3.OperationalError as exc:
+            if "interrupted" in str(exc).lower():
+                raise ValueError("Query exceeded the execution budget") from exc
+            raise
+        finally:
+            conn.set_progress_handler(None, 0)
     return {"limit": safe_limit, "columns": columns, "rows": rows}
 
 

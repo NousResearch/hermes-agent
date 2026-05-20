@@ -415,6 +415,91 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesRadioBandRowsWithPublicApiAndExternalHardwareLabels() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Radio Band Plan")
+                        .put("body", "Radio rows.")
+                        .put("graph_type", "radio_frequency_capability")
+                        .put(
+                            "rows",
+                            JSONArray()
+                                .put(
+                                    JSONObject()
+                                        .put("band", "Wi-Fi 2.4 GHz")
+                                        .put("frequency_min_mhz", 2401.0)
+                                        .put("frequency_max_mhz", 2484.0)
+                                        .put("public_android_scan_supported", true)
+                                        .put("access_path", "wifi_channel_utilization")
+                                        .put("scan_state", "public_android_metadata_route")
+                                        .put("reason", "Android exposes Wi-Fi RSSI and channel metadata."),
+                                )
+                                .put(
+                                    JSONObject()
+                                        .put("band", "External SDR / broad RF")
+                                        .put("requires_external_hardware", true)
+                                        .put("access_path", "USB SDR")
+                                        .put("scan_state", "external_receiver_required")
+                                        .put("reason", "Receiver bridge required."),
+                                ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val rows = extractDiagnosticCards(content).single().rows
+
+        assertEquals("Wi-Fi 2.4 GHz", rows[0].label)
+        assertEquals("Android API", rows[0].valueLabel)
+        assertTrue(rows[0].detail.contains("2401.0-2484.0 MHz"))
+        assertTrue(rows[0].detail.contains("wifi_channel_utilization"))
+        assertTrue(rows[0].detail.contains("public_android_metadata_route"))
+        assertTrue(rows[0].fraction > 0.8f)
+        assertEquals("external", rows[1].valueLabel)
+        assertTrue(rows[1].detail.contains("external_receiver_required"))
+        assertTrue(rows[1].fraction >= 0.4f)
+    }
+
+    @Test
+    fun parsesRadioWorkflowRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Radio Signal Routes")
+                        .put("body", "Route rows.")
+                        .put("graph_type", "radio_signal_workflow_routes")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("category", "radio_signal_route")
+                                    .put("label", "Route Wi-Fi spectrum work")
+                                    .put("ready", true)
+                                    .put("value_label", "wifi_channel_utilization")
+                                    .put("detail", "Use Wi-Fi channel utilization for graphable RF data.")
+                                    .put("recommendation", "Run wifi_channel_utilization first.")
+                                    .put("fraction", 0.9),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("Route Wi-Fi spectrum work", row.label)
+        assertEquals("wifi_channel_utilization", row.valueLabel)
+        assertTrue(row.detail.contains("radio signal route"))
+        assertTrue(row.detail.contains("Run wifi_channel_utilization"))
+        assertTrue(row.fraction > 0.85f)
+    }
+
+    @Test
     fun parsesWifiSignalHistoryRowsForExpandableSignalCards() {
         val content = JSONObject()
             .put(

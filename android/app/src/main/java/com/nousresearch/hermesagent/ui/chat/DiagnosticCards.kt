@@ -80,6 +80,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "bluetooth_analyzer_feature_matrix", "bluetooth_analyzer_workflow_routes", "bluetooth_scan_policy_matrix",
                 "sensor_analyzer_feature_matrix", "sensor_analyzer_workflow_routes", "sensor_sampling_policy_matrix",
                 "signal_awareness_matrix", "signal_workflow_routes", "signal_constraint_matrix",
+                "radio_signal_feature_matrix", "radio_signal_workflow_routes", "radio_signal_constraint_matrix",
                 "soc_backend_matrix", "soc_backend_policy_routes", "soc_backend_constraint_matrix" -> capabilityMatrixRow(row)
                 else -> genericRow(row, index)
             }
@@ -373,22 +374,30 @@ private fun radioRow(row: JSONObject): DiagnosticGraphRow {
     val band = row.optString("band").ifBlank { "Radio band" }
     val supported = row.optBoolean("supported", false)
     val sampled = row.optBoolean("sampled", false)
+    val publicAndroidScan = row.optBoolean("public_android_scan_supported", false)
+    val hardwareHint = row.optBoolean("hardware_hint_supported", false)
     val requiresExternal = row.optBoolean("requires_external_hardware", false)
     val valueLabel = when {
         sampled -> "sampled"
+        publicAndroidScan -> "Android API"
+        hardwareHint -> "vendor hint"
         supported -> "available"
         requiresExternal -> "external"
         else -> "limited"
     }
     val range = radioRangeLabel(row)
     val reason = row.optString("reason").takeIf { it.isNotBlank() }
+    val accessPath = row.optString("access_path").takeIf { it.isNotBlank() }
+    val scanState = row.optString("scan_state").takeIf { it.isNotBlank() }
     return DiagnosticGraphRow(
         label = band,
         valueLabel = valueLabel,
-        detail = listOfNotNull(range, reason).joinToString(" | ").ifBlank { "Radio capability" },
+        detail = listOfNotNull(range, accessPath, scanState, reason).joinToString(" | ").ifBlank { "Radio capability" },
         fraction = when {
             sampled -> 1f
+            publicAndroidScan -> 0.85f
             supported -> 0.75f
+            hardwareHint -> 0.55f
             requiresExternal -> 0.45f
             else -> 0.15f
         },

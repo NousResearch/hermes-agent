@@ -110,6 +110,16 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsExplicitRadioAnalyzerDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=radio_analyzer_report",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("radio_analyzer_report", parsed.getString("action"))
+    }
+
+    @Test
     fun ignoresUnknownExplicitAndroidDiagnosticActions() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=network_intrusion",

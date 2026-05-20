@@ -456,6 +456,15 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONObject("soc_profile").has("litert_lm_backend_strategy"))
         assertTrue(result.getJSONObject("soc_profile").has("native_abi_strategy"))
         assertTrue(result.getJSONArray("limits").length() >= 2)
+        assertTrue(result.getJSONArray("radio_bands").length() >= 6)
+        assertEquals(result.getJSONArray("radio_bands").length(), result.getInt("radio_band_plan_count"))
+        assertTrue(result.getJSONArray("radio_signal_feature_matrix").length() >= 6)
+        assertTrue(result.getJSONArray("radio_signal_workflow_routes").length() >= 4)
+        assertTrue(result.getJSONArray("radio_signal_constraint_matrix").length() >= 4)
+        assertTrue(result.getInt("radio_signal_feature_count") >= 6)
+        assertTrue(result.getInt("ready_radio_signal_feature_count") >= 1)
+        assertTrue(result.getInt("radio_signal_workflow_route_count") >= 4)
+        assertTrue(result.getInt("radio_signal_constraint_count") >= 4)
     }
 
     @Test
@@ -466,10 +475,34 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertEquals("radio_signal_status", result.getString("action"))
         assertFalse(result.getBoolean("am_fm_public_android_scan_supported"))
         assertTrue(result.getBoolean("requires_external_sdr_for_broad_rf"))
-        assertTrue(result.getJSONArray("radio_bands").toString().contains("FM broadcast"))
-        assertEquals("signal_graph_card", result.getJSONArray("cards").getJSONObject(0).getString("type"))
-        assertFalse(result.getJSONArray("radio_bands").getJSONObject(2).getBoolean("supported"))
-        assertTrue(result.getJSONArray("radio_bands").getJSONObject(2).getBoolean("requires_external_hardware"))
+        val bands = result.getJSONArray("radio_bands")
+        val bandRows = (0 until bands.length()).map { bands.getJSONObject(it) }
+        val am = bandRows.first { it.getString("band") == "AM broadcast" }
+        val fm = bandRows.first { it.getString("band") == "FM broadcast" }
+        val wifi = bandRows.first { it.getString("band") == "Wi-Fi 2.4 GHz" }
+        val bluetooth = bandRows.first { it.getString("band") == "Bluetooth 2.4 GHz" }
+        val external = bandRows.first { it.getString("band") == "External SDR / broad RF" }
+        val cards = result.getJSONArray("cards")
+
+        assertTrue(bands.length() >= 6)
+        assertEquals(bands.length(), result.getInt("radio_band_plan_count"))
+        assertFalse(am.getBoolean("public_android_scan_supported"))
+        assertFalse(fm.getBoolean("public_android_scan_supported"))
+        assertTrue(am.getString("access_path").contains("Broadcast Radio HAL"))
+        assertTrue(wifi.getString("access_path").contains("wifi_channel_utilization"))
+        assertTrue(bluetooth.getString("access_path").contains("bluetooth_signal_history"))
+        assertFalse(external.getBoolean("supported"))
+        assertTrue(external.getBoolean("requires_external_hardware"))
+        assertTrue(result.getJSONArray("radio_signal_feature_matrix").length() >= 6)
+        assertTrue(result.getJSONArray("radio_signal_workflow_routes").length() >= 4)
+        assertTrue(result.getJSONArray("radio_signal_constraint_matrix").length() >= 4)
+        assertEquals("signal_graph_card", cards.getJSONObject(0).getString("type"))
+        assertEquals("Radio Band Plan", cards.getJSONObject(0).getString("title"))
+        assertEquals("radio_frequency_capability", cards.getJSONObject(0).getString("graph_type"))
+        assertEquals("Radio Signal Routes", cards.getJSONObject(1).getString("title"))
+        assertEquals("radio_signal_workflow_routes", cards.getJSONObject(1).getString("graph_type"))
+        assertEquals("Radio Scan Boundaries", cards.getJSONObject(2).getString("title"))
+        assertEquals("radio_signal_constraint_matrix", cards.getJSONObject(2).getString("graph_type"))
     }
 
     @Test
@@ -593,6 +626,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_analyzer_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("sensor_analyzer_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_status"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_analyzer_report"))
         assertTrue(result.getJSONObject("hindsight_memory_translation").has("retain"))
     }
 
@@ -739,6 +773,12 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONObject("signal_capability_status").has("requires_external_sdr_for_broad_rf"))
         assertTrue(result.has("cached_wifi_signal_history"))
         assertTrue(result.has("cached_bluetooth_signal_history"))
+        assertTrue(result.getJSONArray("radio_bands").length() >= 6)
+        assertTrue(result.getJSONArray("radio_signal_feature_matrix").length() >= 6)
+        assertTrue(result.getJSONArray("radio_signal_workflow_routes").length() >= 4)
+        assertTrue(result.getJSONArray("radio_signal_constraint_matrix").length() >= 4)
+        assertTrue(result.getInt("radio_band_plan_count") >= 6)
+        assertTrue(result.getInt("radio_signal_feature_count") >= 6)
         assertTrue(awarenessLabels.contains("Wi-Fi scan surface"))
         assertTrue(awarenessLabels.contains("Bluetooth proximity metadata"))
         assertTrue(awarenessLabels.contains("Cached Bluetooth trend memory"))
@@ -750,6 +790,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(constraintLabels.contains("AM/FM tuner public API"))
         assertTrue(constraintLabels.contains("Broad RF and microwave hardware"))
         assertTrue(result.getJSONArray("cards").toString().contains("Signal Awareness"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Radio Band Plan"))
         assertTrue(result.getInt("signal_awareness_count") >= 9)
         assertTrue(result.getInt("signal_workflow_route_count") >= 7)
         assertTrue(result.getInt("signal_constraint_count") >= 5)

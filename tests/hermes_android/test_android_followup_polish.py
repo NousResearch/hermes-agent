@@ -229,13 +229,22 @@ def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_ca
     assert '"signal_awareness_matrix"' in diagnostics_bridge
     assert '"signal_workflow_routes"' in diagnostics_bridge
     assert '"signal_constraint_matrix"' in diagnostics_bridge
+    assert '"radio_signal_feature_matrix"' in diagnostics_bridge
+    assert '"radio_signal_workflow_routes"' in diagnostics_bridge
+    assert '"radio_signal_constraint_matrix"' in diagnostics_bridge
+    assert 'radioBandPlanRows(' in diagnostics_bridge
     assert 'cached_wifi_signal_history' in diagnostics_bridge
     assert 'Route broad RF explanation' in diagnostics_bridge
     assert 'signal_awareness_report' in chat_client
+    assert 'radio_analyzer_report' in chat_client
     assert '"signal_awareness_matrix"' in chat_client
     assert '"signal_workflow_routes"' in chat_client
     assert '"signal_constraint_matrix"' in chat_client
+    assert '"radio_signal_feature_matrix"' in chat_client
+    assert '"radio_signal_workflow_routes"' in chat_client
+    assert '"radio_signal_constraint_matrix"' in chat_client
     assert '"signal_awareness_matrix", "signal_workflow_routes", "signal_constraint_matrix",' in diagnostic_cards
+    assert '"radio_signal_feature_matrix", "radio_signal_workflow_routes", "radio_signal_constraint_matrix",' in diagnostic_cards
 
 
 def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy_cards():

@@ -21,6 +21,7 @@ class SignalIntelligenceQuickActionsTest {
         assertEquals("sensor_analyzer_report", actionsById.getValue("sensor_analyzer").diagnosticAction)
         assertEquals("motion_sensor_history", actionsById.getValue("motion_history").diagnosticAction)
         assertEquals("radio_signal_status", actionsById.getValue("radio_limits").diagnosticAction)
+        assertEquals("Radio Signals", actionsById.getValue("radio_limits").label)
         SIGNAL_INTELLIGENCE_QUICK_ACTIONS.forEach { action ->
             assertTrue(action.prompt.contains("android_device_diagnostics_tool action=${action.diagnosticAction}"))
             val parsed = requireNotNull(NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(action.prompt))

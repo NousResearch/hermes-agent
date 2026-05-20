@@ -83,7 +83,7 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
     ),
     SignalIntelligenceQuickAction(
         id = "radio_limits",
-        label = "Radio Limits",
+        label = "Radio Signals",
         diagnosticAction = "radio_signal_status",
         prompt = "Run android_device_diagnostics_tool action=radio_signal_status",
         iconRes = R.drawable.ic_action_cog,

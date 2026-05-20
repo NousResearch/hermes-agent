@@ -843,3 +843,38 @@ def test_bo062_updates_upstream_question_contract_after_answer(hermes_home):
     assert "Current Ambiguity Snapshot" in contract["system_prompt"]
     assert "Weakest area" in contract["system_prompt"]
     assert session["upstream_question_provider_call"] is False
+
+
+def test_bo062_hermes_generated_question_overrides_gateway_fallback_on_start(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    result = handle_ouro_intake_command(
+        'goal:"Improve existing gateway intake" project:bo tenant:kanban context:"Hermes gateway existing runtime" hermes-question:"Which execution boundary should the Seed preserve first?"',
+        actor="tester",
+    )
+
+    assert "질문: Which execution boundary should the Seed preserve first?" in result.message
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    question = sessions[result.session_id]["last_question"]
+    assert question["source"] == "hermes_generated_from_upstream_question_contract"
+    assert question["fallback_text"]
+    assert sessions[result.session_id]["upstream_question_provider_call"] is False
+
+
+def test_bo062_hermes_generated_question_override_survives_answer_merge(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester")
+    refined = handle_ouro_intake_command(
+        f'answer session:{started.session_id} answer:"A와 B에 가까워" generated-question:"Where should the A+B v1 stop before worker dispatch?"',
+        actor="tester",
+    )
+    assert refined.action == "refine_pending"
+    updated = handle_ouro_intake_command(f"answer session:{started.session_id} answer:승인", actor="tester")
+
+    assert "다음 질문: Where should the A+B v1 stop before worker dispatch?" in updated.message
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    question = sessions[started.session_id]["last_question"]
+    assert question["source"] == "hermes_generated_from_upstream_question_contract"
+    assert question["id"].startswith("upstream_generated_")
+    assert sessions[started.session_id]["values"]["generated_question"] == "Where should the A+B v1 stop before worker dispatch?"

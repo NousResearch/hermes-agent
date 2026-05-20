@@ -71,6 +71,12 @@ _KEY_ALIASES = {
     "seed_extraction": "seed_extraction",
     "structured-extraction": "structured_extraction",
     "structured_extraction": "structured_extraction",
+    "hermes-question": "hermes_question",
+    "hermes_question": "hermes_question",
+    "generated-question": "generated_question",
+    "generated_question": "generated_question",
+    "question-text": "generated_question",
+    "question_text": "generated_question",
 }
 
 _VALID_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*:")
@@ -746,6 +752,36 @@ def _hermes_gateway_fallback_question(values: dict[str, Any], review: dict[str, 
     return {"id": "restate_confirmation", "track": "restate", "text": text, "options": []}
 
 
+def _hermes_generated_question_text(values: dict[str, Any]) -> str | None:
+    """Return a Hermes/provider-generated question supplied outside gateway runtime."""
+
+    for key in ("hermes_question", "generated_question"):
+        value = values.get(key)
+        if isinstance(value, str) and value.strip():
+            text = value.strip()
+            # Fail closed on accidental multi-answer blobs or markdown dumps.
+            first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+            return first_line[:500]
+    return None
+
+
+def _question_for_turn(values: dict[str, Any], review: dict[str, Any], *, previous_track: str | None = None) -> dict[str, Any]:
+    """Select the visible question, preferring an approved Hermes generation bridge."""
+
+    fallback = _hermes_gateway_fallback_question(values, review, previous_track=previous_track)
+    generated = _hermes_generated_question_text(values)
+    if not generated:
+        fallback["source"] = "hermes_gateway_fallback"
+        return fallback
+    return {
+        **fallback,
+        "id": f"upstream_generated_{fallback.get('id') or 'question'}",
+        "text": generated,
+        "source": "hermes_generated_from_upstream_question_contract",
+        "fallback_text": fallback.get("text"),
+    }
+
+
 def _format_interview_question(session_id: str, review: dict[str, Any], question: dict[str, Any]) -> str:
     return (
         f"/ouro-intake 인터뷰를 시작했습니다 (`{session_id}`).\n"
@@ -1008,7 +1044,7 @@ def _start_interview(raw_args: str, *, actor: str | None, origin: dict[str, Any]
     review = _seed_review(values)
     sessions = _load_sessions()
     status = "restate_pending" if review["mode"] == "seed_ready_for_admission" else "interviewing"
-    question = _hermes_gateway_fallback_question(values, review)
+    question = _question_for_turn(values, review)
     upstream_interview_state = _vendored_ouroboros_start_state(
         session_id,
         values,
@@ -1059,6 +1095,9 @@ def _merge_answer(values: dict[str, Any], parsed: dict[str, Any], free_answer: s
         if parsed.get(key):
             existing = str(merged.get(key) or "").strip()
             merged[key] = f"{existing}; {parsed[key]}" if existing else parsed[key]
+    for key in ("hermes_question", "generated_question"):
+        if parsed.get(key):
+            merged[key] = parsed[key]
     answer = str(parsed.get("answer") or free_answer or "").strip()
     if answer:
         existing_context = str(merged.get("context") or "").strip()
@@ -1140,7 +1179,7 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
                 _refresh_upstream_question_contract(session, values, review)
                 message = _format_restate(session_id, values, review)
             else:
-                question = _hermes_gateway_fallback_question(values, review, previous_track=(pending_question or {}).get("track"))
+                question = _question_for_turn(values, review, previous_track=(pending_question or {}).get("track"))
                 session["status"] = "interviewing"
                 session["phase"] = "interviewing"
                 session["track"] = question["track"]
@@ -1251,7 +1290,7 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
         _refresh_upstream_question_contract(session, values, review)
         message = _format_restate(session_id, values, review)
     else:
-        question = _hermes_gateway_fallback_question(values, review, previous_track=(previous_question or {}).get("track"))
+        question = _question_for_turn(values, review, previous_track=(previous_question or {}).get("track"))
         session["status"] = "interviewing"
         session["phase"] = "interviewing"
         session["track"] = question["track"]

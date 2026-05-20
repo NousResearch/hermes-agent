@@ -554,28 +554,49 @@ class TestExtractReasoning:
         assert result == "from structured field"
 
 
-class TestNoSessionJsonSnapshot:
-    """Regression: agent must not write session_{sid}.json snapshots.
+class TestSessionJsonSnapshotOptIn:
+    """Regression: per-session JSON snapshot writer is opt-in via config.
 
-    state.db is the canonical message store after #29182. The legacy snapshot
-    writer was removed; this test pins that contract so a future refactor
-    can't silently reintroduce the file (and the ~500MB/950-file disk usage
-    that came with it).
+    state.db is canonical (PR #29182).  ``sessions.write_json_snapshots``
+    defaults to False, so the agent must NOT write ``session_{sid}.json``
+    files by default — that behavior caused multi-GB sessions directories
+    on heavy users.  Users can opt back in for external tooling that reads
+    the JSON files directly.
     """
 
-    def test_session_log_file_attribute_not_set(self, agent):
-        assert not hasattr(agent, "session_log_file"), (
-            "session_log_file attribute removed in #29182 — state.db is canonical"
+    def test_session_json_disabled_by_default(self, agent):
+        # Default config: writer is gated off.
+        assert getattr(agent, "_session_json_enabled", False) is False, (
+            "sessions.write_json_snapshots must default to False"
         )
 
-    def test_no_session_log_writer_method(self, agent):
-        assert not hasattr(agent, "_save_session_log"), (
-            "_save_session_log method removed in #29182"
+    def test_save_session_log_noops_when_disabled(self, agent, tmp_path):
+        # When disabled, calling the method must not write any file even
+        # if logs_dir is writable and messages are non-empty.
+        agent._session_json_enabled = False
+        agent.logs_dir = tmp_path
+        agent._session_messages = [{"role": "user", "content": "hello"}]
+        agent._save_session_log()
+        # No session_*.json must appear under logs_dir.
+        assert list(tmp_path.glob("session_*.json")) == []
+
+    def test_save_session_log_writes_when_enabled(self, agent, tmp_path):
+        # Opt-in path: with the flag on and a session_id, the writer must
+        # produce ``session_{sid}.json`` under logs_dir.
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [{"role": "user", "content": "hello"}]
+        agent._save_session_log(messages)
+        expected = tmp_path / f"session_{agent.session_id}.json"
+        assert expected.exists(), (
+            "Opt-in writer must produce session_{sid}.json under logs_dir"
         )
 
     def test_logs_dir_retained_for_request_dumps(self, agent):
-        # logs_dir is kept because agent_runtime_helpers.dump_api_request_debug
-        # still writes request_dump_*.json there (debug breadcrumb path).
+        # logs_dir is kept unconditionally because
+        # agent_runtime_helpers.dump_api_request_debug still writes
+        # request_dump_*.json there (debug breadcrumb path), independent of
+        # the session JSON opt-in.
         assert hasattr(agent, "logs_dir")
 
 

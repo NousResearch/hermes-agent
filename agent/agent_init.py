@@ -901,8 +901,19 @@ def init_agent(
     hermes_home = get_hermes_home()
     agent.logs_dir = hermes_home / "sessions"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
-    # session_log_file removed — state.db is the canonical message store.
-    # logs_dir retained for request_dump_*.json (debug breadcrumb path).
+    # Per-session JSON snapshot writer (~/.hermes/sessions/session_{sid}.json)
+    # is opt-in via sessions.write_json_snapshots (default False).  state.db
+    # is canonical — the snapshot is only useful for external tooling that
+    # reads the JSON files directly.  See run_agent._save_session_log.
+    agent._session_json_enabled = False
+    try:
+        from hermes_cli.config import load_config as _load_sess_cfg
+        _sess_cfg = (_load_sess_cfg().get("sessions") or {})
+        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
+    except Exception:
+        pass
+    # logs_dir is retained unconditionally for request_dump_*.json (debug
+    # breadcrumb path written by agent_runtime_helpers.dump_api_request_debug).
     
     # Track conversation messages for session logging
     agent._session_messages: List[Dict[str, Any]] = []

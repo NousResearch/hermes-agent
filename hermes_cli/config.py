@@ -1648,6 +1648,15 @@ DEFAULT_CONFIG = {
         # the sweep on every CLI invocation).  Tracked via state_meta in
         # state.db itself, so it's shared across all processes.
         "min_interval_hours": 24,
+        # Legacy per-session JSON snapshot writer.  When true, the agent
+        # rewrites ``~/.hermes/sessions/session_{sid}.json`` on every turn
+        # boundary with the full message list.  state.db is canonical and
+        # has every field the snapshot stored (plus per-message timestamps
+        # and token counts), so this is off by default — the snapshots had
+        # no consumer outside their own overwrite guard and accumulated
+        # GBs of disk on heavy users.  Opt in only if you have an external
+        # tool that consumes the JSON files directly.
+        "write_json_snapshots": False,
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).

@@ -362,7 +362,7 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
         agent._cleanup_task_resources = lambda task_id: None
         agent._persist_session = lambda messages, history=None: None
         agent._save_trajectory = lambda messages, user_message, completed: None
-    
+
         kwargs = agent._build_api_kwargs(
             [
                 {"role": "system", "content": "sys"},

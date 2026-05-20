@@ -554,6 +554,31 @@ class TestExtractReasoning:
         assert result == "from structured field"
 
 
+class TestNoSessionJsonSnapshot:
+    """Regression: agent must not write session_{sid}.json snapshots.
+
+    state.db is the canonical message store after #29182. The legacy snapshot
+    writer was removed; this test pins that contract so a future refactor
+    can't silently reintroduce the file (and the ~500MB/950-file disk usage
+    that came with it).
+    """
+
+    def test_session_log_file_attribute_not_set(self, agent):
+        assert not hasattr(agent, "session_log_file"), (
+            "session_log_file attribute removed in #29182 — state.db is canonical"
+        )
+
+    def test_no_session_log_writer_method(self, agent):
+        assert not hasattr(agent, "_save_session_log"), (
+            "_save_session_log method removed in #29182"
+        )
+
+    def test_logs_dir_retained_for_request_dumps(self, agent):
+        # logs_dir is kept because agent_runtime_helpers.dump_api_request_debug
+        # still writes request_dump_*.json there (debug breadcrumb path).
+        assert hasattr(agent, "logs_dir")
+
+
 class TestGetMessagesUpToLastAssistant:
     def test_empty_list(self, agent):
         assert agent._get_messages_up_to_last_assistant([]) == []

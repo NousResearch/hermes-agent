@@ -63,31 +63,26 @@
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   gap: 0.75rem;
   align-items: start;
-  overflow-x: auto;
+  overflow-x: visible;
   padding-bottom: 0.35rem;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-muted-foreground) 45%, transparent) transparent;
+  scrollbar-gutter: auto;
 }
-.hermes-kanban-columns::-webkit-scrollbar {
-   height: 0.55rem;
-}
-.hermes-kanban-columns::-webkit-scrollbar-track {
-  background: transparent;
-}
-.hermes-kanban-columns::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--color-muted-foreground) 35%, transparent);
-  border-radius: 999px;
-}
+
+/* Optional: the horizontal scrollbar rules become unnecessary once lanes wrap. */
+.hermes-kanban-columns::-webkit-scrollbar,
+.hermes-kanban-columns::-webkit-scrollbar-track,
+.hermes-kanban-columns::-webkit-scrollbar-thumb,
 .hermes-kanban-columns::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--color-muted-foreground) 55%, transparent);
+  display: none;
 }
 
 .hermes-kanban-column {
-  flex: 0 0 280px;
+  min-width: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);

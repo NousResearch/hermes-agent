@@ -34,6 +34,21 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('handles /update locally and exits with code 42 via dieWithCode', () => {
+    vi.useFakeTimers()
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/update')).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('exiting TUI to run update...')
+
+    // Advance past the 100ms setTimeout
+    vi.advanceTimersByTime(150)
+    expect(ctx.session.dieWithCode).toHaveBeenCalledWith(42)
+
+    vi.useRealTimers()
+  })
+
   it('routes /status to live session.status instead of slash worker', async () => {
     patchUiState({ sid: 'sid-abc' })
     const rpc = vi.fn(() => Promise.resolve({ output: 'Hermes TUI Status' }))
@@ -730,6 +745,7 @@ const buildComposer = () => ({
 const buildGateway = () => ({
   gw: {
     getLogTail: vi.fn(() => ''),
+    kill: vi.fn(),
     request: vi.fn(() => Promise.resolve({}))
   },
   rpc: vi.fn(() => Promise.resolve({}))
@@ -746,6 +762,7 @@ const buildLocal = () => ({
 const buildSession = () => ({
   closeSession: vi.fn(() => Promise.resolve(null)),
   die: vi.fn(),
+  dieWithCode: vi.fn(),
   guardBusySessionSwitch: vi.fn(() => false),
   newSession: vi.fn(),
   resetVisibleHistory: vi.fn(),

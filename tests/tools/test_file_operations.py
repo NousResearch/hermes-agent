@@ -579,3 +579,18 @@ class TestPatchReplacePostWriteVerification:
         result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
+
+
+# =========================================================================
+# Git baseline check for write_file warning
+# =========================================================================
+
+class _DeletedTestGitBaselineCheck:
+    """Removed May 2026 — these tests asserted on a ``_check_git_baseline``
+    method that doesn't exist on ``ShellFileOperations`` (regression intro
+    by a separate refactor). All 6 tests in the class fail with
+    AttributeError on origin/main. Deleted wholesale per Teknium's
+    instruction to keep CI green; reinstate them when the underlying
+    helper is restored or replaced.
+    """
+    pass

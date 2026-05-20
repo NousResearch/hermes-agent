@@ -17,6 +17,71 @@ function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; sch
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatScalar(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function NestedValueEditor({
+  fieldKey,
+  value,
+  onChange,
+}: {
+  fieldKey: string;
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  if (isRecord(value)) {
+    return (
+      <div className="grid gap-2 border border-border p-2">
+        {Object.entries(value).map(([subKey, subVal]) => (
+          <div key={subKey} className="grid gap-1">
+            <Label className="text-xs text-muted-foreground">{subKey}</Label>
+            <NestedValueEditor
+              fieldKey={`${fieldKey}.${subKey}`}
+              value={subVal}
+              onChange={(next) => onChange({ ...value, [subKey]: next })}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (Array.isArray(value)) {
+    return (
+      <div className="grid gap-2">
+        {value.map((item, index) => (
+          <div key={`${fieldKey}.${index}`} className="grid gap-1">
+            <Label className="text-xs text-muted-foreground">Item {index + 1}</Label>
+            <NestedValueEditor
+              fieldKey={`${fieldKey}.${index}`}
+              value={item}
+              onChange={(next) =>
+                onChange(value.map((existing, i) => (i === index ? next : existing)))
+              }
+            />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <Input
+      value={formatScalar(value)}
+      onChange={(e) => onChange(e.target.value)}
+      className="text-xs"
+    />
+  );
+}
+
 export function AutoField({
   schemaKey,
   schema,
@@ -25,6 +90,16 @@ export function AutoField({
 }: AutoFieldProps) {
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
   const label = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  if (isRecord(value) || (Array.isArray(value) && value.some((item) => isRecord(item)))) {
+    return (
+      <div className="grid gap-3 border border-border p-3">
+        <Label className="text-xs font-medium">{label}</Label>
+        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <NestedValueEditor fieldKey={schemaKey} value={value} onChange={onChange} />
+      </div>
+    );
+  }
 
   if (schema.type === "boolean") {
     return (
@@ -110,26 +185,6 @@ export function AutoField({
           }
           placeholder="comma-separated values"
         />
-      </div>
-    );
-  }
-
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    const obj = value as Record<string, unknown>;
-    return (
-      <div className="grid gap-3 border border-border p-3">
-        <Label className="text-xs font-medium">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
-        {Object.entries(obj).map(([subKey, subVal]) => (
-          <div key={subKey} className="grid gap-1">
-            <Label className="text-xs text-muted-foreground">{subKey}</Label>
-            <Input
-              value={String(subVal ?? "")}
-              onChange={(e) => onChange({ ...obj, [subKey]: e.target.value })}
-              className="text-xs"
-            />
-          </div>
-        ))}
       </div>
     );
   }

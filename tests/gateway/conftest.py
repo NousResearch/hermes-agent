@@ -269,7 +269,7 @@ def _scan_for_plugin_adapter_antipattern(source: str) -> list[str]:
                     and isinstance(func.value.value, ast.Name)
                     and func.value.value.id == "sys"
                     and func.value.attr == "path"
-                    and func.attr in ("insert", "append", "extend")
+                    and func.attr in {"insert", "append", "extend"}
                 ):
                     target_name = f"sys.path.{func.attr}"
 

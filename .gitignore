@@ -3,6 +3,13 @@
 /_pycache/
 *.pyc*
 __pycache__/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!*.tfvars.example
 .venv/
 .vscode/
 .env

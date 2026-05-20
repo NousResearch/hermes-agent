@@ -137,6 +137,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
+    "image.inference_sh": ("inferencesh>=0.7.6",),
+
+    # ─── Video generation backends ─────────────────────────────────────────
+    "video.inference_sh": ("inferencesh>=0.7.6",),
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),

@@ -1,0 +1,7 @@
+name: inference-sh
+version: 1.0.0
+description: "inference.sh image generation backend. Multi-model — FLUX, Seedream 4.5, GPT-Image-2, Gemini, Grok Imagine, Reve — via the inference.sh cloud API."
+author: inference.sh
+kind: backend
+requires_env:
+  - INFERENCE_API_KEY

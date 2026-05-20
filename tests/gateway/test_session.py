@@ -504,7 +504,9 @@ class TestSessionStoreRewriteTranscript:
     """Regression: /retry and /undo must persist truncated history to DB."""
 
     @pytest.fixture()
-    def store(self, tmp_path):
+    def store(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         config = GatewayConfig()
         s = SessionStore(sessions_dir=tmp_path, config=config)
         return s
@@ -546,13 +548,17 @@ class TestSessionStoreRewriteTranscript:
 class TestLoadTranscriptDBOnly:
     """After spec 002, load_transcript reads only from state.db."""
 
-    def test_db_only_returns_empty_for_nonexistent(self, tmp_path):
+    def test_db_only_returns_empty_for_nonexistent(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         config = GatewayConfig()
         store = SessionStore(sessions_dir=tmp_path, config=config)
         result = store.load_transcript("nonexistent")
         assert result == []
 
-    def test_db_only_returns_messages(self, tmp_path):
+    def test_db_only_returns_messages(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         config = GatewayConfig()
         store = SessionStore(sessions_dir=tmp_path, config=config)
         sid = "db_only_session"

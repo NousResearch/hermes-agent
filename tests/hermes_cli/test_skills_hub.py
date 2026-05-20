@@ -555,7 +555,9 @@ def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
         "search": lambda self, q, limit=500: [airbnb, booking],
     })()
 
-    with patch("hermes_cli.skills_hub.create_source_router", return_value=[mock_src]):
+    # browse_skills() imports create_source_router locally from tools.skills_hub,
+    # so the patch must target the source module, not hermes_cli.skills_hub.
+    with patch("tools.skills_hub.create_source_router", return_value=[mock_src]):
         result = browse_skills(page=1, page_size=50)
 
     names = [item["name"] for item in result["items"]]

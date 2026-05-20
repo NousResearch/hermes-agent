@@ -79,6 +79,16 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 - xterm.js's WebGL renderer paints each cell to an integer-pixel grid; mouse tracking (SGR 1006), wide characters (Unicode 11), and box-drawing glyphs all render natively
 - Resizing the browser window resizes the TUI via the `@xterm/addon-fit` addon
 
+**RTL and complex-script text:** the Chat tab is a browser-rendered terminal,
+not a normal DOM text control. xterm.js preserves terminal cell layout, but it
+does not apply full browser paragraph direction or glyph shaping for
+right-to-left and complex scripts such as Arabic, Persian, Urdu, and Hebrew.
+Use the Chat tab for terminal commands, logs, Latin text, box drawing, and
+wide-character layouts; for RTL-heavy chat, use the
+[API server](./api-server.md) from a native client or web frontend that renders
+messages in regular DOM controls such as a `textarea dir="auto"` with
+`unicode-bidi: plaintext`.
+
 **Resume an existing session:** from the **Sessions** tab, click the play icon (▶) next to any session. That jumps to `/chat?resume=<id>` and launches the TUI with `--resume`, loading the full history.
 
 **Prerequisites:**

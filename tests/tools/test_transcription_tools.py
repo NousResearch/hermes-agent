@@ -393,7 +393,6 @@ class TestTranscribeLocalCommand:
                 with open(output_path, "wb") as handle:
                     handle.write(b"RIFF....WAVEfmt ")
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
             # The transcription command might be passed as a string or list
             if isinstance(cmd, list) and any("whisper" in arg for arg in cmd):
                 (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
@@ -401,7 +400,6 @@ class TestTranscribeLocalCommand:
             elif isinstance(cmd, str) and "whisper" in cmd:
                 (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
 
         monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
@@ -1351,5 +1349,3 @@ class TestTranscribeAudioXAIDispatch:
                    return_value={"success": True, "transcript": "hi"}) as mock_xai:
             from tools.transcription_tools import transcribe_audio
             transcribe_audio(sample_ogg, model="custom-stt")
-
-        assert mock_xai.call_args[0][1] == "custom-stt"

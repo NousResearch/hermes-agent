@@ -9,6 +9,7 @@ enabled:
   - kanban
   - kanban-orchestrator
   - kanban-paper-nexus
+  - paper-search
   - scientific-writing
   - scientific-visualization
   - literature-review

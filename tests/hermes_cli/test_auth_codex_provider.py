@@ -1,7 +1,9 @@
 """Tests for Codex auth — tokens stored in Hermes auth store (~/.hermes/auth.json)."""
 
 import json
+import sys
 import time
+import types
 import base64
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +15,7 @@ from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
     PROVIDER_REGISTRY,
+    _codex_browser_oauth_login,
     _read_codex_tokens,
     _save_codex_tokens,
     _import_codex_cli_tokens,
@@ -351,3 +354,208 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
 
     assert called["device_login"] == 1
     assert called["tokens"]["access_token"] == "fresh-at"
+
+
+# ── Browser OAuth (oauth-cli-kit) login flow ───────────────────────────
+
+
+@pytest.fixture
+def _fake_tty(monkeypatch):
+    """Pretend stdin is a TTY so the browser-login TTY guard passes.
+
+    Pytest runs with a non-TTY stdin, which would otherwise short-circuit
+    every `_codex_browser_oauth_login` call with a TTY-required AuthError.
+    """
+    import sys as _sys
+
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: True, raising=False)
+
+
+def test_browser_oauth_login_returns_device_code_shaped_creds(_fake_tty, monkeypatch):
+    """_codex_browser_oauth_login returns the same shape as
+    _codex_device_code_login so the caller doesn't need to know which
+    flow produced the tokens.
+    """
+    monkeypatch.delenv("HERMES_CODEX_BASE_URL", raising=False)
+    fake_token = types.SimpleNamespace(
+        access="browser-at",
+        refresh="browser-rt",
+        expires=int(time.time() * 1000) + 3600_000,
+        account_id="acct_browser",
+    )
+
+    fake_oauth = types.ModuleType("oauth_cli_kit")
+    captured = {}
+
+    def _fake_login(*, print_fn, prompt_fn, storage=None, **kwargs):
+        captured["storage"] = storage
+        return fake_token
+
+    fake_oauth.login_oauth_interactive = _fake_login
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", fake_oauth)
+
+    creds = _codex_browser_oauth_login()
+
+    assert creds["tokens"]["access_token"] == "browser-at"
+    assert creds["tokens"]["refresh_token"] == "browser-rt"
+    assert creds["base_url"] == DEFAULT_CODEX_BASE_URL
+    assert creds["auth_mode"] == "chatgpt"
+    assert "last_refresh" in creds
+
+    # We must have passed oauth-cli-kit a private storage — without it,
+    # the library would default to FileTokenStorage and silently write
+    # the shared codex.json on disk.
+    storage = captured["storage"]
+    assert storage is not None
+    assert hasattr(storage, "load") and hasattr(storage, "save")
+
+
+def test_browser_oauth_login_does_not_write_shared_file(_fake_tty, tmp_path, monkeypatch):
+    """Browser login must not create oauth-cli-kit's shared file.
+
+    We stub login_oauth_interactive to simulate a successful login
+    *and* assert that any default shared-file locations stay empty.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    # macOS fallback location (oauth-cli-kit resolves per-platform via
+    # its own path helper — we don't exercise the real resolver here,
+    # we just prove that running the login doesn't touch either of the
+    # two plausible default locations).
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    fake_oauth = types.ModuleType("oauth_cli_kit")
+    fake_oauth.login_oauth_interactive = lambda **kwargs: types.SimpleNamespace(
+        access="browser-at",
+        refresh="browser-rt",
+        expires=0,
+        account_id=None,
+    )
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", fake_oauth)
+
+    _codex_browser_oauth_login()
+
+    xdg_path = tmp_path / "xdg" / "oauth-cli-kit" / "auth" / "codex.json"
+    mac_path = fake_home / "Library" / "Application Support" / "oauth-cli-kit" / "auth" / "codex.json"
+    assert not xdg_path.exists(), f"shared file appeared at {xdg_path}"
+    assert not mac_path.exists(), f"shared file appeared at {mac_path}"
+
+
+def test_browser_oauth_login_raises_when_package_missing(_fake_tty, monkeypatch):
+    """Missing oauth-cli-kit must surface a clean AuthError, not an ImportError."""
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", None)
+
+    with pytest.raises(AuthError) as exc:
+        _codex_browser_oauth_login()
+    assert exc.value.code == "oauth_cli_kit_missing"
+
+
+def test_browser_oauth_login_raises_on_empty_access_token(_fake_tty, monkeypatch):
+    """An oauth-cli-kit login that returns no access token is an error,
+    not a silent success.
+    """
+    fake_oauth = types.ModuleType("oauth_cli_kit")
+    fake_oauth.login_oauth_interactive = lambda **kwargs: types.SimpleNamespace(
+        access="",
+        refresh="",
+        expires=0,
+        account_id=None,
+    )
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", fake_oauth)
+
+    with pytest.raises(AuthError) as exc:
+        _codex_browser_oauth_login()
+    assert exc.value.code == "oauth_cli_kit_login_failed"
+
+
+def test_browser_oauth_login_requires_tty(monkeypatch):
+    """Non-TTY stdin must short-circuit before invoking oauth-cli-kit.
+    Otherwise the library's input() fallback would block forever on a
+    piped/closed stdin.  We explicitly do NOT use the _fake_tty fixture
+    here — pytest's stdin.isatty() returns False, simulating a piped run.
+    """
+    # Trip-wire: oauth-cli-kit must NOT be loaded.  If the TTY guard
+    # ever regresses, this will surface a different (later) failure.
+    fake_oauth = types.ModuleType("oauth_cli_kit")
+    fake_oauth.login_oauth_interactive = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("login_oauth_interactive must not run on non-TTY stdin")
+    )
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", fake_oauth)
+
+    with pytest.raises(AuthError) as exc:
+        _codex_browser_oauth_login()
+    assert exc.value.code == "oauth_cli_kit_requires_tty"
+
+
+def test_browser_oauth_login_converts_keyboard_interrupt_to_auth_error(_fake_tty, monkeypatch):
+    """A Ctrl-C inside oauth-cli-kit's flow must come back as a clean
+    AuthError(code='oauth_cli_kit_login_cancelled'), not a bare
+    KeyboardInterrupt that would crash the surrounding command.
+    """
+    fake_oauth = types.ModuleType("oauth_cli_kit")
+    fake_oauth.login_oauth_interactive = lambda **kwargs: (_ for _ in ()).throw(
+        KeyboardInterrupt()
+    )
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", fake_oauth)
+
+    with pytest.raises(AuthError) as exc:
+        _codex_browser_oauth_login()
+    assert exc.value.code == "oauth_cli_kit_login_cancelled"
+
+
+def test_browser_oauth_login_honours_hermes_codex_base_url_override(_fake_tty, monkeypatch):
+    """When HERMES_CODEX_BASE_URL is set (custom/proxy Codex endpoint),
+    browser login must persist that override into the returned creds —
+    same as the device-code flow.  Otherwise users on a custom endpoint
+    silently get config rewritten to the default ChatGPT endpoint.
+    """
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex.proxy.example/v1")
+
+    fake_oauth = types.ModuleType("oauth_cli_kit")
+    fake_oauth.login_oauth_interactive = lambda **kwargs: types.SimpleNamespace(
+        access="browser-at",
+        refresh="browser-rt",
+        expires=int(time.time() * 1000) + 3600_000,
+        account_id=None,
+    )
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", fake_oauth)
+
+    creds = _codex_browser_oauth_login()
+    assert creds["base_url"] == "https://codex.proxy.example/v1"
+
+
+def test_browser_oauth_login_strips_trailing_slash_in_override(_fake_tty, monkeypatch):
+    """Trailing slash on HERMES_CODEX_BASE_URL is stripped, matching
+    the device-code flow's normalisation.
+    """
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex.proxy.example/v1/")
+
+    fake_oauth = types.ModuleType("oauth_cli_kit")
+    fake_oauth.login_oauth_interactive = lambda **kwargs: types.SimpleNamespace(
+        access="browser-at",
+        refresh="browser-rt",
+        expires=0,
+        account_id=None,
+    )
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", fake_oauth)
+
+    creds = _codex_browser_oauth_login()
+    assert creds["base_url"] == "https://codex.proxy.example/v1"
+
+
+def test_browser_oauth_login_wraps_runtime_errors_as_auth_error(_fake_tty, monkeypatch):
+    """oauth-cli-kit raises plain RuntimeError for state mismatch /
+    server failure / bad code.  Wrap into AuthError so callers see a
+    consistent error type.
+    """
+    fake_oauth = types.ModuleType("oauth_cli_kit")
+    fake_oauth.login_oauth_interactive = lambda **kwargs: (_ for _ in ()).throw(
+        RuntimeError("State validation failed.")
+    )
+    monkeypatch.setitem(sys.modules, "oauth_cli_kit", fake_oauth)
+
+    with pytest.raises(AuthError) as exc:
+        _codex_browser_oauth_login()
+    assert exc.value.code == "oauth_cli_kit_login_failed"
+    assert "State validation failed" in str(exc.value)

@@ -42,6 +42,14 @@ dependencies = [
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",
   "pydantic==2.12.5",
+  # Browser OAuth flow helper for openai-codex (used only for the
+  # login redirect + callback loop; credentials are stored in Hermes's
+  # own auth store, not oauth-cli-kit's shared file). Exact pin:
+  # the package is new (first release 2026-02), has thin attribution
+  # ("nanobot contributors", no homepage/maintainer), and we audited
+  # this specific sdist (sha256 6612b3de...bfb8). Bump only after
+  # re-auditing the newer release.
+  "oauth-cli-kit==0.1.3",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).

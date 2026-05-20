@@ -165,6 +165,15 @@ def auth_add_command(args) -> None:
     if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
         raise SystemExit(f"Unknown provider: {provider}")
 
+    # `--method` is openai-codex-only.  Reject it on other providers
+    # rather than silently ignoring the flag.  argparse default is None,
+    # so detection is a simple `is not None` check.
+    method_arg = getattr(args, "method", None)
+    if method_arg is not None and provider != "openai-codex":
+        raise SystemExit(
+            f"--method is only supported for `openai-codex`, not `{provider}`."
+        )
+
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()
     if requested_type in {AUTH_TYPE_API_KEY, "api-key"}:
         requested_type = AUTH_TYPE_API_KEY
@@ -311,10 +320,19 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "openai-codex":
+        method = str(getattr(args, "method", "") or "device-code").strip().lower()
+        if method not in {"device-code", "browser"}:
+            raise SystemExit(f"Unsupported Codex login method: {method!r}")
+
         # Clear any existing suppression marker so a re-link after `hermes auth
         # remove openai-codex` works without the new tokens being skipped.
         auth_mod.unsuppress_credential_source(provider, "device_code")
-        creds = auth_mod._codex_device_code_login()
+
+        if method == "browser":
+            creds = auth_mod._codex_browser_oauth_login()
+        else:
+            creds = auth_mod._codex_device_code_login()
+
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
@@ -325,6 +343,10 @@ def auth_add_command(args) -> None:
             label=label,
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
+            # Both flows produce a Hermes-owned OAuth session with the
+            # same refresh/removal lifecycle — keep a single pool source
+            # so _remove_codex_device_code + its suppression key cover
+            # both paths.
             source=f"{SOURCE_MANUAL}:device_code",
             access_token=creds["tokens"]["access_token"],
             refresh_token=creds["tokens"].get("refresh_token"),

@@ -310,6 +310,55 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
 
 
+def test_auth_add_codex_browser_persists_same_source_as_device_code(tmp_path, monkeypatch):
+    """`hermes auth add openai-codex --method browser` produces a pool
+    entry identical in shape to the device-code flow — Hermes-owned
+    tokens under source=manual:device_code so the existing refresh /
+    removal / suppression paths all still apply.
+
+    _codex_device_code_login is patched to throw to prove the browser
+    branch is what actually ran.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("browser@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: (_ for _ in ()).throw(AssertionError("device-code must not run")),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_browser_oauth_login",
+        lambda: {
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "browser-refresh",
+            },
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-04-24T10:00:00Z",
+            "auth_mode": "chatgpt",
+            "source": "browser",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        method = "browser"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    assert entry["label"] == "browser@example.com"
+    assert entry["refresh_token"] == "browser-refresh"
+    assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent pool auto-seeding from host env vars and file-backed sources
@@ -1686,3 +1735,46 @@ def test_auth_remove_codex_manual_device_code_suppresses_canonical(tmp_path, mon
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
     assert is_source_suppressed("openai-codex", "device_code")
+
+
+def test_auth_add_method_rejected_on_non_codex_provider(tmp_path, monkeypatch):
+    """--method is global on `hermes auth add` argparse but only
+    openai-codex consumes it.  Passing it to e.g. `nous` must fail
+    loudly rather than silently ignoring the flag.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "nous"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        method = "browser"
+
+    with pytest.raises(SystemExit) as exc:
+        auth_add_command(_Args())
+    msg = str(exc.value)
+    assert "--method" in msg and "openai-codex" in msg
+
+
+def test_auth_add_method_default_none_does_not_trip_validation(tmp_path, monkeypatch):
+    """Without --method (argparse default=None), other providers must
+    still work normally.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openrouter"
+        auth_type = "api-key"
+        api_key = "sk-or-x"
+        label = None
+        method = None  # argparse default
+
+    # Should not raise — method=None is the "didn't pass --method" case.
+    auth_add_command(_Args())

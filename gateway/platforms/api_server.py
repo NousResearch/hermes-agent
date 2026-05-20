@@ -1378,7 +1378,7 @@ class APIServerAdapter(BasePlatformAdapter):
         import queue as _q
 
         sse_headers = {
-            "Content-Type": "text/event-stream",
+            "Content-Type": "text/event-stream; charset=utf-8",
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         }

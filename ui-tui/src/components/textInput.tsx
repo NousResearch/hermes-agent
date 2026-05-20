@@ -1050,20 +1050,24 @@ export function TextInput({
         }
 
         if (text.length > 1 || text.includes('\n')) {
-          if (!pasteBuf.current) {
-            pastePos.current = range ? range.start : c
-            pasteEnd.current = range ? range.end : pastePos.current
+          // Multi-char input that isn't a bracketed paste (e.g. Android CRD
+          // bursts). Commit immediately instead of going through the 50ms
+          // pasteBuf debounce, but preserve fast-echo stdout write for
+          // instant visual feedback.
+          if (range) {
+            v = v.slice(0, range.start) + text + v.slice(range.end)
+            c = range.start + text.length
+          } else {
+            const simpleAppend = canFastAppend(v, c, text)
+            v = v.slice(0, c) + text + v.slice(c)
+            c += text.length
+            if (simpleAppend) {
+              stdout!.write(text)
+              noteCursorAdvance(text.length)
+              return commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
+            }
           }
-
-          pasteBuf.current += text
-
-          if (pasteTimer.current) {
-            clearTimeout(pasteTimer.current)
-          }
-
-          pasteTimer.current = setTimeout(flushPaste, 50)
-
-          return
+          return commit(v, c)
         }
 
         if (PRINTABLE.test(text)) {

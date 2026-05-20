@@ -67,10 +67,14 @@
   gap: 0.75rem;
   align-items: start;
   overflow-x: auto;
-  scrollbar-width: none;
+  scrollbar-width: thin;
 }
 .hermes-kanban-columns::-webkit-scrollbar {
-  display: none;
+  height: 6px;
+}
+.hermes-kanban-columns::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-muted-foreground) 35%, transparent);
+  border-radius: 3px;
 }
 
 .hermes-kanban-column {
@@ -143,6 +147,8 @@
   gap: 0.45rem;
   overflow-y: auto;
   padding-right: 0.1rem;
+  flex: 1;
+  min-height: 0;
 }
 
 .hermes-kanban-empty {

@@ -927,6 +927,7 @@ class SlackAdapter(BasePlatformAdapter):
             # a slash command the manifest doesn't declare.
             from hermes_cli.commands import slack_native_slashes
             import re as _re
+            import os as _os
 
             _slash_names = [name for name, _d, _h in slack_native_slashes()]
             if _slash_names:
@@ -934,7 +935,9 @@ class SlackAdapter(BasePlatformAdapter):
                     r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
                 )
             else:  # pragma: no cover - registry always non-empty
-                _slash_pattern = _re.compile(r"^/hermes$")
+                # Fallback: use the configured slash name (defaults to "hermes")
+                _default_slash = _os.environ.get("HERMES_SLACK_SLASH_NAME", "hermes")
+                _slash_pattern = _re.compile(r"^/" + _re.escape(_default_slash) + r"$")
 
             @self._app.command(_slash_pattern)
             async def handle_hermes_command(ack, command):
@@ -3495,11 +3498,12 @@ class SlackAdapter(BasePlatformAdapter):
         Discord and Telegram model. The slash name itself is the command;
         any text after it is the argument list.
 
-        The legacy ``/hermes <subcommand> [args]`` form is preserved for
+        The legacy ``/<catch-all> <subcommand> [args]`` form is preserved for
         backward compatibility with older workspace manifests and for users
-        who want a single entry point for free-form questions (``/hermes
-        what's the weather`` — non-slash text is treated as a regular
-        message).
+        who want a single entry point for free-form questions.
+        
+        The catch-all command name is configurable via ``HERMES_SLACK_SLASH_NAME``
+        env var (defaults to ``hermes``) to support multi-profile setups.
         """
         slash_name = (command.get("command") or "").lstrip("/").strip()
         text = command.get("text", "").strip()
@@ -3511,8 +3515,12 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        if slash_name in {"hermes", ""}:
-            # Legacy /hermes <subcommand> [args] routing + free-form questions.
+        # Get the dynamic catch-all command name (configurable via env var)
+        import os as _os
+        default_slash_name = _os.environ.get("HERMES_SLACK_SLASH_NAME", "hermes")
+
+        if slash_name in {default_slash_name, ""}:
+            # Legacy /<catch-all> <subcommand> [args] routing + free-form questions.
             # Empty slash_name falls into this branch for backward compat
             # with any caller that didn't populate command["command"].
             from hermes_cli.commands import slack_subcommand_map

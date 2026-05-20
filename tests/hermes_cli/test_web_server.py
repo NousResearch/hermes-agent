@@ -1937,6 +1937,63 @@ class TestPluginAPIAuth:
             pass
 
 
+class TestDashboardAgentPluginRoutes:
+    """Tests for dashboard agent-plugin mutation endpoints."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_enable_plugin_route_accepts_categorized_plugin_names(self, monkeypatch):
+        """Plugins such as ``observability/langfuse`` must be enableable from the dashboard.
+
+        The frontend URL-encodes the slash as ``%2F``.  FastAPI/Starlette decodes
+        it before route matching, so the backend route must explicitly accept a
+        path-like plugin name instead of returning 405 Method Not Allowed.
+        """
+        import hermes_cli.plugins_cmd as plugins_cmd
+
+        seen = []
+
+        def fake_set_enabled(name, enabled):
+            seen.append((name, enabled))
+            return {"ok": True, "name": name, "unchanged": False}
+
+        monkeypatch.setattr(
+            plugins_cmd,
+            "dashboard_set_agent_plugin_enabled",
+            fake_set_enabled,
+        )
+
+        resp = self.client.post(
+            "/api/dashboard/agent-plugins/observability%2Flangfuse/enable"
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "observability/langfuse"
+        assert seen == [("observability/langfuse", True)]
+
+    def test_plugin_name_validation_rejects_traversal_even_with_path_segments(self):
+        from hermes_cli.web_server import _validate_plugin_name
+        from fastapi import HTTPException
+
+        assert _validate_plugin_name("observability/langfuse") == "observability/langfuse"
+        for bad in ("../langfuse", "observability/../langfuse", "/absolute", "trailing/", "bad\\name"):
+            with pytest.raises(HTTPException):
+                _validate_plugin_name(bad)
+
+
 class TestDashboardPluginManifestExtensions:
     """Tests for the extended plugin manifest fields (tab.override,
     tab.hidden, slots) read by _discover_dashboard_plugins()."""

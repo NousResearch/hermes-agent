@@ -364,15 +364,41 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+export interface ProcessMemoryInfo {
+  available: boolean;
+  pid: number;
+  process_count?: number;
+  child_count?: number;
+  rss_bytes?: number;
+  vms_bytes?: number;
+  children_rss_bytes?: number;
+  children_vms_bytes?: number;
+  total_rss_bytes?: number;
+  total_vms_bytes?: number;
+  error?: string;
+  detail?: string;
+  processes?: Array<{
+    pid: number;
+    ppid: number;
+    role: "parent" | "child";
+    name: string;
+    status: string;
+    rss_bytes: number;
+    vms_bytes: number;
+  }>;
+}
+
 export interface StatusResponse {
   active_sessions: number;
   config_path: string;
   config_version: number;
+  dashboard_process_memory?: ProcessMemoryInfo | null;
   env_path: string;
   gateway_exit_reason: string | null;
   gateway_health_url: string | null;
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
+  gateway_process_memory?: ProcessMemoryInfo | null;
   gateway_running: boolean;
   gateway_state: string | null;
   gateway_updated_at: string | null;

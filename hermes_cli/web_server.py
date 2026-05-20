@@ -47,7 +47,7 @@ from hermes_cli.config import (
     check_config_version,
     redact_key,
 )
-from gateway.status import get_running_pid, read_runtime_status
+from gateway.status import collect_process_tree_memory, get_running_pid, read_runtime_status
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -561,6 +561,7 @@ async def get_status():
     gateway_platforms: dict = {}
     gateway_exit_reason = None
     gateway_updated_at = None
+    gateway_process_memory = None
     configured_gateway_platforms: set[str] | None = None
     try:
         from gateway.config import load_gateway_config
@@ -589,6 +590,7 @@ async def get_status():
             }
         gateway_exit_reason = runtime.get("exit_reason")
         gateway_updated_at = runtime.get("updated_at")
+        gateway_process_memory = runtime.get("process_memory")
         if not gateway_running:
             gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
             gateway_platforms = {}
@@ -636,6 +638,8 @@ async def get_status():
         "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
+        "gateway_process_memory": gateway_process_memory,
+        "dashboard_process_memory": collect_process_tree_memory(),
         "active_sessions": active_sessions,
     }
 

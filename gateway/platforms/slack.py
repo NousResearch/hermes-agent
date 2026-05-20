@@ -1936,18 +1936,23 @@ class SlackAdapter(BasePlatformAdapter):
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
 
         # Build thread_ts for session keying.
-        # In channels: fall back to ts so each top-level @mention starts a
-        #   new thread/session (the bot always replies in a thread).
-        # In DMs: fall back to ts so each top-level DM reply thread gets
-        #   its own session key (matching channel behavior). Set
-        #   dm_top_level_threads_as_sessions: false in config to revert to
-        #   legacy single-session-per-DM-channel behavior.
+        # In DMs: fall back to ts only when dm_top_level_threads_as_sessions
+        #   is enabled; otherwise a DM shares one session.
+        # In channels: real human-started Slack threads keep their thread_ts
+        #   and therefore keep a thread-scoped session. Top-level channel
+        #   messages do NOT synthesize thread_ts from the message ts when
+        #   reply_in_thread is false; that would make every top-level message
+        #   a separate session even though the bot replies in-channel. If
+        #   reply_in_thread is true, preserve legacy behaviour where each
+        #   top-level message becomes its own thread/session.
         if is_dm:
             thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
         else:
-            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+            thread_ts = event.get("thread_ts")
+            if not thread_ts and self.config.extra.get("reply_in_thread", True):
+                thread_ts = ts
 
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is

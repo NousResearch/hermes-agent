@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -246,6 +247,92 @@ class TestGatewayPidState:
 
 
 class TestGatewayRuntimeStatus:
+    def test_collect_process_tree_memory_aggregates_children(self, monkeypatch):
+        class FakeMem:
+            def __init__(self, rss, vms):
+                self.rss = rss
+                self.vms = vms
+
+        class FakeProc:
+            def __init__(self, pid, ppid, name, rss, vms, children=None):
+                self.pid = pid
+                self._ppid = ppid
+                self._name = name
+                self._rss = rss
+                self._vms = vms
+                self._children = children or []
+
+            def children(self, recursive=False):
+                if not recursive:
+                    return list(self._children)
+                found = []
+                stack = list(self._children)
+                while stack:
+                    child = stack.pop(0)
+                    found.append(child)
+                    stack.extend(child.children(recursive=False))
+                return found
+
+            def oneshot(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def memory_info(self):
+                return FakeMem(self._rss, self._vms)
+
+            def ppid(self):
+                return self._ppid
+
+            def name(self):
+                return self._name
+
+            def status(self):
+                return "running"
+
+        grandchild = FakeProc(103, 102, "grandchild", 30, 300)
+        child_a = FakeProc(102, 101, "child-a", 20, 200, [grandchild])
+        child_b = FakeProc(104, 101, "child-b", 40, 400)
+        root = FakeProc(101, 1, "parent", 10, 100, [child_a, child_b])
+
+        fake_psutil = SimpleNamespace(
+            Process=lambda pid: root,
+            NoSuchProcess=RuntimeError,
+            AccessDenied=PermissionError,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        memory = status.collect_process_tree_memory(101)
+
+        assert memory["available"] is True
+        assert memory["process_count"] == 4
+        assert memory["child_count"] == 3
+        assert memory["rss_bytes"] == 10
+        assert memory["children_rss_bytes"] == 90
+        assert memory["total_rss_bytes"] == 100
+        assert [p["role"] for p in memory["processes"]] == ["parent", "child", "child", "child"]
+
+    def test_write_runtime_status_records_process_tree_memory(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            status,
+            "collect_process_tree_memory",
+            lambda: {"available": True, "total_rss_bytes": 123, "child_count": 8},
+        )
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["process_memory"] == {
+            "available": True,
+            "total_rss_bytes": 123,
+            "child_count": 8,
+        }
+
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         calls = []

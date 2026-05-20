@@ -216,10 +216,107 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "exit_reason": None,
         "restart_requested": False,
         "active_agents": 0,
+        "process_memory": collect_process_tree_memory(),
         "platforms": {},
         "updated_at": _utc_now_iso(),
     })
     return payload
+
+
+def collect_process_tree_memory(pid: Optional[int] = None) -> dict[str, Any]:
+    """Return RSS/VMS memory for *pid* plus all recursive child processes.
+
+    Gateways and dashboard/API servers can spawn worker children.  Reporting
+    only the parent process undercounts memory substantially, so this helper
+    always aggregates the full process tree while keeping per-process metadata
+    intentionally minimal (no argv/cmdline; those can contain secrets).
+    """
+    root_pid = int(pid or os.getpid())
+    try:
+        import psutil  # type: ignore
+    except Exception as exc:
+        return {
+            "available": False,
+            "pid": root_pid,
+            "error": "psutil_unavailable",
+            "detail": str(exc),
+        }
+
+    try:
+        root = psutil.Process(root_pid)
+        candidates = [root] + root.children(recursive=True)
+    except psutil.NoSuchProcess:
+        return {
+            "available": False,
+            "pid": root_pid,
+            "error": "process_not_found",
+        }
+    except psutil.AccessDenied:
+        return {
+            "available": False,
+            "pid": root_pid,
+            "error": "access_denied",
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "pid": root_pid,
+            "error": "process_probe_failed",
+            "detail": str(exc),
+        }
+
+    processes: list[dict[str, Any]] = []
+    parent_rss = 0
+    parent_vms = 0
+    child_rss = 0
+    child_vms = 0
+
+    for proc in candidates:
+        try:
+            with proc.oneshot():
+                mem = proc.memory_info()
+                proc_pid = int(proc.pid)
+                rss = int(getattr(mem, "rss", 0) or 0)
+                vms = int(getattr(mem, "vms", 0) or 0)
+                ppid = proc.ppid()
+                name = proc.name()
+                status_value = proc.status()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        except Exception:
+            continue
+
+        role = "parent" if proc_pid == root_pid else "child"
+        if role == "parent":
+            parent_rss += rss
+            parent_vms += vms
+        else:
+            child_rss += rss
+            child_vms += vms
+
+        processes.append({
+            "pid": proc_pid,
+            "ppid": ppid,
+            "role": role,
+            "name": name,
+            "status": status_value,
+            "rss_bytes": rss,
+            "vms_bytes": vms,
+        })
+
+    return {
+        "available": True,
+        "pid": root_pid,
+        "process_count": len(processes),
+        "child_count": max(0, len(processes) - 1),
+        "rss_bytes": parent_rss,
+        "vms_bytes": parent_vms,
+        "children_rss_bytes": child_rss,
+        "children_vms_bytes": child_vms,
+        "total_rss_bytes": parent_rss + child_rss,
+        "total_vms_bytes": parent_vms + child_vms,
+        "processes": processes,
+    }
 
 
 def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
@@ -521,6 +618,7 @@ def write_runtime_status(
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    payload["process_memory"] = collect_process_tree_memory()
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:

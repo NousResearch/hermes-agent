@@ -926,7 +926,7 @@ class APIServerAdapter(BasePlatformAdapter):
         dashboard can display full status without needing a shared PID file or
         /proc access.  No authentication required.
         """
-        from gateway.status import read_runtime_status
+        from gateway.status import collect_process_tree_memory, read_runtime_status
 
         runtime = read_runtime_status() or {}
         return web.json_response({
@@ -938,6 +938,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "exit_reason": runtime.get("exit_reason"),
             "updated_at": runtime.get("updated_at"),
             "pid": os.getpid(),
+            "process_memory": collect_process_tree_memory(),
         })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":

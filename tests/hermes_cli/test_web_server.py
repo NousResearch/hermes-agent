@@ -124,6 +124,35 @@ class TestWebServerEndpoints:
         assert "version" in data
         assert "hermes_home" in data
         assert "active_sessions" in data
+        assert "dashboard_process_memory" in data
+
+    def test_get_status_includes_gateway_and_dashboard_process_memory(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "updated_at": "2026-04-12T00:00:00+00:00",
+                "platforms": {},
+                "process_memory": {"available": True, "total_rss_bytes": 1000, "child_count": 8},
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "collect_process_tree_memory",
+            lambda: {"available": True, "total_rss_bytes": 2000, "child_count": 0},
+        )
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_process_memory"] == {"available": True, "total_rss_bytes": 1000, "child_count": 8}
+        assert data["dashboard_process_memory"] == {"available": True, "total_rss_bytes": 2000, "child_count": 0}
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config

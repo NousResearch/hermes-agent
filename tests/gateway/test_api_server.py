@@ -491,7 +491,10 @@ class TestHealthDetailedEndpoint:
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
-        }):
+        }), patch(
+            "gateway.status.collect_process_tree_memory",
+            return_value={"available": True, "total_rss_bytes": 123, "child_count": 8},
+        ):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
@@ -502,6 +505,7 @@ class TestHealthDetailedEndpoint:
                 assert data["platforms"] == {"telegram": {"state": "connected"}}
                 assert data["active_agents"] == 2
                 assert isinstance(data["pid"], int)
+                assert data["process_memory"] == {"available": True, "total_rss_bytes": 123, "child_count": 8}
                 assert "updated_at" in data
 
     @pytest.mark.asyncio

@@ -16,6 +16,8 @@ from typing import Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
+_MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB cap on response bodies
+
 
 @dataclass
 class GpuInfo:
@@ -214,20 +216,30 @@ class PrometheusProvider:
         return result
 
     def _fetch_text(self, endpoint: str, timeout: float) -> Optional[str]:
+        """Fetch metrics text with a body-size guard (10 MB cap)."""
         try:
             import httpx
         except ImportError:
             logger.warning("httpx not installed — GPU monitor unavailable")
             return None
+        body = b""
         try:
-            response = httpx.get(endpoint, timeout=timeout)
-            response.raise_for_status()
+            with httpx.stream("GET", endpoint, timeout=timeout) as response:
+                response.raise_for_status()
+                for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                    body += chunk
+                    if len(body) > _MAX_BODY_SIZE:
+                        logger.warning(
+                            "GPU metrics response from %s exceeded %d bytes — truncated",
+                            endpoint, _MAX_BODY_SIZE,
+                        )
+                        break
         except Exception as e:
             logger.warning(
                 "Failed to fetch %s metrics from %s: %s", self.label, endpoint, e
             )
             return None
-        return response.text
+        return body.decode("utf-8", errors="replace")
 
     def _gpu_key(self, labels: dict) -> str:
         for key in self.GPU_ID_LABELS:

@@ -17,9 +17,28 @@ _DEFAULT_PROVIDER = "dcgm"
 _DEFAULT_REFRESH_INTERVAL = 5.0
 _DEFAULT_ENABLED = True
 
+# Timed config cache — _get_gpu_config() is called on the hot path
+# (every status-bar repaint, ~250 ms).  Skip load_config() for 30 s.
+_CONFIG_TTL = 30.0
+_config_cache: dict = {}            # populated config dict
+_config_cache_stale: bool = True   # True until first successful load
+_config_lock = threading.Lock()
+
 
 def _get_gpu_config() -> dict:
-    """Read GPU config from config.yaml with provider-aware fallbacks."""
+    """Read GPU config from config.yaml with provider-aware fallbacks.
+
+    Caches the result for _CONFIG_TTL seconds so the status-bar render
+    path doesn't call load_config() on every repaint.
+    """
+    global _config_cache, _config_cache_stale
+    now = time.monotonic()
+    with _config_lock:
+        if not _config_cache_stale:
+            elapsed = now - _config_cache.get("_ts", now)
+            if elapsed < _CONFIG_TTL:
+                return {k: v for k, v in _config_cache.items() if k != "_ts"}
+
     try:
         from hermes_cli.config import load_config
         gpu_cfg = load_config().get("gpu", {})
@@ -32,12 +51,31 @@ def _get_gpu_config() -> dict:
     provider = get_provider(provider_name)
     default_endpoint = provider.default_endpoint if provider else ""
 
-    return {
+    cfg = {
         "provider": provider_name,
         "endpoint": gpu_cfg.get("endpoint", default_endpoint),
         "refresh_interval": gpu_cfg.get("refresh_interval", _DEFAULT_REFRESH_INTERVAL),
         "enabled": gpu_cfg.get("enabled", _DEFAULT_ENABLED),
+        "_ts": now,
     }
+
+    with _config_lock:
+        _config_cache.clear()
+        _config_cache.update(cfg)
+        _config_cache_stale = False
+
+    return {k: v for k, v in cfg.items() if k != "_ts"}
+
+
+def _invalidate_config_cache() -> None:
+    """Force a re-read of config.yaml on the next _get_gpu_config() call.
+
+    Used by tests and after config mutations (e.g. slash-command /gpu set).
+    """
+    global _config_cache, _config_cache_stale
+    with _config_lock:
+        _config_cache.clear()
+        _config_cache_stale = True
 
 
 def is_gpu_monitoring_enabled() -> bool:

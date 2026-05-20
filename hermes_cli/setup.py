@@ -3225,6 +3225,12 @@ def setup_gpu_monitoring(config: dict):
         "endpoint": endpoint,
         "refresh_interval": interval,
     })
+    # Invalidate the config cache so the CLI status bar picks up changes.
+    try:
+        from hermes_cli.gpu.monitor import _invalidate_config_cache
+        _invalidate_config_cache()
+    except ImportError:
+        pass
     print_success(f"  GPU monitoring configured: {provider.name} → {endpoint} ({interval}s)")
 
 

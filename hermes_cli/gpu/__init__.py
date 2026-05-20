@@ -24,6 +24,7 @@ from hermes_cli.gpu.monitor import (
     is_gpu_monitoring_enabled,
     stop_gpu_cache,
     validate_gpu_endpoint,
+    _invalidate_config_cache,  # test helper
 )
 
 # Import providers so they self-register at package import time.

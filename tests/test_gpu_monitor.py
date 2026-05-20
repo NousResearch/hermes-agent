@@ -18,15 +18,35 @@ from hermes_cli.gpu import (
     validate_gpu_endpoint,
 )
 from hermes_cli.gpu.base import _parse_labels, _parse_prometheus_line
-from hermes_cli.gpu.monitor import _level_bar, _saturation_bar, _temp_indicator
+from hermes_cli.gpu.monitor import _level_bar, _saturation_bar, _temp_indicator, _invalidate_config_cache
+
+
+def _mock_stream_response(text: str):
+    """Return (mock_response, patched_httpx_stream) for use with httpx.stream().
+
+    Usage:
+        mock_resp, stream_patch = _mock_stream_response(sample_text)
+        with stream_patch:
+            gpus = provider.fetch(endpoint)
+    """
+    mock_response = MagicMock()
+    mock_response.text = text
+    mock_response.raise_for_status = MagicMock()
+    mock_response.iter_bytes.return_value = [text.encode("utf-8")]
+    mock_response.__enter__ = MagicMock(return_value=mock_response)
+    mock_response.__exit__ = MagicMock(return_value=False)
+    return mock_response, patch("httpx.stream", return_value=mock_response)
 
 
 @pytest.fixture(autouse=True)
 def _reset_gpu_cache_singleton():
     """Stop and release the module-level GPU cache between tests."""
     stop_gpu_cache()
+    # Also reset the timed config cache so patched load_config() is picked up.
+    _invalidate_config_cache()
     yield
     stop_gpu_cache()
+    _invalidate_config_cache()
 
 
 # ─── Prometheus Parsing Helpers ───────────────────────────────────────────────
@@ -174,9 +194,8 @@ class TestProviderRegistry:
             LABEL_MAP = {"gpu_id": "gpu_id", "model": "model_name"}
 
         sample = 'fake_gpu_util_pct{gpu_id="0",model="FakeCard"} 42\n'
-        mock_response = MagicMock(text=sample)
-        mock_response.raise_for_status = MagicMock()
-        with patch("httpx.get", return_value=mock_response):
+        _, stream_patch = _mock_stream_response(sample)
+        with stream_patch:
             gpus = FakeProvider().fetch("http://localhost:1234/metrics")
 
         assert len(gpus) == 1
@@ -226,9 +245,8 @@ DCGM_FI_DEV_GPU_UTIL{gpu="0",UUID="GPU-b0516a31",modelName="NVIDIA GeForce RTX 5
 DCGM_FI_DEV_FB_FREE{gpu="0",UUID="GPU-b0516a31",modelName="NVIDIA GeForce RTX 5090",Hostname="test-host"} 4721
 DCGM_FI_DEV_FB_USED{gpu="0",UUID="GPU-b0516a31",modelName="NVIDIA GeForce RTX 5090",Hostname="test-host"} 27387
 """
-        mock_response = MagicMock(text=sample)
-        mock_response.raise_for_status = MagicMock()
-        with patch("httpx.get", return_value=mock_response):
+        _, stream_patch = _mock_stream_response(sample)
+        with stream_patch:
             gpus = fetch_gpu_metrics(endpoint="http://test:9400/metrics")
 
         assert len(gpus) == 1
@@ -243,7 +261,7 @@ DCGM_FI_DEV_FB_USED{gpu="0",UUID="GPU-b0516a31",modelName="NVIDIA GeForce RTX 50
         assert gpu.fb_free_mib == 4721
 
     def test_fetch_failure_returns_empty(self):
-        with patch("httpx.get", side_effect=Exception("Connection refused")):
+        with patch("httpx.stream", side_effect=Exception("Connection refused")):
             assert fetch_gpu_metrics(endpoint="http://test:9400/metrics") == []
 
     def test_multiple_gpus_grouped_by_id(self):
@@ -252,14 +270,30 @@ DCGM_FI_DEV_GPU_UTIL{gpu="1",UUID="GPU-111"} 45
 DCGM_FI_DEV_GPU_TEMP{gpu="0",UUID="GPU-000"} 48
 DCGM_FI_DEV_GPU_TEMP{gpu="1",UUID="GPU-111"} 52
 """
-        mock_response = MagicMock(text=sample)
-        mock_response.raise_for_status = MagicMock()
-        with patch("httpx.get", return_value=mock_response):
+        _, stream_patch = _mock_stream_response(sample)
+        with stream_patch:
             gpus = fetch_gpu_metrics(endpoint="http://test:9400/metrics")
 
         assert len(gpus) == 2
         assert [g.gpu_id for g in gpus] == ["0", "1"]
         assert [g.uuid for g in gpus] == ["GPU-000", "GPU-111"]
+
+    def test_body_size_limit_truncates_large_response(self):
+        from hermes_cli.gpu import base
+        from hermes_cli.gpu.base import PrometheusProvider
+
+        # Simulate a response exceeding the 10 MB cap.
+        big_chunk = b"x" * (base._MAX_BODY_SIZE + 1024)
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_bytes.return_value = [big_chunk]
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with patch("httpx.stream", return_value=mock_response):
+            provider = get_provider("dcgm")
+            gpus = provider.fetch("http://localhost:9400/metrics")
+        # Truncation produces no parseable DCGM metrics, so the result is empty.
+        assert gpus == []
 
 
 # ─── Display GPU Metrics ──────────────────────────────────────────────────────
@@ -272,9 +306,8 @@ DCGM_FI_DEV_GPU_TEMP{gpu="0",UUID="GPU-000",modelName="RTX 5090"} 51
 DCGM_FI_DEV_FB_USED{gpu="0",UUID="GPU-000",modelName="RTX 5090"} 27387
 DCGM_FI_DEV_FB_FREE{gpu="0",UUID="GPU-000",modelName="RTX 5090"} 4721
 """
-        mock_response = MagicMock(text=sample)
-        mock_response.raise_for_status = MagicMock()
-        with patch("httpx.get", return_value=mock_response):
+        _, stream_patch = _mock_stream_response(sample)
+        with stream_patch:
             output = display_gpu_metrics(endpoint="http://test:9400/metrics", width=50)
 
         assert "GPU Status" in output
@@ -311,11 +344,10 @@ class TestGpuMetricsCache:
             'DCGM_FI_DEV_GPU_UTIL{gpu="0",UUID="GPU-000"} 75\n'
             'DCGM_FI_DEV_GPU_TEMP{gpu="0",UUID="GPU-000"} 55\n'
         )
-        mock_response = MagicMock(text=sample)
-        mock_response.raise_for_status = MagicMock()
+        _, stream_patch = _mock_stream_response(sample)
         cache = _dcgm_cache()
         try:
-            with patch("httpx.get", return_value=mock_response):
+            with stream_patch:
                 gpus = cache.force_refresh()
             assert len(gpus) == 1
             assert gpus[0].gpu_util == 75
@@ -326,7 +358,7 @@ class TestGpuMetricsCache:
     def test_force_refresh_returns_empty_on_failure(self):
         cache = _dcgm_cache()
         try:
-            with patch("httpx.get", side_effect=Exception("Connection refused")):
+            with patch("httpx.stream", side_effect=Exception("Connection refused")):
                 assert cache.force_refresh() == []
         finally:
             cache.stop()
@@ -463,6 +495,7 @@ class TestGetGpuCacheSingleton:
             "gpu": {"provider": "dcgm", "endpoint": "http://old:9400/metrics", "enabled": True, "refresh_interval": 3.0}
         }):
             cache1 = get_gpu_cache()
+        _invalidate_config_cache()
 
         with patch("hermes_cli.config.load_config", return_value={
             "gpu": {"provider": "dcgm", "endpoint": "http://new:9400/metrics", "enabled": True, "refresh_interval": 3.0}
@@ -477,6 +510,7 @@ class TestGetGpuCacheSingleton:
             "gpu": {"provider": "dcgm", "endpoint": "http://test:9400/metrics", "enabled": True, "refresh_interval": 3.0}
         }):
             cache1 = get_gpu_cache()
+        _invalidate_config_cache()
 
         with patch("hermes_cli.config.load_config", return_value={
             "gpu": {"provider": "dcgm", "endpoint": "http://test:9400/metrics", "enabled": True, "refresh_interval": 5.0}

@@ -74,6 +74,8 @@ object HermesDeviceDiagnosticsBridge {
                 radioSignalStatusJson(appContext).toString()
             "signal_capability_status", "rf_capabilities", "radio_status", "microwave_status" ->
                 signalCapabilityStatusJson(appContext).toString()
+            "agent_environment_report", "environment_report", "capability_matrix", "system_capability_report", "kai_parity_report" ->
+                agentEnvironmentReportJson(appContext).toString()
             "social_gmail_goal_preflight", "social_gmail_preflight", "phone_goal_preflight", "end_to_end_goal_preflight" ->
                 socialGmailGoalPreflightJson(appContext).toString()
             "show_active_overlay", "show_working_overlay", "active_overlay" ->
@@ -607,6 +609,93 @@ object HermesDeviceDiagnosticsBridge {
             )
     }
 
+    fun agentEnvironmentReportJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val diagnostics = statusJson(appContext)
+        val signalStatus = signalCapabilityStatusJson(appContext)
+        val radioStatus = radioSignalStatusJson(appContext)
+        val preferredModel = preferredLocalModelJson(appContext)
+        val hindsightStatus = HermesHindsightMemoryBridge.statusJson(appContext)
+        val automationStatus = runCatching {
+            JSONObject(HermesAutomationBridge.performActionJson(appContext, "operator_standby_status"))
+        }.getOrDefault(JSONObject())
+        val modelRouting = runCatching {
+            JSONObject(HermesAutomationBridge.performActionJson(appContext, "operator_model_routing"))
+        }.getOrDefault(JSONObject())
+        val socProfile = diagnostics.optJSONObject("soc_profile") ?: socProfileJson()
+        val availableSensors = diagnostics.optJSONArray("available_sensor_types") ?: JSONArray()
+        val capabilityRows = agentCapabilityMatrixRows(
+            context = appContext,
+            diagnostics = diagnostics,
+            signalStatus = signalStatus,
+            radioStatus = radioStatus,
+            preferredModel = preferredModel,
+            hindsightStatus = hindsightStatus,
+            automationStatus = automationStatus,
+            modelRouting = modelRouting,
+            socProfile = socProfile,
+            availableSensors = availableSensors,
+        )
+        val kaiParityRows = kaiParityMatrixRows(preferredModel, hindsightStatus, automationStatus, modelRouting)
+        val readinessRows = workflowReadinessRows(diagnostics, signalStatus, preferredModel, automationStatus, modelRouting, availableSensors)
+        return JSONObject()
+            .put("success", true)
+            .put("action", "agent_environment_report")
+            .put("report_scope", "Hermes agent environment, Kai parity, wireless/radio/sensor inputs, and SOC/backend compatibility context.")
+            .put("android_device_identity", deviceIdentityJson())
+            .put("soc_profile", socProfile)
+            .put("preferred_local_model", preferredModel)
+            .put("model_routing", compactModelRoutingJson(modelRouting))
+            .put("hindsight_memory_status", compactHindsightStatusJson(hindsightStatus))
+            .put("automation_standby_status", compactAutomationStandbyStatusJson(automationStatus))
+            .put("signal_capability_status", compactSignalCapabilityJson(signalStatus))
+            .put("agent_capability_matrix", capabilityRows)
+            .put("kai_parity_matrix", kaiParityRows)
+            .put("workflow_readiness_matrix", readinessRows)
+            .put("agent_capability_count", capabilityRows.length())
+            .put("ready_capability_count", countReadyRows(capabilityRows))
+            .put("kai_parity_count", kaiParityRows.length())
+            .put("workflow_readiness_count", readinessRows.length())
+            .put(
+                "ai_experience_elevation_plan",
+                JSONArray()
+                    .put("Use wifi_scan/wifi_ap_details/wifi_export when the agent needs channel, security, vendor, distance, or exportable AP metadata for a nearby network decision.")
+                    .put("Use bluetooth_scan when the agent needs nearby device, service UUID, manufacturer, RSSI, or proximity context.")
+                    .put("Use sensor_snapshot or sensor watchers for motion, orientation, ambient, and workflow-trigger context.")
+                    .put("Use radio_signal_status/signal_capability_status to explain AM/FM/RF limits honestly and route broad RF work to external SDR/vendor hardware.")
+                    .put("Use SOC and LiteRT backend policy fields to avoid Snapdragon-only assumptions and keep MediaTek/Mali/PowerVR devices on GPU-first with CPU fallback when available.")
+                    .put("Use hindsight_memory_tool and operator heartbeat/status rows to retain durable context and expose autonomous task readiness."),
+            )
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "Agent Environment",
+                            body = "${capabilityRows.length()} capability row(s) covering wireless, radio, sensors, local model, UI, automation, memory, and SOC backend policy.",
+                            graphType = "agent_capability_matrix",
+                            rows = capabilityRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Kai Parity",
+                            body = "${kaiParityRows.length()} Kai-inspired parity row(s) for memory, on-device inference, tools, heartbeat, backup/restore, and multimodal UX.",
+                            graphType = "kai_parity_matrix",
+                            rows = kaiParityRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Workflow Readiness",
+                            body = "${readinessRows.length()} readiness row(s) that tell Gemma which native capability to call next.",
+                            graphType = "agent_workflow_readiness",
+                            rows = readinessRows,
+                        ),
+                    ),
+            )
+    }
+
     fun socialGmailGoalPreflightJson(context: Context): JSONObject {
         val appContext = context.applicationContext
         val packageManager = appContext.packageManager
@@ -708,6 +797,391 @@ object HermesDeviceDiagnosticsBridge {
             .put("likely_emulator", isLikelyEmulatorDevice())
     }
 
+    private fun agentCapabilityMatrixRows(
+        context: Context,
+        diagnostics: JSONObject,
+        signalStatus: JSONObject,
+        radioStatus: JSONObject,
+        preferredModel: JSONObject,
+        hindsightStatus: JSONObject,
+        automationStatus: JSONObject,
+        modelRouting: JSONObject,
+        socProfile: JSONObject,
+        availableSensors: JSONArray,
+    ): JSONArray {
+        val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
+        val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
+        val motionSensors = jsonStringList(signalStatus.optJSONArray("motion_sensor_analysis_supported"))
+        val packageManager = context.packageManager
+        val wifiSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI)
+        val bluetoothSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH)
+        val screenshotSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "local_model",
+                    label = "On-device inference",
+                    ready = preferredModel.optBoolean("ready"),
+                    valueLabel = preferredModel.optString("title").ifBlank { "model import needed" },
+                    detail = listOf(
+                        preferredModel.optString("runtime_flavor").ifBlank { "unknown runtime" },
+                        preferredModel.optString("record_status").ifBlank { "no preferred record" },
+                    ).joinToString(" | "),
+                    recommendation = "Use a preferred Gemma 4 LiteRT-LM or Qwen GGUF model before treating the phone as fully autonomous offline.",
+                    fraction = if (preferredModel.optBoolean("ready")) 1f else 0.35f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "multimodal",
+                    label = "Vision and image attachments",
+                    ready = modelRouting.optBoolean("vision_capable", false) && screenshotSupported,
+                    valueLabel = if (modelRouting.optBoolean("vision_capable", false)) "vision-ready" else "text-first",
+                    detail = "Chat image attachments and accessibility screenshots are available for Gemma/VLM workflows when the active model supports images.",
+                    recommendation = "Use android_ui_tool visual_snapshot or chat image attachments when semantic UI text is insufficient.",
+                    fraction = if (modelRouting.optBoolean("vision_capable", false)) 0.9f else 0.45f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend",
+                    label = "SOC and LiteRT backend policy",
+                    ready = true,
+                    valueLabel = socProfile.optString("litert_lm_acceleration_label").ifBlank { socProfile.optString("soc_family_label").ifBlank { "Android SOC" } },
+                    detail = listOf(
+                        socProfile.optString("soc_family_label").ifBlank { "unknown SOC" },
+                        socProfile.optString("gpu_family_label").ifBlank { "unknown GPU" },
+                        socProfile.optString("primary_abi").ifBlank { "unknown ABI" },
+                    ).joinToString(" | "),
+                    recommendation = socProfile.optString("litert_lm_backend_strategy").ifBlank { "Prefer SOC-neutral GPU probing with CPU fallback; do not assume Snapdragon/Adreno only." },
+                    fraction = 0.95f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "wifi",
+                    label = "Wi-Fi analyzer",
+                    ready = wifiSupported && wifiPermission.optBoolean("can_read_scan_results", false),
+                    valueLabel = if (wifiSupported) {
+                        if (wifiPermission.optBoolean("can_read_scan_results", false)) "scan-ready" else "permission needed"
+                    } else {
+                        "no Wi-Fi feature"
+                    },
+                    detail = "Supports AP details, channel ratings, security/width/standard summaries, signal history, and exportable rows.",
+                    recommendation = "Call wifi_scan, wifi_ap_details, or wifi_export for nearby signal/channel decisions.",
+                    fraction = if (wifiSupported && wifiPermission.optBoolean("can_read_scan_results", false)) 1f else if (wifiSupported) 0.55f else 0.1f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth",
+                    label = "Bluetooth scanner",
+                    ready = bluetoothSupported && bluetoothPermission.optBoolean("can_scan_nearby_devices", false),
+                    valueLabel = if (bluetoothSupported) {
+                        if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) "scan-ready" else "permission needed"
+                    } else {
+                        "no Bluetooth feature"
+                    },
+                    detail = "Supports paired/BLE rows, RSSI proximity, service UUIDs, manufacturer IDs, and metadata cards.",
+                    recommendation = "Call bluetooth_scan when nearby device identity, proximity, or BLE advertisement context matters.",
+                    fraction = if (bluetoothSupported && bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) 1f else if (bluetoothSupported) 0.55f else 0.1f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "radio",
+                    label = "AM/FM and broad RF",
+                    ready = radioStatus.optBoolean("am_fm_public_android_scan_supported", false),
+                    valueLabel = if (radioStatus.optBoolean("requires_external_sdr_for_broad_rf", true)) "external SDR needed" else "built-in scan available",
+                    detail = "Android public APIs expose Wi-Fi/Bluetooth/audio/sensors, but not a general AM/FM/microwave scan feed on normal phones.",
+                    recommendation = "Use radio_signal_status for honest capability cards and route broad RF work to vendor APIs or external SDR hardware.",
+                    fraction = if (radioStatus.optBoolean("am_fm_public_android_scan_supported", false)) 0.8f else 0.25f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensors",
+                    label = "Motion and environmental sensors",
+                    ready = motionSensors.isNotEmpty(),
+                    valueLabel = "${motionSensors.size} motion type(s)",
+                    detail = "Available sensors: ${jsonStringList(availableSensors).take(8).joinToString(", ").ifBlank { "none reported" }}",
+                    recommendation = "Call sensor_snapshot or start_sensor_watcher for accelerometer, gyroscope, magnetic, ambient, and workflow-trigger context.",
+                    fraction = (motionSensors.size / 5f).coerceIn(0.1f, 1f),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "ui_control",
+                    label = "UI perception and control",
+                    ready = HermesAccessibilityController.isServiceConnected(),
+                    valueLabel = if (HermesAccessibilityController.isServiceConnected()) "accessibility connected" else "enable accessibility",
+                    detail = "Accessibility snapshots, screenshot hashes, OpenGUI-style VLM actions, and guarded UI actions are available when the service is enabled.",
+                    recommendation = "Call android_ui_tool status/sense/visual_snapshot before sensitive UI actions or external sends.",
+                    fraction = if (HermesAccessibilityController.isServiceConnected()) 1f else if (HermesAccessibilityController.isServiceEnabled(context)) 0.65f else 0.35f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "automation",
+                    label = "Autonomous heartbeat and dispatch",
+                    ready = automationStatus.optBoolean("standby_heartbeat_supported", false),
+                    valueLabel = if (automationStatus.optBoolean("standby_heartbeat_supported", false)) "heartbeat-ready" else "not configured",
+                    detail = "${automationStatus.optInt("enabled_automation_count", 0)} enabled automation(s), ${automationStatus.optInt("recent_run_count", 0)} recent run(s).",
+                    recommendation = "Use android_automation_tool operator_standby_status/operator_heartbeat for Kai-style autonomous status and remote dispatch.",
+                    fraction = if (automationStatus.optBoolean("standby_heartbeat_supported", false)) 0.9f else 0.4f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "memory",
+                    label = "Persistent hindsight memory",
+                    ready = true,
+                    valueLabel = "${hindsightStatus.optInt("memory_count", 0)} memories",
+                    detail = "${hindsightStatus.optInt("reinforced_memory_count", 0)} reinforced, ${hindsightStatus.optInt("promoted_memory_count", 0)} promoted for prompt context.",
+                    recommendation = "Use hindsight_memory_tool retain/recall/reflect/promoted_context around complex work.",
+                    fraction = ((hindsightStatus.optInt("promoted_memory_count", 0) + 1) / 5f).coerceIn(0.25f, 1f),
+                ),
+            )
+    }
+
+    private fun kaiParityMatrixRows(
+        preferredModel: JSONObject,
+        hindsightStatus: JSONObject,
+        automationStatus: JSONObject,
+        modelRouting: JSONObject,
+    ): JSONArray {
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "kai_parity",
+                    label = "Persistent memory",
+                    ready = true,
+                    valueLabel = "${hindsightStatus.optInt("memory_count", 0)} local row(s)",
+                    detail = "Hermes retains, recalls, reflects, and promotes local memories into compact prompt context.",
+                    recommendation = "Parallels Kai persistent memory and promotion behavior.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("parity_source", "Kai persistent memory"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_parity",
+                    label = "On-device LiteRT inference",
+                    ready = preferredModel.optBoolean("ready"),
+                    valueLabel = preferredModel.optString("runtime_flavor").ifBlank { "LiteRT/GGUF capable" },
+                    detail = "Hermes supports local LiteRT-LM/GGUF model records, Gemma multimodal routing, and SOC-aware backend fallback.",
+                    recommendation = "Keep model readiness and backend health visible before offline work.",
+                    fraction = if (preferredModel.optBoolean("ready")) 1f else 0.55f,
+                    extra = JSONObject().put("parity_source", "Kai on-device inference"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_parity",
+                    label = "Tool execution",
+                    ready = true,
+                    valueLabel = "native Android tools",
+                    detail = "Hermes exposes terminal, file, Android system, UI, automation, diagnostics, and memory tools to the local agent.",
+                    recommendation = "Prefer native Android APIs first, then Linux/shell tooling when the task truly needs it.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("parity_source", "Kai tool execution and Linux sandbox"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_parity",
+                    label = "Autonomous heartbeat",
+                    ready = automationStatus.optBoolean("standby_heartbeat_supported", false),
+                    valueLabel = "${automationStatus.optInt("heartbeat_interval_seconds", 30)}s interval",
+                    detail = "Operator heartbeat/status rows expose standby state, model routing, recent runs, and remote dispatch compatibility.",
+                    recommendation = "Use this for Kai-style self-checks and status surfacing.",
+                    fraction = if (automationStatus.optBoolean("standby_heartbeat_supported", false)) 0.9f else 0.45f,
+                    extra = JSONObject().put("parity_source", "Kai autonomous heartbeat"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_parity",
+                    label = "Settings and automation backup",
+                    ready = true,
+                    valueLabel = "export/import supported",
+                    detail = "Hermes automation bundles can be exported/imported, including records and variables.",
+                    recommendation = "Use android_automation_tool export_automations/import_automations for backup and migration workflows.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("parity_source", "Kai settings export/import"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_parity",
+                    label = "Image attachments and screen vision",
+                    ready = modelRouting.optBoolean("vision_capable", false),
+                    valueLabel = if (modelRouting.optBoolean("vision_capable", false)) "vision-ready" else "model dependent",
+                    detail = "Chat attachments, screenshot capture, and OpenGUI visual fallback feed image context into multimodal Gemma-capable paths.",
+                    recommendation = "Use a vision-capable LiteRT model before relying on image attachments for local-only reasoning.",
+                    fraction = if (modelRouting.optBoolean("vision_capable", false)) 0.9f else 0.5f,
+                    extra = JSONObject().put("parity_source", "Kai image attachments"),
+                ),
+            )
+    }
+
+    private fun workflowReadinessRows(
+        diagnostics: JSONObject,
+        signalStatus: JSONObject,
+        preferredModel: JSONObject,
+        automationStatus: JSONObject,
+        modelRouting: JSONObject,
+        availableSensors: JSONArray,
+    ): JSONArray {
+        val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
+        val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
+        val sensorNames = jsonStringList(availableSensors)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "wireless_workflow",
+                    label = "Analyze nearby Wi-Fi",
+                    ready = wifiPermission.optBoolean("can_read_scan_results", false),
+                    valueLabel = if (wifiPermission.optBoolean("can_read_scan_results", false)) "call wifi_ap_details" else "grant location/Wi-Fi scan access",
+                    detail = "Best next tool: android_device_diagnostics_tool action=wifi_ap_details or wifi_export.",
+                    recommendation = "Use before choosing channels, interpreting nearby signals, or explaining AP security/vendor metadata.",
+                    fraction = if (wifiPermission.optBoolean("can_read_scan_results", false)) 1f else 0.45f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "wireless_workflow",
+                    label = "Inspect nearby Bluetooth",
+                    ready = bluetoothPermission.optBoolean("can_scan_nearby_devices", false),
+                    valueLabel = if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) "call bluetooth_scan" else "grant Bluetooth scan access",
+                    detail = "Best next tool: android_device_diagnostics_tool action=bluetooth_scan.",
+                    recommendation = "Use for nearby BLE beacons, paired devices, service UUIDs, manufacturer IDs, and RSSI proximity.",
+                    fraction = if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) 1f else 0.45f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_workflow",
+                    label = "Sample motion/environment",
+                    ready = sensorNames.isNotEmpty(),
+                    valueLabel = "${sensorNames.size} sensor type(s)",
+                    detail = "Best next tool: android_device_diagnostics_tool action=sensor_snapshot sensor_types=accelerometer,gyroscope,magnetic_field,light,proximity.",
+                    recommendation = "Use for orientation, movement, ambient, and trigger-aware mobile workflows.",
+                    fraction = (sensorNames.size / 8f).coerceIn(0.15f, 1f),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "local_agent_workflow",
+                    label = "Run local multimodal agent",
+                    ready = preferredModel.optBoolean("ready") && modelRouting.optBoolean("vision_capable", false),
+                    valueLabel = if (preferredModel.optBoolean("ready")) modelRouting.optString("active_model").ifBlank { "preferred model ready" } else "model import needed",
+                    detail = "Best next tools: local chat with image attachment, android_ui_tool visual_snapshot, and diagnostics/tool calls.",
+                    recommendation = "Use the SOC backend policy and model routing status before assuming image or GPU availability.",
+                    fraction = when {
+                        preferredModel.optBoolean("ready") && modelRouting.optBoolean("vision_capable", false) -> 1f
+                        preferredModel.optBoolean("ready") -> 0.7f
+                        else -> 0.35f
+                    },
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "automation_workflow",
+                    label = "Autonomous status and dispatch",
+                    ready = automationStatus.optBoolean("standby_heartbeat_supported", false),
+                    valueLabel = if (automationStatus.optBoolean("standby_heartbeat_supported", false)) "operator status ready" else "automation status only",
+                    detail = "Best next tools: android_automation_tool operator_standby_status, operator_model_routing, operator_heartbeat.",
+                    recommendation = "Use for heartbeat/self-check style progress visibility and remote task dispatch.",
+                    fraction = if (automationStatus.optBoolean("standby_heartbeat_supported", false)) 0.95f else 0.45f,
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "rf_workflow",
+                    label = "Explain radio signal limits",
+                    ready = signalStatus.optBoolean("wifi_signal_analysis_supported", false) || signalStatus.optBoolean("bluetooth_signal_access_supported", false),
+                    valueLabel = if (signalStatus.optBoolean("requires_external_sdr_for_broad_rf", true)) "external SDR for broad RF" else "built-in RF ready",
+                    detail = "Best next tool: android_device_diagnostics_tool action=signal_capability_status or radio_signal_status.",
+                    recommendation = "Use this row to be explicit about public Android AM/FM/microwave limitations.",
+                    fraction = 0.5f,
+                ),
+            )
+    }
+
+    private fun capabilityRow(
+        category: String,
+        label: String,
+        ready: Boolean,
+        valueLabel: String,
+        detail: String,
+        recommendation: String,
+        fraction: Float,
+        extra: JSONObject = JSONObject(),
+    ): JSONObject {
+        val row = JSONObject()
+            .put("category", category)
+            .put("label", label)
+            .put("ready", ready)
+            .put("value_label", valueLabel)
+            .put("detail", detail)
+            .put("recommendation", recommendation)
+            .put("fraction", fraction.coerceIn(0.05f, 1f))
+            .put("value", (fraction.coerceIn(0.05f, 1f) * 100).roundToInt())
+        extra.keys().forEach { key -> row.put(key, extra.opt(key)) }
+        return row
+    }
+
+    private fun countReadyRows(rows: JSONArray): Int {
+        var count = 0
+        for (index in 0 until rows.length()) {
+            if (rows.optJSONObject(index)?.optBoolean("ready", false) == true) count += 1
+        }
+        return count
+    }
+
+    private fun compactModelRoutingJson(status: JSONObject): JSONObject {
+        return JSONObject()
+            .put("ready", status.optBoolean("ready", false))
+            .put("active_provider", status.optString("active_provider"))
+            .put("active_provider_label", status.optString("active_provider_label"))
+            .put("active_model", status.optString("active_model"))
+            .put("vision_capable", status.optBoolean("vision_capable", false))
+            .put("model_routing_supported", status.optBoolean("model_routing_supported", false))
+            .put("roles", status.optJSONArray("roles") ?: JSONArray())
+    }
+
+    private fun compactHindsightStatusJson(status: JSONObject): JSONObject {
+        return JSONObject()
+            .put("memory_count", status.optInt("memory_count", 0))
+            .put("reinforced_memory_count", status.optInt("reinforced_memory_count", 0))
+            .put("promoted_memory_count", status.optInt("promoted_memory_count", 0))
+            .put("promotion_hit_threshold", status.optInt("promotion_hit_threshold", 0))
+    }
+
+    private fun compactAutomationStandbyStatusJson(status: JSONObject): JSONObject {
+        return JSONObject()
+            .put("ready", status.optBoolean("ready", false))
+            .put("standby_heartbeat_supported", status.optBoolean("standby_heartbeat_supported", false))
+            .put("batch_heartbeat_supported", status.optBoolean("batch_heartbeat_supported", false))
+            .put("model_routing_supported", status.optBoolean("model_routing_supported", false))
+            .put("heartbeat_interval_seconds", status.optInt("heartbeat_interval_seconds", 0))
+            .put("enabled_automation_count", status.optInt("enabled_automation_count", 0))
+            .put("recent_run_count", status.optInt("recent_run_count", 0))
+            .put("supported_dispatch_channels", status.optJSONArray("supported_dispatch_channels") ?: JSONArray())
+    }
+
+    private fun compactSignalCapabilityJson(status: JSONObject): JSONObject {
+        return JSONObject()
+            .put("audio_frequency_analysis_supported", status.optBoolean("audio_frequency_analysis_supported", false))
+            .put("wifi_signal_analysis_supported", status.optBoolean("wifi_signal_analysis_supported", false))
+            .put("bluetooth_signal_access_supported", status.optBoolean("bluetooth_signal_access_supported", false))
+            .put("magnetic_field_sensor_supported", status.optBoolean("magnetic_field_sensor_supported", false))
+            .put("motion_sensor_analysis_supported", status.optJSONArray("motion_sensor_analysis_supported") ?: JSONArray())
+            .put("am_fm_public_android_scan_supported", status.optBoolean("am_fm_public_android_scan_supported", false))
+            .put("requires_external_sdr_for_broad_rf", status.optBoolean("requires_external_sdr_for_broad_rf", true))
+    }
+
     private fun showActiveOverlayJson(context: Context, arguments: JSONObject): JSONObject {
         val message = arguments.optString("message")
             .ifBlank { "Hermes is active and working on the current task." }
@@ -736,7 +1210,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(toolJson("android_system_tool", "Read phone state and open settings or user-granted Shizuku/Sui actions.", "action, package_name, permission"))
                     .put(toolJson("android_ui_tool", "Inspect and control visible Android UI through accessibility and screenshots.", "action, selectors, coordinates"))
                     .put(toolJson("android_automation_tool", "Run/open/create saved automations, watcher tasks, overlays, notifications, widgets, and Tasker-style triggers.", "action, trigger, data_uri"))
-                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel ratings/AP detail and export rows/vendor OUI/filter facets, Bluetooth nearby devices/service UUIDs/manufacturer/proximity, camera, sensors, SOC compatibility, overlay, radio/RF capability limits, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, refresh, sensor_types, timeout_ms"))
+                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel ratings/AP detail and export rows/vendor OUI/filter facets, Bluetooth nearby devices/service UUIDs/manufacturer/proximity, camera, sensors, SOC compatibility, overlay, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, refresh, sensor_types, timeout_ms"))
                     .put(toolJson("hindsight_memory_tool", "Retain, recall, reflect, and promote local Hindsight-style memories with tags, entities, keywords, recency, reinforcement, and reusable prompt context.", "action, content, query, tags, category")),
             )
             .put("diagnostics_actions", JSONArray(ACTIONS))
@@ -2508,7 +2982,11 @@ object HermesDeviceDiagnosticsBridge {
     }
 
     private fun jsonStringList(row: JSONObject, key: String): List<String> {
-        val array = row.optJSONArray(key) ?: return emptyList()
+        return jsonStringList(row.optJSONArray(key))
+    }
+
+    private fun jsonStringList(array: JSONArray?): List<String> {
+        if (array == null) return emptyList()
         return buildList {
             for (index in 0 until array.length()) {
                 array.optString(index).takeIf { it.isNotBlank() }?.let(::add)
@@ -2684,6 +3162,7 @@ object HermesDeviceDiagnosticsBridge {
         "camera_status",
         "radio_signal_status",
         "signal_capability_status",
+        "agent_environment_report",
         "social_gmail_goal_preflight",
         "show_active_overlay",
         "tool_catalog",

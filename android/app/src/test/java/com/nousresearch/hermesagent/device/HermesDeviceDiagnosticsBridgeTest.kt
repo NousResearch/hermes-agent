@@ -385,9 +385,38 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_channel_rating"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_ap_details"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_export"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("agent_environment_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_scan"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_status"))
         assertTrue(result.getJSONObject("hindsight_memory_translation").has("retain"))
+    }
+
+    @Test
+    fun agentEnvironmentReportSummarizesKaiParityAndSystemInputs() {
+        val result = HermesDeviceDiagnosticsBridge.agentEnvironmentReportJson(context)
+        val capabilities = result.getJSONArray("agent_capability_matrix")
+        val kaiParity = result.getJSONArray("kai_parity_matrix")
+        val readiness = result.getJSONArray("workflow_readiness_matrix")
+        val capabilityText = capabilities.toString()
+        val kaiText = kaiParity.toString()
+        val readinessText = readiness.toString()
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("agent_environment_report", result.getString("action"))
+        assertTrue(result.getJSONObject("soc_profile").has("litert_lm_backend_strategy"))
+        assertTrue(result.getJSONObject("signal_capability_status").has("requires_external_sdr_for_broad_rf"))
+        assertTrue(capabilityText.contains("Wi-Fi analyzer"))
+        assertTrue(capabilityText.contains("Bluetooth scanner"))
+        assertTrue(capabilityText.contains("SOC and LiteRT backend policy"))
+        assertTrue(capabilityText.contains("Persistent hindsight memory"))
+        assertTrue(kaiText.contains("Persistent memory"))
+        assertTrue(kaiText.contains("Autonomous heartbeat"))
+        assertTrue(kaiText.contains("Image attachments and screen vision"))
+        assertTrue(readinessText.contains("Analyze nearby Wi-Fi"))
+        assertTrue(readinessText.contains("Run local multimodal agent"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Kai Parity"))
+        assertTrue(result.getInt("agent_capability_count") >= 8)
+        assertTrue(result.getInt("kai_parity_count") >= 6)
     }
 
     @Test

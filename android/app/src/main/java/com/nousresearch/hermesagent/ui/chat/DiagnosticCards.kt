@@ -72,6 +72,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "radio_frequency_capability" -> radioRow(row)
                 "sensor_vector" -> sensorRow(row)
                 "sensor_capability" -> sensorCapabilityRow(row)
+                "agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness" -> capabilityMatrixRow(row)
                 else -> genericRow(row, index)
             }
             if (parsed != null) add(parsed)
@@ -389,6 +390,27 @@ private fun sensorCapabilityRow(row: JSONObject): DiagnosticGraphRow {
             powerMa <= 5.0 -> 0.65f
             else -> 0.35f
         },
+    )
+}
+
+private fun capabilityMatrixRow(row: JSONObject): DiagnosticGraphRow {
+    val label = row.optString("label").takeIf { it.isNotBlank() }
+        ?: row.optString("category").ifBlank { "Capability" }
+    val ready = row.optBoolean("ready", false)
+    val category = row.optString("category").takeIf { it.isNotBlank() }
+    val recommendation = row.optString("recommendation").takeIf { it.isNotBlank() }
+    val detail = listOfNotNull(
+        category?.replace('_', ' '),
+        row.optString("detail").takeIf { it.isNotBlank() },
+        recommendation,
+    ).joinToString(" | ")
+    val explicitFraction = row.optNumber("fraction")?.toFloat()
+    val valueLabel = row.optString("value_label").ifBlank { if (ready) "ready" else "needs setup" }
+    return DiagnosticGraphRow(
+        label = label,
+        valueLabel = valueLabel,
+        detail = detail.ifBlank { if (ready) "Capability ready" else "Capability needs setup" },
+        fraction = explicitFraction?.coerceIn(0.05f, 1f) ?: if (ready) 0.9f else 0.25f,
     )
 }
 

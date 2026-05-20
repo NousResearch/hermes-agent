@@ -253,6 +253,69 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun compactsAgentEnvironmentReportWithoutDroppingReadinessRows() {
+        val capabilities = JSONArray()
+        repeat(20) { index ->
+            capabilities.put(
+                JSONObject()
+                    .put("category", "capability_$index")
+                    .put("label", "Capability $index")
+                    .put("ready", index % 2 == 0)
+                    .put("value_label", "value $index")
+                    .put("detail", "Detailed capability row $index")
+                    .put("recommendation", "Use the matching native tool.")
+                    .put("fraction", 0.8),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "agent_environment_report")
+            .put("agent_capability_count", 20)
+            .put("ready_capability_count", 10)
+            .put("kai_parity_count", 1)
+            .put("workflow_readiness_count", 1)
+            .put("agent_capability_matrix", capabilities)
+            .put(
+                "kai_parity_matrix",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "kai_parity")
+                        .put("label", "Autonomous heartbeat")
+                        .put("ready", true)
+                        .put("value_label", "30s interval")
+                        .put("parity_source", "Kai autonomous heartbeat"),
+                ),
+            )
+            .put(
+                "workflow_readiness_matrix",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "wireless_workflow")
+                        .put("label", "Analyze nearby Wi-Fi")
+                        .put("ready", true)
+                        .put("value_label", "call wifi_ap_details"),
+                ),
+            )
+            .put("cards", JSONArray().put(JSONObject().put("title", "Agent Environment").put("body", "20 rows")))
+            .toString()
+
+        val compacted = NativeToolContextCompressor.compactToolResult(result)
+        val parsed = JSONObject(compacted)
+        val capabilityMatrix = parsed.getJSONObject("agent_capability_matrix")
+        val kaiParity = parsed.getJSONArray("kai_parity_matrix")
+        val readiness = parsed.getJSONArray("workflow_readiness_matrix")
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(20, parsed.getInt("agent_capability_count"))
+        assertEquals("array", capabilityMatrix.getString("type"))
+        assertEquals(20, capabilityMatrix.getInt("original_count"))
+        assertEquals("Capability 0", capabilityMatrix.getJSONArray("items").getJSONObject(0).getString("label"))
+        assertEquals(true, capabilityMatrix.getJSONArray("items").getJSONObject(0).getBoolean("ready"))
+        assertEquals("Autonomous heartbeat", kaiParity.getJSONObject(0).getString("label"))
+        assertEquals("Analyze nearby Wi-Fi", readiness.getJSONObject(0).getString("label"))
+    }
+
+    @Test
     fun compactsBluetoothAndRadioDiagnosticRowsWithoutDroppingSignalMetadata() {
         val devices = JSONArray()
         repeat(30) { index ->

@@ -277,6 +277,67 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesAgentEnvironmentRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        JSONObject()
+                            .put("title", "Agent Environment")
+                            .put("body", "Capability matrix.")
+                            .put("graph_type", "agent_capability_matrix")
+                            .put(
+                                "rows",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("category", "soc_backend")
+                                        .put("label", "SOC and LiteRT backend policy")
+                                        .put("ready", true)
+                                        .put("value_label", "ARM MediaTek/Mali")
+                                        .put("detail", "MediaTek | Mali | arm64-v8a")
+                                        .put("recommendation", "GPU-first with CPU fallback.")
+                                        .put("fraction", 0.95),
+                                ),
+                            ),
+                    )
+                    .put(
+                        JSONObject()
+                            .put("title", "Kai Parity")
+                            .put("body", "Parity rows.")
+                            .put("graph_type", "kai_parity_matrix")
+                            .put(
+                                "rows",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("category", "kai_parity")
+                                        .put("label", "Autonomous heartbeat")
+                                        .put("ready", true)
+                                        .put("value_label", "30s interval")
+                                        .put("detail", "Operator heartbeat/status rows.")
+                                        .put("recommendation", "Use for self-checks.")
+                                        .put("fraction", 0.9),
+                                ),
+                            ),
+                    ),
+            )
+            .toString()
+
+        val cards = extractDiagnosticCards(content)
+        val socRow = cards[0].rows.single()
+        val heartbeatRow = cards[1].rows.single()
+
+        assertEquals("SOC and LiteRT backend policy", socRow.label)
+        assertEquals("ARM MediaTek/Mali", socRow.valueLabel)
+        assertTrue(socRow.detail.contains("soc backend"))
+        assertTrue(socRow.detail.contains("GPU-first"))
+        assertTrue(socRow.fraction > 0.9f)
+        assertEquals("Autonomous heartbeat", heartbeatRow.label)
+        assertEquals("30s interval", heartbeatRow.valueLabel)
+        assertTrue(heartbeatRow.detail.contains("kai parity"))
+    }
+
+    @Test
     fun parsesWifiSignalHistoryRowsForExpandableSignalCards() {
         val content = JSONObject()
             .put(

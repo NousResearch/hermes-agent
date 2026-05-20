@@ -193,6 +193,28 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     assert 'libvndksupport.so' in manifest
 
 
+def test_android_diagnostics_exposes_agent_environment_report_for_kai_parity():
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+
+    assert '"agent_environment_report"' in diagnostics_bridge
+    assert 'agentEnvironmentReportJson(appContext)' in diagnostics_bridge
+    assert 'agentCapabilityMatrixRows(' in diagnostics_bridge
+    assert 'kaiParityMatrixRows(' in diagnostics_bridge
+    assert 'workflowReadinessRows(' in diagnostics_bridge
+    assert '"agent_capability_matrix"' in diagnostics_bridge
+    assert '"kai_parity_matrix"' in diagnostics_bridge
+    assert '"workflow_readiness_matrix"' in diagnostics_bridge
+    assert 'Use SOC and LiteRT backend policy fields to avoid Snapdragon-only assumptions' in diagnostics_bridge
+    assert 'Use hindsight_memory_tool and operator heartbeat/status rows' in diagnostics_bridge
+    assert 'agent_environment_report' in chat_client
+    assert '"agent_capability_matrix"' in chat_client
+    assert '"kai_parity_matrix"' in chat_client
+    assert '"workflow_readiness_matrix"' in chat_client
+    assert '"agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness" -> capabilityMatrixRow(row)' in diagnostic_cards
+
+
 def test_android_linux_subsystem_reapplies_executable_bits_before_reusing_cached_prefix():
     bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesLinuxSubsystemBridge.kt").read_text(encoding="utf-8")
     linux_subsystem = (REPO_ROOT / "hermes_android/linux_subsystem.py").read_text(encoding="utf-8")

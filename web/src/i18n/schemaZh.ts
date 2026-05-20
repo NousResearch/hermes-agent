@@ -1,6 +1,4 @@
-// Auto-generated schema Chinese translation map
-// Generated from /api/config/schema
-// Run: cd web && curl -s http://localhost:9119/api/config/schema | python3 gen-schema-zh.py
+// Chinese labels for config schema keys used by AutoField.
 
 export const SCHEMA_ZH_LABEL: Record<string, string> = {
   "agent.api_max_retries": "代理 → API 最大重试",

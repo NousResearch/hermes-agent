@@ -150,17 +150,6 @@ def test_main_setup_browser_propagates_browser_failure(monkeypatch):
 
     monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", fake_ensure)
 
-assert sh.is_file(), f"missing bundled script: {sh}"
-    assert ps1.is_file(), f"missing bundled script: {ps1}"
-
-    sh_text = sh.read_text(encoding="utf-8")
-    ps1_text = ps1.read_text(encoding="utf-8")
-
-    # Sanity: scripts know how to find the Hermes-managed Node prefix.
-    assert "HERMES_HOME" in sh_text
-    assert "agent-browser" in sh_text
-    assert "HermesHome" in ps1_text
-    assert "agent-browser" in ps1_text
-with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(SystemExit) as excinfo:
         entry.main(["--setup-browser"])
     assert excinfo.value.code == 1

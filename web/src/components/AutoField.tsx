@@ -13,8 +13,7 @@ function FieldHint({
   schemaKey: string;
 }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
-  const rawDesc = schema.description ? String(schema.description) : "";
-  const description = rawDesc;
+  const description = schema.description ? String(schema.description) : "";
 
   if (!keyPath && !description) return null;
 
@@ -210,27 +209,6 @@ export function AutoField({
       </div>
     );
   }
-
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    const obj = value as Record<string, unknown>;
-    return (
-      <div className="grid gap-3 border border-border p-3">
-        <Label className="text-xs font-medium">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
-        {Object.entries(obj).map(([subKey, subVal]) => (
-          <div key={subKey} className="grid gap-1">
-            <Label className="text-xs text-muted-foreground">{subKey}</Label>
-            <Input
-              value={String(subVal ?? "")}
-              onChange={(e) => onChange({ ...obj, [subKey]: e.target.value })}
-              className="text-xs"
-            />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
 
   return (
     <div className="grid gap-1.5">

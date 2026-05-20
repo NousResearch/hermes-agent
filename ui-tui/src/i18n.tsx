@@ -1053,11 +1053,11 @@ export function I18nProvider({ children, locale }: { children: ReactNode; locale
 
 export const useI18n = () => useContext(I18nContext)
 
-/** 工具集原始名称（带 _tools 后缀或不带）→ 显示名称 */
+/** Raw toolset name, with or without the _tools suffix, to display label. */
 export const toolsetLabel = (raw: string, locale: Locale): string => {
   const key = raw.endsWith('_tools') ? raw.slice(0, -6) : raw
   if (locale !== 'zh') return key
-  // 中文查表，找不到就用原名
+  // Fall back to the original name when no localized label is available.
   const zh = ZH[`toolset.${key}` as keyof typeof ZH]
   return (zh as string) ?? key
 }

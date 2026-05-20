@@ -1810,3 +1810,62 @@ class TestSendUpdatePrompt:
 
         adapter.send_with_keyboard = fake_swk  # type: ignore[assignment]
         await adapter.send_update_prompt(chat_id="u", prompt="ok?")
+
+
+# ---------------------------------------------------------------------------
+# _read_events guard against busy-spin on a stale/closed WebSocket
+# ---------------------------------------------------------------------------
+
+class TestReadEventsClosedSocket:
+    """Regression tests for the QQ adapter event-read loop.
+
+    A previous version of ``_read_events`` returned normally when
+    ``self._ws.closed`` was already True, which let ``_listen_loop`` re-enter
+    the coroutine without ever suspending. That caused the gateway to spin at
+    100% CPU after a failed reconnect (e.g. an empty response from
+    ``_get_gateway_url``), starving the asyncio event loop for every other
+    platform and even blocking systemd from shutting the process down.
+    """
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @pytest.mark.asyncio
+    async def test_raises_when_ws_is_none(self):
+        adapter = self._make_adapter()
+        adapter._ws = None
+        with pytest.raises(RuntimeError, match="WebSocket not connected"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_raises_when_ws_is_closed(self):
+        """Stale, already-closed ``_ws`` must raise instead of returning.
+
+        Returning lets the outer ``_listen_loop`` busy-spin because no
+        ``await`` in the path actually yields back to the event loop.
+        """
+        adapter = self._make_adapter()
+        ws = mock.Mock()
+        ws.closed = True
+        # ``receive`` should never be awaited on a closed socket.
+        ws.receive = mock.Mock(side_effect=AssertionError(
+            "_read_events must not call receive() on a closed socket"))
+        adapter._ws = ws
+        with pytest.raises(RuntimeError, match="WebSocket not connected"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_does_not_busy_spin_on_closed_socket(self):
+        """End-to-end guard: a regression must manifest as a timeout rather
+        than hanging CI forever."""
+        adapter = self._make_adapter()
+        ws = mock.Mock()
+        ws.closed = True
+        adapter._ws = ws
+
+        async def call():
+            with pytest.raises(RuntimeError):
+                await adapter._read_events()
+
+        await asyncio.wait_for(call(), timeout=1.0)

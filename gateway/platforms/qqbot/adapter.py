@@ -652,8 +652,20 @@ class QQAdapter(BasePlatformAdapter):
             return False
 
     async def _read_events(self) -> None:
-        """Read WebSocket frames until connection closes."""
-        if not self._ws:
+        """Read WebSocket frames until the connection closes.
+
+        This coroutine must terminate by raising (or by ``self._running``
+        flipping to ``False``) whenever the socket is unusable. Returning
+        normally while the underlying transport is closed lets the outer
+        ``_listen_loop`` re-enter ``_read_events`` immediately; because no
+        ``await`` in that path actually suspends, the event loop is starved
+        and the whole gateway hangs at 100% CPU.
+        """
+        if not self._ws or self._ws.closed:
+            # ``self._ws`` can be a stale, already-closed reference when a
+            # previous reconnect attempt failed before ``_open_ws`` had a
+            # chance to replace it. Surface that to ``_listen_loop`` so it
+            # backs off and reconnects instead of spinning on a dead socket.
             raise RuntimeError("WebSocket not connected")
 
         while self._running and self._ws and not self._ws.closed:
@@ -669,6 +681,9 @@ class QQAdapter(BasePlatformAdapter):
                 raise QQCloseError(msg.data, msg.extra)
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
+            # Any other frame type (BINARY, PONG, CONTINUATION, CLOSING, ...)
+            # is ignored on purpose; the ``await self._ws.receive()`` above
+            # is the suspension point that keeps the event loop alive.
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).

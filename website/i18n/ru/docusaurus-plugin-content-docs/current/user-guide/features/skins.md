@@ -16,9 +16,9 @@ description: "Настройка Hermes CLI с помощью встроенны
 ## Смена скина
 
 ```bash
-/skin                # show the current skin and list available skins
-/skin ares           # switch to a built-in skin
-/skin mytheme        # switch to a custom skin from ~/.hermes/skins/mytheme.yaml
+/skin                # показать текущий скин и список доступных скинов
+/skin ares           # переключиться на встроенный скин
+/skin mytheme        # переключиться на пользовательский скин из ~/.hermes/skins/mytheme.yaml
 ```
 
 Или задайте скин по умолчанию в `~/.hermes/config.yaml`:
@@ -174,13 +174,13 @@ branding:
 
 tool_prefix: "┊"
 
-# Per-tool emoji overrides (optional)
+# Переопределения эмодзи для отдельных инструментов (необязательно)
 tool_emojis:
   terminal: "⚔"
   web_search: "🔮"
   read_file: "📄"
 
-# Custom ASCII art banners (optional, Rich markup supported)
+# Пользовательские ASCII-баннеры (необязательно, поддерживается разметка Rich)
 # banner_logo: |
 #   [bold #FFD700] MY AGENT [/]
 # banner_hero: |

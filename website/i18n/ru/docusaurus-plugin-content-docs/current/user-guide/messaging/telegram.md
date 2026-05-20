@@ -32,7 +32,7 @@ Hermes Agent умеет работать с Telegram как полноценны
 
 | Команда | Назначение |
 |---------|------------|
-| `/setdescription` | Текст `What can this bot do?`, который показывается до начала чата |
+| `/setdescription` | Текст `What can this bot do?` — описание, которое показывается до начала чата |
 | `/setabouttext` | Короткий текст на странице профиля бота |
 | `/setuserpic` | Загрузить аватар для бота |
 | `/setcommands` | Задать меню команд (кнопка `/` в чате) |
@@ -175,7 +175,7 @@ terminal:
 ```bash
 TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
 TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"  # required
-# TELEGRAM_WEBHOOK_PORT=8443        # optional, default 8443
+# TELEGRAM_WEBHOOK_PORT=8443        # необязательно, по умолчанию 8443
 ```
 
 | Переменная | Требуется | Описание |

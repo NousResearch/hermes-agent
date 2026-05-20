@@ -21,6 +21,7 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
@@ -1589,6 +1590,10 @@ def list_authenticated_providers(
             if not raw_name or not api_url:
                 continue
             api_key = (entry.get("api_key") or "").strip()
+            if not api_key:
+                key_env = (entry.get("key_env") or "").strip()
+                if key_env:
+                    api_key = os.environ.get(key_env, "").strip()
 
             group_key = (api_url, api_key)
             if group_key not in groups:

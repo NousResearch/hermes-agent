@@ -968,7 +968,36 @@ def check_dangerous_command(command: str, env_type: str,
                         "approvals.cron_mode: approve in config.yaml."
                     ),
                 }
-        return {"approved": True, "message": None}
+            return {"approved": True, "message": None}
+
+        # Headless (no CLI, no gateway, no cron) — batch_runner.py, scripted
+        # AIAgent usage, embedded library callers.  Pre-#29159 this branch
+        # fell through to ``approved: True`` and silently waved every
+        # dangerous command through; GHSA-7gp4-gfvg-4mpj called this out
+        # as a Dangerous Command Approval Bypass.  Fail closed by default
+        # — operators who genuinely want a permissive headless run have
+        # two opt-ins:
+        #
+        # * ``HERMES_HEADLESS_APPROVE=1`` — explicit "I understand, run
+        #   batch jobs without prompts" toggle, scoped to one process.
+        # * ``HERMES_YOLO_MODE=1`` / per-session ``/yolo`` — the existing
+        #   blanket bypass, already checked above.  Hardline patterns
+        #   (rm -rf /, mkfs, fork bomb, …) still block under both.
+        if env_var_enabled("HERMES_HEADLESS_APPROVE"):
+            return {"approved": True, "message": None}
+        return {
+            "approved": False,
+            "pattern_key": pattern_key,
+            "description": description,
+            "message": (
+                f"BLOCKED: Command flagged as dangerous ({description}) "
+                "but no interactive approval channel is available (no CLI "
+                "TTY, no gateway adapter, no cron session).  Either find a "
+                "safer alternative, run the agent interactively, or set "
+                "HERMES_HEADLESS_APPROVE=1 / HERMES_YOLO_MODE=1 to opt this "
+                "process into permissive execution (see GHSA-7gp4-gfvg-4mpj)."
+            ),
+        }
 
     if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
         submit_pending(session_key, {
@@ -1083,10 +1112,12 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
-    # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
-    # flows, we do not block on approvals and we skip external guard work.
+    # Outside CLI / gateway / ask flows we have no human channel to ask
+    # — but the pre-#29159 behaviour of unconditionally returning
+    # ``approved: True`` is exactly the GHSA-7gp4-gfvg-4mpj bypass.
+    # Keep cron jobs and the new explicit headless opt-in working, but
+    # otherwise mirror ``check_dangerous_command``'s fail-closed default.
     if not is_cli and not is_gateway and not is_ask:
-        # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
@@ -1102,7 +1133,17 @@ def check_all_command_guards(command: str, env_type: str,
                             "approvals.cron_mode: approve in config.yaml."
                         ),
                     }
-        return {"approved": True, "message": None}
+            return {"approved": True, "message": None}
+
+        # Headless callers (``batch_runner.py``, scripted ``AIAgent``,
+        # ad-hoc embeds).  Opt in to permissive execution explicitly or
+        # delegate the decision to ``check_dangerous_command`` so the
+        # caller gets the same fail-closed deny message and remediation
+        # pointer used by the single-guard path.
+        if env_var_enabled("HERMES_HEADLESS_APPROVE"):
+            return {"approved": True, "message": None}
+        return check_dangerous_command(command, env_type,
+                                       approval_callback=approval_callback)
 
     # --- Phase 1: Gather findings from both checks ---
 

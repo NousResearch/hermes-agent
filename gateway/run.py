@@ -2660,11 +2660,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
 
-        # Wire process registry into session store for reset protection
-        from tools.process_registry import process_registry
+        # Wire process registry into session store for reset protection.
+        # Processes older than MAX_ACTIVE_PROCESS_AGE (24h) are treated as
+        # stale and no longer block session idle / daily reset — see #29177.
+        from tools.process_registry import MAX_ACTIVE_PROCESS_AGE, process_registry
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
-            has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+            has_active_processes_fn=lambda key: process_registry.has_active_for_session(
+                key, max_active_age=MAX_ACTIVE_PROCESS_AGE,
+            ),
         )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False

@@ -58,6 +58,7 @@ CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
+MAX_ACTIVE_PROCESS_AGE = 86400  # 24h — stale processes no longer block session reset
 
 # Watch pattern rate limiting — PER SESSION.
 # Hard rule: at most ONE watch-match notification every WATCH_MIN_INTERVAL_SECONDS.
@@ -1567,17 +1568,35 @@ class ProcessRegistry:
                 for s in self._running.values()
             )
 
-    def has_active_for_session(self, session_key: str) -> bool:
-        """Check if there are active processes for a gateway session key."""
+    def has_active_for_session(
+        self, session_key: str, max_active_age: Optional[float] = None,
+    ) -> bool:
+        """Check if there are active processes for a gateway session key.
+
+        When *max_active_age* is set (seconds), processes that started more
+        than that many seconds ago are **ignored** — they are still running
+        but are considered stale and must not block session idle / daily
+        reset.  This prevents a forgotten ``http.server`` (or any long-lived
+        preview process) from permanently freezing the session lifecycle.
+
+        Args:
+            session_key: Gateway session key to check.
+            max_active_age: If set, ignore processes older than this many
+                seconds.  ``None`` retains the legacy behaviour (any running
+                process blocks).
+        """
         with self._lock:
             sessions = list(self._running.values())
 
         for session in sessions:
             self._refresh_detached_session(session)
 
+        now = time.time()
         with self._lock:
             return any(
-                s.session_key == session_key and not s.exited
+                s.session_key == session_key
+                and not s.exited
+                and (max_active_age is None or (now - s.started_at) < max_active_age)
                 for s in self._running.values()
             )
 

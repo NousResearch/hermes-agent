@@ -16,6 +16,7 @@ from tools.process_registry import (
     ProcessSession,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
+    MAX_ACTIVE_PROCESS_AGE,
 )
 
 
@@ -443,6 +444,27 @@ class TestActiveQueries:
         registry._running[s.id] = s
         assert registry.has_active_for_session("gw_session_1") is True
         assert registry.has_active_for_session("other") is False
+
+    def test_has_active_for_session_with_max_age_recent(self, registry):
+        """Recent process is considered active when max_active_age is set."""
+        s = _make_session(started_at=time.time() - 100)
+        s.session_key = "gw_session_1"
+        registry._running[s.id] = s
+        assert registry.has_active_for_session("gw_session_1", max_active_age=3600) is True
+
+    def test_has_active_for_session_with_max_age_stale(self, registry):
+        """Stale process (older than max_active_age) is ignored."""
+        s = _make_session(started_at=time.time() - 90000)  # 25 hours ago
+        s.session_key = "gw_session_1"
+        registry._running[s.id] = s
+        assert registry.has_active_for_session("gw_session_1", max_active_age=86400) is False
+
+    def test_has_active_for_session_max_age_none_preserves_legacy(self, registry):
+        """Without max_active_age, any running process blocks (legacy behaviour)."""
+        s = _make_session(started_at=time.time() - 90000)  # 25 hours ago
+        s.session_key = "gw_session_1"
+        registry._running[s.id] = s
+        assert registry.has_active_for_session("gw_session_1") is True
 
     def test_exited_not_active(self, registry):
         s = _make_session(task_id="t1", exited=True, exit_code=0)

@@ -238,6 +238,11 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
     first_data_row = _split_markdown_table_row(table_block[2]) if len(table_block) > 2 else []
     has_row_label_col = len(first_data_row) == len(headers) + 1
 
+    # When no row-label column, first data column becomes the heading.
+    # Slice headers once before the loop so zip stays aligned across all rows.
+    if not has_row_label_col:
+        headers = headers[1:]
+
     rendered_rows: list[str] = []
     for index, row in enumerate(table_block[2:], start=1):
         cells = _split_markdown_table_row(row)
@@ -248,7 +253,13 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
         else:
             # No row-label column: use first non-empty cell as heading.
             heading = next((cell for cell in cells if cell), f"Row {index}")
-            data_cells = cells
+            data_cells = cells[1:]  # Remove first cell — it's already in heading
+
+        # Pad or trim data_cells to match headers length.
+        if len(data_cells) < len(headers):
+            data_cells.extend([""] * (len(headers) - len(data_cells)))
+        elif len(data_cells) > len(headers):
+            data_cells = data_cells[: len(headers)]
 
         # Pad or trim data_cells to match headers length.
         if len(data_cells) < len(headers):
@@ -261,7 +272,7 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
             f"• {header}: {value}" for header, value in zip(headers, data_cells)
         )
 
-    return "\n\n".join(rendered_rows)
+    return "\n".join(rendered_rows)
 
 
 def _wrap_markdown_tables(text: str) -> str:

@@ -574,7 +574,8 @@ class TestWrapMarkdownTables:
         )
         out = _wrap_markdown_tables(text)
         assert "**Alice**" in out
-        assert "• Player: Alice" in out
+        # First cell becomes heading, so no duplicate in bullets
+        assert "• Player: Alice" not in out
         assert "• Score: 150" in out
         assert "**Bob**" in out
         assert "• Score: 120" in out
@@ -587,7 +588,8 @@ class TestWrapMarkdownTables:
         text = "head1 | head2\n--- | ---\na | b\nc | d"
         out = _wrap_markdown_tables(text)
         assert out.startswith("**a**")
-        assert "• head1: a" in out
+        # First cell becomes heading, so no duplicate in bullets
+        assert "• head1: a" not in out
         assert "• head2: b" in out
         assert "**c**" in out
 
@@ -600,6 +602,8 @@ class TestWrapMarkdownTables:
         )
         out = _wrap_markdown_tables(text)
         assert "**Ada**" in out
+        # First cell becomes heading, so no duplicate in bullets
+        assert "• Name: Ada" not in out
         assert "• Age: 30" in out
         assert "• City: NYC" in out
 
@@ -616,8 +620,12 @@ class TestWrapMarkdownTables:
         out = _wrap_markdown_tables(text)
         assert out.count("**1**") == 1
         assert out.count("**9**") == 1
-        assert "• A: 1" in out
-        assert "• X: 9" in out
+        # First cell becomes heading, so no duplicate in bullets
+        assert "• A: 1" not in out
+        # Second table: first cell (9) becomes heading, X header is dropped
+        assert "• X: 9" not in out
+        assert "• B: 2" in out
+        assert "• Y: 8" in out
 
     def test_plain_text_with_pipes_not_wrapped(self):
         """A bare pipe in prose must NOT trigger wrapping."""

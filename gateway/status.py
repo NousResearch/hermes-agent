@@ -229,13 +229,36 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
         raw = path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
+    except UnicodeDecodeError:
+        # File contains non-UTF-8 bytes (e.g. truncated write, accidental
+        # binary append). Quarantine it so subsequent writers overwrite a
+        # clean file instead of triggering this error on every status write.
+        # See issue #28579.
+        _quarantine_corrupt_json(path, reason="unicode-decode-error")
+        return None
     if not raw:
         return None
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
+        _quarantine_corrupt_json(path, reason="json-decode-error")
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _quarantine_corrupt_json(path: Path, *, reason: str) -> None:
+    """Move a corrupt JSON file aside so it stops causing repeat read errors.
+
+    Best-effort: any failure here is swallowed.
+    """
+    try:
+        backup = path.with_suffix(path.suffix + f".corrupt.{reason}")
+        if backup.exists():
+            path.unlink(missing_ok=True)
+        else:
+            path.replace(backup)
+    except OSError:
+        pass
 
 
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:

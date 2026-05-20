@@ -941,3 +941,38 @@ class TestReadProcessCmdlinePsFallback:
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+
+class TestReadJsonFileCorruption:
+    """Regression: _read_json_file must not raise on non-UTF-8 input (#28579)."""
+
+    def test_returns_none_on_non_utf8_bytes_and_quarantines(self, tmp_path):
+        path = tmp_path / "gateway_state.json"
+        # Valid JSON followed by a TLS record fragment — real corruption from #28579.
+        path.write_bytes(b'{"a": 1}' + b"\x17\x03\x03\x00\x13\x68\xc7")
+
+        result = status._read_json_file(path)
+
+        assert result is None
+        assert not path.exists()
+        assert (tmp_path / "gateway_state.json.corrupt.unicode-decode-error").exists()
+
+    def test_returns_none_on_invalid_json_and_quarantines(self, tmp_path):
+        path = tmp_path / "gateway_state.json"
+        path.write_text("{not json", encoding="utf-8")
+
+        result = status._read_json_file(path)
+
+        assert result is None
+        assert not path.exists()
+        assert (tmp_path / "gateway_state.json.corrupt.json-decode-error").exists()
+
+    def test_valid_json_unaffected(self, tmp_path):
+        path = tmp_path / "gateway_state.json"
+        path.write_text('{"x": 42}', encoding="utf-8")
+
+        result = status._read_json_file(path)
+
+        assert result == {"x": 42}
+        assert path.exists()
+

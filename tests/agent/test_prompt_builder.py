@@ -266,6 +266,21 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_skill_prompt_includes_proactive_recommendation_layer(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "planning" / "brainstorming"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: brainstorming\ndescription: Explore user intent before implementation\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "proactive skill-recommendation layer" in result
+        assert "Tools are execution primitives" in result
+        assert "Which skills should I recommend or load for this job" in result
+        assert "brainstorming" in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

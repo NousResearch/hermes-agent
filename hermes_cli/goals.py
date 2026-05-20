@@ -350,12 +350,14 @@ _STOP_SENTINEL_RE = re.compile(
 def _detect_goal_stop_sentinel(response: str) -> Optional[Tuple[str, str]]:
     """Return ``(kind, reason)`` if the agent self-attested completion.
 
-    Only fires when the sentinel appears on the **last non-blank line**
-    of the response.  The continuation prompt itself contains the
-    sentinel as an instruction; many models echo their instructions
-    mid-response.  Anchoring on the last line keeps that echo from
-    false-positive-stopping the loop — the agent has to make the
-    sentinel the final thing they say, matching the prompt contract
+    The sentinel must be the **entire** final non-blank line of the
+    response (only the sentinel itself + optional surrounding
+    whitespace allowed on that line).  The continuation prompt
+    contains the sentinel as an instruction, and models routinely
+    echo their instructions mid-reasoning — including inline, on the
+    same line as their normal prose.  Requiring the final line to be
+    the sentinel and nothing else keeps those echoes from false-
+    positive-stopping the loop and matches the prompt contract
     "the sentinel must be the LAST non-blank line in your response".
 
     ``kind`` is ``"done"`` or ``"blocked"``.  Both halt the loop;
@@ -371,7 +373,8 @@ def _detect_goal_stop_sentinel(response: str) -> Optional[Tuple[str, str]]:
             break
     if not last_line:
         return None
-    match = _STOP_SENTINEL_RE.search(last_line)
+    stripped = last_line.strip()
+    match = _STOP_SENTINEL_RE.fullmatch(stripped)
     if not match:
         return None
     kind = match.group(1).lower()

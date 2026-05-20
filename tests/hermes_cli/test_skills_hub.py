@@ -524,3 +524,42 @@ def test_existing_categories_returns_empty_when_skills_dir_missing(monkeypatch, 
 
     from hermes_cli.skills_hub import _existing_categories
     assert _existing_categories() == []
+
+
+# ---------------------------------------------------------------------------
+# browse_skills — dedup by identifier, not name
+# ---------------------------------------------------------------------------
+
+
+def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
+    """browse_skills() must not collapse browse-sh skills that share a task name.
+
+    Airbnb and Booking.com both publish a 'search-listings' skill. Before the
+    fix, both were keyed by name so only one survived deduplication. After the
+    fix, each unique identifier produces a distinct result.
+    """
+    from tools.skills_hub import SkillMeta
+    from hermes_cli.skills_hub import browse_skills
+
+    airbnb = SkillMeta(
+        name="search-listings", description="Airbnb search", source="browse-sh",
+        identifier="browse-sh/airbnb.com/search-listings-ddgioa", trust_level="community",
+    )
+    booking = SkillMeta(
+        name="search-listings", description="Booking.com search", source="browse-sh",
+        identifier="browse-sh/booking.com/search-listings-xyzab", trust_level="community",
+    )
+
+    mock_src = type("S", (), {
+        "source_id": lambda self: "browse-sh",
+        "search": lambda self, q, limit=500: [airbnb, booking],
+    })()
+
+    with patch("hermes_cli.skills_hub.create_source_router", return_value=[mock_src]):
+        result = browse_skills(page=1, page_size=50)
+
+    names = [item["name"] for item in result["items"]]
+    assert names.count("search-listings") == 2, (
+        "browse_skills() must not deduplicate browse-sh skills with the same name "
+        "but different identifiers"
+    )

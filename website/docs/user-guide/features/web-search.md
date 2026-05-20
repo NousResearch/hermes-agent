@@ -25,8 +25,9 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ | 1 000 searches/mo |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — | 1 000 searches/mo |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — | Paid |
+| **xAI (Grok)** | `XAI_API_KEY` or `hermes auth login xai-oauth` | ✔ | — | — | Paid (SuperGrok or per-token) |
 
-Brave Search and DDGS are **search-only** — pair either with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use).
+Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -273,6 +274,53 @@ Get access at [parallel.ai](https://parallel.ai).
 
 ---
 
+### xAI (Grok) {#xai-grok}
+
+Routes `web_search` through Grok's server-side [web_search tool](https://docs.x.ai/developers/tools/web-search) on the Responses API. Grok runs the actual searching and returns the top results as structured JSON.
+
+Works with either credential path — no new env vars, no new setup wizard:
+
+```bash
+# ~/.hermes/.env (env-var path)
+XAI_API_KEY=sk-xai-your-key-here
+```
+
+or for SuperGrok subscribers:
+
+```bash
+hermes auth login xai-oauth
+```
+
+Then select xAI as the search backend:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  backend: "xai"
+```
+
+**Optional knobs:**
+
+```yaml
+web:
+  backend: "xai"
+  xai:
+    model: grok-4.3              # reasoning model required by web_search (default)
+    allowed_domains:             # optional, max 5 — mutex with excluded_domains
+      - arxiv.org
+    excluded_domains:            # optional, max 5
+      - example-spam.com
+    timeout: 90                  # seconds (default)
+```
+
+**Search-only** — pair with Firecrawl / Tavily / Exa / Parallel if you also need `web_extract`. On 401 the provider performs a single forced OAuth-token refresh and retries (covers mid-window revocation and opaque tokens the proactive expiry check can't decode); env-var credentials skip the retry.
+
+:::caution Trust model
+Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-engine results, xAI is an LLM choosing which URLs to surface and writing the titles and descriptions itself. The *content* of the query influences the output, so a maliciously crafted query (e.g. injected via untrusted upstream input the agent picked up) can in principle steer Grok into emitting attacker-chosen URLs. Treat returned URLs the same way you'd treat any model-generated link — validate before fetching, especially if the query came from untrusted input.
+:::
+
+---
+
 ## Configuration
 
 ### Single backend
@@ -282,7 +330,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
 ```
 
 ### Per-capability configuration
@@ -314,6 +362,8 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `TAVILY_API_KEY` | tavily |
 | `EXA_API_KEY` | exa |
 | `SEARXNG_URL` | searxng |
+
+xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 
 ---
 

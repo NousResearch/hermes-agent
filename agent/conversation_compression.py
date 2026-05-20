@@ -281,6 +281,19 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    # Lazy feasibility check — run the auxiliary-provider probe + context
+    # length lookup just-in-time on the first compression attempt instead of
+    # at AIAgent.__init__. Saves ~400ms cold off every short session that
+    # never reaches the threshold (the vast majority of ``chat -q`` runs).
+    # The check itself sets ``agent._compression_warning`` so the
+    # status-callback replay machinery still emits the warning to the user
+    # the first time it would matter.
+    if not getattr(agent, "_compression_feasibility_checked", True):
+        try:
+            check_compression_model_feasibility(agent)
+        finally:
+            agent._compression_feasibility_checked = True
+
     _pre_msg_count = len(messages)
     logger.info(
         "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
@@ -374,8 +387,6 @@ def compress_context(
                 _SESSION_ID.set(agent.session_id)
             except Exception:
                 pass
-            # Update session_log_file to point to the new session's JSON file
-            agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
             agent._session_db_created = False
             agent._session_db.create_session(
                 session_id=agent.session_id,

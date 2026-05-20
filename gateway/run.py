@@ -2042,15 +2042,22 @@ class GatewayRunner:
         self,
         source: SessionSource,
     ) -> Optional[str]:
-        """Pin DM-topic routing to the user's last-active topic.
+        """Recover lobby/General thread_ids to the user's last-active topic.
 
-        Telegram fragments topic-mode DMs two ways: a Reply on a message
-        in another topic delivers ``message_thread_id`` for *that* topic,
-        and ``_build_message_event`` strips the thread_id on plain replies
-        (#3206 — needed for non-topic users). Both route the user to the
-        wrong session. When topic mode is on, rewrite the thread_id to the
-        user's most-recent binding if the inbound id is missing/General or
-        not a known topic for this chat. Returns None to leave it alone.
+        Telegram strips ``message_thread_id`` on plain replies in topic-mode
+        DMs (#3206 — needed for non-topic users), causing messages to arrive
+        with no thread_id (lobby). When topic mode is on and the inbound
+        thread_id is missing or maps to the Telegram General topic, rewrite
+        it to the user's most-recent binding so the message lands in the
+        right session.
+
+        A non-lobby thread_id is always kept as-is, even if it isn't in the
+        binding table yet. That covers freshly-created topics: the binding is
+        recorded by ``_record_telegram_topic_binding`` *after* this function
+        runs, so we must not redirect such messages to the previous topic's
+        session. Replies to messages in a since-deleted topic become a rare
+        orphan case (Telegram itself also shows orphaned replies in that
+        situation). Returns None to leave the source unchanged.
         """
         if (
             source.platform != Platform.TELEGRAM
@@ -2074,8 +2081,13 @@ class GatewayRunner:
             return None
         inbound = str(source.thread_id or "")
         is_lobby = not inbound or inbound in self._TELEGRAM_GENERAL_TOPIC_IDS
-        known = {str(b.get("thread_id") or "") for b in bindings}
-        if not is_lobby and inbound in known:
+        if not is_lobby:
+            # Real thread_id present: could be a known topic OR a brand-new one
+            # the user just created. Either way it is the topic the user intends —
+            # never hijack to the most-recent binding. The previous "unknown id →
+            # recover" branch caused new topics to be silently merged into the
+            # previously-active topic's session because binding for the new id
+            # only happens after recovery decides not to rewrite.
             return None
         user_id = str(source.user_id)
         for b in bindings:  # newest-first

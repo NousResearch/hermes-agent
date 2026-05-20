@@ -7,7 +7,7 @@ tags: [delegation, cost, models, routing, auto-router]
 
 # Subagent Model Routing
 
-> **Last updated:** 100526 | **Sources:** `~/.hermes/scripts/refresh_openrouter_models.py → WHITELISTS` + OpenRouter Pareto Code Router / Artificial Analysis coding percentiles
+> **Last updated:** 100526 | **Source:** `~/.hermes/scripts/refresh_openrouter_models.py → WHITELISTS`
 > If today is >10 days past the date above, verify pricing before high-stakes decisions.
 
 Load this skill every time you use `delegate_task` without an explicit model.
@@ -30,7 +30,8 @@ Budget/standard/premium are mutually exclusive. Coding overlaps all.
 `openai/gpt-5-nano` | `deepseek/deepseek-v4-flash`
 
 **CODING** — anything touching code (overlaps permitted)
-Use `openrouter/pareto-code` by default for coding delegation. It routes across OpenRouter's Pareto-efficient coding frontier; set the global quality floor with `openrouter.min_coding_score`.
+Ranked by [OpenRouter Pareto Code Router](https://openrouter.ai/openrouter/pareto-code/router/) (Artificial Analysis coding percentiles, 100526).
+Router slug: `openrouter/pareto-code` — see Pareto Router section below for usage.
 
 *HIGH tier* (`min_coding_score >= 0.66`) — strongest coders, highest cost:
 `openai/gpt-5.5` | `google/gemini-3.1-pro-preview` | `anthropic/claude-opus-4.7` | `deepseek/deepseek-v4-pro`
@@ -41,11 +42,11 @@ Use `openrouter/pareto-code` by default for coding delegation. It routes across 
 *LOW tier* (`score < 0.33`) — lighter coders, lowest cost:
 `xiaomi/mimo-v2.5-pro` | `qwen/qwen3.6-max-preview` | `z-ai/glm-5.1` | `deepseek/deepseek-v4-flash` | `anthropic/claude-haiku-4.5`
 
-> **Slug verified 100526:** MiMo-V2.5-Pro is Xiaomi, NOT Minimax. Display name in OR UI was misleading. Good: `xiaomi/mimo-v2.5-pro`; bad: `minimax/mimo-v2.5-pro`. Always verify OR slugs via live API when vendor name isn't obvious from the model card.
+> **Slug verified 100526:** MiMo-V2.5-Pro is Xiaomi, NOT Minimax. Display name in OR UI was misleading. `xiaomi/mimo-v2.5-pro` ✅ — `minimax/mimo-v2.5-pro` ❌. Always verify OR slugs via live API when vendor name isn't obvious from the model card.
 
 ## Pareto Router (`openrouter/pareto-code`)
 
-OpenRouter's curated coding router selects a model from the Pareto-efficient quality/cost frontier. No router fee; you pay only for the underlying model.
+OpenRouter's curated coding router — automatically selects a model from the Pareto-efficient quality/cost frontier. No fee added; you pay only for the underlying model.
 
 **Status (100526): ✅ NATIVELY SUPPORTED** — Hermes wires `min_coding_score` automatically via the OpenRouter plugin when model is `openrouter/pareto-code`. PR #22838 shipped in the +80 commit sync.
 
@@ -58,7 +59,7 @@ openrouter:
   min_coding_score: 0.33          # Medium tier floor — Sonnet 4.6 / Grok 4.3 / Kimi K2.6 range
 ```
 
-**Score is a floor, not a target** — OpenRouter picks the cheapest available coding model that meets or exceeds the quality bar.
+**Score is a floor, not a target** — "cheapest model that meets or exceeds this quality bar."
 - `0.66+` → HIGH only (Opus 4.7, GPT-5.5, Gemini 3.1 Pro)
 - `0.33–0.65` → MEDIUM or better (Sonnet 4.6, Grok 4.3, Kimi K2.6)
 - `< 0.33` → any tier
@@ -81,9 +82,20 @@ auxiliary:
 ```python
 # delegate_task — inherits min_coding_score from config automatically
 delegate_task(goal="...", model="openrouter/pareto-code", provider="openrouter")
+
+# Or set per-session score inline (when config.yaml supports it)
+# The plugin emits: extra_body.plugins = [{id: "pareto-router", min_coding_score: X}]
 ```
 
-Response `model` shows which concrete model was used. `min_coding_score` is silently dropped for non-`openrouter/pareto-code` models, so it is safe to leave configured globally.
+**How it works:**
+- Set `model = "openrouter/pareto-code"` and Hermes does the rest
+- `min_coding_score` maps to tier: `>= 0.66` → HIGH, `0.33–0.65` → MEDIUM, `< 0.33` → LOW
+- Falls back to next-closest tier if all candidates are unavailable
+- Response `model` field shows which model was actually used
+- Score is silently dropped on any other model — safe to leave configured globally
+- `min_coding_score` does NOT propagate to aux calls by design
+
+**When to use:** Any coding task where you want OpenRouter to pick the best available model at your cost floor, rather than pinning a specific model that may degrade or disappear. Especially good for cron coding tasks where model availability varies.
 
 ## Routing Matrix
 
@@ -93,8 +105,9 @@ Response `model` shows which concrete model was used. `min_coding_score` is sile
 | Web research | gemini-2.5-flash | budget |
 | Simple file ops / renames | gpt-5-nano | budget |
 | New script / feature | openrouter/pareto-code (MEDIUM) | coding |
-| Refactor / complex integration | explicit premium pin, or temporarily raise Pareto floor to HIGH | coding |
-| Code review | explicit premium coding pin + grok-4.3 second opinion | coding + premium |
+| Small focused code review | anthropic/claude-haiku-4.5 with exact touched-file prompt | budget/standard |
+| Refactor / complex integration | openrouter/pareto-code (HIGH) | coding |
+| Code review | openrouter/pareto-code (HIGH) + grok-4.3 second opinion | coding + premium |
 | Business ops / analysis | claude-haiku-4.5 | standard |
 | Reasoning / math | deepseek-v4-pro or gpt-5.4-mini | standard |
 | Intelligence synthesis | grok-4.20 | premium |
@@ -128,6 +141,18 @@ delegate_task(tasks=[
 6. **Escalating past Standard when user is present:** offer the tradeoff before acting.
 7. **No `openrouter/auto` for cron jobs** where tool execution is mandatory — it can route to a model that fabricates output instead of calling tools. Pin a specific model.
 8. **Rule 0 is not aspirational — it has fired twice.** If you are reading this and Jordan just named a model slug you don't recognize, stop reading, open a terminal, run `curl -s 'https://openrouter.ai/api/v1/models' | python3 -c "import json,sys; [print(m['id']) for m in json.load(sys.stdin)['data']]" | grep <slug>`, and confirm before saying anything.
+
+## Focused Review Retry Pattern
+
+If a code-review delegation times out or starts exploring the whole repo, do not treat that as a code finding. Retry once with a narrower prompt:
+
+- exact touched file list
+- "read only these files"
+- "run at most the focused tests"
+- `PASS` / `REQUEST_CHANGES` output only
+- use `anthropic/claude-haiku-4.5` for small focused reviews unless the diff is architecture-critical
+
+Use the heavier Pareto/high-tier review only when the diff is broad, phase-gating, security-sensitive, or prior focused review found real issues.
 
 ## When Not to Delegate
 

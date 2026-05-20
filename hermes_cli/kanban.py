@@ -43,6 +43,19 @@ _STATUS_ICONS = {
 }
 
 
+_TOP_LEVEL_VALUE_FLAGS = frozenset(
+    {
+        "-z", "--oneshot",
+        "-m", "--model",
+        "--provider",
+        "-t", "--toolsets",
+        "-r", "--resume",
+        "-s", "--skills",
+        "-c", "--continue",
+    }
+)
+
+
 def _format_board_placement_error(prog: str) -> str:
     return (
         "kanban: --board is a kanban global option and must appear before "
@@ -87,11 +100,24 @@ def board_placement_error(
     """
     tokens = list(argv)
     if command_token is not None:
-        try:
-            start = tokens.index(command_token) + 1
-        except ValueError:
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "--":
+                return None
+            if token == command_token:
+                tokens = tokens[i + 1:]
+                break
+            if token.startswith("-"):
+                if "=" in token:
+                    i += 1
+                    continue
+                if token in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(tokens):
+                    i += 2
+                    continue
+            i += 1
+        else:
             return None
-        tokens = tokens[start:]
     if _has_misplaced_board_flag(tokens):
         return _format_board_placement_error(prog)
     return None

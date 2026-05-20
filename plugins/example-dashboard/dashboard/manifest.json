@@ -1,7 +1,7 @@
 {
   "name": "example",
   "label": "Example",
-  "description": "Example dashboard plugin — used by test suite for auth coverage",
+  "description": "Example dashboard plugin \u2014 used by test suite for auth coverage",
   "icon": "Sparkles",
   "version": "1.0.0",
   "tab": {
@@ -10,5 +10,6 @@
   },
   "slots": [],
   "entry": "dist/index.js",
-  "api": "plugin_api.py"
+  "api": "plugin_api.py",
+  "labelKey": "example"
 }

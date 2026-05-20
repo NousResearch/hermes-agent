@@ -204,6 +204,7 @@ function buildNavItems(
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
+      labelKey: manifest.labelKey,
       icon: resolveIcon(manifest.icon),
     };
 

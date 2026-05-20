@@ -84,11 +84,14 @@ export interface Translations {
       stopped: string;
     };
     nav: {
+      achievements: string;
       analytics: string;
       chat: string;
       config: string;
       cron: string;
       documentation: string;
+      example: string;
+      kanban: string;
       keys: string;
       logs: string;
       models: string;

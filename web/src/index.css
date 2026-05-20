@@ -5,7 +5,7 @@
    `fonts.css`, so without this import the DS variables resolve to font
    families the browser never loads and components fall back to a system
    stack (Tabs, Segmented, Typography, Buttons, etc. all look unstyled). */
-@import '@nous-research/ui/styles/fonts.css';
+@import '../node_modules/@nous-research/ui/dist/ui/fonts.css';
 @import '@nous-research/ui/styles/globals.css';
 
 /* Scan the published design-system bundle so its utility classes survive
@@ -233,4 +233,3 @@ code { font-size: 0.875rem; }
 :root[style*="--theme-asset-bg:"] .theme-default-filler {
   display: none;
 }
-

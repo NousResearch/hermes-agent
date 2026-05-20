@@ -2736,11 +2736,15 @@ class TestDeliverResultTimeoutCancelsFuture:
             "configured thread_id 7072 for telegram:226252250 was not found; "
             "delivered without thread_id"
         )
-        adapter.send.assert_called_once_with(
-            "226252250",
-            "Hello world",
-            metadata={"thread_id": "7072"},
-        )
+        assert adapter.send.call_count == 1
+        args, kwargs = adapter.send.call_args
+        assert args == ("226252250", "Hello world")
+        metadata = kwargs["metadata"]
+        # thread_id is the load-bearing field for this test — it must survive
+        # alongside the structured cron context added in #26004.
+        assert metadata["thread_id"] == "7072"
+        assert metadata["cron"]["job_id"] == "thread-fallback-job"
+        assert metadata["cron"]["deliver"] == "telegram:226252250:7072"
 
 
 class TestSendMediaTimeoutCancelsFuture:

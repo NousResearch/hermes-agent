@@ -1476,9 +1476,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Email
     email_addr = os.getenv("EMAIL_ADDRESS")
     email_pwd = os.getenv("EMAIL_PASSWORD")
+    email_auth_mode = os.getenv("EMAIL_AUTH_MODE", "password").strip().lower()
     email_imap = os.getenv("EMAIL_IMAP_HOST")
     email_smtp = os.getenv("EMAIL_SMTP_HOST")
-    if all([email_addr, email_pwd, email_imap, email_smtp]):
+    email_token = os.getenv("GOOGLE_TOKEN_FILE") or str(get_hermes_home() / "google_token.json")
+    email_has_auth = bool(email_pwd) or (email_auth_mode == "google_oauth" and Path(email_token).expanduser().exists())
+    if all([email_addr, email_has_auth, email_imap, email_smtp]):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
         config.platforms[Platform.EMAIL].enabled = True
@@ -1486,6 +1489,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "address": email_addr,
             "imap_host": email_imap,
             "smtp_host": email_smtp,
+            "auth_mode": email_auth_mode,
         })
     email_home = os.getenv("EMAIL_HOME_ADDRESS")
     if email_home and Platform.EMAIL in config.platforms:

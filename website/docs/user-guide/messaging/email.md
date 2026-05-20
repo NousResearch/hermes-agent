@@ -74,6 +74,20 @@ EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
 
+### Gmail OAuth / XOAUTH2
+
+For Gmail accounts that already have a Hermes Google Workspace OAuth token, you can use OAuth instead of storing an email password:
+
+```bash
+EMAIL_ADDRESS=hermes@gmail.com
+EMAIL_AUTH_MODE=google_oauth
+EMAIL_IMAP_HOST=imap.gmail.com
+EMAIL_SMTP_HOST=smtp.gmail.com
+GOOGLE_TOKEN_FILE=/Users/you/.hermes/google_token.json  # Optional; defaults to $HERMES_HOME/google_token.json
+```
+
+The token must include a refresh token and Gmail IMAP/SMTP-compatible scopes. Hermes refreshes the access token before authenticating to IMAP and SMTP with XOAUTH2. If `EMAIL_PASSWORD` is set, password auth is still used for backwards compatibility.
+
 ---
 
 ## Step 2: Start the Gateway
@@ -152,9 +166,9 @@ Email access follows the same pattern as all other Hermes platforms:
 | Problem | Solution |
 |---------|----------|
 | **"IMAP connection failed"** at startup | Verify `EMAIL_IMAP_HOST` and `EMAIL_IMAP_PORT`. Ensure IMAP is enabled on the account. For Gmail, enable it in Settings → Forwarding and POP/IMAP. |
-| **"SMTP connection failed"** at startup | Verify `EMAIL_SMTP_HOST` and `EMAIL_SMTP_PORT`. Check that your password is correct (use App Password for Gmail). |
+| **"SMTP connection failed"** at startup | Verify `EMAIL_SMTP_HOST` and `EMAIL_SMTP_PORT`. Check that your password is correct (use App Password for Gmail), or that `EMAIL_AUTH_MODE=google_oauth` points at a valid Google token. |
 | **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. Check spam folder — some providers flag automated replies. |
-| **"Authentication failed"** | For Gmail, you must use an App Password, not your regular password. Ensure 2FA is enabled first. |
+| **"Authentication failed"** | For password auth on Gmail, use an App Password, not your regular password. For `google_oauth`, verify `GOOGLE_TOKEN_FILE` exists, has a refresh token, and was granted Gmail IMAP/SMTP-compatible scopes. |
 | **Duplicate replies** | Ensure only one gateway instance is running. Check `hermes gateway status`. |
 | **Slow response** | The default poll interval is 15 seconds. Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). |
 | **Replies not threading** | The adapter uses In-Reply-To headers. Some email clients (especially web-based) may not thread correctly with automated messages. |
@@ -179,7 +193,8 @@ Email access follows the same pattern as all other Hermes platforms:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `EMAIL_ADDRESS` | Yes | — | Agent's email address |
-| `EMAIL_PASSWORD` | Yes | — | Email password or app password |
+| `EMAIL_PASSWORD` | Yes unless using Google OAuth | — | Email password or app password |
+| `EMAIL_AUTH_MODE` | No | `password` | Set to `google_oauth` to authenticate Gmail IMAP/SMTP with XOAUTH2 and `GOOGLE_TOKEN_FILE` |
 | `EMAIL_IMAP_HOST` | Yes | — | IMAP server host (e.g., `imap.gmail.com`) |
 | `EMAIL_SMTP_HOST` | Yes | — | SMTP server host (e.g., `smtp.gmail.com`) |
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
@@ -188,3 +203,4 @@ Email access follows the same pattern as all other Hermes platforms:
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `GOOGLE_TOKEN_FILE` | No | `$HERMES_HOME/google_token.json` | Google OAuth token path for `EMAIL_AUTH_MODE=google_oauth` |

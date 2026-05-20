@@ -320,7 +320,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `SMS_HOME_CHANNEL` | Phone number for cron job / notification delivery |
 | `SMS_HOME_CHANNEL_NAME` | Display name for the SMS home channel |
 | `EMAIL_ADDRESS` | Email address for the Email gateway adapter |
-| `EMAIL_PASSWORD` | Password or app password for the email account |
+| `EMAIL_PASSWORD` | Password or app password for the email account (required unless `EMAIL_AUTH_MODE=google_oauth`) |
+| `EMAIL_AUTH_MODE` | Email authentication mode: `password` (default) or `google_oauth` for Gmail XOAUTH2 via `GOOGLE_TOKEN_FILE` |
 | `EMAIL_IMAP_HOST` | IMAP hostname for the email adapter |
 | `EMAIL_IMAP_PORT` | IMAP port |
 | `EMAIL_SMTP_HOST` | SMTP hostname for the email adapter |
@@ -330,6 +331,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `EMAIL_HOME_ADDRESS_NAME` | Display name for the email home target |
 | `EMAIL_POLL_INTERVAL` | Email polling interval in seconds |
 | `EMAIL_ALLOW_ALL_USERS` | Allow all inbound email senders |
+| `GOOGLE_TOKEN_FILE` | Optional Google OAuth token path used by `EMAIL_AUTH_MODE=google_oauth` (defaults to `$HERMES_HOME/google_token.json`) |
 | `DINGTALK_CLIENT_ID` | DingTalk bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)) |
 | `DINGTALK_CLIENT_SECRET` | DingTalk bot AppSecret from developer portal |
 | `DINGTALK_ALLOWED_USERS` | Comma-separated DingTalk user IDs allowed to message the bot |

@@ -57,6 +57,22 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertIsNotNone(home)
         self.assertEqual(home.chat_id, "user@test.com")
 
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_AUTH_MODE": "google_oauth",
+        "EMAIL_IMAP_HOST": "imap.gmail.com",
+        "EMAIL_SMTP_HOST": "smtp.gmail.com",
+        "GOOGLE_TOKEN_FILE": "/tmp/google_token.json",
+    }, clear=True)
+    @patch("gateway.config.Path.exists", return_value=True)
+    def test_email_config_loaded_with_google_oauth_without_password(self, _mock_exists):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        self.assertIn(Platform.EMAIL, config.platforms)
+        self.assertTrue(config.platforms[Platform.EMAIL].enabled)
+        self.assertEqual(config.platforms[Platform.EMAIL].extra["auth_mode"], "google_oauth")
+
     @patch.dict(os.environ, {}, clear=True)
     def test_email_not_loaded_without_env(self):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
@@ -79,6 +95,30 @@ class TestCheckRequirements(unittest.TestCase):
 
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "a@b.com",
+        "EMAIL_AUTH_MODE": "google_oauth",
+        "EMAIL_IMAP_HOST": "imap.gmail.com",
+        "EMAIL_SMTP_HOST": "smtp.gmail.com",
+        "GOOGLE_TOKEN_FILE": "/tmp/google_token.json",
+    }, clear=True)
+    @patch("gateway.platforms.email.Path.exists", return_value=True)
+    def test_requirements_met_with_google_oauth_token(self, _mock_exists):
+        from gateway.platforms.email import check_email_requirements
+        self.assertTrue(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "a@b.com",
+        "EMAIL_AUTH_MODE": "google_oauth",
+        "EMAIL_IMAP_HOST": "imap.gmail.com",
+        "EMAIL_SMTP_HOST": "smtp.gmail.com",
+        "GOOGLE_TOKEN_FILE": "/tmp/missing_google_token.json",
+    }, clear=True)
+    @patch("gateway.platforms.email.Path.exists", return_value=False)
+    def test_requirements_not_met_with_google_oauth_missing_token(self, _mock_exists):
+        from gateway.platforms.email import check_email_requirements
+        self.assertFalse(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "a@b.com",
     }, clear=True)
     def test_requirements_not_met(self):
         from gateway.platforms.email import check_email_requirements
@@ -92,6 +132,33 @@ class TestCheckRequirements(unittest.TestCase):
 
 class TestHelperFunctions(unittest.TestCase):
     """Test email parsing helper functions."""
+
+    def test_imap_login_uses_xoauth2_for_google_oauth(self):
+        from gateway.platforms.email import _imap_login
+
+        imap = MagicMock()
+        with patch("gateway.platforms.email._load_google_access_token", return_value="access-token"):
+            _imap_login(imap, "hermes@gmail.com", "", "google_oauth")
+
+        imap.authenticate.assert_called_once()
+        mechanism, callback = imap.authenticate.call_args.args
+        self.assertEqual(mechanism, "XOAUTH2")
+        self.assertEqual(callback(None), b"user=hermes@gmail.com\x01auth=Bearer access-token\x01\x01")
+        imap.login.assert_not_called()
+
+    def test_smtp_login_uses_xoauth2_for_google_oauth(self):
+        from gateway.platforms.email import _smtp_login
+
+        smtp = MagicMock()
+        smtp.docmd.return_value = (235, b"2.7.0 Accepted")
+        with patch("gateway.platforms.email._load_google_access_token", return_value="access-token"):
+            _smtp_login(smtp, "hermes@gmail.com", "", "google_oauth")
+
+        smtp.docmd.assert_called_once()
+        command, payload = smtp.docmd.call_args.args
+        self.assertEqual(command, "AUTH")
+        self.assertTrue(payload.startswith("XOAUTH2 "))
+        smtp.login.assert_not_called()
 
     def test_decode_header_plain(self):
         from gateway.platforms.email import _decode_header_value

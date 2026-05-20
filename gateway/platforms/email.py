@@ -16,6 +16,7 @@ Environment variables:
 """
 
 import asyncio
+import base64
 import email as email_lib
 import imaplib
 import logging
@@ -42,6 +43,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
+from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored
@@ -64,6 +66,67 @@ MAX_MESSAGE_LENGTH = 50_000
 
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+def _google_token_path() -> Path:
+    """Return the Hermes Google OAuth token path used by Workspace setup."""
+    configured = os.getenv("GOOGLE_TOKEN_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    return get_hermes_home() / "google_token.json"
+
+
+def _email_auth_mode() -> str:
+    return os.getenv("EMAIL_AUTH_MODE", "password").strip().lower()
+
+
+def _load_google_access_token() -> str:
+    """Load and refresh the Google OAuth access token for Gmail IMAP/SMTP."""
+    token_path = _google_token_path()
+    if not token_path.exists():
+        raise FileNotFoundError(f"Google OAuth token not found: {token_path}")
+
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+    except ImportError as exc:  # pragma: no cover - environment-specific dependency error
+        raise RuntimeError("Google OAuth dependencies are not installed") from exc
+
+    creds = Credentials.from_authorized_user_file(str(token_path))
+    if not creds.valid:
+        if not creds.refresh_token:
+            raise RuntimeError("Google OAuth token is invalid and has no refresh token")
+        creds.refresh(Request())
+        token_path.write_text(creds.to_json())
+    if not creds.token:
+        raise RuntimeError("Google OAuth token has no access token")
+    return creds.token
+
+
+def _xoauth2_string(address: str, access_token: str) -> bytes:
+    return f"user={address}\x01auth=Bearer {access_token}\x01\x01".encode()
+
+
+def _imap_login(imap: "imaplib.IMAP4", address: str, password: str, auth_mode: str) -> None:
+    """Authenticate to IMAP with password or Gmail OAuth XOAUTH2."""
+    if auth_mode == "google_oauth":
+        token = _load_google_access_token()
+        imap.authenticate("XOAUTH2", lambda _challenge: _xoauth2_string(address, token))
+        return
+    imap.login(address, password)
+
+
+def _smtp_login(smtp: smtplib.SMTP, address: str, password: str, auth_mode: str) -> None:
+    """Authenticate to SMTP with password or Gmail OAuth XOAUTH2."""
+    if auth_mode == "google_oauth":
+        token = _load_google_access_token()
+        encoded = base64.b64encode(_xoauth2_string(address, token)).decode()
+        code, response = smtp.docmd("AUTH", "XOAUTH2 " + encoded)
+        if code != 235:
+            raise smtplib.SMTPAuthenticationError(code, response)
+        return
+    smtp.login(address, password)
+
 
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID command identifying this client.
@@ -105,9 +168,12 @@ def check_email_requirements() -> bool:
     pwd = os.getenv("EMAIL_PASSWORD")
     imap = os.getenv("EMAIL_IMAP_HOST")
     smtp = os.getenv("EMAIL_SMTP_HOST")
-    if not all([addr, pwd, imap, smtp]):
-        return False
-    return True
+    if all([addr, pwd, imap, smtp]):
+        return True
+    auth_mode = _email_auth_mode()
+    if auth_mode == "google_oauth":
+        return bool(addr and imap and smtp and _google_token_path().exists())
+    return False
 
 
 def _decode_header_value(raw: str) -> str:
@@ -250,6 +316,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         self._address = os.getenv("EMAIL_ADDRESS", "")
         self._password = os.getenv("EMAIL_PASSWORD", "")
+        self._auth_mode = "password" if self._password else _email_auth_mode()
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
         self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
@@ -298,7 +365,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
+            _imap_login(imap, self._address, self._password, self._auth_mode)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
@@ -318,7 +385,7 @@ class EmailAdapter(BasePlatformAdapter):
             # Test SMTP connection
             smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            _smtp_login(smtp, self._address, self._password, self._auth_mode)
             smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
@@ -367,7 +434,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
-                imap.login(self._address, self._password)
+                _imap_login(imap, self._address, self._password, self._auth_mode)
                 _send_imap_id(imap)
                 imap.select("INBOX")
 
@@ -551,7 +618,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            _smtp_login(smtp, self._address, self._password, self._auth_mode)
             smtp.send_message(msg)
         finally:
             try:
@@ -673,7 +740,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            _smtp_login(smtp, self._address, self._password, self._auth_mode)
             smtp.send_message(msg)
         finally:
             try:
@@ -752,7 +819,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            _smtp_login(smtp, self._address, self._password, self._auth_mode)
             smtp.send_message(msg)
         finally:
             try:

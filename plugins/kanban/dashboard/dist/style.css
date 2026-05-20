@@ -7,6 +7,19 @@
 
 .hermes-kanban {
   width: 100%;
+
+  /* The Nous DS layout-wrapper puts `font-mondwest uppercase` on <body>,
+   * which fits the brand chrome but is hostile to a data-dense board:
+   * task titles, profile names, IDs, paths, and code fragments all become
+   * harder to scan, and case-sensitive identifiers like assignees are
+   * misleading when rendered in caps. Opt the plugin root out — `font-family`
+   * and `text-transform` both inherit, so a single override here cascades
+   * to the whole board. */
+  font-family: var(
+    --theme-font-sans,
+    system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif
+  );
+  text-transform: none;
 }
 
 /* ---- Code/pre reset (theme-immune default) --------------------------- *
@@ -446,7 +459,6 @@
 }
 .hermes-kanban-home-sub {
   font-family: var(--font-mono, ui-monospace, monospace);
-  text-transform: lowercase;
   letter-spacing: 0.02em;
 }
 .hermes-kanban-home-sub--on {

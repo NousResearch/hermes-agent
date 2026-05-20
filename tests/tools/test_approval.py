@@ -1245,6 +1245,50 @@ class TestGitDestructiveOps:
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
 
+    def test_force_with_lease_to_slash_branch_not_flagged(self):
+        cmd = "git push --force-with-lease origin feature/sprig"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_force_with_lease_head_refspec_to_slash_branch_not_flagged(self):
+        cmd = "git push --force-with-lease origin HEAD:feature/sprig"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_force_with_lease_to_slashless_branch_still_detected(self):
+        cmd = "git push --force-with-lease origin HEAD:main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force" in desc.lower()
+
+    def test_force_with_lease_to_other_slashless_branch_still_detected(self):
+        cmd = "git push --force-with-lease origin release"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force" in desc.lower()
+
+    def test_force_with_lease_to_refs_heads_slashless_branch_still_detected(self):
+        cmd = "git push --force-with-lease origin HEAD:refs/heads/main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force" in desc.lower()
+
+    def test_force_with_lease_to_refs_heads_slash_branch_not_flagged(self):
+        cmd = "git push --force-with-lease origin HEAD:refs/heads/feature/sprig"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_force_with_lease_safe_override_applies_after_leading_command(self):
+        cmd = "echo hi && git push --force-with-lease origin feature/sprig"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_force_with_lease_safe_override_does_not_mask_later_dangerous_command(self):
+        cmd = "git push --force-with-lease origin feature/sprig && rm -rf /tmp/nope"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "delete" in desc.lower() or "rm" in desc.lower()
+
     def test_git_branch_lowercase_d_also_flagged(self):
         """git branch -d triggers approval too — IGNORECASE is global.
 

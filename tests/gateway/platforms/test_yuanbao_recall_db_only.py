@@ -3,8 +3,15 @@ from gateway.session import SessionStore
 from gateway.config import GatewayConfig
 
 
-def test_recall_falls_through_to_content_match_without_message_id(tmp_path):
-    """When transcript has no message_id field, A2 content-match still works."""
+def test_recall_falls_through_to_content_match_without_message_id(tmp_path, monkeypatch):
+    """When transcript has no message_id field, A2 content-match still works.
+
+    Pin DEFAULT_DB_PATH to tmp_path so SessionDB() can't write to the real
+    ~/.hermes/state.db. (Module-level constant snapshot, see test_load_transcript_db_only.)
+    """
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
 

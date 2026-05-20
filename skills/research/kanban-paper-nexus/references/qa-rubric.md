@@ -19,6 +19,7 @@
 
 - [ ] 中英双语：核心总结 + 参考方向 + CEL 表头 均有 ZH + EN
 - [ ] 无空 `##` 节；**无残留【待填】**
+- [ ] 飞书云文档在线名称为 `[canonical_id] title_zh`（中文，非英文标题）
 - [ ] 数字/指标均能在 T1/T4 handoff 中找到出处
 - [ ] arXiv / PDF 链接有效
 
@@ -29,7 +30,13 @@
 
 ## E. Memory OS
 
-- [ ] `search_memory` 在流水线开始前已执行（或编排 handoff 注明 `memory_hit: true/false`）
+- [ ] `search_memory` 在流水线开始前已执行；query **仅** canonical_id + 论文名（见 `paper_memory_search_query.py`，禁止全文 query）
+
+## F. 飞书实时（feishu-live-updates）
+
+- [ ] 编排已 `paper_feishu_stage_notify.py init` + `pipeline_started`
+- [ ] T0–T6 每阶段完成均有 `notify stage_done`（或 comment 注明 `[feishu-notify-skipped]` 原因）
+- [ ] T6 有 `pipeline_done`；IM 无 PDF/CEL 全文
 - [ ] `workflow_id: paper-nexus:<canonical_id>` 至少 1 条记忆含 `feishu_doc_url`
 - [ ] T1 记忆含 CEL 或 `claims`；T6 或 T5 含 `recommendation_zh` / `qa_pass`
 - [ ] 未将 PDF 全文写入 Memory（仅摘要/CEL/链接）

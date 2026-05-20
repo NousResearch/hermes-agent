@@ -1,7 +1,7 @@
 ---
 name: kanban-paper-nexus
 description: Paper-to-doc Kanban DAG on Hermes; Feishu via lark-cli.
-version: 1.2.0
+version: 1.5.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -14,7 +14,14 @@ metadata:
 
 # Kanban Paper Nexus — 论文精读 → 可决策文档
 
-**入口：`/kanban-paper-nexus <arXiv ID 或 URL>`**（必须 `/` 触发；普通聊天不自动进板）。
+**入口：`/kanban-paper-nexus <论文链接或 ID>`**（arXiv 或 Semantic Scholar；必须 `/` 触发）。
+
+### 禁止自行否决（编排硬规则）
+
+1. **必须先跑** `paper_nexus_metadata.py <用户输入>`；退出码 0 → **必须**继续建板（`kanban_create` 等），**禁止**在未跑脚本前声称「无 arXiv 无法进流水线」。
+2. 无 arXiv 时 `canonical_id` 为 `s2:<40位hash>`（期刊/Elsevier 等正常路径）。
+3. PDF 来源：优先 `arxiv_pdf`；否则 S2 `openAccessPdf` / `s2_url` / DOI 落地页，T0/T1 用 `web_extract`。
+4. 仅当脚本 **非 0 退出** 或 API 持续失败时，才向用户报告失败并给替代方案。
 
 编排者 **只建卡**。工人按研究员框架产出 **CEL 主张表 + 实验审计 + 中英双语飞书 doc**（见 `references/paper-reading-framework.md`）。
 
@@ -31,7 +38,7 @@ metadata:
 
 | 时机 | 工具 | 说明 |
 |------|------|------|
-| 建卡前 | `search_memory` | query=canonical_id 或标题，避免重复 doc/重复精读 |
+| 建卡前 | `search_memory` | **仅** canonical_id + 论文名（`paper_memory_search_query.py`，`limit=3`） |
 | 每阶段完成 | `store_memory_markdown` | 用 `paper_memory_markdown.py` 生成 entry |
 | 可选背景 | `search_existing_knowledge` | 公司 wiki 是否已有该主题（不替代 CEL） |
 
@@ -44,17 +51,18 @@ python3 skills/research/kanban-paper-nexus/scripts/paper_memory_markdown.py \
 
 ## 文档 1:1 规则
 
-- 新 `canonical_id` → `docs +create`（标题含 `[{canonical_id}]`）
+- 新 `canonical_id` → `docs +create`；**在线文档名**=`[{canonical_id}] {中文题名}`（`title_zh`，非英文 arXiv 标题）
 - 同论文（`2402.03300` ≈ `2402.03300v3`）→ 仅 `append`
 - 登记：`~/.hermes/kanban/boards/paper-nexus/paper_doc_registry.json`
 - 同步：`paper_feishu_doc_sync.py`（T4 / E2E）
 
-飞书 IM：**一条**中文摘要 + doc 链接（新建/追加二选一）。
+飞书 IM：**阶段短更新**（`paper_feishu_stage_notify.py`，对齐 finance-nexus 实时）+ T5 后 doc 链接；长文只进 doc，不进 IM。
 
 ## When to Use
 
 - `/kanban-paper-nexus 2402.03300`
 - `/kanban-paper-nexus https://arxiv.org/abs/1706.03762`
+- `/kanban-paper-nexus https://www.semanticscholar.org/paper/ceced53f...`（无 arXiv 时用 `s2:<id>` 作 canonical）
 
 不用本 skill：单次问答、只要 bib、不落地飞书文档。
 
@@ -70,8 +78,8 @@ python3 skills/research/kanban-paper-nexus/scripts/paper_memory_markdown.py \
 
 | 字段 | 规则 |
 |------|------|
-| `paper_id` | arXiv id 或 URL |
-| `canonical_id` | 去 `vN` 后缀 |
+| `paper_id` | arXiv id/URL，或 Semantic Scholar 论文链接/40 位 corpus id |
+| `canonical_id` | arXiv 去 `vN`；S2 为 `s2:<hash>`（见 metadata JSON） |
 | `deep` | 含「深度」「精读」「full pdf」→ T0/T1 必须 `web_extract` PDF，CEL ≥5 行 |
 | `feishu_doc` | `paper_doc_registry.py resolve` |
 | `idempotency_key` | `paper-{canonical_id}-{YYYYMMDD}` |
@@ -79,6 +87,8 @@ python3 skills/research/kanban-paper-nexus/scripts/paper_memory_markdown.py \
 ```bash
 python3 skills/research/kanban-paper-nexus/scripts/paper_nexus_metadata.py <id>
 python3 skills/research/kanban-paper-nexus/scripts/paper_doc_registry.py resolve <id>
+python3 skills/research/kanban-paper-nexus/scripts/paper_nexus_metadata.py <id> > /tmp/paper-meta.json
+python3 skills/research/kanban-paper-nexus/scripts/paper_memory_search_query.py <id> --meta-json /tmp/paper-meta.json
 ```
 
 ## Fixed DAG（`[paper]` 前缀不可改）
@@ -98,13 +108,13 @@ T2∥T3 可并行；T4 必须等 T1+T2。
 ## Orchestrator Procedure
 
 1. `skill_view` 本 skill + `kanban-orchestrator`
-2. `search_memory`（`workflow_id` 或 canonical_id）— 有则告知用户并复用 doc URL
+2. `paper_nexus_metadata.py <id> > /tmp/paper-meta.json` → `paper_memory_search_query.py <id> --meta-json /tmp/paper-meta.json` → `search_memory`（**禁止全文 query**；`--meta-json` 必填，避免重复打 S2 API）
 3. `hermes kanban boards switch paper-nexus`
 4. 解析 `paper_id`、`deep`；`resolve` 告知将 **create** 或 **append** doc
 5. `kanban_create` 全表；`parents` 用返回的 task_id
-6. 确认 `notify_subscribed: true`
+6. **飞书实时（必做）** — `references/feishu-live-updates.md`（共享脚本 `skills/devops/kanban-feishu-live/scripts/`）
 7. `store_memory_markdown`（stage=orchestrator，含 task_ids、doc 策略）
-8. 回复（中文）：canonical_id、task_ids、doc 策略、Memory 是否命中、arXiv/PDF
+8. 回复（中文）：canonical_id、task_ids、doc 策略、Memory 是否命中、arXiv/PDF（说明后续阶段完成会再推短 IM）
 
 ## Worker 必读
 
@@ -114,9 +124,10 @@ T2∥T3 可并行；T4 必须等 T1+T2。
 | `feishu-doc-bilingual-template.md` | T5 |
 | `paper-kanban-pipeline.md` | 全流程 + handoff schema |
 | `memory-os.md` | 何时 search/store、workflow_id |
+| `feishu-live-updates.md` | 每阶段 `lark-cli` 推送（finance 同款，无 core patch） |
 | `qa-rubric.md` | T6 |
 
-`handoff.json` 必须含：`canonical_id`, `stage`, `thesis_one_liner`, `claims[]`, `feishu_doc_url`。
+`handoff.json` 必须含：`canonical_id`, `title_zh`（论文中文名，用于飞书在线文档名）, `stage`, `thesis_one_liner`, `claims[]`, `feishu_doc_url`。
 
 ## Forbidden
 
@@ -140,5 +151,6 @@ scripts/run_tests.sh tests/skills/test_kanban_paper_nexus_skill.py -q
 |------|------|
 | 读后感式摘要 | 改填 CEL；见 framework |
 | 文档与 handoff 数字不一致 | T5 只写 handoff 已核实数字 |
-| 飞书双消息 | E2E/脚本连跑两次；每轮一条 IM |
+| 飞书双消息 | E2E/脚本连跑两次；每阶段 notify 一条，勿手写第二遍长文 |
+| 无阶段推送 | 编排未 `init` / 工人未 `notify stage_done` | 见 `feishu-live-updates.md` |
 | 同论文第二 doc | 必须 `resolve`→update |

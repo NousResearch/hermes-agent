@@ -18,8 +18,10 @@ def hermes_home() -> Path:
 
 
 def canonical_paper_id(paper_id: str) -> str:
-    """2402.03300v3 and 2402.03300 → same canonical id."""
+    """2402.03300v3 and 2402.03300 → same canonical id; s2:<hash> unchanged."""
     pid = (paper_id or "").strip()
+    if pid.lower().startswith("s2:"):
+        return pid.lower()
     return _VERSION_SUFFIX.sub("", pid)
 
 
@@ -57,6 +59,7 @@ def register(
     *,
     document_id: str | None = None,
     title: str | None = None,
+    title_zh: str | None = None,
     board: str = "paper-nexus",
 ) -> dict:
     key = canonical_paper_id(paper_id)
@@ -68,6 +71,7 @@ def register(
         "doc_url": doc_url,
         "document_id": document_id or prev.get("document_id"),
         "title": title or prev.get("title"),
+        "title_zh": title_zh or prev.get("title_zh"),
         "paper_id_latest": paper_id,
         "created_at": prev.get("created_at") or now,
         "updated_at": now,

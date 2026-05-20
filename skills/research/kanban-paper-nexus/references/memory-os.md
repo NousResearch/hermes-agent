@@ -42,14 +42,32 @@ paper-nexus:<canonical_id>
 
 **不要**每个 heartbeat 都写；阶段完成写一次即可。
 
-## 开工前：先搜再干
+## 开工前：先搜再干（query 硬规则）
 
-编排器或 T0 工人：
+**只允许**用 **canonical 代号（arXiv 或 `s2:<hash>`）+ 论文标题（截断）** 作为 `search_memory` 的 `query`。
 
-```text
-search_memory query="<canonical_id> 或论文标题关键词>" 
-  workflow_id 或 tags 含 paper-nexus
+| 允许 | 禁止 |
+|------|------|
+| `2402.03300` | skill / pipeline / qa-rubric 全文 |
+| `s2:ceced53f349f7e425352ecf4813b307667cd8aa6` | PDF、Abstract、CEL 表、handoff JSON |
+| `2402.03300 DeepSeekMath Pushing the Limits` | 同上 |
+| `limit=3` | `kanban-feishu-design`、`finance-kanban` 等无关 Kanban 设计记忆 |
+| 单行 ≤120 字符 | 多段粘贴、换行、>24 个 token |
+
+用脚本生成（编排 **必跑**，禁止手写长 query）：
+
+```bash
+python3 skills/research/kanban-paper-nexus/scripts/paper_nexus_metadata.py <id> > /tmp/meta.json
+python3 skills/research/kanban-paper-nexus/scripts/paper_memory_search_query.py <id> \
+  --meta-json /tmp/meta.json
 ```
+
+将 JSON 里的 `query`、`limit` 传给 `search_memory`；`workflow_id` 字段写入 handoff 供核对（`paper-nexus:<canonical_id>`）。
+
+**推荐两次短搜（均遵守上表）：**
+
+1. `query=<canonical_id>`，`limit=3`
+2. 无命中再 `query=<canonical_id> <title≤80字符>`，`limit=3`
 
 若命中：
 - 复用已有 `feishu_doc_url`（`paper_doc_registry.py resolve` 应一致）

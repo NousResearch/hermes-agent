@@ -2,6 +2,8 @@
 
 **1 论文 = 1 doc**（registry canonical id）。同论文仅 append。
 
+**飞书云文档显示名（在线文档名）：** `[{canonical_id}] {title_zh}` — 必须用 T0 handoff 的中文题名，禁止用英文 arXiv 标题。
+
 **叙事顺序：** 核心总结 → CEL 表 → 阅读地图 → 方法 → 对标 → 实验审计 → **参考方向** → 工具索引。
 
 ## 写作规则

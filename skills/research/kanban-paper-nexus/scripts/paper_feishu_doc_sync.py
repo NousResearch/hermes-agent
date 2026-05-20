@@ -15,8 +15,9 @@ if str(_DIR) not in sys.path:
     sys.path.insert(0, str(_DIR))
 
 from build_bilingual_doc_md import build  # noqa: E402
-from paper_doc_registry import canonical_paper_id, register, resolve  # noqa: E402
-from paper_nexus_metadata import fetch_entry, normalize_paper_id  # noqa: E402
+from paper_doc_registry import canonical_paper_id, lookup, register, resolve  # noqa: E402
+from paper_doc_title import feishu_doc_title, load_handoff, resolve_title_zh  # noqa: E402
+from paper_nexus_metadata import resolve_and_fetch  # noqa: E402
 
 
 def _run_lark(args: list[str], content: str | None = None) -> dict:
@@ -37,10 +38,26 @@ def _run_lark(args: list[str], content: str | None = None) -> dict:
     return json.loads(raw[start:])
 
 
-def sync_paper_doc(paper_id: str, marker: str = "", board: str = "paper-nexus") -> dict:
-    pid = normalize_paper_id(paper_id)
-    meta = fetch_entry(pid)
-    meta["canonical_id"] = canonical_paper_id(meta["paper_id"])
+def sync_paper_doc(
+    paper_id: str,
+    marker: str = "",
+    board: str = "paper-nexus",
+    *,
+    handoff_path: str | None = None,
+    title_zh: str | None = None,
+) -> dict:
+    meta = resolve_and_fetch(paper_id)
+    meta["canonical_id"] = canonical_paper_id(
+        meta.get("canonical_id") or meta["paper_id"]
+    )
+    handoff = load_handoff(handoff_path)
+    reg_entry = lookup(meta["canonical_id"], board)
+    meta["title_zh"] = resolve_title_zh(
+        meta,
+        handoff=handoff,
+        title_zh=title_zh,
+        registry_entry=reg_entry,
+    )
 
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as tf:
         tf.write(build(meta, marker))
@@ -49,7 +66,7 @@ def sync_paper_doc(paper_id: str, marker: str = "", board: str = "paper-nexus") 
     body = Path(md_path).read_text(encoding="utf-8")
     Path(md_path).unlink(missing_ok=True)
 
-    plan = resolve(pid, board)
+    plan = resolve(meta["canonical_id"], board)
     if plan["action"] == "update":
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         body = f"\n\n---\n\n## 流水线更新 / Pipeline refresh · {stamp}\n\n{body}"
@@ -75,8 +92,8 @@ def sync_paper_doc(paper_id: str, marker: str = "", board: str = "paper-nexus") 
         document_id = plan.get("document_id")
         action = "update"
     else:
-        title = f"[{meta['canonical_id']}] {meta['title'][:80]}"
-        wrapped = f"# {title}\n\n{body}"
+        online_title = feishu_doc_title(meta["canonical_id"], meta["title_zh"])
+        wrapped = f"# {online_title}\n\n{body}"
         out = _run_lark(
             [
                 "docs",
@@ -85,9 +102,11 @@ def sync_paper_doc(paper_id: str, marker: str = "", board: str = "paper-nexus") 
                 "v2",
                 "--as",
                 "bot",
+                "--title",
+                online_title,
                 "--doc-format",
                 "markdown",
-                "--content",
+                "--markdown",
                 wrapped,
             ],
         )
@@ -99,10 +118,11 @@ def sync_paper_doc(paper_id: str, marker: str = "", board: str = "paper-nexus") 
         action = "create"
 
     register(
-        pid,
+        meta["canonical_id"],
         doc_url,
         document_id=document_id,
         title=meta["title"],
+        title_zh=meta["title_zh"],
         board=board,
     )
     wf = f"paper-nexus:{meta['canonical_id']}"
@@ -113,6 +133,8 @@ def sync_paper_doc(paper_id: str, marker: str = "", board: str = "paper-nexus") 
         "doc_url": doc_url,
         "document_id": document_id,
         "title": meta["title"],
+        "title_zh": meta["title_zh"],
+        "feishu_doc_title": feishu_doc_title(meta["canonical_id"], meta["title_zh"]),
         "memory_os": {
             "workflow_id": wf,
             "store_hint": (
@@ -125,10 +147,22 @@ def sync_paper_doc(paper_id: str, marker: str = "", board: str = "paper-nexus") 
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("Usage: paper_feishu_doc_sync.py <arxiv_id> [marker]", file=sys.stderr)
+        print("Usage: paper_feishu_doc_sync.py <arxiv_or_s2_url> [marker]", file=sys.stderr)
         return 2
-    marker = sys.argv[2] if len(sys.argv) > 2 else ""
-    result = sync_paper_doc(sys.argv[1], marker=marker)
+    import argparse as _ap
+
+    ap = _ap.ArgumentParser()
+    ap.add_argument("paper_id")
+    ap.add_argument("marker", nargs="?", default="")
+    ap.add_argument("--handoff", default="")
+    ap.add_argument("--title-zh", default="")
+    ns = ap.parse_args()
+    result = sync_paper_doc(
+        ns.paper_id,
+        marker=ns.marker,
+        handoff_path=ns.handoff or None,
+        title_zh=ns.title_zh or None,
+    )
     json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
     return 0

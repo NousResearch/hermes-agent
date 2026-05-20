@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build bilingual (ZH + EN) Feishu markdown skeleton from arXiv metadata (generic)."""
+"""Build bilingual (ZH + EN) Feishu markdown skeleton from paper metadata (generic)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,10 @@ from pathlib import Path
 
 
 def _canonical_id(paper_id: str) -> str:
-    return re.sub(r"v\d+$", "", paper_id.strip(), flags=re.I)
+    pid = (paper_id or "").strip()
+    if pid.lower().startswith("s2:"):
+        return pid.lower()
+    return re.sub(r"v\d+$", "", pid, flags=re.I)
 
 
 def _zh_title_short(title: str, max_len: int = 48) -> str:
@@ -26,9 +29,13 @@ def _first_sentence(text: str) -> str:
 
 def build(meta: dict, marker: str = "", *, stage_notes: str = "") -> str:
     """Generic skeleton — workers replace 【待填】 sections via pipeline handoffs."""
-    title = meta["title"]
-    pid = meta["paper_id"]
-    cid = _canonical_id(pid)
+    title = meta.get("title_zh") or meta["title"]
+    pid = meta.get("paper_id") or meta.get("canonical_id") or ""
+    cid = meta.get("canonical_id") or _canonical_id(pid)
+    link = meta.get("arxiv_abs") or meta.get("s2_url") or "—"
+    pdf = meta.get("arxiv_pdf") or "—"
+    doi = meta.get("doi") or "—"
+    venue = meta.get("venue") or "—"
     authors = ", ".join(meta["authors"][:6])
     if len(meta["authors"]) > 6:
         authors += " et al."
@@ -45,11 +52,13 @@ def build(meta: dict, marker: str = "", *, stage_notes: str = "") -> str:
 | 项 Item | 内容 |
 |---------|------|
 | canonical_id | `{cid}` |
-| arXiv | {meta['arxiv_abs']} |
+| 链接 Link | {link} |
+| DOI | {doi} |
+| 期刊 Venue | {venue} |
 | 发表 Published | {meta['published']} |
 | 领域 Categories | {cats or '—'} |
 | 作者 Authors | {authors} |
-| PDF | {meta['arxiv_pdf']} |
+| PDF | {pdf} |
 | 流水线 Pipeline | `paper-nexus` · `/kanban-paper-nexus` |
 {marker_row}{notes_block}
 ---

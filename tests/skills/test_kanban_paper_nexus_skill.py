@@ -70,6 +70,75 @@ def test_registry_resolve_create_then_update(tmp_path, monkeypatch):
     assert r["doc_url"] == "https://my.feishu.cn/docx/TESTDOC"
 
 
+def test_memory_search_query_id_only_and_with_title():
+    import importlib.util
+
+    path = SKILL.parent / "scripts" / "paper_memory_search_query.py"
+    spec = importlib.util.spec_from_file_location("paper_memory_search_query", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    assert mod.build_search_query("2402.03300") == "2402.03300"
+    q = mod.build_search_query("2402.03300v3", "DeepSeekMath: Pushing the Limits of Mathematical Reasoning")
+    assert q.startswith("2402.03300 ")
+    assert len(q) <= mod.MAX_QUERY_CHARS
+    mod.validate_query(q)
+
+    try:
+        mod.validate_query("2402.03300 kanban-feishu-design full doc")
+    except ValueError as exc:
+        assert "forbidden" in str(exc).lower()
+    else:
+        raise AssertionError("expected ValueError for forbidden substring")
+
+
+def test_feishu_stage_notify_render():
+    import importlib.util
+
+    live = SKILL.parents[2] / "devops" / "kanban-feishu-live" / "scripts" / "kanban_feishu_stage_notify.py"
+    spec = importlib.util.spec_from_file_location("kanban_feishu_stage_notify", live)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    session = {
+        "canonical_id": "2402.03300",
+        "title_zh": "深度求索数学推理",
+        "feishu_doc_url": "https://my.feishu.cn/docx/TEST",
+        "tasks": {"T0": "t_a", "T1": "t_b"},
+    }
+    msg = mod.render_message(
+        session,
+        board="paper-nexus",
+        event="stage_done",
+        stage="T1",
+        summary="测试摘要",
+        kb=None,
+        conn=None,
+    )
+    assert "2402.03300" in msg
+    assert "深度求索" in msg
+    assert "T1" in msg and "完成" in msg
+    assert "TEST" in msg
+
+
+def test_paper_doc_title_zh():
+    import importlib.util
+
+    path = SKILL.parent / "scripts" / "paper_doc_title.py"
+    spec = importlib.util.spec_from_file_location("paper_doc_title", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    zh = mod.resolve_title_zh(
+        {"title": "DeepSeekMath English"},
+        handoff={"title_zh": "深度求索数学"},
+    )
+    assert mod.feishu_doc_title("2402.03300", zh) == "[2402.03300] 深度求索数学"
+
+
 def test_memory_markdown_entry():
     import importlib.util
     import json
@@ -94,6 +163,32 @@ def test_memory_markdown_entry():
     assert "测试论点" in entry
 
 
+def test_resolve_canonical_id_from_s2_url_without_network():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("paper_nexus_metadata", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    cid = mod.resolve_canonical_id(
+        "https://www.semanticscholar.org/paper/ceced53f349f7e425352ecf4813b307667cd8aa6"
+    )
+    assert cid == "s2:ceced53f349f7e425352ecf4813b307667cd8aa6"
+
+
+def test_metadata_parses_semanticscholar_url():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("paper_nexus_metadata", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    cid = mod._s2_corpus_from_raw(
+        "https://www.semanticscholar.org/paper/ceced53f349f7e425352ecf4813b307667cd8aa6"
+    )
+    assert cid == "ceced53f349f7e425352ecf4813b307667cd8aa6"
+
+
 def test_metadata_script_parses_arxiv_id():
     import importlib.util
 
@@ -101,5 +196,5 @@ def test_metadata_script_parses_arxiv_id():
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(mod)
-    assert mod.normalize_paper_id("https://arxiv.org/abs/2402.03300") == "2402.03300"
-    assert mod.normalize_paper_id("2402.03300v3") == "2402.03300v3"
+    assert mod.resolve_canonical_id("https://arxiv.org/abs/2402.03300") == "2402.03300"
+    assert mod.resolve_canonical_id("2402.03300v3") == "2402.03300"

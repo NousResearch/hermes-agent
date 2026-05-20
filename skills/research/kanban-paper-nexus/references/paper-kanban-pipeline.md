@@ -3,7 +3,8 @@
 Board: `paper-nexus`. Titles: `[paper] <arxiv_id> …`.
 
 **Read first:** `paper-reading-framework.md` (CEL + 实验五问 + 写作原则).  
-**跨会话：** `memory-os.md`（每阶段 `store_memory_markdown`）.
+**跨会话：** `memory-os.md`（每阶段 `store_memory_markdown`）。  
+**飞书实时：** `feishu-live-updates.md`（每阶段 `paper_feishu_stage_notify.py`，不改 Hermes 核心）。
 
 ## Scripts & registry
 
@@ -19,6 +20,7 @@ python3 skills/research/kanban-paper-nexus/scripts/paper_feishu_doc_sync.py <id>
 {
   "paper_id": "2402.03300v3",
   "canonical_id": "2402.03300",
+  "title_zh": "DeepSeekMath 开放数学推理模型",
   "stage": "T1",
   "thesis_one_liner": "用公开数学语料续训 7B 提升 MATH 推理。",
   "arxiv_abs": "https://arxiv.org/abs/2402.03300",
@@ -47,13 +49,14 @@ Downstream: `kanban_show` 读父任务 handoff；**禁止**编造父任务未出
 ## T0 — 论点与阅读地图
 
 - `paper_nexus_metadata.py`
-- 产出 `thesis_one_liner`（≤40 汉字）
+- 产出 `thesis_one_liner`（≤40 汉字）与 **`title_zh`**（论文中文名，供飞书在线文档名）
 - `reading_map`：5 步扫读顺序 + 计划读的 §/Fig
 - `deep` 模式：`web_extract` PDF 前 3–5 页 + 目录；记入 `pdf_sections_read`
 
 **完成标准：** 读者不看 PDF 也能知道「这篇想证明什么、去哪找证据」。
 
-**Memory：** `search_memory`（canonical_id）；完成后 `store_memory_markdown` stage=T0。
+**Memory：** `paper_memory_search_query.py` → `search_memory`（仅代号+标题，`limit=3`）；完成后 `store_memory_markdown` stage=T0。  
+**Feishu：** `notify --event stage_done --stage T0`（摘要=thesis_one_liner）。
 
 ---
 
@@ -97,7 +100,7 @@ Downstream: `kanban_show` 读父任务 handoff；**禁止**编造父任务未出
 
 1. 读 `lark-shared`、`lark-doc`、`feishu-doc-bilingual-template.md`
 2. 合并 T0–T4 handoff，**替换** skeleton 中【待填】（可先 `build_bilingual_doc_md.py` 出骨架再手改）
-3. `paper_feishu_doc_sync.py` — 遵守 create/append 策略
+3. `paper_feishu_doc_sync.py --handoff handoff.json` — 在线文档名 `[canonical_id] title_zh`；遵守 create/append
 4. 核心总结 5 条必须中文可读；English mirror
 
 **禁止：** 跨论文 doc；handoff 无依据的新 SOTA 数字。
@@ -129,4 +132,5 @@ Downstream: `kanban_show` 读父任务 handoff；**禁止**编造父任务未出
 ## Tools
 
 - Worker 用 `kanban_*`，不用 `hermes kanban` CLI（容器内无 CLI）
-- Notifier 发完成推送；勿再发长文 IM 重复 T5 内容
+- 每阶段完成前：`paper_feishu_stage_notify.py notify`（短 IM + DAG 行）；T5 勿把 doc 全文贴进 IM
+- Gateway Notifier 仅兜底（`paper_feishu_subscribe.py`）；不替代阶段 notify

@@ -5491,6 +5491,14 @@ class GatewayRunner:
                         )
                         del self._failed_platforms[platform]
                     else:
+                        # Defensive cleanup: connect() returned False but the
+                        # adapter may still hold a half-open ClientSession,
+                        # child subprocess, or socket from partial init. Without
+                        # this, the next reconnect attempt overwrites the only
+                        # reference and the old resources are GC'd with sockets
+                        # still in CLOSE_WAIT, surfacing later as cryptic
+                        # "Session is closed" / "Connector is closed" errors.
+                        await self._safe_adapter_disconnect(adapter, platform)
                         self._update_platform_runtime_status(
                             platform.value,
                             platform_state="retrying",
@@ -5513,6 +5521,15 @@ class GatewayRunner:
                                 ),
                             )
                 except Exception as e:
+                    # Same defensive cleanup for the exception path: connect()
+                    # raised partway through, so the adapter may hold live
+                    # resources. ``adapter`` may not be bound if _create_adapter
+                    # itself raised — guard with locals().
+                    if "adapter" in locals() and adapter is not None:
+                        try:
+                            await self._safe_adapter_disconnect(adapter, platform)
+                        except Exception:
+                            pass
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",

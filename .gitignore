@@ -73,3 +73,6 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat

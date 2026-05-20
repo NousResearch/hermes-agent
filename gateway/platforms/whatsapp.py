@@ -404,8 +404,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
         bot_ids = set()
         for candidate in data.get("botIds") or []:
             normalized = self._normalize_whatsapp_id(candidate)
-            if normalized:
-                bot_ids.add(normalized)
+            if not normalized:
+                continue
+            bot_ids.add(normalized)
+            # Baileys quotedParticipant arrives without the multi-device
+            # suffix (e.g. "123@s.whatsapp.net"), but sock.user.{id,lid}
+            # in botIds carries it (e.g. "123@10@s.whatsapp.net"). Add a
+            # suffix-stripped alias so reply-to-bot detection matches.
+            parts = normalized.split("@")
+            if len(parts) > 2:
+                bot_ids.add(f"{parts[0]}@{parts[-1]}")
         return bot_ids
 
     def _message_is_reply_to_bot(self, data: Dict[str, Any]) -> bool:

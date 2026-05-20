@@ -371,3 +371,38 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
     assert WhatsAppAdapter._is_broadcast_chat("") is False
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
+
+
+# --- Regression: device-suffix mismatch in reply-to-bot detection (issue #29023) ---
+
+def test_reply_to_bot_matches_device_suffixed_bot_ids():
+    """quotedParticipant from Baileys arrives without the multi-device suffix,
+    but sock.user.{id,lid} in botIds carries one. _bot_ids_from_message must
+    expose a suffix-stripped alias so the membership check succeeds."""
+    adapter = _make_adapter(require_mention=True)
+
+    # Multi-device botIds (note the `:10` device suffix → normalized to `@10`)
+    data = _group_message(
+        "thanks bot",
+        botIds=[
+            "5511999999999:10@s.whatsapp.net",
+            "99999999999999:10@lid",
+        ],
+        quotedParticipant="5511999999999@s.whatsapp.net",
+    )
+
+    assert adapter._message_is_reply_to_bot(data) is True
+    assert adapter._should_process_message(data) is True
+
+
+def test_reply_to_bot_legacy_non_multidevice_unchanged():
+    """Legacy (no device suffix) botIds should still match without any alias."""
+    adapter = _make_adapter(require_mention=True)
+
+    data = _group_message(
+        "thanks bot",
+        botIds=["15551230000@s.whatsapp.net", "15551230000@lid"],
+        quotedParticipant="15551230000@s.whatsapp.net",
+    )
+
+    assert adapter._message_is_reply_to_bot(data) is True

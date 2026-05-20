@@ -101,7 +101,6 @@ _CREDENTIAL_NAMES = frozenset({
     "RETAINDB_API_KEY",
     "HINDSIGHT_API_KEY",
     "HINDSIGHT_LLM_API_KEY",
-    "TINKER_API_KEY",
     "DAYTONA_API_KEY",
     "TWILIO_AUTH_TOKEN",
     "TELEGRAM_BOT_TOKEN",
@@ -188,15 +187,20 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
+    "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to
     # the real ~/.hermes/kanban.db instead of the per-test HERMES_HOME.
     "HERMES_KANBAN_DB",
     "HERMES_KANBAN_BOARD",
+    "HERMES_KANBAN_HOME",
     "HERMES_KANBAN_WORKSPACES_ROOT",
     "HERMES_KANBAN_LOGS_ROOT",
     "HERMES_KANBAN_TASK",
     "HERMES_KANBAN_WORKSPACE",
+    "HERMES_KANBAN_RUN_ID",
+    "HERMES_KANBAN_CLAIM_LOCK",
+    "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
     "HERMES_TENANT",
     "TERMINAL_CWD",
     "TERMINAL_ENV",
@@ -239,6 +243,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "TELEGRAM_HOME_CHANNEL",
     "TELEGRAM_HOME_CHANNEL_THREAD_ID",
     "TELEGRAM_HOME_CHANNEL_NAME",
+    "TELEGRAM_CRON_THREAD_ID",
     "DISCORD_HOME_CHANNEL",
     "DISCORD_HOME_CHANNEL_THREAD_ID",
     "DISCORD_HOME_CHANNEL_NAME",
@@ -476,12 +481,14 @@ def _reset_module_state():
     except Exception:
         pass
 
-    # --- agent.auxiliary_client — runtime main provider/model override ---
-    # Set per-turn by AIAgent.run_conversation; tests that import it must
-    # see a clean state so config.yaml fallback works as expected.
+    # --- agent.auxiliary_client — runtime main provider/model override and
+    #     payment-error health cache. Both are process-global in production;
+    #     reset them per test so one worker's fallback/402 test does not make
+    #     later auxiliary-client tests skip otherwise-available providers.
     try:
         from agent import auxiliary_client as _aux_mod
         _aux_mod.clear_runtime_main()
+        _aux_mod._reset_aux_unhealthy_cache()
     except Exception:
         pass
 

@@ -1,6 +1,6 @@
 # Phase A: Scoped Skills
 
-**Status**: TODO
+**Status**: Complete
 **Depends on**: Phase 0
 **Blocks**: Phase C
 
@@ -57,15 +57,15 @@ When `HERMES_MODE=saas`, the existing `skill_manage` tool's filesystem write pat
 
 ## Acceptance Criteria
 
-- [ ] `resolve_skill("foo", identity_A)` returns personal skill if it exists at `personal/.../foo/SKILL.md`
-- [ ] `resolve_skill("foo", identity_A)` falls back to team skill if no personal skill exists
-- [ ] `resolve_skill("foo", identity_A)` falls back to global if no team skill exists
-- [ ] `write_skill("foo", content, scope="global", identity)` raises `PermissionError`
-- [ ] `list_skills(identity)` shows personal skill shadowing a same-named team skill (personal entry, not both)
-- [ ] `promote_skill_to_team("foo", identity)` copies the skill to team scope on S3
-- [ ] With `HERMES_MODE=local`, skill_manage still reads/writes `~/.hermes/skills/` (no regression)
-- [ ] With `HERMES_MODE=saas`, skill_manage reads/writes S3
-- [ ] `pytest tests/test_skills_scoped.py -v` — all pass
+- [x] `resolve_skill("foo", identity_A)` returns personal skill if it exists at `personal/.../foo/SKILL.md`
+- [x] `resolve_skill("foo", identity_A)` falls back to team skill if no personal skill exists
+- [x] `resolve_skill("foo", identity_A)` falls back to global if no team skill exists
+- [x] `write_skill("foo", content, scope="global", identity)` raises `PermissionError`
+- [x] `list_skills(identity)` shows personal skill shadowing a same-named team skill (personal entry, not both)
+- [x] `promote_skill_to_team("foo", identity)` copies the skill to team scope on S3
+- [x] With `HERMES_MODE=local`, skill_manage still reads/writes `~/.hermes/skills/` (no regression)
+- [x] With `HERMES_MODE=saas`, skill_manage reads/writes S3
+- [x] `pytest tests/test_skills_scoped.py -v` — all pass (22/22)
 
 ## Skill Conflict Rules
 

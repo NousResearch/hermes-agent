@@ -205,3 +205,78 @@ class TestResetPolicyNotify:
         assert restored.notify == original.notify
         assert restored.notify_exclude_platforms == original.notify_exclude_platforms
         assert restored.mode == original.mode
+
+
+# ---------------------------------------------------------------------------
+# SessionEntry to_dict / from_dict roundtrip for auto-reset fields
+# ---------------------------------------------------------------------------
+
+class TestSessionEntryAutoResetRoundtrip:
+    def test_was_auto_reset_persists_across_roundtrip(self, tmp_path):
+        """was_auto_reset=True survives to_dict() → from_dict() (gateway restart)."""
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=1),
+            tmp_path,
+        )
+        source = _make_source()
+
+        entry = store.get_or_create_session(source)
+        entry.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+
+        entry2 = store.get_or_create_session(source)
+        assert entry2.was_auto_reset is True
+        assert entry2.auto_reset_reason == "idle"
+        assert entry2.session_id != entry.session_id
+
+        # Simulate gateway restart: reload from disk
+        store._loaded = False
+        store._entries.clear()
+        store._ensure_loaded()
+
+        reloaded = store._entries.get(entry2.session_key)
+        assert reloaded is not None
+        assert reloaded.was_auto_reset is True
+        assert reloaded.auto_reset_reason == "idle"
+
+    def test_reset_had_activity_persists_across_roundtrip(self, tmp_path):
+        """reset_had_activity survives to_dict() → from_dict() (gateway restart)."""
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=1),
+            tmp_path,
+        )
+        source = _make_source()
+
+        entry = store.get_or_create_session(source)
+        entry.total_tokens = 1000
+        entry.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+
+        entry2 = store.get_or_create_session(source)
+        assert entry2.reset_had_activity is True
+
+        store._loaded = False
+        store._entries.clear()
+        store._ensure_loaded()
+
+        reloaded = store._entries.get(entry2.session_key)
+        assert reloaded is not None
+        assert reloaded.reset_had_activity is True
+
+    def test_auto_reset_reason_none_roundtrip(self, tmp_path):
+        """auto_reset_reason=None (no reset) survives roundtrip cleanly."""
+        store = _make_store(tmp_path=tmp_path)
+        source = _make_source()
+
+        entry = store.get_or_create_session(source)
+        assert entry.was_auto_reset is False
+
+        store._loaded = False
+        store._entries.clear()
+        store._ensure_loaded()
+
+        reloaded = store._entries.get(entry.session_key)
+        assert reloaded is not None
+        assert reloaded.was_auto_reset is False
+        assert reloaded.auto_reset_reason is None
+        assert reloaded.reset_had_activity is False

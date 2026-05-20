@@ -21,7 +21,7 @@ install, no separate daemon to manage.
 ## When LSP runs
 
 LSP is gated on **git workspace detection**. When the agent's working
-directory (or the file being edited) is inside a git worktree, LSP
+directory (or the file being edited) is inside a git repository, LSP
 runs against that workspace. When neither is in a git repo, LSP
 stays dormant — useful for messaging gateways where the cwd is the
 user's home directory and there's no project to diagnose.
@@ -249,5 +249,6 @@ the next edit re-spawns.
 
 **Editing a file outside any git repo**
 
-By design, LSP only runs inside git worktrees. Run `git init` in the
-project, or accept the in-process syntax-only fallback.
+By design, LSP only runs inside a git repository. If the project isn't
+yet initialized, run `git init` to enable LSP diagnostics. Otherwise the
+in-process syntax-only fallback applies.

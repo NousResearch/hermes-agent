@@ -120,9 +120,14 @@ echo "▶ running pytest with $WORKERS workers, hermetic env, in $REPO_ROOT"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"
 
 # -o "addopts=" clears pyproject.toml's `-n auto` so our -n wins.
+# We re-add --timeout/--timeout-method here because pyproject.toml's
+# addopts is wiped above. The 60s cap is essential: see pyproject.toml
+# for why (suite deadlocks at session teardown without it).
 exec "$PYTHON" -m pytest \
   -o "addopts=" \
   -n "$WORKERS" \
+  --timeout=30 \
+  --timeout-method=signal \
   --ignore=tests/integration \
   --ignore=tests/e2e \
   -m "not integration" \

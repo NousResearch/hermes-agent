@@ -182,6 +182,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Connected platform validation | Registry `validate_config()` called |
 | User authorization | `allowed_users_env` / `allow_all_env` checked |
 | Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` + `home_channel` |
+| YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
 | `hermes config` UI entries | `requires_env` / `optional_env` in `plugin.yaml` auto-populate |
 | send_message tool | Routes through live gateway adapter |
@@ -238,6 +239,46 @@ def register(ctx):
         # ... other fields
     )
 ```
+
+
+## YAML→env Config Bridge
+
+Some users prefer setting `config.yaml` keys (`my_platform.require_mention`, `my_platform.allowed_channels`, etc.) over env vars. The `apply_yaml_config_fn` hook lets your plugin own this translation instead of forcing core `gateway/config.py` to know your platform's YAML schema.
+
+```python
+import os
+
+def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict | None:
+    """Translate config.yaml `my_platform:` keys into env vars / extras.
+
+    yaml_cfg     — the full top-level parsed config.yaml dict
+    platform_cfg — the platform's own sub-dict (yaml_cfg.get("my_platform", {}))
+
+    May mutate os.environ directly (use `not os.getenv(...)` guards to
+    preserve env > YAML precedence) and/or return a dict to merge into
+    PlatformConfig.extra. Return None or {} for no extras.
+    """
+    if "require_mention" in platform_cfg and not os.getenv("MY_PLATFORM_REQUIRE_MENTION"):
+        os.environ["MY_PLATFORM_REQUIRE_MENTION"] = str(platform_cfg["require_mention"]).lower()
+    allowed = platform_cfg.get("allowed_channels")
+    if allowed is not None and not os.getenv("MY_PLATFORM_ALLOWED_CHANNELS"):
+        if isinstance(allowed, list):
+            allowed = ",".join(str(v) for v in allowed)
+        os.environ["MY_PLATFORM_ALLOWED_CHANNELS"] = str(allowed)
+    return None  # nothing extra to merge into PlatformConfig.extra
+
+def register(ctx):
+    ctx.register_platform(
+        name="my_platform",
+        ...,
+        apply_yaml_config_fn=_apply_yaml_config,
+    )
+```
+
+The hook is invoked during `load_gateway_config()` after the generic shared-key loop (which handles common keys like `unauthorized_dm_behavior`, `notice_delivery`, `reply_prefix`, `require_mention`, etc.) and before `_apply_env_overrides()`, so your plugin only needs to bridge **platform-specific** keys.
+
+Exceptions raised by the hook are swallowed and logged at debug level — a misbehaving plugin never aborts gateway config load.
+
 
 ## Cron Delivery
 

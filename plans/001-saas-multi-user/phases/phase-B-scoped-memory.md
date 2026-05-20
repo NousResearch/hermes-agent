@@ -1,6 +1,6 @@
 # Phase B: Scoped Atlas Memory
 
-**Status**: TODO
+**Status**: Complete
 **Depends on**: Phase 0
 **Blocks**: None
 
@@ -57,15 +57,15 @@ Out of scope for this phase. Tracked in Atlas repo (army-of-one) as a separate p
 
 ## Acceptance Criteria
 
-- [ ] `personal_fence(identity)` returns `"personal:{platform}:{team_id}:{user_id}"`
-- [ ] `team_fence(identity)` returns `"team:{platform}:{team_id}"`
-- [ ] `scoped_atlas_search` returns results from all three fences, personal ranked first
-- [ ] Personal result deduplicates: same chunk in personal + global returns only once (personal wins)
-- [ ] `scoped_atlas_ingest(..., scope="global")` raises `PermissionError`
-- [ ] User A's personal-fence knowledge is not retrievable by User B (different `user_id`, same `team_id`)
-- [ ] Team-fence knowledge is retrievable by both User A and User B in the same team
-- [ ] Existing Atlas calls without identity are unaffected (`fence=None` behavior unchanged)
-- [ ] `pytest tests/test_atlas_scopes.py -v` — all pass
+- [x] `personal_fence(identity)` returns `"personal:{platform}:{team_id}:{user_id}"`
+- [x] `team_fence(identity)` returns `"team:{platform}:{team_id}"`
+- [x] `scoped_atlas_search` returns results from all three fences, personal ranked first
+- [x] Personal result deduplicates: same chunk in personal + global returns only once (personal wins)
+- [x] `scoped_atlas_ingest(..., scope="global")` raises `PermissionError`
+- [x] User A's personal-fence knowledge is not retrievable by User B (different `user_id`, same `team_id`)
+- [x] Team-fence knowledge is retrievable by both User A and User B in the same team
+- [x] Existing Atlas calls without identity are unaffected (`fence=None` behavior unchanged)
+- [x] `pytest tests/test_atlas_scopes.py -v` — all pass (32/32)
 
 ## Key Code
 

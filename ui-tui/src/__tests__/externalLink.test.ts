@@ -30,6 +30,12 @@ describe('external link helpers', () => {
     ).toBe('From Fajardo Icacos Island Full Day Catamaran Trip')
   })
 
+  it('keeps x.com status fallbacks link-like instead of generic Status labels', () => {
+    expect(urlSlugTitleLabel('https://x.com/grok/status/2056065022749479209')).toBe(
+      'x.com/grok/status/2056065022749479209'
+    )
+  })
+
   it('normalizes scheme-less links', () => {
     expect(normalizeExternalUrl(' expedia.com/things-to-do/puerto-rico-el-yunque ')).toBe(
       'https://expedia.com/things-to-do/puerto-rico-el-yunque'

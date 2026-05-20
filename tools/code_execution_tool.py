@@ -33,6 +33,7 @@ import functools
 import json
 import logging
 import os
+from hermes_constants import expand_user_path
 import platform
 import shlex
 import signal
@@ -1632,7 +1633,7 @@ def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
         return staging_dir
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
-        expanded = os.path.expanduser(raw)
+        expanded = expand_user_path(raw)
         if os.path.isdir(expanded):
             return expanded
     here = os.getcwd()
@@ -1711,7 +1712,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     if mode == "strict":
         cwd_note = (
             "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
-            "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
+            "(expand_user_path('~/.hermes/.env')) or terminal()/read_file() for user files."
         )
     else:
         cwd_note = (

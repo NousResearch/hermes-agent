@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from hermes_constants import get_os_user_home
 from typing import Any, Dict
 
 from utils import is_truthy_value
@@ -60,7 +61,7 @@ def has_direct_modal_credentials() -> bool:
     """Return True when direct Modal credentials/config are available."""
     return bool(
         (os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"))
-        or (Path.home() / ".modal.toml").exists()
+        or (get_os_user_home() / ".modal.toml").exists()
     )
 
 

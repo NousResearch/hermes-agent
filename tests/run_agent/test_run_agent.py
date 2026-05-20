@@ -693,6 +693,7 @@ class TestInit:
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={"model": {"context_length": 200_000}}),
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
@@ -2328,6 +2329,17 @@ class TestParallelScopePathNormalization:
 
         assert rel_scoped == abs_scoped
         assert _paths_overlap(rel_scoped, abs_scoped)
+
+    def test_extract_parallel_scope_path_ignores_corrupt_home_env(self, tmp_path, monkeypatch):
+        from hermes_constants import get_os_user_home
+        from run_agent import _extract_parallel_scope_path
+
+        monkeypatch.setenv("HOME", f"{tmp_path}/\ufffcbad")
+
+        scoped = _extract_parallel_scope_path("write_file", {"path": "~/.hermes/config.yaml"})
+
+        assert scoped == get_os_user_home() / ".hermes" / "config.yaml"
+        assert "\ufffc" not in str(scoped)
 
     def test_should_parallelize_tool_batch_rejects_same_file_with_mixed_path_spellings(self, tmp_path, monkeypatch):
         from run_agent import _should_parallelize_tool_batch

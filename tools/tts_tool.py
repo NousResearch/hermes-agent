@@ -49,6 +49,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
+from hermes_constants import expand_user_path
 from typing import Callable, Dict, Any, Optional
 from urllib.parse import urljoin
 
@@ -661,7 +662,7 @@ def _generate_command_tts(
             f"tts.providers.{provider_name}.command is not configured"
         )
 
-    output = Path(output_path).expanduser()
+    output = Path(expand_user_path(output_path))
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
         output.unlink()
@@ -1436,7 +1437,7 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
         voice = DEFAULT_PIPER_VOICE
 
     # Case 1: user gave a direct file path.
-    candidate = Path(voice).expanduser()
+    candidate = Path(expand_user_path(voice))
     if candidate.suffix.lower() == ".onnx" and candidate.exists():
         return str(candidate)
 
@@ -1486,7 +1487,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
     piper_config = tts_config.get("piper", {}) if isinstance(tts_config, dict) else {}
     voice_name = piper_config.get("voice") or DEFAULT_PIPER_VOICE
-    download_dir = Path(piper_config.get("voices_dir") or _get_piper_voices_dir()).expanduser()
+    download_dir = Path(expand_user_path(piper_config.get("voices_dir") or _get_piper_voices_dir()))
     download_dir.mkdir(parents=True, exist_ok=True)
     use_cuda = bool(piper_config.get("use_cuda", False))
 
@@ -1671,7 +1672,7 @@ def text_to_speech_tool(
 
     # Determine output path
     if output_path:
-        file_path = Path(output_path).expanduser()
+        file_path = Path(expand_user_path(output_path))
         if command_provider_config is not None:
             # Respect caller-supplied path but align the extension with the
             # provider's configured output_format so the command writes to a

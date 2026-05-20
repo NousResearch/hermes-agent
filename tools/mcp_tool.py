@@ -84,6 +84,7 @@ import json
 import logging
 import math
 import os
+from hermes_constants import expand_user_path, get_hermes_home, get_os_user_home
 import re
 import shutil
 import sys
@@ -405,7 +406,7 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     This primarily exists to make bare ``npx``/``npm``/``node`` commands work
     reliably even when MCP subprocesses run under a filtered PATH.
     """
-    resolved_command = os.path.expanduser(str(command).strip())
+    resolved_command = expand_user_path(str(command).strip())
     resolved_env = dict(env or {})
 
     if os.sep not in resolved_command:
@@ -414,14 +415,10 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         if which_hit:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node"}:
-            hermes_home = os.path.expanduser(
-                os.getenv(
-                    "HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes")
-                )
-            )
+            hermes_home = str(get_hermes_home())
             candidates = [
                 os.path.join(hermes_home, "node", "bin", resolved_command),
-                os.path.join(os.path.expanduser("~"), ".local", "bin", resolved_command),
+                os.path.join(str(get_os_user_home()), ".local", "bin", resolved_command),
             ]
             for candidate in candidates:
                 if os.path.isfile(candidate) and os.access(candidate, os.X_OK):

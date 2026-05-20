@@ -57,6 +57,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from hermes_constants import expand_user_path, get_os_user_home
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -192,7 +193,7 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
 
 def _normalize_path(path_value: str) -> Path:
     """Return a canonical absolute path for checkpoint operations."""
-    return Path(path_value).expanduser().resolve()
+    return Path(expand_user_path(path_value)).resolve()
 
 
 def _project_hash(working_dir: str) -> str:
@@ -639,7 +640,7 @@ class CheckpointManager:
         abs_dir = str(_normalize_path(working_dir))
 
         # Skip root, home, and other overly broad directories
-        if abs_dir in {"/", str(Path.home())}:
+        if abs_dir in {"/", str(get_os_user_home())}:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 

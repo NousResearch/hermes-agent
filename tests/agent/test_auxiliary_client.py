@@ -351,8 +351,10 @@ class TestAnthropicOAuthFlag:
 class TestBuildCodexClient:
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (
-            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
-            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client._select_pool_entry_with_pool", return_value=(True, None, MagicMock())),
+            patch("hermes_cli.auth._read_codex_tokens", return_value={
+                "tokens": {"access_token": "codex-auth-token"}
+            }),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             mock_openai.return_value = MagicMock()
@@ -364,6 +366,35 @@ class TestBuildCodexClient:
         assert model == "gpt-5.4"
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+    def test_raw_codex_client_carries_selected_pool_for_main_fallback(self):
+        class _Entry:
+            runtime_api_key = "pool-token"
+            runtime_base_url = "https://chatgpt.com/backend-api/codex"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        pool = _Pool()
+        raw_client = SimpleNamespace(api_key="pool-token", base_url="https://chatgpt.com/backend-api/codex")
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client.OpenAI", return_value=raw_client),
+        ):
+            client, model = resolve_provider_client(
+                "openai-codex",
+                model="gpt-5.5",
+                raw_codex=True,
+            )
+
+        assert client is raw_client
+        assert model == "gpt-5.5"
+        assert client._hermes_credential_pool is pool
+        assert client._hermes_pool_provider == "openai-codex"
 
     def test_rejects_missing_model(self):
         """Callers must pass an explicit model; no hardcoded default."""

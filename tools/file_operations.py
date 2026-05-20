@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from tools.binary_extensions import BINARY_EXTENSIONS
+from hermes_constants import expand_user_path, get_os_user_home
 
 from agent.file_safety import (
     build_write_denied_paths,
@@ -46,7 +47,7 @@ from agent.file_safety import (
 # Write-path deny list — blocks writes to sensitive system/credential files
 # ---------------------------------------------------------------------------
 
-_HOME = str(Path.home())
+_HOME = str(get_os_user_home())
 
 WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
 
@@ -672,6 +673,12 @@ class ShellFileOperations(FileOperations):
             result = self._exec("echo $HOME")
             if result.exit_code == 0 and result.stdout.strip():
                 home = result.stdout.strip()
+                if "\ufffc" in home:
+                    # Guardrail for corrupted local HOME env observed on VPS
+                    # launches.  Remote backends should not normally emit this;
+                    # if they do, using the host passwd home is safer than
+                    # constructing paths containing U+FFFC.
+                    home = str(get_os_user_home())
                 if path == '~':
                     return home
                 elif path.startswith('~/'):

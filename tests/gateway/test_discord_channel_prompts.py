@@ -29,7 +29,7 @@ def _ensure_discord_mock():
 
 
 import gateway.run as gateway_run
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig, GatewayConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
@@ -139,6 +139,28 @@ class TestResolveChannelPrompts:
             }
         }
         assert adapter._resolve_channel_prompt("999", parent_id="200") == "Thread override"
+
+    def test_exact_thread_prompt_hot_reloads_and_overrides_parent(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter.config.extra = {"channel_prompts": {"200": "Stale parent prompt"}}
+
+        live_config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    extra={
+                        "channel_prompts": {
+                            "999": "Live thread override",
+                            "200": "Live parent prompt",
+                        }
+                    }
+                )
+            }
+        )
+        import gateway.config as gateway_config
+
+        monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: live_config)
+
+        assert adapter._resolve_channel_prompt("999", parent_id="200") == "Live thread override"
 
     def test_build_message_event_sets_channel_prompt(self):
         adapter = _make_adapter()
@@ -254,5 +276,7 @@ async def test_run_agent_appends_channel_prompt_to_ephemeral_system_prompt(monke
 
     assert result["final_response"] == "ok"
     assert _CapturingAgent.last_init["ephemeral_system_prompt"] == (
-        "Context prompt\n\nChannel prompt\n\nGlobal prompt"
+        "Context prompt\n\nChannel prompt\n\nGlobal prompt\n\n"
+        "Channel prompts and ephemeral prompts are scoped runtime context only. "
+        "They must not replace or rename the agent identity defined by SOUL.md."
     )

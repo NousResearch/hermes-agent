@@ -510,20 +510,38 @@ def _to_openai_base_url(base_url: str) -> str:
     return url
 
 
-def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
-    """Return (pool_exists_for_provider, selected_entry)."""
+def _select_pool_entry_with_pool(provider: str) -> Tuple[bool, Optional[Any], Optional[Any]]:
+    """Return (pool_exists_for_provider, selected_entry, pool)."""
     try:
         pool = load_pool(provider)
     except Exception as exc:
         logger.debug("Auxiliary client: could not load pool for %s: %s", provider, exc)
-        return False, None
+        return False, None, None
     if not pool or not pool.has_credentials():
-        return False, None
+        return False, None, None
     try:
-        return True, pool.select()
+        return True, pool.select(), pool
     except Exception as exc:
         logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
-        return True, None
+        return True, None, pool
+
+
+def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
+    """Return (pool_exists_for_provider, selected_entry)."""
+    pool_present, entry, _pool = _select_pool_entry_with_pool(provider)
+    return pool_present, entry
+
+
+def _attach_credential_pool(client: Any, provider: str, pool: Optional[Any]) -> Any:
+    """Best-effort tag so main-agent fallback can keep pool recovery attached."""
+    if client is None or pool is None:
+        return client
+    try:
+        setattr(client, "_hermes_credential_pool", pool)
+        setattr(client, "_hermes_pool_provider", _normalize_aux_provider(provider))
+    except Exception:
+        pass
+    return client
 
 
 def _peek_pool_entry(provider: str) -> Optional[Any]:
@@ -1348,8 +1366,8 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     return api_key, base_url
 
 
-def _read_codex_access_token() -> Optional[str]:
-    """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
+def _resolve_codex_credentials_for_aux() -> Tuple[Optional[str], str, Optional[Any]]:
+    """Resolve Codex OAuth credentials and the selected credential pool, if any.
 
     If a credential pool exists but currently has no selectable runtime entry
     (for example all pool slots are marked exhausted), fall back to the
@@ -1357,11 +1375,13 @@ def _read_codex_access_token() -> Optional[str]:
     fallback-to-Codex working when the pool state is stale but the stored OAuth
     token is still valid.
     """
-    pool_present, entry = _select_pool_entry("openai-codex")
+    fallback_base_url = _CODEX_AUX_BASE_URL
+    pool_present, entry, pool = _select_pool_entry_with_pool("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
-            return token
+            base_url = _pool_runtime_base_url(entry, fallback_base_url) or fallback_base_url
+            return token, base_url, pool
 
     try:
         from hermes_cli.auth import _read_codex_tokens
@@ -1369,7 +1389,7 @@ def _read_codex_access_token() -> Optional[str]:
         tokens = data.get("tokens", {})
         access_token = tokens.get("access_token")
         if not isinstance(access_token, str) or not access_token.strip():
-            return None
+            return None, fallback_base_url, None
 
         # Check JWT expiry — expired tokens block the auto chain and
         # prevent fallback to working providers (e.g. Anthropic).
@@ -1381,14 +1401,20 @@ def _read_codex_access_token() -> Optional[str]:
             exp = claims.get("exp", 0)
             if exp and time.time() > exp:
                 logger.debug("Codex access token expired (exp=%s), skipping", exp)
-                return None
+                return None, fallback_base_url, None
         except Exception:
             pass  # Non-JWT token or decode error — use as-is
 
-        return access_token.strip()
+        return access_token.strip(), fallback_base_url, None
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
-        return None
+        return None, fallback_base_url, None
+
+
+def _read_codex_access_token() -> Optional[str]:
+    """Read a valid, non-expired Codex OAuth access token."""
+    token, _base_url, _pool = _resolve_codex_credentials_for_aux()
+    return token
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -1885,28 +1911,19 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        codex_token = _pool_runtime_api_key(entry)
-        if codex_token:
-            base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
-        else:
-            codex_token = _read_codex_access_token()
-            if not codex_token:
-                return None, None
-            base_url = _CODEX_AUX_BASE_URL
-    else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = _CODEX_AUX_BASE_URL
+    codex_token, base_url, pool = _resolve_codex_credentials_for_aux()
+    if not codex_token:
+        return None, None
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = OpenAI(
         api_key=codex_token,
         base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token),
     )
-    return CodexAuxiliaryClient(real_client, model), model
+    wrapped = CodexAuxiliaryClient(real_client, model)
+    _attach_credential_pool(wrapped, "openai-codex", pool)
+    _attach_credential_pool(real_client, "openai-codex", pool)
+    return wrapped, model
 
 
 def _try_azure_foundry(
@@ -2029,13 +2046,14 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     except ImportError:
         return None, None
 
-    pool_present, entry = _select_pool_entry("anthropic")
+    pool_present, entry, pool = _select_pool_entry_with_pool("anthropic")
     if pool_present:
         if entry is None:
             return None, None
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
         entry = None
+        pool = None
         token = explicit_api_key or resolve_anthropic_token()
     if not token:
         return None, None
@@ -2068,7 +2086,9 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
         # missing — build_anthropic_client raises ImportError at call time
         # when _anthropic_sdk is None.  Treat as unavailable.
         return None, None
-    return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
+    wrapped = AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth)
+    _attach_credential_pool(wrapped, "anthropic", pool)
+    return wrapped, model
 
 
 _AUTO_PROVIDER_LABELS = {
@@ -3225,7 +3245,7 @@ def resolve_provider_client(
         if raw_codex:
             # Return the raw OpenAI client for callers that need direct
             # access to responses.stream() (e.g., the main agent loop).
-            codex_token = _read_codex_access_token()
+            codex_token, codex_base_url, pool = _resolve_codex_credentials_for_aux()
             if not codex_token:
                 logger.warning("resolve_provider_client: openai-codex requested "
                                "but no Codex OAuth token found (run: hermes model)")
@@ -3233,9 +3253,10 @@ def resolve_provider_client(
             final_model = _normalize_resolved_model(model, provider)
             raw_client = OpenAI(
                 api_key=codex_token,
-                base_url=_CODEX_AUX_BASE_URL,
+                base_url=codex_base_url,
                 default_headers=_codex_cloudflare_headers(codex_token),
             )
+            _attach_credential_pool(raw_client, "openai-codex", pool)
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
         client, default = _build_codex_client(model)

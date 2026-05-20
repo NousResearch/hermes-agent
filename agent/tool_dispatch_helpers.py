@@ -30,6 +30,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from hermes_constants import expand_user_path
+
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
 )
@@ -155,7 +157,7 @@ def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Optiona
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
 
-    expanded = Path(raw_path).expanduser()
+    expanded = Path(expand_user_path(raw_path))
     if expanded.is_absolute():
         return Path(os.path.abspath(str(expanded)))
 

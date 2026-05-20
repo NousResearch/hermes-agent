@@ -334,6 +334,62 @@ def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatc
     assert pool.select() is None
 
 
+def test_codex_slot_entry_syncs_from_slot_auth_before_selection(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    home = tmp_path / "home"
+    slot_dir = home / ".codex-redam-b"
+    slot_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HOME", str(home))
+
+    stale_access = _jwt_with_claims({"exp": int(time.time()) + 600})
+    fresh_access = _jwt_with_claims({"exp": int(time.time()) + 3600})
+    (slot_dir / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": fresh_access,
+            "refresh_token": "fresh-refresh",
+        },
+        "last_refresh": "2026-05-20T06:01:58Z",
+    }))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "redam-b",
+                        "label": "redam-b",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "slot:.codex-redam-b",
+                        "access_token": stale_access,
+                        "refresh_token": "stale-refresh",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_status": "ok",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.access_token == fresh_access
+    assert entry.refresh_token == "fresh-refresh"
+    assert entry.last_status is None
+
+    persisted = json.loads((hermes_home / "auth.json").read_text())
+    persisted_entry = persisted["credential_pool"]["openai-codex"][0]
+    assert persisted_entry["access_token"] == fresh_access
+    assert persisted_entry["refresh_token"] == "fresh-refresh"
+    assert persisted_entry["last_refresh"] == "2026-05-20T06:01:58Z"
+
+
 def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

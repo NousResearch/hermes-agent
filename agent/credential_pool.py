@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
@@ -545,6 +546,69 @@ class CredentialPool:
             logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
         return entry
 
+    def _sync_codex_entry_from_slot_auth(self, entry: PooledCredential) -> PooledCredential:
+        """Sync a ``slot:.codex-*`` Codex pool entry from its slot auth file.
+
+        Slot-backed subscription credentials are owned by their
+        ``~/.codex-<slot>/auth.json`` files. Other tooling such as Deckel reads
+        those files directly; Hermes must not keep using a stale copy embedded
+        in ``~/.hermes/auth.json`` after the slot has refreshed elsewhere.
+        """
+        if self.provider != "openai-codex":
+            return entry
+        source = str(entry.source or "").strip()
+        if not source.startswith("slot:.codex-"):
+            return entry
+        slot_dir_name = source.split("slot:", 1)[1].strip()
+        if (
+            not slot_dir_name
+            or "/" in slot_dir_name
+            or slot_dir_name in {".", ".."}
+            or not slot_dir_name.startswith(".codex-")
+        ):
+            return entry
+        auth_path = os.path.join(os.path.expanduser("~"), slot_dir_name, "auth.json")
+        try:
+            with open(auth_path, "r", encoding="utf-8") as handle:
+                slot_state = json.load(handle)
+            tokens = slot_state.get("tokens") if isinstance(slot_state, dict) else None
+            if not isinstance(tokens, dict):
+                return entry
+            slot_access = str(tokens.get("access_token") or "").strip()
+            slot_refresh = str(tokens.get("refresh_token") or "").strip()
+            if not slot_access:
+                return entry
+            if (
+                slot_access != str(entry.access_token or "")
+                or (slot_refresh and slot_refresh != str(entry.refresh_token or ""))
+            ):
+                logger.debug(
+                    "Pool entry %s: syncing Codex slot tokens from %s",
+                    entry.id,
+                    slot_dir_name,
+                )
+                field_updates: Dict[str, Any] = {
+                    "access_token": slot_access,
+                    "refresh_token": slot_refresh or entry.refresh_token,
+                    "last_status": None,
+                    "last_status_at": None,
+                    "last_error_code": None,
+                    "last_error_reason": None,
+                    "last_error_message": None,
+                    "last_error_reset_at": None,
+                }
+                if slot_state.get("last_refresh"):
+                    field_updates["last_refresh"] = slot_state["last_refresh"]
+                updated = replace(entry, **field_updates)
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+        except FileNotFoundError:
+            return entry
+        except Exception as exc:
+            logger.debug("Failed to sync Codex slot tokens from %s: %s", slot_dir_name, exc)
+        return entry
+
     def _sync_xai_oauth_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync an xAI OAuth pool entry from auth.json if tokens differ.
 
@@ -797,6 +861,9 @@ class CredentialPool:
                     except Exception as wexc:
                         logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
             elif self.provider == "openai-codex":
+                slot_synced = self._sync_codex_entry_from_slot_auth(entry)
+                if slot_synced is not entry:
+                    return slot_synced
                 # Adopt fresher tokens from auth.json before spending the
                 # refresh_token — single-use tokens consumed by another Hermes
                 # process sharing the same auth.json singleton would otherwise
@@ -963,6 +1030,12 @@ class CredentialPool:
             # and the HTTP call.  Re-check auth.json and adopt the fresh tokens
             # if they have rotated since.
             if self.provider == "openai-codex":
+                slot_synced = self._sync_codex_entry_from_slot_auth(entry)
+                if slot_synced is not entry:
+                    logger.debug(
+                        "Codex OAuth refresh failed but slot auth has newer tokens — adopting"
+                    )
+                    return slot_synced
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug(
@@ -1163,6 +1236,14 @@ class CredentialPool:
                     and entry.source == "device_code"
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_nous_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                    cleared_any = True
+            # Codex slot credentials live in ~/.codex-<slot>/auth.json.  Sync
+            # them on every selection, not only when exhausted, because a copied
+            # pool token can be stale while still marked "ok".
+            if self.provider == "openai-codex" and str(entry.source or "").startswith("slot:.codex-"):
+                synced = self._sync_codex_entry_from_slot_auth(entry)
                 if synced is not entry:
                     entry = synced
                     cleared_any = True

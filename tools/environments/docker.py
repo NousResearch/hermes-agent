@@ -7,6 +7,7 @@ persistence via bind mounts.
 
 import logging
 import os
+from hermes_constants import expand_user_path
 import re
 import shutil
 import subprocess
@@ -358,7 +359,7 @@ class DockerEnvironment(BaseEnvironment):
             else:
                 logger.warning(f"Docker volume '{vol}' missing colon, skipping")
 
-        host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        host_cwd_abs = os.path.abspath(expand_user_path(host_cwd)) if host_cwd else ""
         bind_host_cwd = (
             auto_mount_cwd
             and bool(host_cwd_abs)

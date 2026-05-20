@@ -594,3 +594,27 @@ class _DeletedTestGitBaselineCheck:
     helper is restored or replaced.
     """
     pass
+
+
+class TestCorruptHomeGuardrails:
+    def test_expand_path_uses_passwd_home_when_terminal_home_contains_object_replacement(self, mock_env):
+        from hermes_constants import get_os_user_home
+
+        def side_effect(command, **kwargs):
+            if command == "echo $HOME":
+                return {"output": "/home/\ufffc/bad\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+
+        assert ops._expand_path("~/.hermes/hermes-agent") == str(get_os_user_home() / ".hermes" / "hermes-agent")
+
+    def test_write_deny_ignores_corrupt_home_env(self, monkeypatch):
+        from agent.file_safety import is_write_denied
+        from hermes_constants import get_os_user_home
+
+        monkeypatch.setenv("HOME", "/tmp/\ufffcbad")
+
+        assert is_write_denied(str(get_os_user_home() / ".ssh" / "id_rsa")) is True
+        assert is_write_denied("~/.ssh/id_rsa") is True

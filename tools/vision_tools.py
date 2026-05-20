@@ -34,6 +34,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
+from hermes_constants import expand_user_path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
@@ -562,7 +563,7 @@ async def _vision_analyze_native(
         resolved_url = image_url
         if resolved_url.startswith("file://"):
             resolved_url = resolved_url[len("file://"):]
-        local_path = Path(os.path.expanduser(resolved_url))
+        local_path = Path(expand_user_path(resolved_url))
 
         if local_path.is_file():
             temp_image_path = local_path
@@ -701,7 +702,7 @@ async def vision_analyze_tool(
         resolved_url = image_url
         if resolved_url.startswith("file://"):
             resolved_url = resolved_url[len("file://"):]
-        local_path = Path(os.path.expanduser(resolved_url))
+        local_path = Path(expand_user_path(resolved_url))
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
             logger.info("Using local image file: %s", image_url)
@@ -1201,7 +1202,7 @@ async def video_analyze_tool(
         resolved_url = video_url
         if resolved_url.startswith("file://"):
             resolved_url = resolved_url[len("file://"):]
-        local_path = Path(os.path.expanduser(resolved_url))
+        local_path = Path(expand_user_path(resolved_url))
 
         if local_path.is_file():
             logger.info("Using local video file: %s", video_url)

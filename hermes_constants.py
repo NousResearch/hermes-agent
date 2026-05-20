@@ -10,6 +10,55 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 
 
+
+def get_os_user_home() -> Path:
+    """Return the real OS account home without trusting ``$HOME``.
+
+    Agent/profile subprocesses may intentionally override ``HOME`` for tool
+    isolation, and on some VPS launches that env value has been observed to
+    contain U+FFFC.  Python's ``Path.home()`` / ``expanduser("~")`` trust
+    ``$HOME`` on POSIX, so use the passwd database there instead.
+    """
+    if os.name != "nt":
+        try:
+            import pwd
+
+            home = pwd.getpwuid(os.getuid()).pw_dir
+            if home:
+                return Path(home)
+        except Exception:
+            pass
+    return Path(os.path.expanduser("~"))
+
+
+def expand_user_path(path: str | Path) -> str:
+    """Expand ``~`` without trusting a possibly corrupted ``$HOME``.
+
+    ``os.path.expanduser`` and ``Path.expanduser`` read ``HOME`` first on
+    POSIX.  That is wrong for Hermes' own host-side path resolution when
+    ``HOME`` is profile-scoped or contains U+FFFC.  Preserve ``~user`` support
+    via the passwd database on POSIX, and fall back to stdlib behavior for
+    non-tilde paths / Windows.
+    """
+    raw = os.fspath(path)
+    if not raw.startswith("~"):
+        return raw
+    if raw == "~" or raw.startswith("~/"):
+        return str(get_os_user_home()) + raw[1:]
+    if os.name != "nt":
+        try:
+            import pwd
+
+            rest = raw[1:]
+            slash_idx = rest.find("/")
+            username = rest if slash_idx < 0 else rest[:slash_idx]
+            suffix = "" if slash_idx < 0 else rest[slash_idx:]
+            if username:
+                return pwd.getpwnam(username).pw_dir + suffix
+        except Exception:
+            pass
+    return os.path.expanduser(raw)
+
 _profile_fallback_warned: bool = False
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
@@ -72,7 +121,7 @@ def get_hermes_home() -> Path:
             # Inline the default-root resolution from get_default_hermes_root()
             # to stay import-safe (this function is called from module scope
             # in 30+ files; we cannot afford to trigger logging setup here).
-            active_path = (Path.home() / ".hermes" / "active_profile")
+            active_path = (get_os_user_home() / ".hermes" / "active_profile")
             active = active_path.read_text().strip() if active_path.exists() else ""
         except (UnicodeDecodeError, OSError):
             active = ""
@@ -98,7 +147,7 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return Path.home() / ".hermes"
+    return get_os_user_home() / ".hermes"
 
 
 def get_default_hermes_root() -> Path:
@@ -117,7 +166,7 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = Path.home() / ".hermes"
+    native_home = get_os_user_home() / ".hermes"
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home
@@ -230,7 +279,7 @@ def display_hermes_home() -> str:
     """
     home = get_hermes_home()
     try:
-        return "~/" + str(home.relative_to(Path.home()))
+        return "~/" + str(home.relative_to(get_os_user_home()))
     except ValueError:
         return str(home)
 

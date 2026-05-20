@@ -731,7 +731,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     # raw_codex=True because the main agent needs direct responses.stream()
     # access for Codex providers.
     try:
-        from agent.auxiliary_client import resolve_provider_client
+        from agent.auxiliary_client import resolve_provider_client, _normalize_aux_provider
         # Pass base_url and api_key from fallback config so custom
         # endpoints (e.g. Ollama Cloud) resolve correctly instead of
         # falling through to OpenRouter defaults.
@@ -802,6 +802,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
+        fb_pool = getattr(fb_client, "_hermes_credential_pool", None)
+        fb_pool_provider = str(
+            getattr(fb_client, "_hermes_pool_provider", "") or ""
+        ).strip().lower()
+        normalized_fb_provider = _normalize_aux_provider(fb_provider)
+        agent._credential_pool = (
+            fb_pool
+            if fb_pool is not None
+            and (not fb_pool_provider or fb_pool_provider == normalized_fb_provider)
+            else None
+        )
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True

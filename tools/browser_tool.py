@@ -65,6 +65,7 @@ import time
 import requests
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
+from hermes_constants import expand_user_path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
@@ -3506,7 +3507,7 @@ def _chromium_search_roots() -> List[str]:
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
     if env_path and env_path != "0":
         roots.append(env_path)
-    home = os.path.expanduser("~")
+    home = expand_user_path("~")
     roots.append(os.path.join(home, ".cache", "ms-playwright"))
     if sys.platform == "darwin":
         roots.append(os.path.join(home, "Library", "Caches", "ms-playwright"))

@@ -108,7 +108,21 @@ def _get_token_dir() -> Path:
         from hermes_constants import get_hermes_home
         base = Path(get_hermes_home())
     except ImportError:
-        base = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+        env_home = os.environ.get("HERMES_HOME")
+        if env_home:
+            base = Path(env_home)
+        elif os.name != "nt":
+            try:
+                import pwd
+
+                base = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes"
+            except Exception:
+                fallback_home = os.environ.get("HOME", "")
+                if not fallback_home or "\ufffc" in fallback_home:
+                    fallback_home = "/tmp"
+                base = Path(fallback_home) / ".hermes"
+        else:
+            base = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or ".") / ".hermes"
     return base / "mcp-tokens"
 
 

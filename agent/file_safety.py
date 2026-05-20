@@ -13,7 +13,8 @@ def _hermes_home_path() -> Path:
         from hermes_constants import get_hermes_home  # local import to avoid cycles
         return get_hermes_home()
     except Exception:
-        return Path(os.path.expanduser("~/.hermes"))
+        from hermes_constants import expand_user_path
+        return Path(expand_user_path("~/.hermes"))
 
 
 def build_write_denied_paths(home: str) -> set[str]:
@@ -67,21 +68,35 @@ def get_safe_write_root() -> Optional[str]:
     if not root:
         return None
     try:
-        return os.path.realpath(os.path.expanduser(root))
+        from hermes_constants import expand_user_path
+        return os.path.realpath(expand_user_path(root))
     except Exception:
         return None
 
 
 def is_write_denied(path: str) -> bool:
     """Return True if path is blocked by the write denylist or safe root."""
-    home = os.path.realpath(os.path.expanduser("~"))
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    from hermes_constants import expand_user_path, get_os_user_home
 
-    if resolved in build_write_denied_paths(home):
+    raw_path = str(path)
+    if "\ufffc" in raw_path:
         return True
-    for prefix in build_write_denied_prefixes(home):
-        if resolved.startswith(prefix):
+
+    resolved = os.path.realpath(expand_user_path(raw_path))
+    if "\ufffc" in resolved:
+        return True
+
+    homes = {os.path.realpath(str(get_os_user_home()))}
+    env_home = os.getenv("HOME", "")
+    if env_home and "\ufffc" not in env_home:
+        homes.add(os.path.realpath(env_home))
+
+    for home in homes:
+        if resolved in build_write_denied_paths(home):
             return True
+        for prefix in build_write_denied_prefixes(home):
+            if resolved.startswith(prefix):
+                return True
 
     safe_root = get_safe_write_root()
     if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
@@ -92,7 +107,8 @@ def is_write_denied(path: str) -> bool:
 
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets internal Hermes cache files."""
-    resolved = Path(path).expanduser().resolve()
+    from hermes_constants import expand_user_path
+    resolved = Path(expand_user_path(path)).resolve()
     hermes_home = _hermes_home_path().resolve()
     blocked_dirs = [
         hermes_home / "skills" / ".hub" / "index-cache",

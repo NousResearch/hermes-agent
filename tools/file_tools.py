@@ -8,6 +8,8 @@ import os
 import threading
 from pathlib import Path
 
+from hermes_constants import expand_user_path
+
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
@@ -118,7 +120,7 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's live terminal cwd when possible."""
-    p = Path(filepath).expanduser()
+    p = Path(expand_user_path(filepath))
     if not p.is_absolute():
         base = _get_live_tracking_cwd(task_id) or os.environ.get(
             "TERMINAL_CWD", os.getcwd()
@@ -135,7 +137,7 @@ def _is_blocked_device(filepath: str) -> bool:
     through (e.g. /dev/stdin → /proc/self/fd/0 → /dev/pts/0), defeating
     the check.
     """
-    normalized = os.path.expanduser(filepath)
+    normalized = expand_user_path(filepath)
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -161,7 +163,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-    normalized = os.path.normpath(os.path.expanduser(filepath))
+    normalized = os.path.normpath(expand_user_path(filepath))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."

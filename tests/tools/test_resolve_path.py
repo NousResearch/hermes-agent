@@ -38,11 +38,14 @@ class TestResolvePath:
     def test_tilde_expansion(self, monkeypatch, tmp_path):
         """~ is expanded before TERMINAL_CWD join (already absolute)."""
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        from hermes_constants import get_os_user_home
         from tools.file_tools import _resolve_path
 
         result = _resolve_path("~/notes.txt")
-        # After expanduser, ~/notes.txt becomes absolute → TERMINAL_CWD ignored
-        assert result == Path.home() / "notes.txt"
+        # After host-side expanduser, ~/notes.txt becomes absolute → TERMINAL_CWD ignored.
+        # Use passwd-backed home, not $HOME, because worker/profile HOME can be
+        # redirected or corrupted by U+FFFC.
+        assert result == get_os_user_home() / "notes.txt"
 
     def test_result_is_resolved(self, monkeypatch, tmp_path):
         """Output path has no '..' components."""
@@ -83,3 +86,16 @@ class TestResolvePath:
                     file_tools._file_ops_cache[task_id] = previous
 
         assert result == live_dir / "nested" / "file.txt"
+
+
+    def test_tilde_expansion_ignores_corrupt_home_env(self, monkeypatch, tmp_path):
+        """Host-side file tool path resolution must not trust a corrupt $HOME."""
+        monkeypatch.setenv("HOME", f"{tmp_path}/\ufffcbad")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        from hermes_constants import get_os_user_home
+        from tools.file_tools import _resolve_path
+
+        result = _resolve_path("~/.hermes/hermes-agent")
+
+        assert result == (get_os_user_home() / ".hermes" / "hermes-agent").resolve()
+        assert "\ufffc" not in str(result)

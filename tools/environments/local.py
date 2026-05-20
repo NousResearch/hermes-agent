@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from hermes_constants import expand_user_path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -385,7 +386,7 @@ def _resolve_shell_init_files() -> list[str]:
     resolved: list[str] = []
     for raw in candidates:
         try:
-            path = os.path.expandvars(os.path.expanduser(raw))
+            path = os.path.expandvars(expand_user_path(raw))
         except Exception:
             continue
         if path and os.path.isfile(path):
@@ -424,7 +425,7 @@ class LocalEnvironment(BaseEnvironment):
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         if cwd:
-            cwd = os.path.expanduser(cwd)
+            cwd = expand_user_path(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
 

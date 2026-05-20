@@ -3552,9 +3552,44 @@ class DiscordAdapter(BasePlatformAdapter):
         return resolve_channel_skills(self.config.extra, channel_id, parent_id)
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
-        """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
+        """Resolve a Discord per-channel prompt, preferring live exact thread config.
+
+        Discord adapters are long-lived, while ``config.yaml`` is expected to
+        hot-reload for gateway turns.  Start with the adapter's startup config
+        as a fallback, then overlay freshly loaded Discord platform extras so
+        newly added exact thread prompts take effect without a gateway restart.
+        """
         from gateway.platforms.base import resolve_channel_prompt
-        return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
+
+        config_extra = dict(getattr(self.config, "extra", None) or {})
+        try:
+            from gateway.config import load_gateway_config
+
+            live_config = load_gateway_config()
+            live_platform = (live_config.platforms or {}).get(Platform.DISCORD)
+            live_extra = getattr(live_platform, "extra", None) or {}
+            if isinstance(live_extra, dict):
+                config_extra.update(live_extra)
+        except Exception as exc:
+            logger.debug("Discord channel_prompt live config reload failed: %s", exc)
+
+        prompt = resolve_channel_prompt(config_extra, channel_id, parent_id)
+        if prompt:
+            prompts = config_extra.get("channel_prompts") or {}
+            matched = "exact" if isinstance(prompts, dict) and prompts.get(str(channel_id)) is not None else "parent"
+            logger.info(
+                "Discord channel_prompt resolved (%s): channel_id=%s parent_id=%s",
+                matched,
+                channel_id,
+                parent_id or "",
+            )
+        else:
+            logger.debug(
+                "Discord channel_prompt not found: channel_id=%s parent_id=%s",
+                channel_id,
+                parent_id or "",
+            )
+        return prompt
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""

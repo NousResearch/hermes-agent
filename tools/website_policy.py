@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 from pathlib import Path
+from hermes_constants import expand_user_path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -177,7 +178,7 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
     for shared_file in raw_shared_files:
         if not isinstance(shared_file, str) or not shared_file.strip():
             continue
-        path = Path(shared_file).expanduser()
+        path = Path(expand_user_path(shared_file))
         if not path.is_absolute():
             path = (get_hermes_home() / path).resolve()
         for normalized in _iter_blocklist_file_rules(path):

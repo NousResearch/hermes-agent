@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+from hermes_constants import expand_user_path
 import platform
 import shutil
 import stat
@@ -459,7 +460,7 @@ def _resolve_tirith_path(configured_path: str) -> str:
     if _resolved_path is not None and _resolved_path is not _INSTALL_FAILED:
         return _resolved_path
 
-    expanded = os.path.expanduser(configured_path)
+    expanded = expand_user_path(configured_path)
     explicit = _is_explicit_path(configured_path)
     install_failed = _resolved_path is _INSTALL_FAILED
 
@@ -608,7 +609,7 @@ def ensure_installed(*, log_failures: bool = True):
 
     configured_path = cfg["tirith_path"]
     explicit = _is_explicit_path(configured_path)
-    expanded = os.path.expanduser(configured_path)
+    expanded = expand_user_path(configured_path)
 
     # Explicit path: synchronous check only, no download
     if explicit:

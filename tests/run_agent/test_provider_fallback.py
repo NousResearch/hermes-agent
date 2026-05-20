@@ -182,6 +182,44 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_fallback_replaces_active_credential_pool(self):
+        """Fallback provider pool must replace the failed primary provider pool."""
+        fbs = [{"provider": "openai-codex", "model": "gpt-5.5"}]
+        agent = _make_agent(fallback_model=fbs)
+        old_pool = MagicMock(name="anthropic-pool")
+        new_pool = MagicMock(name="codex-pool")
+        agent._credential_pool = old_pool
+
+        client = _mock_client(
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+        )
+        client._hermes_credential_pool = new_pool
+        client._hermes_pool_provider = "openai-codex"
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(client, "gpt-5.5"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "openai-codex"
+        assert agent._credential_pool is new_pool
+
+    def test_fallback_clears_stale_pool_when_target_has_no_pool(self):
+        fbs = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
+        agent = _make_agent(fallback_model=fbs)
+        agent._credential_pool = MagicMock(name="failed-primary-pool")
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "anthropic/claude-sonnet-4"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "openrouter"
+        assert agent._credential_pool is None
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

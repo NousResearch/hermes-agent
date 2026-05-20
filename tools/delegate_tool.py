@@ -22,6 +22,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+from hermes_constants import expand_user_path
 import threading
 import time
 from concurrent.futures import (
@@ -661,7 +662,7 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
         if not candidate:
             continue
         try:
-            text = os.path.abspath(os.path.expanduser(str(candidate)))
+            text = os.path.abspath(expand_user_path(str(candidate)))
         except Exception:
             continue
         if os.path.isabs(text) and os.path.isdir(text):

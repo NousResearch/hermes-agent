@@ -520,6 +520,81 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun compactsSensorAnalyzerReportWithoutDroppingPolicyRoutes() {
+        val features = JSONArray()
+        repeat(18) { index ->
+            features.put(
+                JSONObject()
+                    .put("category", "sensor_analyzer_parity")
+                    .put("label", "Sensor analyzer feature $index")
+                    .put("ready", index % 2 == 0)
+                    .put("value_label", "value $index")
+                    .put("detail", "Detailed Sensor Analyzer row $index with accelerometer, gyroscope, metadata, and sampling-policy context.")
+                    .put("recommendation", "Route through the matching sensor diagnostic action.")
+                    .put("feature_source", "Android SensorManager")
+                    .put("tool_action", "sensor_snapshot")
+                    .put("fraction", 0.82),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "sensor_analyzer_report")
+            .put("sensor_analyzer_feature_count", 18)
+            .put("ready_sensor_analyzer_feature_count", 9)
+            .put("sensor_analyzer_workflow_route_count", 1)
+            .put("sensor_sampling_policy_count", 1)
+            .put(
+                "sensor_sampling_status",
+                JSONObject()
+                    .put("active_sample_requested", false)
+                    .put("passive_report_default", true)
+                    .put("requested_available_sensor_count", 2),
+            )
+            .put("sensor_analyzer_feature_matrix", features)
+            .put(
+                "sensor_analyzer_workflow_routes",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "sensor_analyzer_route")
+                        .put("label", "Route one-shot motion sample")
+                        .put("ready", true)
+                        .put("value_label", "sensor_snapshot")
+                        .put("tool_action", "sensor_snapshot"),
+                ),
+            )
+            .put(
+                "sensor_sampling_policy_matrix",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "sensor_sampling_policy")
+                        .put("label", "Passive report default")
+                        .put("ready", true)
+                        .put("value_label", "no live sample")
+                        .put("constraint_type", "sampling_cadence"),
+                ),
+            )
+            .put("cards", JSONArray().put(JSONObject().put("title", "Sensor Analyzer Readiness").put("body", "18 rows")))
+            .toString()
+
+        val parsed = JSONObject(NativeToolContextCompressor.compactToolResult(result))
+        val featureMatrix = parsed.getJSONObject("sensor_analyzer_feature_matrix")
+        val routes = parsed.getJSONArray("sensor_analyzer_workflow_routes")
+        val policies = parsed.getJSONArray("sensor_sampling_policy_matrix")
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(18, parsed.getInt("sensor_analyzer_feature_count"))
+        assertEquals(9, parsed.getInt("ready_sensor_analyzer_feature_count"))
+        assertFalse(parsed.getJSONObject("sensor_sampling_status").getBoolean("active_sample_requested"))
+        assertEquals("array", featureMatrix.getString("type"))
+        assertEquals("Sensor analyzer feature 0", featureMatrix.getJSONArray("items").getJSONObject(0).getString("label"))
+        assertEquals("Android SensorManager", featureMatrix.getJSONArray("items").getJSONObject(0).getString("feature_source"))
+        assertEquals("sensor_snapshot", featureMatrix.getJSONArray("items").getJSONObject(0).getString("tool_action"))
+        assertEquals("Route one-shot motion sample", routes.getJSONObject(0).getString("label"))
+        assertEquals("Passive report default", policies.getJSONObject(0).getString("label"))
+        assertEquals("sampling_cadence", policies.getJSONObject(0).getString("constraint_type"))
+    }
+
+    @Test
     fun compactsBluetoothAndRadioDiagnosticRowsWithoutDroppingSignalMetadata() {
         val devices = JSONArray()
         repeat(30) { index ->

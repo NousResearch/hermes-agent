@@ -340,6 +340,43 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun sensorAnalyzerReportExposesReadinessRoutesAndSamplingPolicyWithoutForcingSnapshot() {
+        val result = HermesDeviceDiagnosticsBridge.sensorAnalyzerReportJson(context)
+        val features = result.getJSONArray("sensor_analyzer_feature_matrix")
+        val routes = result.getJSONArray("sensor_analyzer_workflow_routes")
+        val policies = result.getJSONArray("sensor_sampling_policy_matrix")
+        val featureLabels = buildSet {
+            for (index in 0 until features.length()) add(features.getJSONObject(index).getString("label"))
+        }
+        val routeLabels = buildSet {
+            for (index in 0 until routes.length()) add(routes.getJSONObject(index).getString("label"))
+        }
+        val policyLabels = buildSet {
+            for (index in 0 until policies.length()) add(policies.getJSONObject(index).getString("label"))
+        }
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("sensor_analyzer_report", result.getString("action"))
+        assertTrue(result.has("sensor_sampling_status"))
+        assertFalse(result.getJSONObject("sensor_sampling_status").getBoolean("active_sample_requested"))
+        assertTrue(featureLabels.contains("Motion and orientation sensors"))
+        assertTrue(featureLabels.contains("Accelerometer access"))
+        assertTrue(featureLabels.contains("Gyroscope access"))
+        assertTrue(featureLabels.contains("Sensor hardware metadata"))
+        assertTrue(featureLabels.contains("Sensor privacy and power boundary"))
+        assertTrue(routeLabels.contains("Route one-shot motion sample"))
+        assertTrue(routeLabels.contains("Route sensor hardware metadata"))
+        assertTrue(routeLabels.contains("Route sampling policy explanation"))
+        assertTrue(policyLabels.contains("Passive report default"))
+        assertTrue(policyLabels.contains("Bounded one-shot timeout"))
+        assertTrue(policyLabels.contains("Analysis and privacy boundary"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Sensor Analyzer Readiness"))
+        assertTrue(result.getInt("sensor_analyzer_feature_count") >= 9)
+        assertTrue(result.getInt("sensor_analyzer_workflow_route_count") >= 6)
+        assertTrue(result.getInt("sensor_sampling_policy_count") >= 5)
+    }
+
+    @Test
     fun socDetectionCoversMediatekAndSnapdragonWithoutAdrenoAssumptions() {
         assertTrue(HermesDeviceDiagnosticsBridge.isLikelyMediatekSoc(listOf("MediaTek", "mt6893", "Dimensity 1200")))
         assertFalse(HermesDeviceDiagnosticsBridge.isLikelyMediatekSoc(listOf("Qualcomm", "sm8550", "Snapdragon 8 Gen 2")))
@@ -390,6 +427,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("agent_environment_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_scan"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_analyzer_report"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("sensor_analyzer_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_status"))
         assertTrue(result.getJSONObject("hindsight_memory_translation").has("retain"))
     }

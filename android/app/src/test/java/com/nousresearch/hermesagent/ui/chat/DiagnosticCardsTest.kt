@@ -591,4 +591,40 @@ class DiagnosticCardsTest {
         assertTrue(row.detail.contains("Use bluetooth_scan"))
         assertTrue(row.fraction > 0.9f)
     }
+
+    @Test
+    fun parsesSensorAnalyzerReadinessRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Sensor Analyzer Readiness")
+                        .put("body", "Readiness rows.")
+                        .put("graph_type", "sensor_analyzer_feature_matrix")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("category", "sensor_analyzer_parity")
+                                    .put("label", "Gyroscope access")
+                                    .put("ready", true)
+                                    .put("value_label", "gyroscope ready")
+                                    .put("detail", "Gyroscope rows are available.")
+                                    .put("recommendation", "Use sensor_snapshot.")
+                                    .put("fraction", 0.93),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("Gyroscope access", row.label)
+        assertEquals("gyroscope ready", row.valueLabel)
+        assertTrue(row.detail.contains("sensor analyzer parity"))
+        assertTrue(row.detail.contains("Use sensor_snapshot"))
+        assertTrue(row.fraction > 0.9f)
+    }
 }

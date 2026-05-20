@@ -284,6 +284,30 @@ def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and
     assert 'capabilityMatrixRow(row)' in diagnostic_cards
 
 
+def test_android_diagnostics_exposes_sensor_analyzer_report_for_motion_and_sampling_policy_cards():
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+
+    assert '"sensor_analyzer_report"' in diagnostics_bridge
+    assert 'sensorAnalyzerReportJson(appContext' in diagnostics_bridge
+    assert 'sensorAnalyzerFeatureRows(' in diagnostics_bridge
+    assert 'sensorAnalyzerWorkflowRows(' in diagnostics_bridge
+    assert 'sensorSamplingPolicyRows(' in diagnostics_bridge
+    assert '"sensor_analyzer_feature_matrix"' in diagnostics_bridge
+    assert '"sensor_analyzer_workflow_routes"' in diagnostics_bridge
+    assert '"sensor_sampling_policy_matrix"' in diagnostics_bridge
+    assert 'Sensor Analyzer readiness' in diagnostics_bridge
+    assert 'accelerometer' in diagnostics_bridge
+    assert 'gyroscope' in diagnostics_bridge
+    assert 'sensor_analyzer_report' in chat_client
+    assert '"sensor_analyzer_feature_matrix"' in chat_client
+    assert '"sensor_analyzer_workflow_routes"' in chat_client
+    assert '"sensor_sampling_policy_matrix"' in chat_client
+    assert '"sensor_analyzer_feature_matrix", "sensor_analyzer_workflow_routes", "sensor_sampling_policy_matrix"' in diagnostic_cards
+    assert 'capabilityMatrixRow(row)' in diagnostic_cards
+
+
 def test_android_linux_subsystem_reapplies_executable_bits_before_reusing_cached_prefix():
     bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesLinuxSubsystemBridge.kt").read_text(encoding="utf-8")
     linux_subsystem = (REPO_ROOT / "hermes_android/linux_subsystem.py").read_text(encoding="utf-8")

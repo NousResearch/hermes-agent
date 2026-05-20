@@ -71,6 +71,8 @@ object HermesDeviceDiagnosticsBridge {
                 bluetoothAnalyzerReportJson(appContext, arguments).toString()
             "bluetooth_scan", "bluetooth_scanner", "nearby_bluetooth", "ble_scan", "bluetooth_signals" ->
                 bluetoothScanJson(appContext, arguments).toString()
+            "sensor_analyzer_report", "sensor_readiness_report", "sensor_feature_report", "sensor_sampling_policy", "motion_sensor_report" ->
+                sensorAnalyzerReportJson(appContext, arguments).toString()
             "sensor_snapshot", "sensors", "sensor_status", "sample_sensors", "motion_sensors" ->
                 sensorSnapshotJson(appContext, arguments).toString()
             "camera_status", "camera", "camera_capabilities" -> cameraStatusJson(appContext).toString()
@@ -732,6 +734,127 @@ object HermesDeviceDiagnosticsBridge {
                         ),
                     ),
             )
+    }
+
+    fun sensorAnalyzerReportJson(context: Context, arguments: JSONObject = JSONObject()): JSONObject {
+        val appContext = context.applicationContext
+        val sensorManager = appContext.getSystemService(SensorManager::class.java)
+        val requested = sensorAnalyzerRequestedSensorTypes(arguments)
+        val available = sensorTypeCatalog(appContext)
+        val availableSet = available.toSet()
+        val capabilities = if (sensorManager != null) {
+            sensorCapabilityRows(sensorManager, requested)
+        } else {
+            unavailableSensorRows(requested)
+        }
+        val includeSnapshot = arguments.optBoolean("include_snapshot", false) || arguments.optBoolean("sample", false)
+        val timeoutMs = arguments.optLong("timeout_ms", DEFAULT_SENSOR_TIMEOUT_MS).coerceIn(150L, MAX_SENSOR_TIMEOUT_MS)
+        val snapshot = if (includeSnapshot && sensorManager != null) sensorSnapshotJson(appContext, arguments) else null
+        val samples = snapshot?.optJSONArray("sensor_samples") ?: JSONArray()
+        val motionSensorCount = countSensorCapabilities(capabilities, MOTION_SENSOR_TYPES)
+        val ambientSensorCount = countSensorCapabilities(capabilities, AMBIENT_SENSOR_TYPES)
+        val wakeUpSensorCount = countSensorCapabilityFlag(capabilities, "wake_up")
+        val directChannelSensorCount = countSensorCapabilityFlag(capabilities, "direct_channel_supported")
+        val requestedAvailableCount = requested.count { it in availableSet }
+        val samplingStatus = sensorSamplingStatusJson(
+            sensorServiceAvailable = sensorManager != null,
+            requestedSensorCount = requested.size,
+            availableSensorCount = available.size,
+            requestedAvailableCount = requestedAvailableCount,
+            sampledSensorCount = samples.length(),
+            activeSampleRequested = includeSnapshot,
+            timeoutMs = timeoutMs,
+        )
+        val featureRows = sensorAnalyzerFeatureRows(
+            sensorServiceAvailable = sensorManager != null,
+            availableSensors = available,
+            capabilityCount = capabilities.length(),
+            motionSensorCount = motionSensorCount,
+            ambientSensorCount = ambientSensorCount,
+            wakeUpSensorCount = wakeUpSensorCount,
+            directChannelSensorCount = directChannelSensorCount,
+            sampledSensorCount = samples.length(),
+        )
+        val routeRows = sensorAnalyzerWorkflowRows(
+            availableSensors = available,
+            motionSensorCount = motionSensorCount,
+            ambientSensorCount = ambientSensorCount,
+            capabilityCount = capabilities.length(),
+        )
+        val policyRows = sensorSamplingPolicyRows(
+            sensorServiceAvailable = sensorManager != null,
+            requestedSensorCount = requested.size,
+            requestedAvailableCount = requestedAvailableCount,
+            wakeUpSensorCount = wakeUpSensorCount,
+            directChannelSensorCount = directChannelSensorCount,
+            activeSampleRequested = includeSnapshot,
+            timeoutMs = timeoutMs,
+        )
+        val cards = JSONArray()
+            .put(
+                graphCard(
+                    title = "Sensor Analyzer Readiness",
+                    body = "${featureRows.length()} feature row(s) covering accelerometer, gyroscope, orientation, ambient context, hardware metadata, watcher automation, card rendering, and privacy boundaries.",
+                    graphType = "sensor_analyzer_feature_matrix",
+                    rows = featureRows,
+                ),
+            )
+            .put(
+                graphCard(
+                    title = "Sensor Analyzer Routes",
+                    body = "${routeRows.length()} route row(s) for choosing one-shot samples, orientation context, ambient context, hardware metadata, watcher automation, or sampling-policy flows.",
+                    graphType = "sensor_analyzer_workflow_routes",
+                    rows = routeRows,
+                ),
+            )
+            .put(
+                graphCard(
+                    title = "Sensor Sampling Policy",
+                    body = "${policyRows.length()} service, availability, sampling-cadence, timeout, power, and privacy row(s) for honest motion and ambient analysis.",
+                    graphType = "sensor_sampling_policy_matrix",
+                    rows = policyRows,
+                ),
+            )
+            .put(
+                graphCard(
+                    title = "Sensor Hardware",
+                    body = "${capabilities.length()} sensor capability row(s) with vendor, range, resolution, power, FIFO, wake-up, direct-channel, and sampling-rate metadata.",
+                    graphType = "sensor_capability",
+                    rows = capabilities,
+                ),
+            )
+        snapshot?.optJSONArray("cards")?.let { snapshotCards ->
+            for (index in 0 until snapshotCards.length()) {
+                cards.put(snapshotCards.getJSONObject(index))
+            }
+        }
+        return JSONObject()
+            .put("success", true)
+            .put("action", "sensor_analyzer_report")
+            .put("report_scope", "Sensor Analyzer readiness and routing report for accelerometer, gyroscope, rotation/orientation, ambient sensors, sensor hardware metadata, one-shot sampling, watcher automation, sampling cadence, power, and privacy boundaries.")
+            .put("sensor_service_available", sensorManager != null)
+            .put("requested_sensor_types", JSONArray(requested))
+            .put("available_sensor_types", JSONArray(available))
+            .put("sensor_sampling_status", samplingStatus)
+            .put("sensor_samples", samples)
+            .put("sensor_capabilities", capabilities)
+            .put("supported_watcher_types", JSONArray(SENSOR_TYPE_LABELS.keys))
+            .put("sensor_analyzer_feature_matrix", featureRows)
+            .put("sensor_analyzer_workflow_routes", routeRows)
+            .put("sensor_sampling_policy_matrix", policyRows)
+            .put("sensor_catalog_count", available.size)
+            .put("sensor_capability_count", capabilities.length())
+            .put("requested_available_sensor_count", requestedAvailableCount)
+            .put("sampled_sensor_count", samples.length())
+            .put("motion_sensor_count", motionSensorCount)
+            .put("ambient_sensor_count", ambientSensorCount)
+            .put("wake_up_sensor_count", wakeUpSensorCount)
+            .put("direct_channel_sensor_count", directChannelSensorCount)
+            .put("sensor_analyzer_feature_count", featureRows.length())
+            .put("ready_sensor_analyzer_feature_count", countReadyRows(featureRows))
+            .put("sensor_analyzer_workflow_route_count", routeRows.length())
+            .put("sensor_sampling_policy_count", policyRows.length())
+            .put("cards", cards)
     }
 
     fun cameraStatusJson(context: Context): JSONObject {
@@ -2126,6 +2249,377 @@ object HermesDeviceDiagnosticsBridge {
             )
     }
 
+    private fun sensorAnalyzerFeatureRows(
+        sensorServiceAvailable: Boolean,
+        availableSensors: List<String>,
+        capabilityCount: Int,
+        motionSensorCount: Int,
+        ambientSensorCount: Int,
+        wakeUpSensorCount: Int,
+        directChannelSensorCount: Int,
+        sampledSensorCount: Int,
+    ): JSONArray {
+        val hasAccelerometer = "accelerometer" in availableSensors
+        val hasGyroscope = "gyroscope" in availableSensors
+        val hasRotationContext = "rotation_vector" in availableSensors ||
+            (hasGyroscope && "magnetic_field" in availableSensors)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Motion and orientation sensors",
+                    ready = sensorServiceAvailable && motionSensorCount > 0,
+                    valueLabel = if (motionSensorCount > 0) "$motionSensorCount motion type(s)" else "no motion rows",
+                    detail = "Hermes can expose accelerometer, gyroscope, gravity, linear-acceleration, and rotation-vector metadata when Android reports those sensors.",
+                    recommendation = "Use sensor_snapshot for the exact motion types needed by the workflow instead of sampling every sensor.",
+                    fraction = if (motionSensorCount > 0) (motionSensorCount / MOTION_SENSOR_TYPES.size.toFloat()).coerceIn(0.35f, 1f) else 0.2f,
+                    extra = JSONObject()
+                        .put("feature_source", "Android SensorManager")
+                        .put("tool_action", "sensor_snapshot"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Accelerometer access",
+                    ready = hasAccelerometer,
+                    valueLabel = if (hasAccelerometer) "accelerometer ready" else "not reported",
+                    detail = "Accelerometer rows support movement, shake, tilt, posture-change, and device-handling context for local workflows.",
+                    recommendation = "Ask for sensor_snapshot sensor_types=accelerometer when the user needs current acceleration values.",
+                    fraction = if (hasAccelerometer) 0.95f else 0.25f,
+                    extra = JSONObject()
+                        .put("feature_source", "Sensor.TYPE_ACCELEROMETER")
+                        .put("tool_action", "sensor_snapshot"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Gyroscope access",
+                    ready = hasGyroscope,
+                    valueLabel = if (hasGyroscope) "gyroscope ready" else "not reported",
+                    detail = "Gyroscope rows expose angular velocity for rotation-aware automation, stabilization, and device-orientation reasoning.",
+                    recommendation = "Use gyroscope together with accelerometer or rotation-vector rows before making orientation claims.",
+                    fraction = if (hasGyroscope) 0.95f else 0.25f,
+                    extra = JSONObject()
+                        .put("feature_source", "Sensor.TYPE_GYROSCOPE")
+                        .put("tool_action", "sensor_snapshot"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Rotation and heading context",
+                    ready = hasRotationContext,
+                    valueLabel = when {
+                        "rotation_vector" in availableSensors -> "rotation vector ready"
+                        hasRotationContext -> "gyro plus magnetic"
+                        else -> "orientation gated"
+                    },
+                    detail = "Rotation-vector, gyroscope, and magnetic-field rows help Gemma reason about orientation and heading without camera-only assumptions.",
+                    recommendation = "Prefer rotation_vector when available; otherwise combine gyroscope and magnetic_field with clear uncertainty.",
+                    fraction = if (hasRotationContext) 0.9f else 0.3f,
+                    extra = JSONObject()
+                        .put("feature_source", "Android orientation sensors")
+                        .put("tool_action", "sensor_snapshot"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Environmental and proximity context",
+                    ready = ambientSensorCount > 0,
+                    valueLabel = if (ambientSensorCount > 0) "$ambientSensorCount ambient type(s)" else "none reported",
+                    detail = "Light, proximity, pressure, temperature, humidity, and magnetic rows can add local context to user workflows when hardware exists.",
+                    recommendation = "Use ambient rows as context signals and tell the user when the device does not expose those sensors.",
+                    fraction = if (ambientSensorCount > 0) (ambientSensorCount / AMBIENT_SENSOR_TYPES.size.toFloat()).coerceIn(0.3f, 1f) else 0.2f,
+                    extra = JSONObject()
+                        .put("feature_source", "Android ambient sensors")
+                        .put("tool_action", "sensor_snapshot"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Sensor hardware metadata",
+                    ready = capabilityCount > 0,
+                    valueLabel = "$capabilityCount capability row(s)",
+                    detail = "Sensor Analyzer reports preserve vendor, range, resolution, power, min/max delay, FIFO, wake-up, direct-channel, and reporting-mode metadata.",
+                    recommendation = "Use hardware metadata before choosing polling cadence, battery strategy, or workflow thresholds.",
+                    fraction = if (capabilityCount > 0) 0.9f else 0.25f,
+                    extra = JSONObject()
+                        .put("feature_source", "Sensor metadata")
+                        .put("tool_action", "sensor_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Wake-up and direct-channel hints",
+                    ready = wakeUpSensorCount > 0 || directChannelSensorCount > 0,
+                    valueLabel = "$wakeUpSensorCount wake-up, $directChannelSensorCount direct",
+                    detail = "Wake-up and direct-channel fields help the agent explain power and low-latency limits without relying on a specific SOC vendor.",
+                    recommendation = "Treat these as hardware hints; normal Hermes sampling still stays in the Android app permission model.",
+                    fraction = if (wakeUpSensorCount > 0 || directChannelSensorCount > 0) 0.85f else 0.45f,
+                    extra = JSONObject()
+                        .put("feature_source", "Sensor hardware flags")
+                        .put("tool_action", "sensor_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Sensor watcher automation route",
+                    ready = availableSensors.isNotEmpty(),
+                    valueLabel = if (availableSensors.isNotEmpty()) "watcher route ready" else "no sensor types",
+                    detail = "Hermes automation can route explicit sensor events through saved watcher records for motion-aware workflows.",
+                    recommendation = "Use start_sensor_watcher only for intentional workflows and keep one-shot sensor_snapshot as the default diagnostic path.",
+                    fraction = if (availableSensors.isNotEmpty()) 0.8f else 0.25f,
+                    extra = JSONObject()
+                        .put("feature_source", "Hermes automation watcher")
+                        .put("tool_action", "start_sensor_watcher"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Gemma-readable sensor cards",
+                    ready = true,
+                    valueLabel = "${capabilityCount + sampledSensorCount} card row(s)",
+                    detail = "Sensor analyzer reports create top-level expandable cards for readiness, routes, sampling policy, and hardware rows Gemma can compactly inspect.",
+                    recommendation = "Show sensor cards before long explanations when the user asks what motion or ambient context the agent can see.",
+                    fraction = 0.9f,
+                    extra = JSONObject()
+                        .put("feature_source", "Hermes diagnostic cards")
+                        .put("tool_action", "sensor_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Sensor privacy and power boundary",
+                    ready = true,
+                    valueLabel = "bounded sampling",
+                    detail = "Hermes reports Android-exposed sensor metadata and bounded one-shot samples; it does not infer hidden location or run endless background polling by default.",
+                    recommendation = "Keep sensor answers scoped to user-authorized local context, sensor availability, and explicit automation records.",
+                    fraction = 1f,
+                    extra = JSONObject().put("feature_source", "Sensor safety boundary"),
+                ),
+            )
+    }
+
+    private fun sensorAnalyzerWorkflowRows(
+        availableSensors: List<String>,
+        motionSensorCount: Int,
+        ambientSensorCount: Int,
+        capabilityCount: Int,
+    ): JSONArray {
+        val hasAccelerometer = "accelerometer" in availableSensors
+        val hasGyroscope = "gyroscope" in availableSensors
+        val hasRotationContext = "rotation_vector" in availableSensors ||
+            (hasGyroscope && "magnetic_field" in availableSensors)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_route",
+                    label = "Route one-shot motion sample",
+                    ready = motionSensorCount > 0,
+                    valueLabel = "sensor_snapshot",
+                    detail = "Use for current accelerometer, gyroscope, gravity, linear acceleration, or rotation-vector values.",
+                    recommendation = "Pass only the needed sensor_types and a bounded timeout_ms.",
+                    fraction = if (motionSensorCount > 0) 0.95f else 0.35f,
+                    extra = JSONObject()
+                        .put("tool_action", "sensor_snapshot")
+                        .put("sensor_types", "accelerometer,gyroscope,linear_acceleration,rotation_vector"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_route",
+                    label = "Route accelerometer workflow",
+                    ready = hasAccelerometer,
+                    valueLabel = "accelerometer",
+                    detail = "Use when the task needs movement, shake, phone posture, pocket handling, or coarse activity context.",
+                    recommendation = "Sample accelerometer before building motion-triggered automation thresholds.",
+                    fraction = if (hasAccelerometer) 0.9f else 0.3f,
+                    extra = JSONObject()
+                        .put("tool_action", "sensor_snapshot")
+                        .put("sensor_types", "accelerometer"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_route",
+                    label = "Route orientation workflow",
+                    ready = hasGyroscope || hasRotationContext,
+                    valueLabel = if (hasRotationContext) "rotation context" else "gyroscope",
+                    detail = "Use when device orientation, angular velocity, heading, or stabilization context matters.",
+                    recommendation = "Prefer rotation_vector, then gyroscope plus magnetic_field when available.",
+                    fraction = if (hasRotationContext) 0.9f else if (hasGyroscope) 0.75f else 0.3f,
+                    extra = JSONObject()
+                        .put("tool_action", "sensor_snapshot")
+                        .put("sensor_types", "gyroscope,rotation_vector,magnetic_field"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_route",
+                    label = "Route ambient context workflow",
+                    ready = ambientSensorCount > 0,
+                    valueLabel = if (ambientSensorCount > 0) "ambient sensors" else "not reported",
+                    detail = "Use for light, proximity, magnetic, pressure, temperature, or humidity context before environment-sensitive workflows.",
+                    recommendation = "Explain missing hardware directly because many phones only expose a subset of ambient sensors.",
+                    fraction = if (ambientSensorCount > 0) 0.85f else 0.3f,
+                    extra = JSONObject()
+                        .put("tool_action", "sensor_snapshot")
+                        .put("sensor_types", "light,proximity,pressure,ambient_temperature,relative_humidity,magnetic_field"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_route",
+                    label = "Route sensor hardware metadata",
+                    ready = capabilityCount > 0,
+                    valueLabel = "sensor_analyzer_report",
+                    detail = "Use for vendor, range, resolution, power, FIFO, wake-up, direct-channel, and sampling-rate metadata without forcing a live sample.",
+                    recommendation = "Prefer this passive report for planning and policy answers.",
+                    fraction = if (capabilityCount > 0) 0.85f else 0.3f,
+                    extra = JSONObject().put("tool_action", "sensor_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_route",
+                    label = "Route sensor watcher automation",
+                    ready = availableSensors.isNotEmpty(),
+                    valueLabel = "start_sensor_watcher",
+                    detail = "Use for explicit, saved Hermes automations that react to sensor events instead of ad hoc chat diagnostics.",
+                    recommendation = "Create watcher records deliberately and expose thresholds clearly to the user.",
+                    fraction = if (availableSensors.isNotEmpty()) 0.75f else 0.25f,
+                    extra = JSONObject().put("tool_action", "start_sensor_watcher"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_route",
+                    label = "Route sampling policy explanation",
+                    ready = true,
+                    valueLabel = "sensor_analyzer_report",
+                    detail = "Use before repeated sampling so the agent can explain timeout, power, hardware, privacy, and background constraints.",
+                    recommendation = "Keep sensor_analyzer_report passive and call sensor_snapshot only for a needed current reading.",
+                    fraction = 0.85f,
+                    extra = JSONObject().put("tool_action", "sensor_analyzer_report"),
+                ),
+            )
+    }
+
+    private fun sensorSamplingPolicyRows(
+        sensorServiceAvailable: Boolean,
+        requestedSensorCount: Int,
+        requestedAvailableCount: Int,
+        wakeUpSensorCount: Int,
+        directChannelSensorCount: Int,
+        activeSampleRequested: Boolean,
+        timeoutMs: Long,
+    ): JSONArray {
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "sensor_sampling_policy",
+                    label = "Sensor service availability",
+                    ready = sensorServiceAvailable,
+                    valueLabel = if (sensorServiceAvailable) "service present" else "no SensorManager",
+                    detail = "Android must expose SensorManager before Hermes can read motion, orientation, ambient, or hardware metadata rows.",
+                    recommendation = "Report missing sensor service honestly instead of inventing motion or ambient rows.",
+                    fraction = if (sensorServiceAvailable) 1f else 0.1f,
+                    extra = JSONObject().put("constraint_type", "hardware_service"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_sampling_policy",
+                    label = "Requested sensor availability",
+                    ready = requestedAvailableCount > 0,
+                    valueLabel = "$requestedAvailableCount/$requestedSensorCount requested",
+                    detail = "Sensor Analyzer compares requested accelerometer, gyroscope, orientation, and ambient types with the Android sensor catalog.",
+                    recommendation = "Ask for a smaller sensor_types list when only one workflow signal is needed.",
+                    fraction = if (requestedSensorCount > 0) (requestedAvailableCount / requestedSensorCount.toFloat()).coerceIn(0.1f, 1f) else 0.1f,
+                    extra = JSONObject().put("constraint_type", "hardware_inventory"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_sampling_policy",
+                    label = "Passive report default",
+                    ready = true,
+                    valueLabel = if (activeSampleRequested) "sample included" else "no live sample",
+                    detail = "sensor_analyzer_report stays passive unless include_snapshot or sample is explicitly requested.",
+                    recommendation = "Use sensor_snapshot for a current reading and sensor_analyzer_report for planning, readiness, and policy cards.",
+                    fraction = if (activeSampleRequested) 0.8f else 0.9f,
+                    extra = JSONObject().put("constraint_type", "sampling_cadence"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_sampling_policy",
+                    label = "Bounded one-shot timeout",
+                    ready = true,
+                    valueLabel = "${timeoutMs}ms timeout",
+                    detail = "One-shot sensor sampling clamps timeout_ms between 150ms and ${MAX_SENSOR_TIMEOUT_MS}ms to avoid hanging chat turns.",
+                    recommendation = "Use short timeouts for chat diagnostics and saved watcher automation for ongoing sensor workflows.",
+                    fraction = 0.85f,
+                    extra = JSONObject().put("constraint_type", "latency_power"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_sampling_policy",
+                    label = "Power and low-latency hints",
+                    ready = true,
+                    valueLabel = "$wakeUpSensorCount wake-up, $directChannelSensorCount direct",
+                    detail = "Power, FIFO, wake-up, min/max delay, reporting mode, and direct-channel fields are metadata hints, not permission to bypass Android policy.",
+                    recommendation = "Use these fields when choosing thresholds or explaining battery impact.",
+                    fraction = if (wakeUpSensorCount > 0 || directChannelSensorCount > 0) 0.85f else 0.65f,
+                    extra = JSONObject().put("constraint_type", "power_policy"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_sampling_policy",
+                    label = "Analysis and privacy boundary",
+                    ready = true,
+                    valueLabel = "local metadata",
+                    detail = "Hermes uses local Android sensor metadata and bounded readings; it does not infer hidden location, identify people, or poll forever by default.",
+                    recommendation = "Keep sensor explanations scoped to observable local context and explicit user workflows.",
+                    fraction = 1f,
+                    extra = JSONObject().put("constraint_type", "privacy_safety"),
+                ),
+            )
+    }
+
+    private fun sensorSamplingStatusJson(
+        sensorServiceAvailable: Boolean,
+        requestedSensorCount: Int,
+        availableSensorCount: Int,
+        requestedAvailableCount: Int,
+        sampledSensorCount: Int,
+        activeSampleRequested: Boolean,
+        timeoutMs: Long,
+    ): JSONObject {
+        return JSONObject()
+            .put("sensor_service_available", sensorServiceAvailable)
+            .put("requested_sensor_count", requestedSensorCount)
+            .put("available_sensor_count", availableSensorCount)
+            .put("requested_available_sensor_count", requestedAvailableCount)
+            .put("active_sample_requested", activeSampleRequested)
+            .put("sampled_sensor_count", sampledSensorCount)
+            .put("sample_timeout_ms", timeoutMs)
+            .put("default_timeout_ms", DEFAULT_SENSOR_TIMEOUT_MS)
+            .put("max_timeout_ms", MAX_SENSOR_TIMEOUT_MS)
+            .put("passive_report_default", true)
+            .put("android_sensor_policy_note", "Normal Android sensors can be read through SensorManager, but Hermes keeps analyzer reports passive and bounds one-shot sampling to reduce latency and power use.")
+    }
+
     private fun signalWorkflowRouteRows(
         diagnostics: JSONObject,
         signalStatus: JSONObject,
@@ -2555,6 +3049,12 @@ object HermesDeviceDiagnosticsBridge {
                 },
             )
         }
+        return rows
+    }
+
+    private fun unavailableSensorRows(requested: List<String>): JSONArray {
+        val rows = JSONArray()
+        requested.forEach { key -> rows.put(unavailableSensorJson(key)) }
         return rows
     }
 
@@ -3076,6 +3576,14 @@ object HermesDeviceDiagnosticsBridge {
             .distinct()
             .ifEmpty { DEFAULT_SENSOR_TYPES }
             .take(MAX_SENSOR_TYPES_PER_SAMPLE)
+    }
+
+    private fun sensorAnalyzerRequestedSensorTypes(arguments: JSONObject): List<String> {
+        return if (arguments.has("sensor_types") || arguments.has("sensors") || arguments.has("sensor_type")) {
+            requestedSensorTypes(arguments)
+        } else {
+            SENSOR_TYPE_LABELS.keys.toList()
+        }
     }
 
     private fun sensorTypeCatalog(context: Context): List<String> {
@@ -4391,6 +4899,7 @@ object HermesDeviceDiagnosticsBridge {
         "wifi_export",
         "bluetooth_analyzer_report",
         "bluetooth_scan",
+        "sensor_analyzer_report",
         "sensor_snapshot",
         "camera_status",
         "radio_signal_status",

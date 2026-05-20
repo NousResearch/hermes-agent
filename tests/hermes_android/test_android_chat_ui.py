@@ -74,6 +74,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
         "bluetooth_analyzer_report",
         "bluetooth_signal_history",
         "sensor_analyzer_report",
+        "motion_sensor_history",
         "radio_signal_status",
     ]:
         assert f"action={action}" in actions
@@ -89,3 +90,4 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
     assert 'id = "bluetooth_analyzer"' in actions
     assert 'id = "bluetooth_history"' in actions
     assert 'id = "sensor_analyzer"' in actions
+    assert 'id = "motion_history"' in actions

@@ -98,6 +98,18 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsExplicitMotionSensorHistoryDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=motion_sensor_history sample=true sensor_types=accelerometer,gyroscope",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("motion_sensor_history", parsed.getString("action"))
+        assertTrue(parsed.getBoolean("sample"))
+        assertEquals("accelerometer,gyroscope", parsed.getString("sensor_types"))
+    }
+
+    @Test
     fun ignoresUnknownExplicitAndroidDiagnosticActions() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=network_intrusion",

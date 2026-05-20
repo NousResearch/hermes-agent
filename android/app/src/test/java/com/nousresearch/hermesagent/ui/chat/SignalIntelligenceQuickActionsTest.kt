@@ -19,6 +19,7 @@ class SignalIntelligenceQuickActionsTest {
         assertEquals("bluetooth_analyzer_report", actionsById.getValue("bluetooth_analyzer").diagnosticAction)
         assertEquals("bluetooth_signal_history", actionsById.getValue("bluetooth_history").diagnosticAction)
         assertEquals("sensor_analyzer_report", actionsById.getValue("sensor_analyzer").diagnosticAction)
+        assertEquals("motion_sensor_history", actionsById.getValue("motion_history").diagnosticAction)
         assertEquals("radio_signal_status", actionsById.getValue("radio_limits").diagnosticAction)
         SIGNAL_INTELLIGENCE_QUICK_ACTIONS.forEach { action ->
             assertTrue(action.prompt.contains("android_device_diagnostics_tool action=${action.diagnosticAction}"))

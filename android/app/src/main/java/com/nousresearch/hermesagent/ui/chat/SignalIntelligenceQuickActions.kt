@@ -75,6 +75,13 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
         iconRes = R.drawable.ic_nav_device,
     ),
     SignalIntelligenceQuickAction(
+        id = "motion_history",
+        label = "Motion Trends",
+        diagnosticAction = "motion_sensor_history",
+        prompt = "Run android_device_diagnostics_tool action=motion_sensor_history sample=true sensor_types=accelerometer,gyroscope,linear_acceleration,rotation_vector",
+        iconRes = R.drawable.ic_action_refresh,
+    ),
+    SignalIntelligenceQuickAction(
         id = "radio_limits",
         label = "Radio Limits",
         diagnosticAction = "radio_signal_status",

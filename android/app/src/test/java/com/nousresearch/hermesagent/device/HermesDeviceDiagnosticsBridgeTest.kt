@@ -365,6 +365,55 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun buildsMotionSensorHistoryRowsFromBoundedSamples() {
+        val firstSample = JSONArray().put(
+            JSONObject()
+                .put("sensor_type", "accelerometer")
+                .put("sensor_label", "Accelerometer")
+                .put("sensor_name", "BMI160 Accelerometer")
+                .put("vendor", "Bosch")
+                .put("unit", "m/s^2")
+                .put("sampled", true)
+                .put("available", true)
+                .put("values", JSONArray().put(0.0).put(0.0).put(9.81))
+                .put("accuracy_label", "high")
+                .put("maximum_range", 19.6),
+        )
+        val secondSample = JSONArray().put(
+            JSONObject()
+                .put("sensor_type", "accelerometer")
+                .put("sensor_label", "Accelerometer")
+                .put("sensor_name", "BMI160 Accelerometer")
+                .put("vendor", "Bosch")
+                .put("unit", "m/s^2")
+                .put("sampled", true)
+                .put("available", true)
+                .put("values", JSONArray().put(0.0).put(2.0).put(11.0))
+                .put("accuracy_label", "high")
+                .put("maximum_range", 19.6),
+        )
+
+        val store = HermesDeviceDiagnosticsBridge.mergeMotionSensorHistory(
+            HermesDeviceDiagnosticsBridge.mergeMotionSensorHistory(JSONObject(), firstSample, 1_000L),
+            secondSample,
+            2_000L,
+        )
+        val rows = HermesDeviceDiagnosticsBridge.motionSensorHistoryRowsFromStore(store, 2_500L)
+        val row = rows.getJSONObject(0)
+
+        assertEquals("accelerometer", row.getString("sensor_type"))
+        assertEquals("BMI160 Accelerometer", row.getString("sensor_name"))
+        assertEquals(2, row.getInt("sample_count"))
+        assertEquals(11.18, row.getDouble("current_magnitude"), 0.02)
+        assertEquals(10.50, row.getDouble("average_magnitude"), 0.02)
+        assertEquals("increasing", row.getString("trend_label"))
+        assertEquals("drifting", row.getString("stability_label"))
+        assertEquals(2, row.getJSONArray("magnitude_series").length())
+        assertEquals(3, row.getJSONArray("current_values").length())
+        assertEquals(500L, row.getLong("last_seen_ms"))
+    }
+
+    @Test
     fun emulatorDetectionSeparatesVirtualTargetsFromPhysicalPhoneEvidence() {
         assertTrue(
             HermesDeviceDiagnosticsBridge.isLikelyEmulatorDevice(
@@ -434,9 +483,15 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertEquals("sensor_vector", card.getString("graph_type"))
         assertEquals(result.getJSONArray("sensor_samples").length(), card.getInt("row_count"))
         val capabilityCard = result.getJSONArray("cards").getJSONObject(1)
-        assertEquals("Sensor Hardware", capabilityCard.getString("title"))
-        assertEquals("sensor_capability", capabilityCard.getString("graph_type"))
-        assertEquals(result.getJSONArray("sensor_capabilities").length(), capabilityCard.getInt("row_count"))
+        assertEquals("Motion Sensor History", capabilityCard.getString("title"))
+        assertEquals("motion_sensor_history", capabilityCard.getString("graph_type"))
+        assertEquals(result.getJSONArray("motion_sensor_history").length(), capabilityCard.getInt("row_count"))
+        val hardwareCard = result.getJSONArray("cards").getJSONObject(2)
+        assertEquals("Sensor Hardware", hardwareCard.getString("title"))
+        assertEquals("sensor_capability", hardwareCard.getString("graph_type"))
+        assertEquals(result.getJSONArray("sensor_capabilities").length(), hardwareCard.getInt("row_count"))
+        assertTrue(result.has("sampled_sensor_count"))
+        assertTrue(result.has("motion_sensor_history_count"))
         assertTrue(result.has("sensor_capability_count"))
         assertTrue(result.has("motion_sensor_count"))
         assertTrue(result.has("wake_up_sensor_count"))
@@ -461,21 +516,25 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getBoolean("success"))
         assertEquals("sensor_analyzer_report", result.getString("action"))
         assertTrue(result.has("sensor_sampling_status"))
+        assertTrue(result.has("cached_motion_sensor_history_count"))
+        assertTrue(result.has("motion_sensor_history_count"))
         assertFalse(result.getJSONObject("sensor_sampling_status").getBoolean("active_sample_requested"))
         assertTrue(featureLabels.contains("Motion and orientation sensors"))
+        assertTrue(featureLabels.contains("Motion trend history graph"))
         assertTrue(featureLabels.contains("Accelerometer access"))
         assertTrue(featureLabels.contains("Gyroscope access"))
         assertTrue(featureLabels.contains("Sensor hardware metadata"))
         assertTrue(featureLabels.contains("Sensor privacy and power boundary"))
         assertTrue(routeLabels.contains("Route one-shot motion sample"))
+        assertTrue(routeLabels.contains("Route motion trend history"))
         assertTrue(routeLabels.contains("Route sensor hardware metadata"))
         assertTrue(routeLabels.contains("Route sampling policy explanation"))
         assertTrue(policyLabels.contains("Passive report default"))
         assertTrue(policyLabels.contains("Bounded one-shot timeout"))
         assertTrue(policyLabels.contains("Analysis and privacy boundary"))
         assertTrue(result.getJSONArray("cards").toString().contains("Sensor Analyzer Readiness"))
-        assertTrue(result.getInt("sensor_analyzer_feature_count") >= 9)
-        assertTrue(result.getInt("sensor_analyzer_workflow_route_count") >= 6)
+        assertTrue(result.getInt("sensor_analyzer_feature_count") >= 10)
+        assertTrue(result.getInt("sensor_analyzer_workflow_route_count") >= 7)
         assertTrue(result.getInt("sensor_sampling_policy_count") >= 5)
     }
 

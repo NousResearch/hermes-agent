@@ -73,6 +73,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "bluetooth_signal_history" -> bluetoothSignalHistoryRow(row)
                 "radio_frequency_capability" -> radioRow(row)
                 "sensor_vector" -> sensorRow(row)
+                "motion_sensor_history" -> motionSensorHistoryRow(row)
                 "sensor_capability" -> sensorCapabilityRow(row)
                 "agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness",
                 "wifi_analyzer_feature_matrix", "wifi_analyzer_workflow_routes", "wifi_scan_policy_matrix",
@@ -415,6 +416,43 @@ private fun sensorRow(row: JSONObject): DiagnosticGraphRow {
         },
         detail = detail.ifBlank { if (sampled) "Sensor sample" else "Sensor unavailable" },
         fraction = if (sampled && magnitude != null) (magnitude / 20.0).toFloat().coerceIn(0.05f, 1f) else 0.08f,
+    )
+}
+
+private fun motionSensorHistoryRow(row: JSONObject): DiagnosticGraphRow? {
+    val currentMagnitude = row.optNumber("current_magnitude")?.toDouble() ?: return null
+    val label = row.optString("sensor_label").takeIf { it.isNotBlank() }
+        ?: row.optString("sensor_type").ifBlank { "Motion sensor" }
+    val unit = row.optString("magnitude_unit")
+        .ifBlank { row.optString("unit") }
+        .takeIf { it.isNotBlank() }
+    val sampleCount = row.optNumber("sample_count")?.toInt() ?: 0
+    val averageMagnitude = row.optNumber("average_magnitude")?.toDouble()
+    val minMagnitude = row.optNumber("min_magnitude")?.toDouble()
+    val maxMagnitude = row.optNumber("max_magnitude")?.toDouble()
+    val trendMagnitude = row.optNumber("trend_magnitude")?.toDouble()
+    val trendLabel = row.optString("trend_label").ifBlank { "stable" }
+    val stabilityLabel = row.optString("stability_label").takeIf { it.isNotBlank() }
+    val vector = joinJsonStrings(row.optJSONArray("current_values"), 4)
+    val detail = listOfNotNull(
+        row.optString("sensor_name").takeIf { it.isNotBlank() },
+        row.optString("vendor").takeIf { it.isNotBlank() },
+        "$sampleCount sample${if (sampleCount == 1) "" else "s"}",
+        stabilityLabel?.let { "stability $it" },
+        averageMagnitude?.let { "avg ${formatDecimal(it, 2)}${unit?.let { value -> " $value" }.orEmpty()}" },
+        if (minMagnitude != null && maxMagnitude != null) {
+            "range ${formatDecimal(minMagnitude, 2)}..${formatDecimal(maxMagnitude, 2)}${unit?.let { " $it" }.orEmpty()}"
+        } else {
+            null
+        },
+        trendMagnitude?.let { "trend ${if (it > 0) "+" else ""}${formatDecimal(it, 2)} ${trendLabel}" },
+        vector.takeIf { it.isNotBlank() }?.let { "vector $it" },
+    ).joinToString(" | ")
+    return DiagnosticGraphRow(
+        label = label,
+        valueLabel = "${formatDecimal(currentMagnitude, 2)}${unit?.let { " $it" }.orEmpty()} $trendLabel",
+        detail = detail.ifBlank { "Motion sensor history" },
+        fraction = (currentMagnitude / 20.0).toFloat().coerceIn(0.05f, 1f),
     )
 }
 

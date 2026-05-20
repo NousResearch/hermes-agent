@@ -1187,10 +1187,10 @@ class NativeToolCallingChatClient(
         }
         val baseContent = if (toolsEnabled) {
             "You are Hermes running inside the native Android app. " +
-                "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata, camera capability checks, Wi-Fi analysis/channel ratings/channel utilization/signal history, Bluetooth Analyzer readiness/scan-policy reports plus nearby scans/service metadata, radio capability checks, resource summaries, or Tasker-style automation. " +
+                "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata and motion history, camera capability checks, Wi-Fi analysis/channel ratings/channel utilization/signal history, Bluetooth Analyzer readiness/scan-policy reports plus nearby scans/service metadata, radio capability checks, resource summaries, or Tasker-style automation. " +
                 "When writing multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
                 "For HTML/browser work: write the file with file_write_tool, then call android_automation_tool action=open_uri with data_uri set to the workspace filename. " +
-                "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings/channel utilization/signal history, Wi-Fi Analyzer readiness/scan-policy reports, Bluetooth Analyzer readiness/scan-policy reports and nearby devices/service metadata, camera/sensor status plus accelerometer/gyroscope hardware metadata, active overlays, tool catalog, Kai-style agent environment reports, cross-signal awareness reports, SOC compatibility/backend reports for MediaTek/Mali/PowerVR and non-Snapdragon devices, RF capability limits, or phone preflight checks before TikTok/Instagram/Gmail work. " +
+                "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings/channel utilization/signal history, Wi-Fi Analyzer readiness/scan-policy reports, Bluetooth Analyzer readiness/scan-policy reports and nearby devices/service metadata, camera/sensor status plus accelerometer/gyroscope hardware metadata and motion trend history, active overlays, tool catalog, Kai-style agent environment reports, cross-signal awareness reports, SOC compatibility/backend reports for MediaTek/Mali/PowerVR and non-Snapdragon devices, RF capability limits, or phone preflight checks before TikTok/Instagram/Gmail work. " +
                 "Use hindsight_memory_tool to retain, recall, reflect, and inspect promoted durable local memories before or after complex work. " +
                 "Report missing Android permissions honestly. Keep replies brief."
         } else {
@@ -1251,13 +1251,13 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service/manufacturer/proximity metadata, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, camera capability, overlay status, SOC/GPU compatibility and backend-policy reports, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service/manufacturer/proximity metadata, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, camera capability, overlay status, SOC/GPU compatibility and backend-policy reports, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_analyzer_report, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, soc_compatibility_report, signal_awareness_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
+                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_analyzer_report, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, motion_sensor_history, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, soc_compatibility_report, signal_awareness_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point detail/export rows. Defaults to limit, or the Wi-Fi max for wifi_ap_details/wifi_export."))
                         .put("export_format", stringProp("Wi-Fi export format for wifi_export: json, csv, or both."))
-                        .put("refresh", boolProp("For wifi_scan, wifi_export, wifi_ap_details, bluetooth_scan, or bluetooth_signal_history, request Android to refresh scan results before reading available results; analyzer reports stay passive."))
+                        .put("refresh", boolProp("For wifi_scan, wifi_export, wifi_ap_details, bluetooth_scan, bluetooth_signal_history, or motion_sensor_history, request Android to refresh scan/sensor results before reading available results; analyzer reports stay passive."))
                         .put("include_snapshot", boolProp("For sensor_analyzer_report, include a bounded one-shot sensor snapshot; default is passive readiness and policy rows only."))
                         .put("sensor_types", stringProp("Comma-separated sensor types such as accelerometer, gyroscope, magnetic_field, light, proximity; returned rows include sensor range, resolution, power, FIFO, wake-up, and sampling-rate metadata when Android exposes it."))
                         .put("timeout_ms", intProp("Sensor or Bluetooth sampling timeout in milliseconds."))
@@ -1513,6 +1513,16 @@ class NativeToolCallingChatClient(
                     "sensor readiness",
                     "sensor sampling policy",
                     "motion sensor report",
+                    "motion sensor history",
+                    "sensor history",
+                    "sensor trend",
+                    "sensor trends",
+                    "motion trend",
+                    "motion trends",
+                    "imu history",
+                    "imu trend",
+                    "accelerometer history",
+                    "gyroscope history",
                     "sensor metadata",
                     "sensor capability",
                     "sensor range",
@@ -3041,6 +3051,7 @@ class NativeToolCallingChatClient(
             "bluetooth_analyzer_report",
             "bluetooth_signal_history",
             "sensor_analyzer_report",
+            "motion_sensor_history",
             "sensor_snapshot",
             "camera_status",
             "radio_signal_status",
@@ -3070,6 +3081,7 @@ class NativeToolCallingChatClient(
         private val DIAGNOSTIC_STRING_ARGUMENTS = listOf(
             "export_format",
             "format",
+            "sensor_types",
         )
         private val DIAGNOSTIC_BOOLEAN_REGEXES = DIAGNOSTIC_BOOLEAN_ARGUMENTS.associateWith { key ->
             Regex("""(?i)\b${Regex.escape(key)}\s*[:=]\s*(true|false)\b""")
@@ -3308,6 +3320,7 @@ internal object NativeToolContextCompressor {
 
     private fun preservedArrayItemLimit(key: String): Int = when (key) {
         "wifi_signal_history" -> 4
+        "motion_sensor_history", "cached_motion_sensor_history" -> 6
         else -> PRESERVED_ARRAY_ITEM_LIMIT
     }
 
@@ -3440,6 +3453,8 @@ internal object NativeToolContextCompressor {
                 "requested_available_sensor_count",
                 "sampled_sensor_count",
                 "motion_sensor_count",
+                "motion_sensor_history_count",
+                "cached_motion_sensor_history_count",
                 "ambient_sensor_count",
                 "wake_up_sensor_count",
                 "direct_channel_sensor_count",
@@ -3531,6 +3546,7 @@ internal object NativeToolContextCompressor {
         "soc_backend_constraint_matrix",
         "cached_wifi_signal_history",
         "cached_bluetooth_signal_history",
+        "cached_motion_sensor_history",
         "ai_experience_elevation_plan",
         "bluetooth_devices",
         "bluetooth_metadata_summary",
@@ -3542,6 +3558,7 @@ internal object NativeToolContextCompressor {
         "radio_scan_rows",
         "sensor_samples",
         "sensor_capabilities",
+        "motion_sensor_history",
         "available_sensor_types",
         "requested_sensor_types",
         "supported_watcher_types",
@@ -3686,7 +3703,18 @@ internal object NativeToolContextCompressor {
         "vendor",
         "version",
         "values",
+        "current_values",
         "unit",
+        "magnitude_unit",
+        "current_magnitude",
+        "average_magnitude",
+        "min_magnitude",
+        "max_magnitude",
+        "trend_magnitude",
+        "stability_delta",
+        "stability_label",
+        "magnitude_series",
+        "timestamp_nanos",
         "maximum_range",
         "resolution",
         "power_ma",

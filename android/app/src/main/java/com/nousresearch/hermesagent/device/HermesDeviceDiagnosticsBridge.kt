@@ -49,6 +49,7 @@ import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 object HermesDeviceDiagnosticsBridge {
     fun performActionJson(context: Context, action: String, arguments: JSONObject = JSONObject()): String {
@@ -77,6 +78,8 @@ object HermesDeviceDiagnosticsBridge {
                 bluetoothScanJson(appContext, arguments).toString()
             "sensor_analyzer_report", "sensor_readiness_report", "sensor_feature_report", "sensor_sampling_policy", "motion_sensor_report" ->
                 sensorAnalyzerReportJson(appContext, arguments).toString()
+            "motion_sensor_history", "motion_history", "sensor_history", "imu_history", "imu_sensor_history", "accelerometer_history", "gyroscope_history", "sensor_trends", "motion_sensor_trends" ->
+                motionSensorHistoryJson(appContext, arguments).toString()
             "sensor_snapshot", "sensors", "sensor_status", "sample_sensors", "motion_sensors" ->
                 sensorSnapshotJson(appContext, arguments).toString()
             "camera_status", "camera", "camera_capabilities" -> cameraStatusJson(appContext).toString()
@@ -752,6 +755,10 @@ object HermesDeviceDiagnosticsBridge {
         val samples = sampleSensors(sensorManager, requested, targets, timeoutMs)
         val capabilities = sensorCapabilityRows(sensorManager, requested)
         val available = sensorTypeCatalog(appContext)
+        val observedAtMs = System.currentTimeMillis()
+        val motionHistoryStore = updateMotionSensorHistory(appContext, samples, observedAtMs)
+        val motionHistory = motionSensorHistoryRowsFromStore(motionHistoryStore, observedAtMs)
+        val sampledSensorCount = countSampledSensors(samples)
         return JSONObject()
             .put("success", true)
             .put("action", "sensor_snapshot")
@@ -759,9 +766,12 @@ object HermesDeviceDiagnosticsBridge {
             .put("sample_timeout_ms", timeoutMs)
             .put("available_sensor_types", JSONArray(available))
             .put("sensor_samples", samples)
+            .put("sampled_sensor_count", sampledSensorCount)
             .put("sensor_capabilities", capabilities)
             .put("sensor_capability_count", capabilities.length())
             .put("motion_sensor_count", countSensorCapabilities(capabilities, MOTION_SENSOR_TYPES))
+            .put("motion_sensor_history", motionHistory)
+            .put("motion_sensor_history_count", motionHistory.length())
             .put("wake_up_sensor_count", countSensorCapabilityFlag(capabilities, "wake_up"))
             .put("supported_watcher_types", JSONArray(SENSOR_TYPE_LABELS.keys))
             .put(
@@ -777,8 +787,73 @@ object HermesDeviceDiagnosticsBridge {
                     )
                     .put(
                         graphCard(
+                            title = "Motion Sensor History",
+                            body = "${motionHistory.length()} cached accelerometer, gyroscope, linear-acceleration, rotation, or magnetic trend row(s) for motion-aware agent context.",
+                            graphType = "motion_sensor_history",
+                            rows = motionHistory,
+                        ),
+                    )
+                    .put(
+                        graphCard(
                             title = "Sensor Hardware",
                             body = "${capabilities.length()} sensor capability row(s) with vendor, range, resolution, power, FIFO, wake-up, and sampling-rate metadata.",
+                            graphType = "sensor_capability",
+                            rows = capabilities,
+                        ),
+                    ),
+            )
+    }
+
+    fun motionSensorHistoryJson(context: Context, arguments: JSONObject = JSONObject()): JSONObject {
+        val appContext = context.applicationContext
+        val sensorManager = appContext.getSystemService(SensorManager::class.java)
+        val requested = requestedMotionHistorySensorTypes(arguments)
+        val timeoutMs = arguments.optLong("timeout_ms", DEFAULT_SENSOR_TIMEOUT_MS).coerceIn(150L, MAX_SENSOR_TIMEOUT_MS)
+        val sampleRequested = arguments.optBoolean("sample", arguments.optBoolean("refresh", true))
+        val sampleResult = if (sampleRequested && sensorManager != null) {
+            val sampleArguments = JSONObject(arguments.toString())
+                .put("sensor_types", requested.joinToString(","))
+                .put("timeout_ms", timeoutMs)
+            sensorSnapshotJson(appContext, sampleArguments)
+        } else {
+            null
+        }
+        val historyRows = sampleResult?.optJSONArray("motion_sensor_history")
+            ?: motionSensorHistoryRowsFromStore(readMotionSensorHistory(appContext))
+        val capabilities = if (sensorManager != null) {
+            sensorCapabilityRows(sensorManager, requested)
+        } else {
+            unavailableSensorRows(requested)
+        }
+        val available = sensorTypeCatalog(appContext)
+        return JSONObject()
+            .put("success", sensorManager != null || historyRows.length() > 0)
+            .put("action", "motion_sensor_history")
+            .put("sensor_service_available", sensorManager != null)
+            .put("sample_requested", sampleRequested)
+            .put("sample_timeout_ms", timeoutMs)
+            .put("requested_sensor_types", JSONArray(requested))
+            .put("available_sensor_types", JSONArray(available))
+            .put("sampled_sensor_count", sampleResult?.optInt("sampled_sensor_count") ?: 0)
+            .put("motion_sensor_history", historyRows)
+            .put("motion_sensor_history_count", historyRows.length())
+            .put("sensor_capabilities", capabilities)
+            .put("sensor_capability_count", capabilities.length())
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "Motion Sensor History",
+                            body = "${historyRows.length()} cached motion/IMU trend row(s) with magnitude, trend, stability, and current vector values.",
+                            graphType = "motion_sensor_history",
+                            rows = historyRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Sensor Hardware",
+                            body = "${capabilities.length()} motion sensor capability row(s) with vendor, range, resolution, power, FIFO, wake-up, and sampling-rate metadata.",
                             graphType = "sensor_capability",
                             rows = capabilities,
                         ),
@@ -801,6 +876,8 @@ object HermesDeviceDiagnosticsBridge {
         val timeoutMs = arguments.optLong("timeout_ms", DEFAULT_SENSOR_TIMEOUT_MS).coerceIn(150L, MAX_SENSOR_TIMEOUT_MS)
         val snapshot = if (includeSnapshot && sensorManager != null) sensorSnapshotJson(appContext, arguments) else null
         val samples = snapshot?.optJSONArray("sensor_samples") ?: JSONArray()
+        val motionHistory = snapshot?.optJSONArray("motion_sensor_history")
+            ?: motionSensorHistoryRowsFromStore(readMotionSensorHistory(appContext))
         val motionSensorCount = countSensorCapabilities(capabilities, MOTION_SENSOR_TYPES)
         val ambientSensorCount = countSensorCapabilities(capabilities, AMBIENT_SENSOR_TYPES)
         val wakeUpSensorCount = countSensorCapabilityFlag(capabilities, "wake_up")
@@ -824,12 +901,14 @@ object HermesDeviceDiagnosticsBridge {
             wakeUpSensorCount = wakeUpSensorCount,
             directChannelSensorCount = directChannelSensorCount,
             sampledSensorCount = samples.length(),
+            motionHistoryCount = motionHistory.length(),
         )
         val routeRows = sensorAnalyzerWorkflowRows(
             availableSensors = available,
             motionSensorCount = motionSensorCount,
             ambientSensorCount = ambientSensorCount,
             capabilityCount = capabilities.length(),
+            motionHistoryCount = motionHistory.length(),
         )
         val policyRows = sensorSamplingPolicyRows(
             sensorServiceAvailable = sensorManager != null,
@@ -873,6 +952,16 @@ object HermesDeviceDiagnosticsBridge {
                     rows = capabilities,
                 ),
             )
+        if (snapshot == null && motionHistory.length() > 0) {
+            cards.put(
+                graphCard(
+                    title = "Motion Sensor History",
+                    body = "${motionHistory.length()} cached motion/IMU trend row(s) available without forcing another sample.",
+                    graphType = "motion_sensor_history",
+                    rows = motionHistory,
+                ),
+            )
+        }
         snapshot?.optJSONArray("cards")?.let { snapshotCards ->
             for (index in 0 until snapshotCards.length()) {
                 cards.put(snapshotCards.getJSONObject(index))
@@ -888,6 +977,10 @@ object HermesDeviceDiagnosticsBridge {
             .put("sensor_sampling_status", samplingStatus)
             .put("sensor_samples", samples)
             .put("sensor_capabilities", capabilities)
+            .put("cached_motion_sensor_history", motionHistory)
+            .put("cached_motion_sensor_history_count", motionHistory.length())
+            .put("motion_sensor_history", motionHistory)
+            .put("motion_sensor_history_count", motionHistory.length())
             .put("supported_watcher_types", JSONArray(SENSOR_TYPE_LABELS.keys))
             .put("sensor_analyzer_feature_matrix", featureRows)
             .put("sensor_analyzer_workflow_routes", routeRows)
@@ -1089,6 +1182,7 @@ object HermesDeviceDiagnosticsBridge {
         val availableSensors = diagnostics.optJSONArray("available_sensor_types") ?: JSONArray()
         val cachedWifiHistory = wifiSignalHistoryRowsFromStore(readWifiSignalHistory(appContext))
         val cachedBluetoothHistory = bluetoothSignalHistoryRowsFromStore(readBluetoothSignalHistory(appContext))
+        val cachedMotionHistory = motionSensorHistoryRowsFromStore(readMotionSensorHistory(appContext))
         val awarenessRows = signalAwarenessRows(
             diagnostics = diagnostics,
             signalStatus = signalStatus,
@@ -1098,6 +1192,7 @@ object HermesDeviceDiagnosticsBridge {
             availableSensors = availableSensors,
             cachedWifiHistory = cachedWifiHistory,
             cachedBluetoothHistory = cachedBluetoothHistory,
+            cachedMotionHistory = cachedMotionHistory,
         )
         val workflowRows = signalWorkflowRouteRows(
             diagnostics = diagnostics,
@@ -1106,6 +1201,7 @@ object HermesDeviceDiagnosticsBridge {
             availableSensors = availableSensors,
             cachedWifiHistory = cachedWifiHistory,
             cachedBluetoothHistory = cachedBluetoothHistory,
+            cachedMotionHistory = cachedMotionHistory,
         )
         val constraintRows = signalConstraintRows(diagnostics, signalStatus, radioStatus)
         return JSONObject()
@@ -1122,6 +1218,8 @@ object HermesDeviceDiagnosticsBridge {
             .put("cached_wifi_history_network_count", cachedWifiHistory.length())
             .put("cached_bluetooth_signal_history", cachedBluetoothHistory)
             .put("cached_bluetooth_history_device_count", cachedBluetoothHistory.length())
+            .put("cached_motion_sensor_history", cachedMotionHistory)
+            .put("cached_motion_sensor_history_count", cachedMotionHistory.length())
             .put("radio_bands", radioStatus.optJSONArray("radio_bands") ?: JSONArray())
             .put("signal_awareness_matrix", awarenessRows)
             .put("signal_workflow_routes", workflowRows)
@@ -1155,6 +1253,14 @@ object HermesDeviceDiagnosticsBridge {
                             body = "${constraintRows.length()} Android permission, hardware, and public-API constraints for honest radio/sensor reasoning.",
                             graphType = "signal_constraint_matrix",
                             rows = constraintRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Motion Sensor History",
+                            body = "${cachedMotionHistory.length()} cached motion/IMU trend row(s) available to the signal-awareness report.",
+                            graphType = "motion_sensor_history",
+                            rows = cachedMotionHistory,
                         ),
                     ),
             )
@@ -1669,6 +1775,7 @@ object HermesDeviceDiagnosticsBridge {
         availableSensors: JSONArray,
         cachedWifiHistory: JSONArray,
         cachedBluetoothHistory: JSONArray,
+        cachedMotionHistory: JSONArray,
     ): JSONArray {
         val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
         val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
@@ -1737,10 +1844,22 @@ object HermesDeviceDiagnosticsBridge {
                     label = "Motion/orientation sensors",
                     ready = motionSensors.isNotEmpty(),
                     valueLabel = "${motionSensors.size} motion type(s)",
-                    detail = "Motion sensors present: ${motionSensors.joinToString(", ").ifBlank { "none reported" }}.",
-                    recommendation = "Use sensor_snapshot for accelerometer, gyroscope, gravity, linear acceleration, and rotation-vector context before motion-aware workflows.",
+                    detail = "${cachedMotionHistory.length()} cached trend row(s); motion sensors present: ${motionSensors.joinToString(", ").ifBlank { "none reported" }}.",
+                    recommendation = "Use motion_sensor_history for recent accelerometer/gyroscope trends or sensor_snapshot for a one-shot current reading before motion-aware workflows.",
                     fraction = (motionSensors.size / MOTION_SENSOR_TYPES.size.toFloat()).coerceIn(0.1f, 1f),
-                    extra = JSONObject().put("tool_action", "sensor_snapshot"),
+                    extra = JSONObject().put("tool_action", "motion_sensor_history"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "Cached motion trend memory",
+                    ready = cachedMotionHistory.length() > 0,
+                    valueLabel = "${cachedMotionHistory.length()} tracked sensor(s)",
+                    detail = "Hermes keeps bounded IMU magnitude history so Gemma can compare current, average, range, trend, stability, current vector, and recent series after sensor samples.",
+                    recommendation = "Run motion_sensor_history when diagnosing movement changes, orientation shifts, device handling, or sensor stability.",
+                    fraction = if (cachedMotionHistory.length() > 0) (cachedMotionHistory.length() / MOTION_HISTORY_SENSOR_TYPES.size.toFloat()).coerceIn(0.35f, 1f) else 0.25f,
+                    extra = JSONObject().put("tool_action", "motion_sensor_history"),
                 ),
             )
             .put(
@@ -2427,6 +2546,7 @@ object HermesDeviceDiagnosticsBridge {
         wakeUpSensorCount: Int,
         directChannelSensorCount: Int,
         sampledSensorCount: Int,
+        motionHistoryCount: Int,
     ): JSONArray {
         val hasAccelerometer = "accelerometer" in availableSensors
         val hasGyroscope = "gyroscope" in availableSensors
@@ -2491,6 +2611,20 @@ object HermesDeviceDiagnosticsBridge {
                     extra = JSONObject()
                         .put("feature_source", "Android orientation sensors")
                         .put("tool_action", "sensor_snapshot"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Motion trend history graph",
+                    ready = motionHistoryCount > 0,
+                    valueLabel = "$motionHistoryCount trend row(s)",
+                    detail = "Motion history rows preserve current, average, range, trend, stability, current vector, and recent magnitude series for IMU-style context across bounded samples.",
+                    recommendation = "Use motion_sensor_history when comparing movement or orientation changes across recent samples instead of relying on one point in time.",
+                    fraction = if (motionHistoryCount > 0) (motionHistoryCount / MOTION_HISTORY_SENSOR_TYPES.size.toFloat()).coerceIn(0.35f, 1f) else 0.3f,
+                    extra = JSONObject()
+                        .put("feature_source", "Hermes motion sensor history")
+                        .put("tool_action", "motion_sensor_history"),
                 ),
             )
             .put(
@@ -2582,6 +2716,7 @@ object HermesDeviceDiagnosticsBridge {
         motionSensorCount: Int,
         ambientSensorCount: Int,
         capabilityCount: Int,
+        motionHistoryCount: Int,
     ): JSONArray {
         val hasAccelerometer = "accelerometer" in availableSensors
         val hasGyroscope = "gyroscope" in availableSensors
@@ -2600,6 +2735,20 @@ object HermesDeviceDiagnosticsBridge {
                     extra = JSONObject()
                         .put("tool_action", "sensor_snapshot")
                         .put("sensor_types", "accelerometer,gyroscope,linear_acceleration,rotation_vector"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_route",
+                    label = "Route motion trend history",
+                    ready = motionSensorCount > 0 || motionHistoryCount > 0,
+                    valueLabel = "motion_sensor_history",
+                    detail = "Use for cached accelerometer, gyroscope, linear-acceleration, rotation-vector, magnetic-field magnitude, trend, stability, and vector rows.",
+                    recommendation = "Set sample=true only when the user needs a fresh bounded reading; otherwise reuse cached motion history.",
+                    fraction = if (motionHistoryCount > 0) 0.9f else if (motionSensorCount > 0) 0.65f else 0.3f,
+                    extra = JSONObject()
+                        .put("tool_action", "motion_sensor_history")
+                        .put("sensor_types", "accelerometer,gyroscope,linear_acceleration,rotation_vector,magnetic_field"),
                 ),
             )
             .put(
@@ -2796,6 +2945,7 @@ object HermesDeviceDiagnosticsBridge {
         availableSensors: JSONArray,
         cachedWifiHistory: JSONArray,
         cachedBluetoothHistory: JSONArray,
+        cachedMotionHistory: JSONArray,
     ): JSONArray {
         val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
         val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
@@ -2847,6 +2997,18 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Refresh BLE scans only when the user needs a fresh sample because scan permission and battery policy can gate repeated reads.",
                     fraction = if (cachedBluetoothHistory.length() > 0) 0.85f else if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) 0.7f else 0.35f,
                     extra = JSONObject().put("tool_action", "bluetooth_signal_history"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_route",
+                    label = "Route motion trend work",
+                    ready = sensorNames.any { it in MOTION_HISTORY_SENSOR_TYPES } || cachedMotionHistory.length() > 0,
+                    valueLabel = "motion_sensor_history",
+                    detail = "Use for cached accelerometer, gyroscope, linear-acceleration, rotation, magnetic magnitude, stability, and trend rows across recent samples.",
+                    recommendation = "Use sample=true only when a fresh bounded IMU reading is needed for the current workflow.",
+                    fraction = if (cachedMotionHistory.length() > 0) 0.85f else if (sensorNames.any { it in MOTION_HISTORY_SENSOR_TYPES }) 0.65f else 0.3f,
+                    extra = JSONObject().put("tool_action", "motion_sensor_history"),
                 ),
             )
             .put(
@@ -3919,6 +4081,117 @@ object HermesDeviceDiagnosticsBridge {
         return JSONArray().also { array -> rows.forEach(array::put) }
     }
 
+    internal fun mergeMotionSensorHistory(existing: JSONObject, samples: JSONArray, observedAtMs: Long): JSONObject {
+        val records = linkedMapOf<String, JSONObject>()
+        val existingRecords = existing.optJSONArray("sensors") ?: JSONArray()
+        for (index in 0 until existingRecords.length()) {
+            val record = existingRecords.optJSONObject(index) ?: continue
+            val key = record.optString("key").ifBlank { motionSensorHistoryKey(record) }
+            if (key.isNotBlank()) {
+                records[key] = record.put("key", key)
+            }
+        }
+        for (index in 0 until minOf(samples.length(), MAX_MOTION_HISTORY_SENSORS_PER_SAMPLE)) {
+            val sample = samples.optJSONObject(index) ?: continue
+            val sensorType = canonicalSensorType(sample.optString("sensor_type"))
+            if (sensorType !in MOTION_HISTORY_SENSOR_TYPES) continue
+            if (!sample.optBoolean("sampled", false) || !sample.optBoolean("available", true)) continue
+            val values = sample.optJSONArray("values") ?: continue
+            val magnitude = motionVectorMagnitude(values) ?: continue
+            val key = motionSensorHistoryKey(sample)
+            if (key.isBlank()) continue
+            val record = records.getOrPut(key) { JSONObject().put("key", key) }
+            record
+                .put("sensor_type", sensorType)
+                .put("sensor_label", sample.optString("sensor_label").ifBlank { SENSOR_TYPE_LABELS[sensorType] ?: sensorType })
+                .put("sensor_name", sample.optString("sensor_name"))
+                .put("vendor", sample.optString("vendor"))
+                .put("unit", sample.optString("unit").ifBlank { unitForSensorType(sensorType) })
+                .put("maximum_range", jsonValueOrNull(sample, "maximum_range"))
+                .put("resolution", jsonValueOrNull(sample, "resolution"))
+                .put("power_ma", jsonValueOrNull(sample, "power_ma"))
+                .put("reporting_mode", sample.optString("reporting_mode"))
+            val observations = record.optJSONArray("observations") ?: JSONArray()
+            observations.put(
+                JSONObject()
+                    .put("observed_at_ms", observedAtMs)
+                    .put("timestamp_nanos", jsonValueOrNull(sample, "timestamp_nanos"))
+                    .put("magnitude", magnitude)
+                    .put("values", copyJsonArray(values))
+                    .put("accuracy", jsonValueOrNull(sample, "accuracy"))
+                    .put("accuracy_label", sample.optString("accuracy_label").ifBlank { "unknown" }),
+            )
+            record.put("observations", trimMotionSensorObservations(observations))
+        }
+        val ordered = records.values
+            .filter { record -> (record.optJSONArray("observations")?.length() ?: 0) > 0 }
+            .sortedWith(
+                compareByDescending<JSONObject> { lastMotionSensorObservationTime(it) }
+                    .thenBy { motionSensorSortKey(it.optString("sensor_type")) }
+                    .thenBy { it.optString("sensor_label") },
+            )
+            .take(MAX_MOTION_HISTORY_SENSORS)
+        return JSONObject()
+            .put("updated_at_ms", observedAtMs)
+            .put("sensors", JSONArray().also { array -> ordered.forEach(array::put) })
+    }
+
+    internal fun motionSensorHistoryRowsFromStore(store: JSONObject, nowMs: Long = System.currentTimeMillis()): JSONArray {
+        val records = store.optJSONArray("sensors") ?: JSONArray()
+        val rows = buildList {
+            for (index in 0 until records.length()) {
+                val record = records.optJSONObject(index) ?: continue
+                val observations = record.optJSONArray("observations") ?: continue
+                val magnitudes = buildList {
+                    for (sampleIndex in 0 until observations.length()) {
+                        jsonDoubleOrNull(observations.optJSONObject(sampleIndex) ?: continue, "magnitude")?.let(::add)
+                    }
+                }
+                if (magnitudes.isEmpty()) continue
+                val firstMagnitude = magnitudes.first()
+                val currentMagnitude = magnitudes.last()
+                val averageMagnitude = magnitudes.average()
+                val minMagnitude = magnitudes.minOrNull() ?: currentMagnitude
+                val maxMagnitude = magnitudes.maxOrNull() ?: currentMagnitude
+                val trendMagnitude = currentMagnitude - firstMagnitude
+                val rangeMagnitude = maxMagnitude - minMagnitude
+                val sensorType = record.optString("sensor_type").ifBlank { motionSensorHistoryKey(record) }
+                val lastObservation = lastMotionSensorObservation(record)
+                val lastSeenMs = (nowMs - lastMotionSensorObservationTime(record)).coerceAtLeast(0L)
+                add(
+                    JSONObject()
+                        .put("sensor_type", sensorType)
+                        .put("sensor_label", record.optString("sensor_label").ifBlank { SENSOR_TYPE_LABELS[sensorType] ?: sensorType })
+                        .put("sensor_name", record.optString("sensor_name"))
+                        .put("vendor", record.optString("vendor"))
+                        .put("unit", record.optString("unit").ifBlank { unitForSensorType(sensorType) })
+                        .put("magnitude_unit", record.optString("unit").ifBlank { unitForSensorType(sensorType) })
+                        .put("sample_count", magnitudes.size)
+                        .put("current_magnitude", currentMagnitude)
+                        .put("average_magnitude", averageMagnitude)
+                        .put("min_magnitude", minMagnitude)
+                        .put("max_magnitude", maxMagnitude)
+                        .put("trend_magnitude", trendMagnitude)
+                        .put("trend_label", motionSensorTrendLabel(sensorType, trendMagnitude))
+                        .put("stability_delta", rangeMagnitude)
+                        .put("stability_label", motionSensorStabilityLabel(sensorType, rangeMagnitude, averageMagnitude))
+                        .put("last_seen_ms", lastSeenMs)
+                        .put("current_values", lastObservation?.optJSONArray("values") ?: JSONArray())
+                        .put("accuracy_label", lastObservation?.optString("accuracy_label").orEmpty().ifBlank { "unknown" })
+                        .put("magnitude_series", motionSensorObservationSeries(observations)),
+                )
+            }
+        }
+            .sortedWith(
+                compareBy<JSONObject> { motionSensorSortKey(it.optString("sensor_type")) }
+                    .thenBy { it.optLong("last_seen_ms", Long.MAX_VALUE) }
+                    .thenByDescending { it.optInt("sample_count", 0) }
+                    .thenBy { it.optString("sensor_label") },
+            )
+            .take(MAX_MOTION_HISTORY_ROWS)
+        return JSONArray().also { array -> rows.forEach(array::put) }
+    }
+
     private fun bluetoothDistinctStringCount(devices: JSONArray, key: String): Int {
         val values = linkedSetOf<String>()
         for (index in 0 until devices.length()) {
@@ -4125,6 +4398,17 @@ object HermesDeviceDiagnosticsBridge {
             .distinct()
             .ifEmpty { DEFAULT_SENSOR_TYPES }
             .take(MAX_SENSOR_TYPES_PER_SAMPLE)
+    }
+
+    private fun requestedMotionHistorySensorTypes(arguments: JSONObject): List<String> {
+        return if (arguments.has("sensor_types") || arguments.has("sensors") || arguments.has("sensor_type")) {
+            requestedSensorTypes(arguments)
+                .filter { it in MOTION_HISTORY_SENSOR_TYPES }
+                .ifEmpty { DEFAULT_MOTION_HISTORY_SENSOR_TYPES }
+                .take(MAX_MOTION_HISTORY_SENSORS_PER_SAMPLE)
+        } else {
+            DEFAULT_MOTION_HISTORY_SENSOR_TYPES
+        }
     }
 
     private fun sensorAnalyzerRequestedSensorTypes(arguments: JSONObject): List<String> {
@@ -5239,6 +5523,23 @@ object HermesDeviceDiagnosticsBridge {
         }.getOrDefault(JSONObject())
     }
 
+    private fun updateMotionSensorHistory(context: Context, samples: JSONArray, observedAtMs: Long): JSONObject {
+        val prefs = context.getSharedPreferences(MOTION_SENSOR_HISTORY_PREFS, Context.MODE_PRIVATE)
+        val existing = runCatching {
+            JSONObject(prefs.getString(MOTION_SENSOR_HISTORY_KEY, "{}").orEmpty().ifBlank { "{}" })
+        }.getOrDefault(JSONObject())
+        val updated = mergeMotionSensorHistory(existing, samples, observedAtMs)
+        prefs.edit().putString(MOTION_SENSOR_HISTORY_KEY, updated.toString()).apply()
+        return updated
+    }
+
+    private fun readMotionSensorHistory(context: Context): JSONObject {
+        val prefs = context.getSharedPreferences(MOTION_SENSOR_HISTORY_PREFS, Context.MODE_PRIVATE)
+        return runCatching {
+            JSONObject(prefs.getString(MOTION_SENSOR_HISTORY_KEY, "{}").orEmpty().ifBlank { "{}" })
+        }.getOrDefault(JSONObject())
+    }
+
     private fun wifiHistoryKey(row: JSONObject): String {
         val bssid = row.optString("bssid").trim().lowercase(Locale.US)
         if (bssid.isNotBlank()) return bssid
@@ -5262,6 +5563,15 @@ object HermesDeviceDiagnosticsBridge {
             .orEmpty()
     }
 
+    private fun motionSensorHistoryKey(row: JSONObject): String {
+        val sensorType = canonicalSensorType(row.optString("sensor_type"))
+        if (sensorType in MOTION_HISTORY_SENSOR_TYPES) return sensorType
+        return row.optString("sensor_label").trim().lowercase(Locale.US)
+            .replace(' ', '_')
+            .takeIf { it.isNotBlank() }
+            .orEmpty()
+    }
+
     private fun trimWifiObservations(observations: JSONArray): JSONArray {
         val start = (observations.length() - MAX_WIFI_HISTORY_SAMPLES_PER_NETWORK).coerceAtLeast(0)
         val trimmed = JSONArray()
@@ -5273,6 +5583,15 @@ object HermesDeviceDiagnosticsBridge {
 
     private fun trimBluetoothObservations(observations: JSONArray): JSONArray {
         val start = (observations.length() - MAX_BLUETOOTH_HISTORY_SAMPLES_PER_DEVICE).coerceAtLeast(0)
+        val trimmed = JSONArray()
+        for (index in start until observations.length()) {
+            observations.optJSONObject(index)?.let(trimmed::put)
+        }
+        return trimmed
+    }
+
+    private fun trimMotionSensorObservations(observations: JSONArray): JSONArray {
+        val start = (observations.length() - MAX_MOTION_HISTORY_SAMPLES_PER_SENSOR).coerceAtLeast(0)
         val trimmed = JSONArray()
         for (index in start until observations.length()) {
             observations.optJSONObject(index)?.let(trimmed::put)
@@ -5296,6 +5615,23 @@ object HermesDeviceDiagnosticsBridge {
             if (time > 0L) return time
         }
         return 0L
+    }
+
+    private fun lastMotionSensorObservationTime(record: JSONObject): Long {
+        val observations = record.optJSONArray("observations") ?: return 0L
+        for (index in observations.length() - 1 downTo 0) {
+            val time = observations.optJSONObject(index)?.optLong("observed_at_ms", 0L) ?: 0L
+            if (time > 0L) return time
+        }
+        return 0L
+    }
+
+    private fun lastMotionSensorObservation(record: JSONObject): JSONObject? {
+        val observations = record.optJSONArray("observations") ?: return null
+        for (index in observations.length() - 1 downTo 0) {
+            observations.optJSONObject(index)?.let { return it }
+        }
+        return null
     }
 
     private fun currentWifiRssi(record: JSONObject): Int? {
@@ -5326,6 +5662,41 @@ object HermesDeviceDiagnosticsBridge {
         else -> "stable"
     }
 
+    private fun motionSensorTrendLabel(sensorType: String, trendMagnitude: Double): String {
+        val threshold = motionSensorTrendThreshold(sensorType)
+        return when {
+            trendMagnitude >= threshold -> "increasing"
+            trendMagnitude <= -threshold -> "decreasing"
+            else -> "stable"
+        }
+    }
+
+    private fun motionSensorStabilityLabel(sensorType: String, rangeMagnitude: Double, averageMagnitude: Double): String {
+        val threshold = maxOf(motionSensorTrendThreshold(sensorType), abs(averageMagnitude) * 0.08)
+        return when {
+            rangeMagnitude <= threshold -> "steady"
+            rangeMagnitude <= threshold * 3 -> "drifting"
+            else -> "changing"
+        }
+    }
+
+    private fun motionSensorTrendThreshold(sensorType: String): Double = when (sensorType) {
+        "gyroscope" -> 0.15
+        "rotation_vector" -> 0.05
+        "magnetic_field" -> 2.0
+        else -> 0.5
+    }
+
+    private fun motionSensorSortKey(sensorType: String): Int = when (canonicalSensorType(sensorType)) {
+        "accelerometer" -> 0
+        "gyroscope" -> 1
+        "linear_acceleration" -> 2
+        "gravity" -> 3
+        "rotation_vector" -> 4
+        "magnetic_field" -> 5
+        else -> 6
+    }
+
     private fun wifiObservationSeries(observations: JSONArray): JSONArray {
         val series = JSONArray()
         val start = (observations.length() - MAX_WIFI_HISTORY_SERIES_POINTS).coerceAtLeast(0)
@@ -5352,6 +5723,52 @@ object HermesDeviceDiagnosticsBridge {
             )
         }
         return series
+    }
+
+    private fun motionSensorObservationSeries(observations: JSONArray): JSONArray {
+        val series = JSONArray()
+        val start = (observations.length() - MAX_MOTION_HISTORY_SERIES_POINTS).coerceAtLeast(0)
+        for (index in start until observations.length()) {
+            val observation = observations.optJSONObject(index) ?: continue
+            series.put(
+                JSONObject()
+                    .put("observed_at_ms", observation.optLong("observed_at_ms", 0L))
+                    .put("magnitude", jsonDoubleOrNull(observation, "magnitude") ?: JSONObject.NULL),
+            )
+        }
+        return series
+    }
+
+    private fun motionVectorMagnitude(values: JSONArray): Double? {
+        var sum = 0.0
+        var count = 0
+        for (index in 0 until values.length()) {
+            val value = when (val raw = values.opt(index)) {
+                is Number -> raw.toDouble()
+                is String -> raw.toDoubleOrNull()
+                else -> null
+            } ?: continue
+            sum += value * value
+            count += 1
+        }
+        return if (count > 0) sqrt(sum) else null
+    }
+
+    private fun copyJsonArray(values: JSONArray): JSONArray {
+        val copy = JSONArray()
+        for (index in 0 until values.length()) {
+            copy.put(values.opt(index) ?: JSONObject.NULL)
+        }
+        return copy
+    }
+
+    private fun countSampledSensors(samples: JSONArray): Int {
+        var count = 0
+        for (index in 0 until samples.length()) {
+            val row = samples.optJSONObject(index) ?: continue
+            if (row.optBoolean("sampled", false)) count += 1
+        }
+        return count
     }
 
     private fun jsonIntOrNull(row: JSONObject, key: String): Int? {
@@ -5646,6 +6063,7 @@ object HermesDeviceDiagnosticsBridge {
         "bluetooth_scan",
         "bluetooth_signal_history",
         "sensor_analyzer_report",
+        "motion_sensor_history",
         "sensor_snapshot",
         "camera_status",
         "radio_signal_status",
@@ -5675,7 +6093,9 @@ object HermesDeviceDiagnosticsBridge {
     )
     private val MOTION_SENSOR_TYPES = setOf("accelerometer", "gyroscope", "gravity", "linear_acceleration", "rotation_vector")
     private val AMBIENT_SENSOR_TYPES = setOf("magnetic_field", "light", "proximity", "pressure", "ambient_temperature", "relative_humidity")
+    private val MOTION_HISTORY_SENSOR_TYPES = setOf("accelerometer", "gyroscope", "gravity", "linear_acceleration", "rotation_vector", "magnetic_field")
     private val DEFAULT_SENSOR_TYPES = listOf("accelerometer", "gyroscope", "magnetic_field", "light", "proximity")
+    private val DEFAULT_MOTION_HISTORY_SENSOR_TYPES = listOf("accelerometer", "gyroscope", "linear_acceleration", "rotation_vector", "magnetic_field")
     private const val DEFAULT_LIMIT = 5
     private const val MAX_LIMIT = 20
     private const val MAX_WIFI_RESULTS = 40
@@ -5705,6 +6125,13 @@ object HermesDeviceDiagnosticsBridge {
     private const val MAX_BLUETOOTH_HISTORY_SERIES_POINTS = 8
     private const val BLUETOOTH_SIGNAL_HISTORY_PREFS = "hermes_bluetooth_signal_history"
     private const val BLUETOOTH_SIGNAL_HISTORY_KEY = "signal_history"
+    private const val MAX_MOTION_HISTORY_SENSORS_PER_SAMPLE = 8
+    private const val MAX_MOTION_HISTORY_SENSORS = 12
+    private const val MAX_MOTION_HISTORY_ROWS = 12
+    private const val MAX_MOTION_HISTORY_SAMPLES_PER_SENSOR = 12
+    private const val MAX_MOTION_HISTORY_SERIES_POINTS = 8
+    private const val MOTION_SENSOR_HISTORY_PREFS = "hermes_motion_sensor_history"
+    private const val MOTION_SENSOR_HISTORY_KEY = "motion_history"
     private const val MAX_SENSOR_TYPES_PER_SAMPLE = 8
     private const val DEFAULT_SENSOR_TIMEOUT_MS = 800L
     private const val MAX_SENSOR_TIMEOUT_MS = 3_000L

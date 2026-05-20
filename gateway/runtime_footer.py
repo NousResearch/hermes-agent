@@ -54,6 +54,17 @@ def _model_short(model: Optional[str]) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def _model_display(model: Optional[str], provider: Optional[str] = None) -> str:
+    """Render the runtime model, optionally prefixed by the live provider."""
+    short_model = _model_short(model)
+    if not short_model:
+        return ""
+    provider_text = str(provider or "").strip()
+    if provider_text:
+        return f"{provider_text}/{short_model}"
+    return short_model
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,
@@ -96,6 +107,7 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    provider: Optional[str] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -105,7 +117,7 @@ def format_runtime_footer(
     parts: list[str] = []
     for field in fields:
         if field == "model":
-            m = _model_short(model)
+            m = _model_display(model, provider)
             if m:
                 parts.append(m)
         elif field == "context_pct":
@@ -131,6 +143,7 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -147,4 +160,5 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        provider=provider,
     )

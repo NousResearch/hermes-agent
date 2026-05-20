@@ -8546,6 +8546,7 @@ class GatewayRunner:
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
                     model=agent_result.get("model"),
+                    provider=agent_result.get("provider"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
@@ -9984,13 +9985,16 @@ class GatewayRunner:
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
 
-                        # Store model note + session override
+                        # Store model note + session override.  Keep it structured
+                        # so the next turn can compare the queued switch against the
+                        # live runtime before using it for self-identification.
                         if not hasattr(_self, "_pending_model_notes"):
                             _self._pending_model_notes = {}
-                        _self._pending_model_notes[_session_key] = (
-                            f"[Note: model was just switched from {_cur_model} to {result.new_model} "
-                            f"via {result.provider_label or result.target_provider}. "
-                            f"Adjust your self-identification accordingly.]"
+                        from gateway.runtime_provenance import build_model_switch_note
+                        _self._pending_model_notes[_session_key] = build_model_switch_note(
+                            previous_model=_cur_model,
+                            requested_model=result.new_model,
+                            requested_provider=result.target_provider,
                         )
                         _self._session_model_overrides[_session_key] = {
                             "model": result.new_model,
@@ -10121,14 +10125,15 @@ class GatewayRunner:
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
 
-        # Store a note to prepend to the next user message so the model
-        # knows about the switch (avoids system messages mid-history).
+        # Store a note to prepend to the next user message so the model knows
+        # about the switch without treating stale queued metadata as authority.
         if not hasattr(self, "_pending_model_notes"):
             self._pending_model_notes = {}
-        self._pending_model_notes[session_key] = (
-            f"[Note: model was just switched from {current_model} to {result.new_model} "
-            f"via {result.provider_label or result.target_provider}. "
-            f"Adjust your self-identification accordingly.]"
+        from gateway.runtime_provenance import build_model_switch_note
+        self._pending_model_notes[session_key] = build_model_switch_note(
+            previous_model=current_model,
+            requested_model=result.new_model,
+            requested_provider=result.target_provider,
         )
 
         # Store session override so next agent creation uses the new model
@@ -16615,11 +16620,21 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
 
-            # Prepend pending model switch note so the model knows about the switch
+            # Prepend pending model switch note after validating it against the
+            # live runtime selected for this turn.  The runtime wins: stale
+            # queued notes are diagnostic context, not self-ID authority.
             _pending_notes = getattr(self, '_pending_model_notes', {})
             _msn = _pending_notes.pop(session_key, None) if session_key else None
             if _msn:
-                message = _msn + "\n\n" + message
+                from gateway.runtime_provenance import resolve_self_identification_note
+                _runtime_note = resolve_self_identification_note(
+                    _msn,
+                    runtime_model=turn_route["model"],
+                    runtime_provider=turn_route["runtime"].get("provider") or "",
+                    session_key=session_key or "",
+                    log=logger,
+                )
+                message = _runtime_note + "\n\n" + message
 
             # Auto-continue: if the loaded history ends with a tool result,
             # the previous agent turn was interrupted mid-work (gateway
@@ -16772,6 +16787,7 @@ class GatewayRunner:
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            _resolved_provider = getattr(_agent, "provider", None) if _agent else None
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
@@ -16792,6 +16808,7 @@ class GatewayRunner:
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "provider": _resolved_provider,
                     "context_length": _context_length,
                 }
             
@@ -16952,6 +16969,7 @@ class GatewayRunner:
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": _resolved_provider,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),

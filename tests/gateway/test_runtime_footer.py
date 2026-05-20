@@ -147,6 +147,19 @@ def test_format_footer_unknown_field_silently_ignored():
     assert out == "gpt-5.4 · 50%"
 
 
+def test_format_footer_model_includes_provider_when_supplied():
+    out = format_runtime_footer(
+        provider="openai-codex",
+        model="gpt-5.5",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        fields=("model",),
+    )
+
+    assert out == "openai-codex/gpt-5.5"
+
+
 # ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------

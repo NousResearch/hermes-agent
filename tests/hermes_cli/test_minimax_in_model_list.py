@@ -4,7 +4,7 @@ import os
 from unittest.mock import patch
 
 from hermes_cli.model_switch import list_authenticated_providers
-from hermes_cli.models import _PROVIDER_MODELS
+from hermes_cli.models import provider_model_ids
 
 
 _MINIMAX_REQUIRED = {
@@ -17,11 +17,11 @@ _MINIMAX_REQUIRED = {
 
 def test_minimax_curated_includes_highspeed_variants():
     """Both highspeed variants must be in the static curated list."""
-    models = set(_PROVIDER_MODELS.get("minimax", []))
+    models = set(provider_model_ids("minimax"))
     missing = _MINIMAX_REQUIRED - models
     assert not missing, (
         f"minimax curated should include highspeed variants; missing: {sorted(missing)}. "
-        f"Got: {_PROVIDER_MODELS.get('minimax')}"
+        f"Got: {provider_model_ids('minimax')}"
     )
 
 
@@ -33,8 +33,10 @@ def test_minimax_picker_lists_highspeed_when_api_key_set():
     # ``data.get(mdev_id)`` isn't a dict, so an unreachable registry on CI
     # would otherwise drop minimax even when MINIMAX_API_KEY is set.
     fake_registry = {"minimax": {"name": "MiniMax", "env": ["MINIMAX_API_KEY"], "models": {}}}
+    # ``max_models`` is set well beyond the curated list size so the assertion
+    # never trips on truncation if the curated catalog grows.
     with patch("agent.models_dev.fetch_models_dev", return_value=fake_registry):
-        providers = list_authenticated_providers(current_provider="openrouter", max_models=50)
+        providers = list_authenticated_providers(current_provider="openrouter", max_models=1000)
 
     minimax = next((p for p in providers if p["slug"] == "minimax"), None)
     assert minimax is not None, "minimax should appear when MINIMAX_API_KEY is set"

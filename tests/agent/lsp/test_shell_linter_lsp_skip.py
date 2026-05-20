@@ -37,7 +37,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def _make_fops(tmp_path):
+def _make_fops():
     from tools.environments.local import LocalEnvironment
     from tools.file_operations import ShellFileOperations
     return ShellFileOperations(LocalEnvironment())
@@ -51,7 +51,7 @@ def test_shell_linter_skipped_when_lsp_will_handle(ext, tmp_path):
     point.  We assert by patching ``_exec`` to raise, so any accidental
     invocation surfaces as a test failure.
     """
-    fops = _make_fops(tmp_path)
+    fops = _make_fops()
     src = tmp_path / f"bad{ext}"
     src.write_text("intentionally invalid content\n")
 
@@ -73,7 +73,7 @@ def test_shell_linter_skipped_when_lsp_will_handle(ext, tmp_path):
 def test_shell_linter_runs_when_lsp_inactive(ext, tmp_path):
     """When LSP is inactive (default config, no service, remote backend, ...),
     the shell linter runs as before — no behavior change."""
-    fops = _make_fops(tmp_path)
+    fops = _make_fops()
     src = tmp_path / f"clean{ext}"
     src.write_text("// content\n")
 
@@ -98,7 +98,7 @@ def test_lsp_does_not_skip_non_redundant_extensions(ext, tmp_path):
     they're fast, file-local, and correct, so there's no upside to
     suppressing them.
     """
-    fops = _make_fops(tmp_path)
+    fops = _make_fops()
     src = tmp_path / f"clean{ext}"
     src.write_text("# valid\n" if ext == ".py" else "// valid\n")
 
@@ -123,7 +123,7 @@ def test_lsp_will_handle_returns_false_when_service_is_none(tmp_path):
     """``_lsp_will_handle`` must return False when the LSP service hasn't
     been initialized — otherwise we'd accidentally skip the shell linter
     on systems where LSP isn't configured at all."""
-    fops = _make_fops(tmp_path)
+    fops = _make_fops()
     src = tmp_path / "foo.ts"
     src.write_text("const x = 1\n")
 
@@ -137,7 +137,7 @@ def test_lsp_will_handle_returns_false_on_remote_backend(tmp_path):
     SSH, Modal, …) keep files inside the sandbox where the host LSP
     can't reach them.  ``_lsp_will_handle`` must short-circuit before
     calling into the service in that case."""
-    fops = _make_fops(tmp_path)
+    fops = _make_fops()
     src = tmp_path / "foo.ts"
     src.write_text("const x = 1\n")
 
@@ -154,7 +154,7 @@ def test_lsp_will_handle_swallows_enabled_for_exception(tmp_path):
     """A flaky LSP service must never break the shell-linter fallback —
     if ``enabled_for`` raises, we treat the file as "not handled" so the
     shell linter still runs."""
-    fops = _make_fops(tmp_path)
+    fops = _make_fops()
     src = tmp_path / "foo.ts"
     src.write_text("const x = 1\n")
 
@@ -191,7 +191,7 @@ def test_tsx_default_check_lint_returns_skipped(tmp_path):
     """End-to-end: ``.tsx`` files get ``LintResult(skipped=True)`` from
     ``_check_lint`` regardless of LSP status — this is the no-regression
     contract that addresses Copilot review #3271017282."""
-    fops = _make_fops(tmp_path)
+    fops = _make_fops()
     src = tmp_path / "foo.tsx"
     src.write_text("export const X = () => <div/>\n")
 

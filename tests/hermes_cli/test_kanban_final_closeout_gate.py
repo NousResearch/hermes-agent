@@ -268,6 +268,39 @@ def test_gate_fails_when_public_text_scan_finds_json_encoded_sensitive_fields():
     assert check["raw_locator_scan_summary"].startswith("failed")
 
 
+def test_failed_trace_receipt_output_redacts_raw_locator_and_secret_values():
+    raw_chat_id = "-100" + "1234567890"
+    raw_locator = "telegram:" + raw_chat_id + ":17585"
+    fake_secret_value = "abcdefghijklmnop1234"
+    secret_field_name = "access" + "_token"
+    executor = _executor_manifest()
+    executor["trace"]["receipts"].append(
+        {
+            "event": "submitted",
+            "delivery_status": "failed",
+            "receipt_url_or_comment_url": raw_locator,
+            "target_alias": "telegram:中书门下",
+            "chat_id": int(raw_chat_id),
+            secret_field_name: fake_secret_value,
+        }
+    )
+
+    receipt = _pass_receipt(executor=executor)
+    serialized = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+
+    assert receipt["closeout_gate"] == "failed"
+    assert "public_text_scan_failed" in _gap_codes(receipt)
+    assert receipt["gate_checks"]["trace_receipts_complete"]["status"] == "failed"
+    assert receipt["gate_checks"]["public_text_sanitation"]["status"] == "failed"
+    raw_locator_present = raw_locator in serialized
+    raw_chat_id_present = raw_chat_id in serialized
+    fake_secret_present = fake_secret_value in serialized
+    assert raw_locator_present is False
+    assert raw_chat_id_present is False
+    assert fake_secret_present is False
+    assert "telegram:中书门下" in serialized
+
+
 def test_gate_fails_when_identity_block_is_missing_from_required_manifest():
     executor = _executor_manifest()
     del executor["identity_block"]

@@ -50,6 +50,10 @@ RAW_LOCATOR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("discord_raw_ids", re.compile(r"\bdiscord:\d{8,}(?::\d{8,})?\b", re.IGNORECASE)),
     ("slack_raw_channel", re.compile(r"\bslack:[CGD][A-Z0-9]{8,}\b", re.IGNORECASE)),
 )
+SENSITIVE_FIELD_RE = re.compile(
+    r"(?i)^(?:oauth_token|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|bearer[_-]?token|secret|password|authorization)$"
+)
+RAW_LOCATOR_FIELD_RE = re.compile(r"(?i)^(?:chat_id|thread_id|topic_id|channel_id|guild_id)$")
 
 PASS_STATUSES = {"passed", "pass", "ok", "success", "waived", "not_applicable"}
 FAIL_STATUSES = {"failed", "fail", "error", "blocked", "returned"}
@@ -232,6 +236,34 @@ def _public_text_payload(manifests: list[dict[str, Any]], public_text: Optional[
     payload = [json.dumps(manifest, ensure_ascii=False, sort_keys=True) for manifest in manifests]
     payload.extend(public_text or [])
     return payload
+
+
+def _redact_public_text(text: str) -> str:
+    redacted = text
+    for name, pattern in (*SECRET_PATTERNS, *RAW_LOCATOR_PATTERNS):
+        redacted = pattern.sub(f"<redacted:{name}>", redacted)
+    return redacted
+
+
+def _redact_public_value(value: Any, *, field_name: Optional[str] = None) -> Any:
+    if field_name and SENSITIVE_FIELD_RE.match(field_name):
+        return "<redacted:credential>"
+    if field_name and RAW_LOCATOR_FIELD_RE.match(field_name):
+        return "<redacted:raw_platform_locator>"
+    if isinstance(value, str):
+        return _redact_public_text(value)
+    if isinstance(value, dict):
+        return {key: _redact_public_value(child, field_name=str(key)) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_redact_public_value(child) for child in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_public_value(child) for child in value)
+    return value
+
+
+def _sanitize_public_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Remove raw locators/secrets from any structure that may be pasted publicly."""
+    return _redact_public_value(receipt)
 
 
 def _make_gap(code: str, message: str, *, evidence: Optional[Iterable[Any]] = None, next_owner: str, next_action: str) -> dict[str, Any]:
@@ -770,7 +802,7 @@ def build_closeout_gate_receipt(
 
     evidence_urls = _dedupe(_github_urls_from_payload(manifest_list) + _github_urls_from_payload(guard_list))
     passed = not unique_gaps
-    return {
+    receipt = {
         "schema": SCHEMA_VERSION,
         "mode": "check",
         "ok": passed,
@@ -811,6 +843,7 @@ def build_closeout_gate_receipt(
             "no_reaudit_performed": True,
         },
     }
+    return _sanitize_public_receipt(receipt)
 
 
 def render_markdown_report(receipt: dict[str, Any]) -> str:
@@ -905,7 +938,7 @@ def _read_public_text_files(paths: Iterable[str]) -> list[str]:
 
 
 def _doctor_receipt(actor_profile: Optional[str]) -> dict[str, Any]:
-    return {
+    receipt = {
         "schema": SCHEMA_VERSION,
         "mode": "doctor",
         "ok": True,
@@ -921,6 +954,7 @@ def _doctor_receipt(actor_profile: Optional[str]) -> dict[str, Any]:
             "credentials_or_tokens_touched": False,
         },
     }
+    return _sanitize_public_receipt(receipt)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -961,18 +995,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             Path(args.markdown_report_file).expanduser().write_text(render_markdown_report(receipt), encoding="utf-8")
         return 0 if receipt["ok"] else 1
     except Exception as exc:
-        error_receipt = {
-            "schema": SCHEMA_VERSION,
-            "mode": "check",
-            "ok": False,
-            "closeout_gate": "failed",
-            "error": str(exc),
-            "public_safety": {"no_mutations_performed": True, "write_targets": []},
-        }
+        error_receipt = _sanitize_public_receipt(
+            {
+                "schema": SCHEMA_VERSION,
+                "mode": "check",
+                "ok": False,
+                "closeout_gate": "failed",
+                "error": str(exc),
+                "public_safety": {"no_mutations_performed": True, "write_targets": []},
+            }
+        )
         if getattr(args, "json", False):
             print(json.dumps(error_receipt, ensure_ascii=False, indent=2, sort_keys=True), file=sys.stderr)
         else:
-            print(f"{ENTRYPOINT}: {exc}", file=sys.stderr)
+            print(f"{ENTRYPOINT}: {error_receipt['error']}", file=sys.stderr)
         return 2
 
 

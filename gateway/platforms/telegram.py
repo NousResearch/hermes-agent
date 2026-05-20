@@ -786,6 +786,22 @@ class TelegramAdapter(BasePlatformAdapter):
             "[%s] Telegram network error (attempt %d/%d), reconnecting in %ds. Error: %s",
             self.name, attempt, MAX_NETWORK_RETRIES, delay, error,
         )
+        # Surface the degraded state to external monitors via the runtime
+        # status file BEFORE we sleep — otherwise everything reading
+        # ``platforms.telegram.state`` keeps seeing ``connected`` for up
+        # to ~55 minutes while the reconnect ladder churns (#29005).  The
+        # state flips to ``fatal`` only at attempt 11 today; this fills
+        # the gap.  Reuses the same ``retrying`` value the gateway's
+        # fatal-error handler already writes for retryable failures.
+        self._write_runtime_status_safe(
+            "polling_retrying",
+            platform_state="retrying",
+            error_code="telegram_network_error",
+            error_message=(
+                f"Network error retry {attempt}/{MAX_NETWORK_RETRIES} "
+                f"(next in {delay}s): {error}"
+            ),
+        )
         await asyncio.sleep(delay)
 
         try:
@@ -807,6 +823,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            # Clear the ``retrying`` status we wrote before sleeping so
+            # external monitors stop alerting once polling is healthy
+            # again (#29005).  ``_mark_connected`` would also clobber
+            # ``_fatal_error_*`` fields the adapter may have set
+            # elsewhere; this is the surgical equivalent.
+            self._write_runtime_status_safe(
+                "polling_recovered",
+                platform_state="connected",
+                error_code=None,
+                error_message=None,
+            )
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
             # but the underlying long-poll task is wedged on a stale httpx

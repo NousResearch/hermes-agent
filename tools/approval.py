@@ -500,8 +500,8 @@ DANGEROUS_PATTERNS = [
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
     (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b[^;&|\n]*--force\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b[^;&|\n]*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'\bgit\s+push\b.*?--force\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b.*?-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # Script execution after chmod +x — catches the two-step pattern where

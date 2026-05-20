@@ -1181,6 +1181,8 @@ _cleanup_done = False
 # Default: 5 minutes. Needs headroom for LLM reasoning between browser commands,
 # especially when subagents are doing multi-step browser tasks.
 BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
+_BROWSER_SANDBOX_BYPASS_ARGS = "--no-sandbox,--disable-dev-shm-usage"
+_APPARMOR_USERNS_RESTRICT_PATH = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
@@ -1191,6 +1193,76 @@ _cleanup_running = False
 # Protects _session_last_activity AND _active_sessions for thread safety
 # (subagents run concurrently via ThreadPoolExecutor)
 _cleanup_lock = threading.Lock()
+
+
+def _apparmor_restricts_unprivileged_userns(
+    restrict_path: str = _APPARMOR_USERNS_RESTRICT_PATH,
+) -> bool:
+    try:
+        with open(restrict_path, encoding="utf-8") as f:
+            return f.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def _unprivileged_userns_probe_fails() -> bool:
+    if os.name != "posix" or not sys.platform.startswith("linux"):
+        return False
+
+    unshare = shutil.which("unshare")
+    if not unshare:
+        return False
+
+    try:
+        proc = subprocess.run(
+            [unshare, "-U", "/bin/true"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+    return proc.returncode != 0
+
+
+@functools.lru_cache(maxsize=1)
+def _browser_sandbox_bypass_reason() -> Optional[str]:
+    if os.name != "posix":
+        return None
+
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return "running as root"
+
+    if _apparmor_restricts_unprivileged_userns():
+        return "AppArmor user namespace restrictions detected"
+
+    if _unprivileged_userns_probe_fails():
+        return "unprivileged user namespace probe failed"
+
+    return None
+
+
+def _inject_browser_sandbox_args_if_needed(browser_env: Dict[str, str]) -> Optional[str]:
+    # Honour either the legacy AGENT_BROWSER_CHROME_FLAGS (never consumed by
+    # agent-browser itself, but documented in older notes) or the real
+    # AGENT_BROWSER_ARGS — if the user pre-sets either, don't overwrite it.
+    if (
+        "AGENT_BROWSER_ARGS" in browser_env
+        or "AGENT_BROWSER_CHROME_FLAGS" in browser_env
+    ):
+        return None
+
+    sandbox_bypass_reason = _browser_sandbox_bypass_reason()
+    if sandbox_bypass_reason:
+        logger.debug(
+            "browser: %s — injecting --no-sandbox",
+            sandbox_bypass_reason,
+        )
+        browser_env["AGENT_BROWSER_ARGS"] = _BROWSER_SANDBOX_BYPASS_ARGS
+
+    return sandbox_bypass_reason
 
 
 def _emergency_cleanup_all_sessions():
@@ -2011,34 +2083,7 @@ def _run_browser_command(
         # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
         #   are restricted, causing Chromium to exit with "No usable sandbox"
         #   even for non-root users running under systemd or containers.
-        # Honour either the legacy AGENT_BROWSER_CHROME_FLAGS (never consumed by
-        # agent-browser itself, but documented in older notes) or the real
-        # AGENT_BROWSER_ARGS — if the user pre-sets either, don't overwrite it.
-        if (
-            "AGENT_BROWSER_ARGS" not in browser_env
-            and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
-        ):
-            _needs_sandbox_bypass = False
-            if hasattr(os, "geteuid") and os.geteuid() == 0:
-                _needs_sandbox_bypass = True
-                logger.debug("browser: running as root — injecting --no-sandbox")
-            else:
-                # Detect AppArmor user namespace restrictions (Ubuntu 23.10+)
-                _userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
-                try:
-                    with open(_userns_restrict, encoding="utf-8") as _f:
-                        if _f.read().strip() == "1":
-                            _needs_sandbox_bypass = True
-                            logger.debug(
-                                "browser: AppArmor userns restrictions detected — "
-                                "injecting --no-sandbox"
-                            )
-                except OSError:
-                    pass
-            if _needs_sandbox_bypass:
-                browser_env["AGENT_BROWSER_ARGS"] = (
-                    "--no-sandbox,--disable-dev-shm-usage"
-                )
+        _inject_browser_sandbox_args_if_needed(browser_env)
 
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file

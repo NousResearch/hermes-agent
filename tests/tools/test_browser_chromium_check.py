@@ -7,6 +7,7 @@ for the full command timeout before surfacing a useless error.
 """
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -17,8 +18,14 @@ from tools import browser_tool as bt
 @pytest.fixture(autouse=True)
 def _reset_chromium_cache():
     bt._cached_chromium_installed = None
+    cache_clear = getattr(bt._browser_sandbox_bypass_reason, "cache_clear", None)
+    if cache_clear:
+        cache_clear()
     yield
     bt._cached_chromium_installed = None
+    cache_clear = getattr(bt._browser_sandbox_bypass_reason, "cache_clear", None)
+    if cache_clear:
+        cache_clear()
 
 
 class TestChromiumSearchRoots:
@@ -50,6 +57,87 @@ class TestChromiumInstalled:
         )
 
         assert bt._chromium_installed() is True
+
+
+class TestBrowserSandboxBypass:
+    def test_root_requires_sandbox_bypass(self, monkeypatch):
+        monkeypatch.setattr(bt.os, "name", "posix")
+        monkeypatch.setattr(bt.sys, "platform", "linux")
+        monkeypatch.setattr(bt.os, "geteuid", lambda: 0, raising=False)
+
+        assert bt._browser_sandbox_bypass_reason() == "running as root"
+
+    def test_apparmor_userns_restriction_requires_sandbox_bypass(self, monkeypatch):
+        monkeypatch.setattr(bt.os, "name", "posix")
+        monkeypatch.setattr(bt.sys, "platform", "linux")
+        monkeypatch.setattr(bt.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(bt, "_apparmor_restricts_unprivileged_userns", lambda: True)
+        monkeypatch.setattr(bt, "_unprivileged_userns_probe_fails", lambda: False)
+
+        assert (
+            bt._browser_sandbox_bypass_reason()
+            == "AppArmor user namespace restrictions detected"
+        )
+
+    def test_failed_unshare_probe_requires_sandbox_bypass(self, monkeypatch):
+        monkeypatch.setattr(bt.os, "name", "posix")
+        monkeypatch.setattr(bt.sys, "platform", "linux")
+        monkeypatch.setattr(bt.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(bt, "_apparmor_restricts_unprivileged_userns", lambda: False)
+        monkeypatch.setattr(bt, "_unprivileged_userns_probe_fails", lambda: True)
+
+        assert (
+            bt._browser_sandbox_bypass_reason()
+            == "unprivileged user namespace probe failed"
+        )
+
+    def test_unshare_probe_failure_detects_blocked_userns(self, monkeypatch):
+        monkeypatch.setattr(bt.os, "name", "posix")
+        monkeypatch.setattr(bt.sys, "platform", "linux")
+        monkeypatch.setattr(bt.shutil, "which", lambda name: "/usr/bin/unshare")
+
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(args[0], 1)
+
+        monkeypatch.setattr(bt.subprocess, "run", fake_run)
+
+        assert bt._unprivileged_userns_probe_fails() is True
+
+    def test_unshare_probe_skips_non_linux(self, monkeypatch):
+        monkeypatch.setattr(bt.os, "name", "nt")
+        monkeypatch.setattr(bt.sys, "platform", "win32")
+        monkeypatch.setattr(bt.shutil, "which", lambda name: "/usr/bin/unshare")
+
+        assert bt._unprivileged_userns_probe_fails() is False
+
+    def test_injects_browser_args_when_sandbox_bypass_needed(self, monkeypatch):
+        browser_env = {}
+        monkeypatch.setattr(
+            bt,
+            "_browser_sandbox_bypass_reason",
+            lambda: "unprivileged user namespace probe failed",
+        )
+
+        reason = bt._inject_browser_sandbox_args_if_needed(browser_env)
+
+        assert reason == "unprivileged user namespace probe failed"
+        assert browser_env["AGENT_BROWSER_ARGS"] == "--no-sandbox,--disable-dev-shm-usage"
+
+    @pytest.mark.parametrize(
+        "browser_env",
+        [
+            {"AGENT_BROWSER_ARGS": "--custom-flag"},
+            {"AGENT_BROWSER_CHROME_FLAGS": "--custom-legacy-flag"},
+        ],
+    )
+    def test_preserves_user_browser_args(self, monkeypatch, browser_env):
+        monkeypatch.setattr(bt, "_browser_sandbox_bypass_reason", lambda: "running as root")
+        original = dict(browser_env)
+
+        reason = bt._inject_browser_sandbox_args_if_needed(browser_env)
+
+        assert reason is None
+        assert browser_env == original
 
     def test_true_when_chromium_dir_present(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))

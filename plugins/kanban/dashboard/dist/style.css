@@ -67,10 +67,23 @@
   gap: 0.75rem;
   align-items: start;
   overflow-x: auto;
-  scrollbar-width: none;
+  padding-bottom: 0.35rem;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-muted-foreground) 45%, transparent) transparent;
 }
 .hermes-kanban-columns::-webkit-scrollbar {
-  display: none;
+  height: 0.55rem;
+}
+.hermes-kanban-columns::-webkit-scrollbar-track {
+  background: transparent;
+}
+.hermes-kanban-columns::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-muted-foreground) 35%, transparent);
+  border-radius: 999px;
+}
+.hermes-kanban-columns::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-muted-foreground) 55%, transparent);
 }
 
 .hermes-kanban-column {
@@ -165,9 +178,11 @@
 }
 .hermes-kanban-dot-triage   { background: #b47dd6; }  /* lilac — fresh/unspecified */
 .hermes-kanban-dot-todo     { background: var(--color-muted-foreground); }
+.hermes-kanban-dot-scheduled { background: #8f8bd6; }  /* periwinkle */
 .hermes-kanban-dot-ready    { background: #d4b348; }  /* amber */
 .hermes-kanban-dot-running  { background: #3fb97d; }  /* green */
 .hermes-kanban-dot-blocked  { background: var(--color-destructive, #d14a4a); }
+.hermes-kanban-dot-review   { background: #d67d9d; }  /* rose */
 .hermes-kanban-dot-done     { background: #4a8cd1; }  /* blue */
 .hermes-kanban-dot-archived { background: var(--color-border); }
 

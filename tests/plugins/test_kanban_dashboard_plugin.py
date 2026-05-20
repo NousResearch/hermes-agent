@@ -71,12 +71,55 @@ def test_board_empty(client):
     # All canonical columns present (triage + the rest), each empty.
     names = [c["name"] for c in data["columns"]]
     assert set(names) == kb.VALID_STATUSES - {"archived"}
-    for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for expected in (
+        "triage",
+        "todo",
+        "scheduled",
+        "ready",
+        "running",
+        "blocked",
+        "review",
+        "done",
+    ):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
+
+
+def test_dashboard_frontend_column_metadata_matches_api_columns():
+    """The static dashboard bundle must know every backend board column."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert (
+        'const COLUMN_ORDER = ["triage", "todo", "scheduled", "ready", '
+        '"running", "blocked", "review", "done"];'
+    ) in js
+    assert 'scheduled: "Scheduled"' in js
+    assert 'review: "Review"' in js
+    assert 'scheduled: "hermes-kanban-dot-scheduled"' in js
+    assert 'review: "hermes-kanban-dot-review"' in js
+
+
+def test_dashboard_columns_keep_visible_horizontal_scrollbar():
+    """Overflowing Kanban columns need a visible scroll affordance."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    styles = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    css = styles.read_text()
+    columns_rule = css[
+        css.index(".hermes-kanban-columns {"):css.index(".hermes-kanban-column {")
+    ]
+
+    assert "overflow-x: auto;" in columns_rule
+    assert "scrollbar-width: thin;" in columns_rule
+    assert "scrollbar-gutter: stable;" in columns_rule
+    assert "scrollbar-width: none;" not in columns_rule
+    assert "display: none;" not in columns_rule
 
 
 # ---------------------------------------------------------------------------

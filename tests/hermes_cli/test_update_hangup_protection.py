@@ -213,8 +213,14 @@ class TestInstallHangupProtection:
         try:
             # On Windows (no SIGHUP) we still wrap stdio and create the log.
             assert state["installed"] is True
-            assert isinstance(sys.stdout, _UpdateOutputStream)
-            assert isinstance(sys.stderr, _UpdateOutputStream)
+            # Other tests may reload ``hermes_cli.main`` in the same worker,
+            # leaving this module's imported class object stale even though
+            # the live stream is the correct wrapper. Check wrapper shape
+            # instead of object identity across reload boundaries.
+            assert sys.stdout.__class__.__name__ == "_UpdateOutputStream"
+            assert sys.stderr.__class__.__name__ == "_UpdateOutputStream"
+            assert getattr(sys.stdout, "_log", None) is state["log_file"]
+            assert getattr(sys.stderr, "_log", None) is state["log_file"]
             assert state["log_file"] is not None
 
             sys.stdout.write("checking mirror\n")

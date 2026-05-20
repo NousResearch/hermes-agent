@@ -1,0 +1,36 @@
+{
+  "scenario": "issue-155-historical-duplicate-review-children",
+  "root": {
+    "title": "【#155】普通任务 evidence manifest 与四阶段合同模板",
+    "body": "GitHub issue: https://github.com/GTZhou/TianGongKaiWu/issues/155\nreview_scope_key: 155\naudit_scope: 155",
+    "assignee": "jiangzuodajiang"
+  },
+  "children": [
+    {
+      "title": "审计｜#155 evidence manifest review child A",
+      "body": "GitHub issue: https://github.com/GTZhou/TianGongKaiWu/issues/155\nPR: https://github.com/GTZhou/TianGongKaiWu/pull/160\nhead_sha: issue155head\nreview_scope_key: 155\naudit_scope: 155",
+      "assignee": "yushidafu",
+      "status_class": "unrun"
+    },
+    {
+      "title": "审计｜#155 evidence manifest review child B",
+      "body": "GitHub issue: https://github.com/GTZhou/TianGongKaiWu/issues/155\nPR: https://github.com/GTZhou/TianGongKaiWu/pull/160\nhead_sha: issue155head\nreview_scope_key: 155\naudit_scope: 155",
+      "assignee": "yushidafu",
+      "status_class": "unrun"
+    }
+  ],
+  "expected": {
+    "duplicate_groups": 1,
+    "group_state": "unrun_duplicate",
+    "group_key": {
+      "issues": ["#155"],
+      "prs": ["PR#160"],
+      "head_shas": ["issue155head"],
+      "assignee": "yushidafu",
+      "review_scope_key": "155",
+      "audit_scope": "155",
+      "phase_scope": "155"
+    },
+    "dry_run_actions": ["keep_canonical_child", "safe_converge_unrun_duplicate"]
+  }
+}

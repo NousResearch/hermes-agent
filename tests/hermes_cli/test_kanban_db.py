@@ -620,6 +620,47 @@ def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypat
     assert not res.spawned
 
 
+def test_dispatch_configured_nonspawnable_profile_skips_even_when_profile_exists(
+    kanban_home, monkeypatch
+):
+    """User-facing Hermes profiles can be excluded from auto-spawn by config."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="for-architect", assignee="architect")
+        res = kb.dispatch_once(
+            conn,
+            dry_run=True,
+            cfg={"kanban": {"non_spawnable_profiles": ["architect"]}},
+        )
+    assert t in res.skipped_nonspawnable
+    assert t not in res.skipped_unassigned
+    assert not res.spawned
+
+
+def test_dispatch_existing_profile_spawns_when_not_configured_nonspawnable(
+    kanban_home, monkeypatch
+):
+    """Config skip is opt-in; missing profiles still use the legacy skip path."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(
+        profiles, "profile_exists", lambda name: name == "architect"
+    )
+    with kb.connect() as conn:
+        architect = kb.create_task(conn, title="real-profile", assignee="architect")
+        missing = kb.create_task(conn, title="missing-profile", assignee="orion-cc")
+        res = kb.dispatch_once(
+            conn,
+            dry_run=True,
+            cfg={"kanban": {"non_spawnable_profiles": []}},
+        )
+    assert {s[0] for s in res.spawned} == {architect}
+    assert missing in res.skipped_nonspawnable
+    assert architect not in res.skipped_nonspawnable
+
+
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
     """``has_spawnable_ready`` returns False when every ready task is
     assigned to a control-plane lane — used by gateway/CLI dispatchers

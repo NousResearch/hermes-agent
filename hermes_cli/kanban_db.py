@@ -3631,7 +3631,41 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
-def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+def _configured_non_spawnable_profiles(cfg: Optional[dict[str, Any]]) -> set[str]:
+    """Return profile names that config marks as dispatcher non-spawnable.
+
+    The canonical shape is::
+
+        kanban:
+          non_spawnable_profiles: ["architect"]
+
+    Be forgiving for hand-edited YAML / env-expanded values: a comma-separated
+    string is split, tuples/sets are accepted, and malformed values fall back
+    to an empty set for backward compatibility.
+    """
+    kanban_cfg: Any = {}
+    if isinstance(cfg, dict):
+        maybe_kanban = cfg.get("kanban", {}) or {}
+        if isinstance(maybe_kanban, dict):
+            kanban_cfg = maybe_kanban
+    raw = kanban_cfg.get("non_spawnable_profiles") or []
+    if isinstance(raw, str):
+        values: Iterable[Any] = re.split(r"[,\n]", raw)
+    elif isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        values = []
+    out: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        name = str(value).strip()
+        if name:
+            out.add(name)
+    return out
+
+
+def has_spawnable_ready(conn: sqlite3.Connection, *, cfg: Optional[dict[str, Any]] = None) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
 
@@ -3645,6 +3679,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     importable (e.g. partial install) — preserves the old behavior so
     the warning still fires in degraded environments.
     """
+    non_spawnable_profiles = _configured_non_spawnable_profiles(cfg)
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
@@ -3658,6 +3693,8 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
     for row in rows:
+        if row["assignee"] in non_spawnable_profiles:
+            continue
         if profile_exists(row["assignee"]):
             return True
     return False
@@ -3672,6 +3709,7 @@ def dispatch_once(
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     board: Optional[str] = None,
+    cfg: Optional[dict[str, Any]] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -3699,6 +3737,9 @@ def dispatch_once(
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
+    ``cfg`` may contain ``kanban.non_spawnable_profiles`` for real Hermes
+    profiles that should never be auto-spawned (for example, user-facing
+    ``architect`` profiles).
     """
     # Reap zombie children from previously spawned workers.
     # The gateway-embedded dispatcher is the parent of every worker spawned
@@ -3734,6 +3775,7 @@ def dispatch_once(
             pass
 
     result = DispatchResult()
+    non_spawnable_profiles = _configured_non_spawnable_profiles(cfg)
     result.reclaimed = release_stale_claims(conn)
     result.crashed = detect_crashed_workers(conn)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
@@ -3773,6 +3815,9 @@ def dispatch_once(
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        if row["assignee"] in non_spawnable_profiles:
+            result.skipped_nonspawnable.append(row["id"])
             continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
@@ -4029,6 +4074,7 @@ def run_daemon(
     interval: float = 60.0,
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+    cfg: Optional[dict[str, Any]] = None,
     stop_event=None,
     on_tick=None,
 ) -> None:
@@ -4036,6 +4082,8 @@ def run_daemon(
 
     Calls :func:`dispatch_once` every ``interval`` seconds. Exits cleanly
     on SIGINT / SIGTERM so ``hermes kanban daemon`` is systemd-friendly.
+    ``cfg`` is passed through to each tick for dispatcher policy knobs such
+    as ``kanban.non_spawnable_profiles``.
     ``stop_event`` (a :class:`threading.Event`) and ``on_tick`` (a
     callable receiving the :class:`DispatchResult`) are test hooks.
     """
@@ -4066,6 +4114,7 @@ def run_daemon(
                     conn,
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
+                    cfg=cfg,
                 )
             if on_tick is not None:
                 try:

@@ -1658,13 +1658,26 @@ def _cmd_tail(args: argparse.Namespace) -> int:
         return 0
 
 
+def _load_dispatch_config() -> dict[str, Any]:
+    """Best-effort config load for dispatcher policy knobs."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
+    cfg = _load_dispatch_config()
     with kb.connect() as conn:
         res = kb.dispatch_once(
             conn,
             dry_run=args.dry_run,
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            cfg=cfg,
         )
     if getattr(args, "json", False):
         print(json.dumps({
@@ -1734,6 +1747,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "    kanban:\n"
             "      dispatch_in_gateway: true      # default\n"
             "      dispatch_interval_seconds: 60\n"
+            "      non_spawnable_profiles: [architect]  # user-facing profiles to skip\n"
             "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
             "\n"
             "Running both the gateway AND this standalone daemon will\n"
@@ -1747,6 +1761,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     # Make sure the DB exists before printing "started" so the user sees the
     # correct DB path and any init error surfaces immediately.
     kb.init_db()
+    cfg = _load_dispatch_config()
 
     pidfile = getattr(args, "pidfile", None)
     if pidfile:
@@ -1826,7 +1841,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         """
         try:
             with kb.connect() as conn:
-                return kb.has_spawnable_ready(conn)
+                return kb.has_spawnable_ready(conn, cfg=cfg)
         except Exception:
             return False
 
@@ -1835,6 +1850,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             interval=args.interval,
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            cfg=cfg,
             on_tick=_on_tick,
         )
     finally:

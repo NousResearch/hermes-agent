@@ -84,6 +84,15 @@ The shape every kanban worker takes today: the assignee is a profile name, the d
 
 When you create profiles for your fleet, choose names that match the *role* you want the orchestrator to route to. The orchestrator (when there is one) discovers your profile names via `hermes profile list` — there's no fixed roster the system assumes (see the [`kanban-orchestrator`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-orchestrator/SKILL.md) skill for the orchestrator side of the contract).
 
+Some real Hermes profiles are intentionally **not** worker lanes even though they exist on disk. For example, an `architect` profile may be a user-facing Telegram agent that should discuss and route work but never be launched headlessly by the kanban dispatcher. Add those profiles to config so ready cards assigned to them are left in the `skipped_nonspawnable` bucket instead of spawned or failure-counted:
+
+```yaml
+kanban:
+  non_spawnable_profiles: ["architect"]
+```
+
+Omit the key to keep the historical behavior: any existing profile name remains spawnable, while truly missing profile names are still skipped as non-spawnable.
+
 ### Orchestrator profile lane
 
 A specialisation of the profile lane: an orchestrator is a Hermes profile whose toolset includes `kanban` but excludes `terminal` / `file` / `code` / `web` for implementation. Its job is decomposing a high-level goal into child tasks via `kanban_create` + `kanban_link` and stepping back. The orchestrator skill encodes the anti-temptation rules.

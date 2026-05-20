@@ -4564,6 +4564,7 @@ class GatewayRunner:
                     board=slug,
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
+                    cfg=cfg,
                 )
             except Exception:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
@@ -4613,7 +4614,7 @@ class GatewayRunner:
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
-                    if _kb.has_spawnable_ready(conn):
+                    if _kb.has_spawnable_ready(conn, cfg=cfg):
                         return True
                 except Exception:
                     continue

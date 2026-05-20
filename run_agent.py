@@ -1368,6 +1368,18 @@ class AIAgent:
           * xAI OAuth: "do not have an active Grok subscription" /
             "out of available resources" / "does not have permission" + "grok"
 
+        Disambiguator for xAI (#29344): the same ``code`` text ("The caller
+        does not have permission to execute the specified operation") is
+        returned for BOTH an unsubscribed account AND a stale OAuth access
+        token.  xAI ships an explicit signal in the ``error`` field that
+        tells the two apart: a ``[WKE=unauthenticated:...]`` suffix (and/or
+        the ``OAuth2 access token could not be validated`` phrasing) means
+        the credentials failed validation — that's recoverable by refreshing
+        the token, NOT by surfacing an entitlement message.  When either
+        signal is present we return False eagerly so the credential-pool
+        refresh path runs, letting long-running TUI sessions recover from
+        stale tokens without an exit/reopen cycle.
+
         Extend here for new providers as we discover them (Anthropic's
         Claude Max OAuth entitlement errors look distinct enough today that
         the existing 1M-context-beta branch handles them; revisit if other
@@ -1377,10 +1389,28 @@ class AIAgent:
             return False
         if not isinstance(error_context, dict):
             return False
+        # Build a single lowercase haystack covering every field shape the
+        # body might land in.  ``_extract_api_error_context`` normalises to
+        # ``message``/``reason``, but callers (and the test suite) may also
+        # hand us the raw body with ``code``/``error`` keys; cover both so
+        # the WKE disambiguator below fires regardless of entry point.
         message = str(error_context.get("message") or "").lower()
         reason = str(error_context.get("reason") or "").lower()
-        haystack = f"{message} {reason}"
+        code = str(error_context.get("code") or "").lower()
+        err = str(error_context.get("error") or "").lower()
+        haystack = f"{message} {reason} {code} {err}"
         if not haystack.strip():
+            return False
+        # xAI's authoritative disambiguator for "stale token" vs
+        # "unsubscribed account".  Both conditions share the same
+        # permission-denied ``code`` text; only one carries this suffix.
+        # Bail out before the entitlement keyword checks so a stale OAuth
+        # token routes through the credential-refresh path instead of the
+        # surface-error-as-entitlement path.  See #29344 for the long-
+        # running TUI failure mode this closes.
+        if "[wke=unauthenticated:" in haystack:
+            return False
+        if "oauth2 access token could not be validated" in haystack:
             return False
         if "do not have an active grok subscription" in haystack:
             return True

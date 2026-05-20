@@ -56,3 +56,142 @@ def test_resolve_named_custom_runtime_honors_explicit_base_url(monkeypatch):
     assert result["provider"] == "custom"
     assert result["api_key"] == "test-api-key"
     assert result["source"] == "direct-alias"
+
+
+# ---------------------------------------------------------------------------
+# `hermes chat -m <direct-alias>` resolves to the underlying runtime
+# Covers #16767 (chat -m <alias>) and #18954 (custom-provider alias resolution)
+# ---------------------------------------------------------------------------
+
+
+class TestChatDispatchDirectAliasResolution:
+    """Before this fix, `hermes chat -m <alias-listed-in-DIRECT_ALIASES>`
+    handed the raw alias to AIAgent and the agent emitted "unknown
+    provider/model" because the alias was never translated to its
+    underlying (provider, base_url, model_id, api_mode) triple."""
+
+    def test_alias_resolution_swaps_in_runtime(self, monkeypatch):
+        """Resolving an alias must update provider, model, base_url, and
+        api_mode in the runtime dict — without mutating the caller's dict."""
+        from cli import _resolve_direct_alias_for_chat, _apply_resolved_alias
+
+        # Stub out resolve_alias to return a known direct hit
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setitem(
+            ms.DIRECT_ALIASES,
+            "fake-alias",
+            ms.DirectAlias(
+                model="vendor/full-model-id:v2",
+                provider="custom",
+                base_url="http://192.0.2.10:8080/v1",
+            ),
+        )
+        monkeypatch.setattr(
+            ms,
+            "resolve_alias",
+            lambda raw, prov: (
+                "custom",
+                "vendor/full-model-id:v2",
+                "fake-alias",
+            ),
+        )
+
+        resolved = _resolve_direct_alias_for_chat("fake-alias", "")
+        assert resolved == {
+            "provider": "custom",
+            "model": "vendor/full-model-id:v2",
+            "base_url": "http://192.0.2.10:8080/v1",
+        }
+
+        original_runtime = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": None,
+            "api_mode": "responses",
+        }
+        effective_model, new_runtime = _apply_resolved_alias(
+            resolved, original_runtime
+        )
+
+        # Caller's dict must not be mutated:
+        assert original_runtime["provider"] == "openrouter"
+        assert original_runtime["base_url"] == "https://openrouter.ai/api/v1"
+
+        # Resolved runtime points at the alias target:
+        assert effective_model == "vendor/full-model-id:v2"
+        assert new_runtime["provider"] == "custom"
+        assert new_runtime["base_url"] == "http://192.0.2.10:8080/v1"
+        # Local/local-style targets get a placeholder key so the OpenAI SDK
+        # doesn't refuse to send the request:
+        assert new_runtime["api_key"] == "no-key-required"
+        # api_mode is recomputed from the resolved provider/base_url:
+        assert new_runtime["api_mode"]
+
+    def test_unknown_alias_returns_none(self, monkeypatch):
+        """Non-alias inputs must fall through to the generic dispatch path."""
+        from cli import _resolve_direct_alias_for_chat
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr(ms, "resolve_alias", lambda raw, prov: None)
+        assert _resolve_direct_alias_for_chat("not-an-alias", "") is None
+
+    def test_existing_api_key_is_preserved(self, monkeypatch):
+        """If the caller already passed an api_key (e.g. custom provider
+        with credentials), the resolver must not clobber it with the
+        ``no-key-required`` placeholder."""
+        from cli import _apply_resolved_alias
+
+        resolved = {
+            "provider": "custom",
+            "model": "vendor/x:v1",
+            "base_url": "http://192.0.2.10:8080/v1",
+        }
+        original = {
+            "provider": "custom",
+            "base_url": "http://old/",
+            "api_key": "real-key",
+            "api_mode": "",
+        }
+        _, new_runtime = _apply_resolved_alias(resolved, original)
+        assert new_runtime["api_key"] == "real-key"
+
+    def test_alias_without_base_url_does_not_set_one(self, monkeypatch):
+        """Catalog-only aliases (no DirectAlias.base_url) must not blank
+        out an existing base_url."""
+        from cli import _apply_resolved_alias
+
+        resolved = {
+            "provider": "openrouter",
+            "model": "vendor/full-id",
+            "base_url": "",
+        }
+        original = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-...",
+            "api_mode": "responses",
+        }
+        _, new_runtime = _apply_resolved_alias(resolved, original)
+        assert new_runtime["base_url"] == "https://openrouter.ai/api/v1"
+
+    def test_missing_model_switch_module_returns_none(self, monkeypatch):
+        """Trimmed embedded installs may omit hermes_cli.model_switch;
+        the resolver must degrade gracefully so chat dispatch falls
+        through to the generic provider/base_url path."""
+        from cli import _resolve_direct_alias_for_chat
+        import importlib
+        import sys
+
+        # Pretend the module isn't importable — the resolver catches
+        # ImportError specifically (not all exceptions).
+        sys.modules.pop("hermes_cli.model_switch", None)
+        real_import = importlib.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "hermes_cli.model_switch":
+                raise ImportError("trimmed install")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", fake_import)
+        assert _resolve_direct_alias_for_chat("any-alias", "") is None

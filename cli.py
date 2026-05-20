@@ -743,6 +743,70 @@ _cleanup_done = False
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
 
+
+def _resolve_direct_alias_for_chat(
+    effective_model: str,
+    current_provider: str,
+) -> Optional[Dict[str, Any]]:
+    """Resolve a model id through DIRECT_ALIASES for `hermes chat` dispatch.
+
+    Returns a dict with ``provider``, ``model``, ``base_url`` (may be ``""``)
+    on a hit, or ``None`` if the input isn't a known alias / resolves to a
+    catalog-only entry without a direct base_url. Returns ``None`` (rather
+    than raising) when ``hermes_cli.model_switch`` is unavailable — the
+    module is part of the standard install but trimmed embedded builds may
+    omit it; in that case the caller falls through to the generic
+    provider/base_url path.
+
+    See regression #16767 (chat -m <alias>) and #18954 (custom-provider
+    alias resolution) for the motivating bugs.
+    """
+    try:
+        from hermes_cli.model_switch import DIRECT_ALIASES, resolve_alias
+    except ImportError:
+        return None
+
+    alias_result = resolve_alias(effective_model, current_provider)
+    if alias_result is None:
+        return None
+
+    resolved_provider, resolved_model, resolved_alias = alias_result
+    direct_alias = DIRECT_ALIASES.get(resolved_alias)
+    return {
+        "provider": resolved_provider,
+        "model": resolved_model,
+        "base_url": (
+            getattr(direct_alias, "base_url", "") if direct_alias is not None else ""
+        ),
+    }
+
+
+def _apply_resolved_alias(
+    resolved: Dict[str, Any],
+    runtime: Dict[str, Any],
+) -> tuple[str, Dict[str, Any]]:
+    """Fold a :func:`_resolve_direct_alias_for_chat` result into a runtime dict.
+
+    Returns ``(effective_model, updated_runtime)``. Never mutates the input
+    runtime. Local direct-alias targets that don't require credentials get
+    ``api_key="no-key-required"`` so the OpenAI SDK doesn't refuse to send
+    requests; the api_mode is recomputed from the resolved provider/base_url.
+    """
+    from hermes_cli.providers import determine_api_mode
+
+    runtime = dict(runtime)
+    runtime["provider"] = resolved["provider"] or runtime.get("provider")
+    if resolved["base_url"]:
+        runtime["base_url"] = resolved["base_url"]
+        if not runtime.get("api_key"):
+            runtime["api_key"] = "no-key-required"
+    runtime["api_mode"] = determine_api_mode(
+        runtime.get("provider") or "",
+        runtime.get("base_url") or "",
+    )
+    return resolved["model"], runtime
+
+
 def _run_cleanup():
     """Run resource cleanup exactly once."""
     global _cleanup_done
@@ -4576,6 +4640,21 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            if effective_model:
+                resolved = _resolve_direct_alias_for_chat(
+                    effective_model,
+                    runtime.get("provider") or self.provider or "",
+                )
+                if resolved is not None:
+                    effective_model, runtime = _apply_resolved_alias(resolved, runtime)
+                    if model_override is None and runtime_override is None:
+                        # Persist the resolved triple on the CLI instance so
+                        # /status, /switch, and the next _init_agent call see
+                        # the post-resolution state rather than the raw alias.
+                        self.model = effective_model
+                        self.provider = runtime.get("provider")
+                        self.base_url = runtime.get("base_url")
+                        self.api_mode = runtime.get("api_mode")
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),

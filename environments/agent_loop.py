@@ -233,8 +233,8 @@ class HermesAgentLoop:
                 response = await self.server.chat_completion(**chat_kwargs)
             except Exception as e:
                 api_elapsed = _time.monotonic() - api_start
-                logger.error(
-                    "API call failed on turn %d (%.1fs): %s", turn + 1, api_elapsed, e
+                logger.exception(
+                    "API call failed on turn %d (%.1fs)", turn + 1, api_elapsed
                 )
                 return AgentResult(
                     messages=messages,

@@ -134,6 +134,34 @@ def test_recompute_ready_cascades_through_chain(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
+    """blocked tasks with all parents done should be promoted to ready."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(
+            conn, title="child", assignee="a", parents=[parent],
+        )
+        # Complete the parent
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, result="ok")
+        # Manually block the child (simulates a worker that failed
+        # after the parent finished)
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=5, "
+            "last_failure_error='persistent error' WHERE id=?",
+            (child,),
+        )
+        conn.commit()
+        assert kb.get_task(conn, child).status == "blocked"
+        # recompute_ready should promote blocked → ready and reset failures
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 1
+        task = kb.get_task(conn, child)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+
+
 def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
     with kb.connect() as conn:
         a = kb.create_task(conn, title="a")
@@ -156,6 +184,16 @@ def test_claim_once_wins_second_loses(kanban_home):
         assert first is not None and first.status == "running"
         second = kb.claim_task(conn, t, claimer="host:2")
         assert second is None
+
+
+def test_claim_uses_env_default_ttl(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_TTL_SECONDS", "3600")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        kb.claim_task(conn, t, claimer="host:1")
+        expires = kb.get_task(conn, t).claim_expires
+    assert expires is not None
+    assert expires > int(time.time()) + 3000
 
 
 def test_claim_fails_on_non_ready(kanban_home):
@@ -239,6 +277,33 @@ def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
         assert "reclaimed" not in kinds
 
 
+def test_stale_claim_with_live_pid_uses_env_ttl_override(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_TTL_SECONDS", "3600")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 60, t),
+        )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 0
+
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.claim_expires is not None
+        assert task.claim_expires > int(time.time()) + 3000
+
+
 def test_stale_claim_reclaim_event_records_diagnostic_payload(
     kanban_home, monkeypatch,
 ):
@@ -275,6 +340,68 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["last_heartbeat_at"] == hb_at
         assert payload["worker_pid"] == 12345
         assert payload["host_local"] is True
+
+
+def test_detect_crashed_workers_systemic_failure_fast_block(
+    kanban_home, monkeypatch,
+):
+    """When many tasks crash with the same error, trip the breaker faster."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        task_ids = []
+        for i in range(4):
+            tid = kb.create_task(conn, title=f"task-{i}", assignee="a")
+            host = _kb._claimer_id().split(":", 1)[0]
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=? WHERE id=?",
+                (90000 + i, f"{host}:w{i}", tid),
+            )
+            task_ids.append(tid)
+        conn.commit()
+
+        crashed = kb.detect_crashed_workers(conn)
+        assert len(crashed) == 4
+
+        for tid in task_ids:
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked", (
+                f"task {tid} should be blocked (systemic), got {task.status}"
+            )
+
+
+def test_detect_crashed_workers_isolated_failure_normal_retry(
+    kanban_home, monkeypatch,
+):
+    """Below the systemic threshold, tasks retain normal retry budget."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        task_ids = []
+        for i in range(2):
+            tid = kb.create_task(conn, title=f"iso-{i}", assignee="a")
+            host = _kb._claimer_id().split(":", 1)[0]
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=? WHERE id=?",
+                (80000 + i, f"{host}:w{i}", tid),
+            )
+            task_ids.append(tid)
+        conn.commit()
+
+        crashed = kb.detect_crashed_workers(conn)
+        assert len(crashed) == 2
+
+        for tid in task_ids:
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"task {tid} should stay ready (isolated), got {task.status}"
+            )
 
 
 def test_max_runtime_uses_current_run_start_after_retry(kanban_home):
@@ -337,6 +464,20 @@ def test_heartbeat_extends_claim(kanban_home):
         assert new > int(time.time()) + 3000
 
 
+def test_heartbeat_uses_env_default_ttl(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_TTL_SECONDS", "3600")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        claimer = "host:hb"
+        kb.claim_task(conn, t, claimer=claimer, ttl_seconds=60)
+        conn.execute("UPDATE tasks SET claim_expires = ? WHERE id = ?", (0, t))
+        ok = kb.heartbeat_claim(conn, t, claimer=claimer)
+        assert ok
+        new = kb.get_task(conn, t).claim_expires
+        assert new is not None
+        assert new > int(time.time()) + 3000
+
+
 def test_concurrent_claims_only_one_wins(kanban_home):
     """Fire N threads claiming the same task; exactly one must win."""
     with kb.connect() as conn:
@@ -376,6 +517,26 @@ def test_block_then_unblock(kanban_home):
         assert kb.get_task(conn, t).status == "blocked"
         assert kb.unblock_task(conn, t)
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_unblock_resets_failure_counters(kanban_home):
+    """unblock_task must reset consecutive_failures and last_failure_error."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        kb.claim_task(conn, t)
+        assert kb.block_task(conn, t, reason="need input")
+        # Simulate accumulated failures from the circuit breaker
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 5, "
+            "last_failure_error = 'test error' WHERE id = ?",
+            (t,),
+        )
+        conn.commit()
+        assert kb.unblock_task(conn, t)
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +693,70 @@ def test_archive_hides_from_default_list(kanban_home):
         assert kb.archive_task(conn, t)
         assert len(kb.list_tasks(conn)) == 0
         assert len(kb.list_tasks(conn, include_archived=True)) == 1
+
+
+def test_delete_archived_task_removes_related_rows(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        tid = kb.create_task(conn, title="child", parents=[parent], assignee="worker")
+        kb.add_comment(conn, tid, "user", "cleanup me")
+        kb.claim_task(conn, tid)
+        kb.complete_task(conn, tid, result="done")
+        assert kb.archive_task(conn, tid)
+        conn.execute(
+            "INSERT INTO kanban_notify_subs(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id) "
+            "VALUES (?, 'telegram', '123', '', 'u', 0, 0)",
+            (tid,),
+        )
+        conn.commit()
+
+        assert kb.delete_archived_task(conn, tid) is True
+        assert kb.get_task(conn, tid) is None
+        assert conn.execute("SELECT COUNT(*) FROM task_links WHERE child_id = ? OR parent_id = ?", (tid, tid)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_comments WHERE task_id = ?", (tid,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id = ?", (tid,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
+
+
+def test_delete_archived_task_rejects_non_archived_rows(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="live")
+        assert kb.delete_archived_task(conn, tid) is False
+        assert kb.get_task(conn, tid) is not None
+
+
+def test_list_tasks_order_by(kanban_home):
+    with kb.connect() as conn:
+        # Create tasks with different titles and priorities
+        t_a = kb.create_task(conn, title="alpha", priority=1)
+        t_b = kb.create_task(conn, title="beta", priority=2)
+        t_c = kb.create_task(conn, title="gamma", priority=1)
+
+        # Default sort: priority DESC, created ASC
+        default = kb.list_tasks(conn)
+        assert [t.id for t in default] == [t_b, t_a, t_c]
+
+        # Sort by title ASC
+        by_title = kb.list_tasks(conn, order_by="title")
+        assert [t.id for t in by_title] == [t_a, t_b, t_c]
+
+        # Sort by assignee
+        kb.assign_task(conn, t_a, "alice")
+        kb.assign_task(conn, t_b, "bob")
+        kb.assign_task(conn, t_c, "alice")
+        by_assignee = kb.list_tasks(conn, order_by="assignee")
+        # alice's tasks first (alphabetically), then bob's
+        assignees = [t.assignee for t in by_assignee]
+        assert assignees[:2] == ["alice", "alice"]
+        assert assignees[2] == "bob"
+
+        # Invalid sort order raises ValueError
+        try:
+            kb.list_tasks(conn, order_by="bogus")
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert "order_by must be one of" in str(e)
 
 
 # ---------------------------------------------------------------------------
@@ -808,6 +1033,76 @@ def test_tenant_propagates_to_events(kanban_home):
     # The "created" event should have tenant in its payload.
     created = [e for e in events if e.kind == "created"]
     assert created and created[0].payload.get("tenant") == "biz-a"
+
+
+# ---------------------------------------------------------------------------
+# Originating session id (ACP propagation)
+# ---------------------------------------------------------------------------
+
+def test_create_task_stamps_session_id(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="from chat", session_id="acp-sess-123"
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.session_id == "acp-sess-123"
+
+
+def test_create_task_session_id_defaults_to_none(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cli-created")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.session_id is None
+
+
+def test_session_id_filters_listings(kanban_home):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="s1-a", session_id="sess-1")
+        kb.create_task(conn, title="s1-b", session_id="sess-1")
+        kb.create_task(conn, title="s2-a", session_id="sess-2")
+        kb.create_task(conn, title="cli-only")  # no session
+        sess1 = kb.list_tasks(conn, session_id="sess-1")
+        sess2 = kb.list_tasks(conn, session_id="sess-2")
+        unscoped = kb.list_tasks(conn)
+    assert sorted(t.title for t in sess1) == ["s1-a", "s1-b"]
+    assert [t.title for t in sess2] == ["s2-a"]
+    # Unscoped list still returns everything (legacy NULL rows visible).
+    assert len(unscoped) == 4
+
+
+def test_session_id_index_exists(kanban_home):
+    """The migration creates an index on session_id for cheap per-session
+    list queries on busy boards. Without it, a chat-scoped poll would
+    full-scan the tasks table."""
+    with kb.connect() as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='tasks'"
+        ).fetchall()
+    names = {r["name"] for r in rows}
+    assert "idx_tasks_session_id" in names
+
+
+def test_session_id_compose_with_tenant_filter(kanban_home):
+    """A client may want both `tenant=scarf:foo` AND `session=acp-x` —
+    the filters must AND, not replace."""
+    with kb.connect() as conn:
+        kb.create_task(
+            conn, title="match", tenant="scarf:foo", session_id="acp-x"
+        )
+        kb.create_task(
+            conn, title="wrong-tenant", tenant="other", session_id="acp-x"
+        )
+        kb.create_task(
+            conn, title="wrong-session",
+            tenant="scarf:foo", session_id="acp-y",
+        )
+        rows = kb.list_tasks(
+            conn, tenant="scarf:foo", session_id="acp-x"
+        )
+    assert [t.title for t in rows] == ["match"]
 
 
 # ---------------------------------------------------------------------------
@@ -1247,6 +1542,28 @@ def test_unlink_tasks_triggers_recompute_ready(kanban_home):
             "child should promote to ready immediately after unlink_tasks "
             "removes its last blocking dependency"
         )
+
+
+def test_archive_task_triggers_recompute_ready_for_dependents(kanban_home):
+    """Archiving a parent must immediately unblock its children.
+
+    ``recompute_ready()`` already treats ``archived`` parents as satisfied
+    dependencies, just like ``done``. Regression: ``archive_task()`` updated
+    the parent row but never ran the ready-promotion pass, so children stayed
+    stuck in ``todo`` until a later dispatcher tick.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="obsolete parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.archive_task(conn, parent) is True
+
+        assert kb.get_task(conn, child).status == "ready", (
+            "child should promote to ready immediately after its last blocking "
+            "parent is archived"
+        )
+
 # ---------------------------------------------------------------------------
 # _add_column_if_missing / _migrate_add_optional_columns idempotency (#21708)
 # ---------------------------------------------------------------------------
@@ -1310,7 +1627,8 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
             workflow_template_id TEXT,
             current_step_key TEXT,
             skills TEXT,
-            max_retries INTEGER
+            max_retries INTEGER,
+            session_id TEXT
         )
         """
     )
@@ -1350,9 +1668,111 @@ def test_resolve_hermes_argv_prefers_path_shim(monkeypatch):
     import shutil
     import hermes_cli.kanban_db as kb
 
+    monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/hermes")
     argv = kb._resolve_hermes_argv()
     assert argv == ["/usr/local/bin/hermes"]
+
+
+def test_resolve_hermes_argv_absolutizes_relative_exe_shim(monkeypatch, tmp_path):
+    """A relative executable override must not remain workspace-cwd-dependent."""
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_BIN", ".\\hermes.exe")
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+
+    assert kb._resolve_hermes_argv() == [os.path.abspath(".\\hermes.exe")]
+
+
+def test_resolve_hermes_argv_avoids_implicit_windows_batch_shim(monkeypatch, tmp_path):
+    """Implicit .cmd/.bat shims use the module fallback, not batch argv[0]."""
+    import sys
+    import hermes_cli.kanban_db as kb
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "hermes.CMD").write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("PATHEXT", ".CMD")
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+
+    assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+
+def test_resolve_hermes_argv_honors_hermes_bin_path_override(monkeypatch, tmp_path):
+    """An explicit path-like HERMES_BIN lets service managers pin the executable."""
+    import shutil
+    import hermes_cli.kanban_db as kb
+
+    shim = tmp_path / "bin" / "hermes"
+    shim.parent.mkdir()
+    shim.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_BIN", str(shim))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    assert kb._resolve_hermes_argv() == [str(shim)]
+
+
+def test_resolve_hermes_argv_hermes_bin_bare_name_uses_path(monkeypatch, tmp_path):
+    """Bare HERMES_BIN values keep PATH semantics instead of cwd shadowing."""
+    import stat
+    import hermes_cli.kanban_db as kb
+
+    cwd_hermes = tmp_path / "hermes"
+    cwd_hermes.write_text("wrong\n", encoding="utf-8")
+    cwd_hermes.chmod(cwd_hermes.stat().st_mode | stat.S_IXUSR)
+    path_hermes = tmp_path / "bin" / "hermes"
+    path_hermes.parent.mkdir()
+    path_hermes.write_text("right\n", encoding="utf-8")
+    path_hermes.chmod(path_hermes.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", str(path_hermes.parent))
+    monkeypatch.setenv("HERMES_BIN", "hermes")
+
+    assert kb._resolve_hermes_argv() == [str(path_hermes)]
+
+
+def test_resolve_hermes_argv_hermes_bin_bare_name_ignores_cwd(monkeypatch, tmp_path):
+    """Bare HERMES_BIN does not accept current-directory shadow executables."""
+    import sys
+    import hermes_cli.kanban_db as kb
+
+    (tmp_path / "hermes.exe").write_text("wrong\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("HERMES_BIN", "hermes")
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+
+    assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+
+def test_resolve_hermes_argv_hermes_bin_bare_cmd_uses_module_fallback(monkeypatch, tmp_path):
+    """A PATH-resolved HERMES_BIN batch shim is not used as worker argv[0]."""
+    import sys
+    import hermes_cli.kanban_db as kb
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "hermes.CMD").write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("PATHEXT", ".CMD")
+    monkeypatch.setenv("HERMES_BIN", "hermes")
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+
+    assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+
+def test_resolve_hermes_argv_hermes_bin_unresolved_bare_name_falls_back(monkeypatch):
+    """Unresolved HERMES_BIN command names do not delegate cwd search to Popen."""
+    import sys
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("HERMES_BIN", "hermes")
+
+    assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
 
 
 def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeypatch):
@@ -1367,6 +1787,7 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
     import sys
     import hermes_cli.kanban_db as kb
 
+    monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: None)
     argv = kb._resolve_hermes_argv()
     assert argv == [sys.executable, "-m", "hermes_cli.main"]
@@ -1387,8 +1808,10 @@ def test_resolve_hermes_argv_module_actually_runs():
     import shutil
     import unittest.mock as mock
 
-    with mock.patch.object(shutil, "which", return_value=None):
-        argv = kb._resolve_hermes_argv()
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HERMES_BIN", None)
+        with mock.patch.object(shutil, "which", return_value=None):
+            argv = kb._resolve_hermes_argv()
     r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
@@ -1530,3 +1953,105 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
         conn.close()
     age = kb.task_age(task)
     assert age["created_age_seconds"] is None
+
+
+# ---------------------------------------------------------------------------
+# Board-level default_workdir
+# ---------------------------------------------------------------------------
+
+
+def test_create_task_without_workspace_inherits_board_default_workdir(kanban_home, monkeypatch):
+    """Board with default_workdir → create_task without workspace_path → inherits default."""
+    default_wd = "/home/user/project"
+    kb.create_board("work-proj", default_workdir=default_wd)
+
+    with kb.connect(board="work-proj") as conn:
+        tid = kb.create_task(conn, title="inherited", board="work-proj")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.workspace_path == default_wd
+
+
+def test_create_task_without_workspace_no_default_stays_none(kanban_home):
+    """Board without default_workdir → create_task without workspace_path → stays None."""
+    kb.create_board("empty-board")
+
+    with kb.connect(board="empty-board") as conn:
+        tid = kb.create_task(conn, title="none", board="empty-board")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.workspace_path is None
+
+
+def test_create_task_with_explicit_workspace_ignores_board_default(kanban_home):
+    """create_task with explicit workspace_path → ignores board default."""
+    kb.create_board("custom-ws-board", default_workdir="/board/default")
+
+    explicit = "/my/explicit/path"
+    with kb.connect(board="custom-ws-board") as conn:
+        tid = kb.create_task(conn, title="explicit", workspace_path=explicit, board="custom-ws-board")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.workspace_path == explicit
+    assert t.workspace_path != "/board/default"
+
+
+# ---------------------------------------------------------------------------
+# dispatch_once — max_in_progress
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_max_in_progress_skips_when_at_limit(kanban_home, all_assignees_spawnable):
+    """When max_in_progress=N and N tasks are already running, spawn nothing."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        # Two running tasks.
+        t1 = kb.create_task(conn, title="a", assignee="alice")
+        t2 = kb.create_task(conn, title="b", assignee="bob")
+        kb.claim_task(conn, t1)
+        kb.claim_task(conn, t2)
+        # Two more ready to spawn — but cap is 2 so none should fire.
+        kb.create_task(conn, title="c", assignee="bob")
+        kb.create_task(conn, title="d", assignee="alice")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=2)
+
+    assert len(spawns) == 0, f"expected 0 spawns, got {len(spawns)}"
+
+
+def test_dispatch_max_in_progress_spawns_up_to_cap(kanban_home, all_assignees_spawnable):
+    """When max_in_progress=3 and only 1 is running, spawn up to 2 more."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        # One running task.
+        t1 = kb.create_task(conn, title="a", assignee="alice")
+        kb.claim_task(conn, t1)
+        # Three ready tasks — only the first 2 should be spawned.
+        kb.create_task(conn, title="b", assignee="bob")
+        kb.create_task(conn, title="c", assignee="bob")
+        kb.create_task(conn, title="d", assignee="bob")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=3)
+
+    assert len(spawns) == 2, f"expected 2 spawns (cap 3 - 1 running), got {len(spawns)}"
+
+
+def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_spawnable):
+    """Default None means no limit — all ready tasks are spawned."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        for title in ["a", "b", "c", "d"]:
+            kb.create_task(conn, title=title, assignee="alice")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=None)
+
+    assert len(spawns) == 4, f"expected 4 spawns (unlimited), got {len(spawns)}"

@@ -761,6 +761,37 @@ def test_cli_archive_bulk(kanban_home):
         conn.close()
 
 
+def test_cli_archive_rm_deletes_archived_tasks(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="gone")
+        assert kb.archive_task(conn, tid)
+    finally:
+        conn.close()
+    out = run_slash(f"archive --rm {tid}")
+    assert f"Deleted {tid}" in out
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid) is None
+    finally:
+        conn.close()
+
+
+def test_cli_archive_rm_rejects_live_tasks(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="still-live")
+    finally:
+        conn.close()
+    out = run_slash(f"archive --rm {tid}")
+    assert "cannot delete" in out.lower()
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid) is not None
+    finally:
+        conn.close()
+
+
 def test_cli_unblock_bulk(kanban_home):
     conn = kb.connect()
     try:
@@ -2699,6 +2730,10 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     assert cmd[idx + 1] == "kanban-worker", (
         f"expected 'kanban-worker', got {cmd[idx + 1]!r}"
     )
+    assert "--accept-hooks" in cmd, f"spawn argv missing --accept-hooks: {cmd}"
+    assert cmd.index("--accept-hooks") < cmd.index("chat"), (
+        f"--accept-hooks must come before 'chat' in argv: {cmd}"
+    )
     # Assignee + task env are still present
     assert "some-profile" in cmd
     env = captured["env"]
@@ -3559,8 +3594,6 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
     )
 
 
-
-
 def test_gateway_kanban_scoped_board_slugs_default_and_explicit(tmp_path, monkeypatch):
     from gateway.run import GatewayRunner
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "nagaklas"))
@@ -3588,6 +3621,85 @@ def test_gateway_kanban_scoped_board_slugs_star_lists_all(tmp_path, monkeypatch)
     assert GatewayRunner._kanban_scoped_board_slugs(
         {"dispatch_boards": ["*"]}, "dispatch_boards", kb
     ) == ["default", "alpha", "beta"]
+
+
+def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
+    monkeypatch, tmp_path, caplog
+):
+    """Corrupt board DBs log one actionable error and stop retrying per tick."""
+    import asyncio
+    import logging
+    import sqlite3
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    corrupt_db = tmp_path / "kanban.db"
+    corrupt_db.write_text("not sqlite", encoding="utf-8")
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(
+        _kb,
+        "read_board_metadata",
+        lambda slug: {"slug": slug},
+    )
+    monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: corrupt_db)
+
+    calls = {"connect": 0, "to_thread": 0}
+
+    def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        raise sqlite3.DatabaseError("file is not a database")
+
+    async def _to_thread(fn, *args, **kwargs):
+        calls["to_thread"] += 1
+        result = fn(*args, **kwargs)
+        if calls["to_thread"] >= 4:
+            runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.ERROR, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("not a valid SQLite database" in msg for msg in messages) == 1
+    assert not any("tick failed on board" in msg for msg in messages)
+    assert not any(record.exc_info for record in caplog.records)
+    # First tick connect + two ready-queue probes. The second dispatch tick
+    # skips connect because the corrupt board fingerprint is disabled.
+    assert calls["connect"] == 3
+
+
 
 # ---------------------------------------------------------------------------
 # Hallucination gate (created_cards verify + prose scan)

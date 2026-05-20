@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_swarm as ks
+from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +73,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "session_id": t.session_id,
     }
 
 
@@ -229,6 +232,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Optional hex color (e.g. '#8b5cf6') for the dashboard")
     b_create.add_argument("--switch", action="store_true",
                           help="Switch to the new board after creating it")
+    b_create.add_argument("--default-workdir", default=None,
+                          help="Default workspace path for tasks created on this board")
 
     b_rm = boards_sub.add_parser(
         "rm", aliases=["remove", "delete"],
@@ -256,6 +261,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     b_rename.add_argument("slug")
     b_rename.add_argument("name", help="New display name")
+
+    b_set_wd = boards_sub.add_parser(
+        "set-default-workdir",
+        help="Set the default workspace path for tasks on a board",
+    )
+    b_set_wd.add_argument("slug")
+    b_set_wd.add_argument("path", nargs="?", default=None,
+                          help="Absolute path to use as default workdir. Omit to clear.")
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
@@ -294,7 +307,34 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--initial-status",
+                          choices=sorted(kb.VALID_INITIAL_STATUSES),
+                          default="running",
+                          help="Initial card status. Use 'blocked' for cards "
+                               "that require immediate human ops (R3 gate) "
+                               "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    # --- swarm ---
+    p_swarm = sub.add_parser(
+        "swarm",
+        help="Create a Kanban Swarm v1 graph (parallel workers → verifier → synthesizer)",
+    )
+    p_swarm.add_argument("goal", help="Swarm goal / final outcome")
+    p_swarm.add_argument(
+        "--worker",
+        action="append",
+        default=[],
+        metavar="PROFILE:TITLE[:SKILL,SKILL]",
+        help="Parallel worker card (repeatable)",
+    )
+    p_swarm.add_argument("--verifier", required=True, help="Verifier profile")
+    p_swarm.add_argument("--synthesizer", required=True, help="Synthesizer/writer profile")
+    p_swarm.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_swarm.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_swarm.add_argument("--created-by", default=None, help="Creator/anchor profile")
+    p_swarm.add_argument("--idempotency-key", default=None, help="Dedup key for the root card")
+    p_swarm.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
     p_list = sub.add_parser("list", aliases=["ls"], help="List tasks")
@@ -304,9 +344,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_list.add_argument("--status", default=None,
                         choices=sorted(kb.VALID_STATUSES))
     p_list.add_argument("--tenant", default=None)
+    p_list.add_argument("--session", default=None,
+                        help="Filter by originating chat/agent session id "
+                             "(set on tasks created from inside an ACP loop)")
     p_list.add_argument("--archived", action="store_true",
                         help="Include archived tasks")
     p_list.add_argument("--json", action="store_true")
+    p_list.add_argument(
+        "--sort",
+        default=None,
+        choices=sorted(kb.VALID_SORT_ORDERS.keys()),
+        help="Sort order for listed tasks (default: priority)",
+    )
 
     # --- show ---
     p_show = sub.add_parser("show", help="Show a task with comments + events")
@@ -392,6 +441,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_comment.add_argument("text", nargs="+", help="Comment body")
     p_comment.add_argument("--author", default=None,
                            help="Author name (default: $HERMES_PROFILE or 'user')")
+    p_comment.add_argument("--max-len", type=int, default=None,
+                           help="Trim the stored comment body to this many characters")
 
     p_complete = sub.add_parser("complete", help="Mark one or more tasks done")
     p_complete.add_argument("task_ids", nargs="+",
@@ -435,7 +486,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_unblock.add_argument("task_ids", nargs="+")
 
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
-    p_archive.add_argument("task_ids", nargs="+")
+    p_archive.add_argument("task_ids", nargs="*",
+                           help="Task ids to archive (default mode)")
+    p_archive.add_argument(
+        "--rm",
+        dest="purge_ids",
+        nargs="+",
+        default=None,
+        help="Permanently delete already-archived task ids from the board",
+    )
 
     # --- tail ---
     p_tail = sub.add_parser("tail", help="Follow a task's event stream")
@@ -688,6 +747,14 @@ def kanban_command(args: argparse.Namespace) -> int:
             )
         return 0
 
+    # Board-management commands operate on board metadata and the persisted
+    # current-board pointer itself. They must ignore the shared `--board`
+    # task-routing override; otherwise `/kanban --board beta boards show`
+    # reports beta as the current board even when the on-disk pointer is
+    # alpha.
+    if action == "boards":
+        return _dispatch_boards(args)
+
     # `--board <slug>` applies to every subcommand below by way of an
     # env-var pin for the duration of this call. Using HERMES_KANBAN_BOARD
     # (rather than threading `board=` through 50+ kb.connect() sites)
@@ -748,15 +815,6 @@ def kanban_command(args: argparse.Namespace) -> int:
         os.environ["HERMES_KANBAN_BOARD"] = _profile_default_board()
         restore_board_env = True
 
-    # Boards management doesn't touch the DB at all — dispatch early so
-    # fresh installs that haven't initialized any DB can still use
-    # `hermes kanban boards create …`.
-    if action == "boards":
-        try:
-            return _dispatch_boards(args)
-        finally:
-            _restore_board_env()
-
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
     # SELECT against sqlite_master when tables already exist) and
@@ -774,6 +832,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     handlers = {
         "init":     _cmd_init,
         "create":   _cmd_create,
+        "swarm":    _cmd_swarm,
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
@@ -899,6 +958,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_show(args)
     if sub == "rename":
         return _cmd_boards_rename(args)
+    if sub == "set-default-workdir":
+        return _cmd_boards_set_default_workdir(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -969,6 +1030,7 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         description=args.description,
         icon=args.icon,
         color=args.color,
+        default_workdir=args.default_workdir,
     )
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")
@@ -983,8 +1045,13 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
 
 
 def _cmd_boards_rm(args: argparse.Namespace) -> int:
+    # When the user runs `hermes kanban boards delete <slug>` (alias), the
+    # boards_action is 'delete' but args.delete is never set to True because
+    # the --delete flag belongs to the 'rm' subparser only.  Detect the alias
+    # and treat it identically to `boards rm --delete` (fixes #23139).
+    force_delete = getattr(args, "delete", False) or getattr(args, "boards_action", "") == "delete"
     try:
-        res = kb.remove_board(args.slug, archive=not getattr(args, "delete", False))
+        res = kb.remove_board(args.slug, archive=not force_delete)
     except ValueError as exc:
         print(f"kanban boards rm: {exc}", file=sys.stderr)
         return 1
@@ -1049,6 +1116,25 @@ def _cmd_boards_rename(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards set-default-workdir: {exc}", file=sys.stderr)
+        return 2
+    if not normed or not kb.board_exists(normed):
+        print(f"kanban boards set-default-workdir: board {args.slug!r} does not exist",
+              file=sys.stderr)
+        return 1
+    meta = kb.write_board_metadata(normed, default_workdir=args.path)
+    new_val = meta.get("default_workdir")
+    if new_val:
+        print(f"Board {normed!r} default workdir set to {new_val!r}.")
+    else:
+        print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -1080,6 +1166,22 @@ def _parse_duration(val) -> Optional[int]:
 def _cmd_init(args: argparse.Namespace) -> int:
     path = kb.init_db()
     print(f"Kanban DB initialized at {path}")
+
+    # Seed bundled skills (e.g. kanban-worker) into the active profile so
+    # the kanban dispatcher can use them without a separate `hermes profile
+    # create` step.  This is best-effort — a missing or broken profile is
+    # not fatal to `kanban init`.
+    try:
+        profile_name = get_active_profile_name() or "default"
+        profile_dir = get_profile_dir(profile_name)
+        result = seed_profile_skills(profile_dir, quiet=True)
+        if result:
+            copied = result.get("copied", [])
+            if copied:
+                print(f"Seeded skill(s) into profile {profile_name}: {', '.join(copied)}")
+    except Exception:
+        pass  # best-effort
+
     print()
     # Enumerate profiles on disk so the user knows what assignees are
     # already addressable. Multica does this auto-detection on its
@@ -1176,6 +1278,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1197,6 +1300,37 @@ def _cmd_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_swarm(args: argparse.Namespace) -> int:
+    try:
+        workers = [ks.parse_worker_arg(raw) for raw in (args.worker or [])]
+    except ValueError as exc:
+        print(f"kanban swarm: {exc}", file=sys.stderr)
+        return 2
+    if not workers:
+        print("kanban swarm: at least one --worker is required", file=sys.stderr)
+        return 2
+    with kb.connect() as conn:
+        created = ks.create_swarm(
+            conn,
+            goal=args.goal,
+            workers=workers,
+            verifier_assignee=args.verifier,
+            synthesizer_assignee=args.synthesizer,
+            tenant=args.tenant,
+            created_by=args.created_by or _profile_author(),
+            priority=args.priority,
+            idempotency_key=getattr(args, "idempotency_key", None),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(f"Swarm root: {created.root_id}")
+        print("Workers: " + ", ".join(created.worker_ids))
+        print(f"Verifier: {created.verifier_id}")
+        print(f"Synthesizer: {created.synthesizer_id}")
+    return 0
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
@@ -1210,7 +1344,9 @@ def _cmd_list(args: argparse.Namespace) -> int:
             assignee=assignee,
             status=args.status,
             tenant=args.tenant,
+            session_id=args.session,
             include_archived=args.archived,
+            order_by=getattr(args, "sort", None),
         )
     if getattr(args, "json", False):
         print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
@@ -1303,6 +1439,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
+    if task.model_override:
+        print(f"  model:     {task.model_override}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see
@@ -1621,6 +1759,13 @@ def _cmd_claim(args: argparse.Namespace) -> int:
 
 def _cmd_comment(args: argparse.Namespace) -> int:
     body = " ".join(args.text).strip()
+    if args.max_len is not None:
+        if args.max_len < 1:
+            print("kanban: --max-len must be positive", file=sys.stderr)
+            return 2
+        if len(body) > args.max_len:
+            suffix = f"\n\n[trimmed to {args.max_len} chars by --max-len]"
+            body = body[: max(0, args.max_len - len(suffix))].rstrip() + suffix
     author = args.author or _profile_author()
     with kb.connect() as conn:
         kb.add_comment(conn, args.task_id, author, body)
@@ -1753,11 +1898,23 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
 
 def _cmd_archive(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
-    if not ids:
+    purge_ids = list(getattr(args, "purge_ids", None) or [])
+    if ids and purge_ids:
+        print("choose either task_ids to archive or --rm archived task_ids", file=sys.stderr)
+        return 1
+    if not ids and not purge_ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
     failed: list[str] = []
     with kb.connect() as conn:
+        if purge_ids:
+            for tid in purge_ids:
+                if not kb.delete_archived_task(conn, tid):
+                    failed.append(tid)
+                    print(f"cannot delete {tid} (must already be archived)", file=sys.stderr)
+                else:
+                    print(f"Deleted {tid}")
+            return 0 if not failed else 1
         for tid in ids:
             if not kb.archive_task(conn, tid):
                 failed.append(tid)

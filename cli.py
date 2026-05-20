@@ -1569,7 +1569,14 @@ def _rich_text_from_ansi(text: str) -> _RichText:
 def _strip_markdown_syntax(text: str) -> str:
     """Best-effort markdown marker removal for plain-text display."""
     plain = _rich_text_from_ansi(text or "").plain
-    plain = re.sub(r"^\s{0,3}(?:[-*_]\s*){3,}$", "", plain, flags=re.MULTILINE)
+    # Avoid stripping cron-style expressions like "* * * * *" as if they were
+    # Markdown horizontal rules. CommonMark treats three or more "*" as an HR,
+    # but in Hermes output it's common to display cron schedules verbatim.
+    #
+    # Keep the behavior for "-" / "_" HR markers, and only strip "*" HR lines
+    # when there are exactly 3 asterisks (with optional whitespace).
+    plain = re.sub(r"^\s{0,3}(?:[-_]\s*){3,}$", "", plain, flags=re.MULTILINE)
+    plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
     # Preserve blockquotes, lists, and checkboxes because they carry structure.
     plain = re.sub(r"(```+|~~~+)", "", plain)
@@ -1580,7 +1587,9 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"(?<!\w)___([^_]+)___(?!\w)", r"\1", plain)
     plain = re.sub(r"\*\*([^*]+)\*\*", r"\1", plain)
     plain = re.sub(r"(?<!\w)__([^_]+)__(?!\w)", r"\1", plain)
-    plain = re.sub(r"\*([^*]+)\*", r"\1", plain)
+    # Only strip `*emphasis*` markers when the inner text is non-whitespace.
+    # This avoids corrupting cron expressions like "* * * * *".
+    plain = re.sub(r"\*([^\s*][^*]*?[^\s*])\*", r"\1", plain)
     plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)
@@ -1785,7 +1794,16 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print(_PT_ANSI(text))
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            # Fallback when stdout is not a real console (e.g. subprocess
+            # worker logging to a file). prompt_toolkit raises
+            # NoConsoleScreenBufferError (Windows) or OSError (other).
+            try:
+                print(text)
+            except Exception:
+                pass
         return
 
     try:
@@ -1817,13 +1835,26 @@ def _cprint(text: str):
     # prompt, prints, and redraws.  Fire-and-forget — if scheduling
     # fails we fall back to a direct print so the line isn't lost.
     def _schedule():
+        # run_in_terminal() may return either:
+        #   • a coroutine / Future (prompt_toolkit ≥ 3.0) — must be scheduled
+        #     via ensure_future so the coroutine is actually awaited; calling
+        #     it bare would leave it unawaited and silently drop the output
+        #     (fixes #23185 Bug A).
+        #   • None (some mocks / older PT builds) — just call the inner
+        #     function directly since PT already executed it synchronously.
+        # Do NOT fall back to a bare _pt_print when ensure_future raises,
+        # because run_in_terminal already invoked the lambda in that case
+        # (the mock path), which would double-print the line.
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            import asyncio as _aio
+            import inspect as _inspect
+            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            if coro is not None and (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
+                _aio.ensure_future(coro)
+            # else: run_in_terminal ran the lambda synchronously; nothing more
+            # to do (double-scheduling would print twice).
         except Exception:
-            try:
-                _pt_print(_PT_ANSI(text))
-            except Exception:
-                pass
+            pass  # best-effort; the line may already have been printed
 
     try:
         loop.call_soon_threadsafe(_schedule)
@@ -2833,6 +2864,11 @@ class HermesCLI:
         # process_command() when the user runs /exit --delete or /quit --delete.
         # Ported from google-gemini/gemini-cli#19332.
         self._delete_session_on_exit = False
+        # /update: when set, run() executes relaunch() after prompt_toolkit
+        # has fully exited and cleaned up terminal modes.  Set by
+        # _handle_update_command() so the relaunch happens on the main thread,
+        # not the background process_loop thread.
+        self._pending_relaunch: list[str] | None = None
         self._last_ctrl_c_time = 0
         self._clarify_state = None
         self._clarify_freetext = False
@@ -7951,6 +7987,9 @@ class HermesCLI:
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command()
+        elif canonical == "update":
+            if self._handle_update_command():
+                return False
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -9232,6 +9271,58 @@ class HermesCLI:
 
         args = SimpleNamespace(lines=200, expire=7, local=False)
         run_debug_share(args)
+
+    def _handle_update_command(self) -> bool:
+        """Handle /update — update Hermes Agent to the latest version.
+
+        In the classic CLI this exits the session and relaunches as
+        ``hermes update`` so the user sees update output directly and gets
+        the new version on next launch.
+
+        Returns ``True`` when the update was confirmed (caller should trigger
+        app exit so the relaunch is deferred to the main thread after
+        prompt_toolkit cleans up terminal modes).  Returns ``False`` / falsy
+        when cancelled.
+        """
+        from hermes_cli.config import is_managed, format_managed_message
+
+        if is_managed():
+            print(f"  ✗ {format_managed_message('update Hermes Agent')}")
+            return False
+
+        # Use the prompt_toolkit-native modal so the confirmation panel
+        # renders properly above the composer and avoids raw input() races
+        # with the prompt_toolkit event loop (same pattern as
+        # _confirm_destructive_slash).
+        choices = [
+            ("once", "Update Now", "exit the current session and update Hermes Agent"),
+            ("cancel", "Cancel", "keep the current session"),
+        ]
+        raw = self._prompt_text_input_modal(
+            title="⚕  Update Hermes Agent",
+            detail="This will exit the current session and run `hermes update`.",
+            choices=choices,
+        )
+        if raw is None:
+            print("  🟡 /update cancelled.")
+            return False
+        choice = self._normalize_slash_confirm_choice(raw, choices)
+        if choice != "once":
+            print("  🟡 /update cancelled.")
+            return False
+
+        print()
+        print("  ⚕ Launching update...")
+        print()
+
+        # Store the relaunch args so run() can exec them from the main thread
+        # after prompt_toolkit exits and restores terminal modes.  Calling
+        # relaunch() directly here (from the process_loop daemon thread) would
+        # skip terminal cleanup on POSIX (execvp replaces the process mid-TUI)
+        # and only exit the worker thread on Windows (subprocess.run +
+        # sys.exit inside a non-main thread does not exit the process).
+        self._pending_relaunch = ["update"]
+        return True
 
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""
@@ -13939,6 +14030,15 @@ class HermesCLI:
                     pass
             _run_cleanup()
             self._print_exit_summary()
+
+        # Deferred relaunch: /update sets _pending_relaunch so the exec
+        # happens here — after prompt_toolkit has exited and fully restored
+        # terminal modes — rather than from the background process_loop
+        # thread (which would skip terminal cleanup on POSIX and only exit
+        # the worker thread on Windows).
+        if getattr(self, '_pending_relaunch', None):
+            from hermes_cli.relaunch import relaunch
+            relaunch(self._pending_relaunch, preserve_inherited=False)
 
 
 # ============================================================================

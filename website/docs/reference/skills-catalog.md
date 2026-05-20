@@ -38,6 +38,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram) | Dark-themed SVG architecture/cloud/infra diagrams as HTML. | `creative/architecture-diagram` |
 | [`ascii-art`](/docs/user-guide/skills/bundled/creative/creative-ascii-art) | ASCII art: pyfiglet, cowsay, boxes, image-to-ascii. | `creative/ascii-art` |
 | [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video) | ASCII video: convert video/audio to colored ASCII MP4/GIF. | `creative/ascii-video` |
+| [`baoyu-article-illustrator`](/docs/user-guide/skills/bundled/creative/creative-baoyu-article-illustrator) | Article illustrations: type × style × palette consistency. | `creative/baoyu-article-illustrator` |
 | [`baoyu-comic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-comic) | Knowledge comics (知识漫画): educational, biography, tutorial. | `creative/baoyu-comic` |
 | [`baoyu-infographic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic) | Infographics: 21 layouts x 21 styles (信息图, 可视化). | `creative/baoyu-infographic` |
 | [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design) | Design one-off HTML artifacts (landing, deck, prototype). | `creative/claude-design` |

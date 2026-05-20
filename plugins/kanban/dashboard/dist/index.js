@@ -413,7 +413,7 @@
 
   function KanbanPage() {
     const { t } = useI18n();
-    const [board, setBoard] = useState(() => readSelectedBoard() || "default");
+    const [board, setBoard] = useState(() => readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
 
@@ -494,11 +494,16 @@
       return SDK.fetchJSON(withBoard(`${API}/boards`, board))
         .then(function (data) {
           const boards = (data && data.boards) || [];
+          const storedBoard = readSelectedBoard();
           setBoardList(boards);
+          if (!storedBoard && !board && data && data.current) {
+            setBoard(data.current);
+            return;
+          }
           // If the stored slug isn't in the list any longer (board was
           // deleted in the CLI while dashboard was open), fall back to
           // default so the UI doesn't hang on a 404.
-          if (board !== "default" && !boards.find(function (b) { return b.slug === board; })) {
+          if (board && board !== "default" && !boards.find(function (b) { return b.slug === board; })) {
             setBoard("default");
             writeSelectedBoard("default");
           }
@@ -1588,10 +1593,12 @@
                   saveSettings({ auto_decompose: !!e.target.checked });
                 },
               }),
-              settings.auto_decompose ? "Auto (default)" : "Manual",
+              "Auto-decompose triage tasks",
             ),
             h("div", { className: "text-[10px] text-muted-foreground" },
-              "When on, the dispatcher decomposes new triage tasks automatically."),
+              settings.auto_decompose
+                ? "The dispatcher decomposes new triage tasks automatically."
+                : "Triage tasks stay in triage until you click ⚗ Decompose."),
           ),
         ) : h("div", { className: "text-xs text-muted-foreground" },
           "Loading…"),

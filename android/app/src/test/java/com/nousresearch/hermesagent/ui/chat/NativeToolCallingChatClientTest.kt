@@ -66,6 +66,16 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsExplicitSocCompatibilityDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=soc_compatibility_report",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("soc_compatibility_report", parsed.getString("action"))
+    }
+
+    @Test
     fun ignoresUnknownExplicitAndroidDiagnosticActions() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=network_intrusion",
@@ -401,6 +411,73 @@ class NativeToolCallingChatClientTest {
         assertEquals("Route Wi-Fi analyzer work", routes.getJSONObject(0).getString("label"))
         assertEquals("AM/FM tuner public API", constraints.getJSONObject(0).getString("label"))
         assertEquals("hardware_api", constraints.getJSONObject(0).getString("constraint_type"))
+    }
+
+    @Test
+    fun compactsSocCompatibilityReportWithoutDroppingBackendPolicyRows() {
+        val backend = JSONArray()
+        repeat(18) { index ->
+            backend.put(
+                JSONObject()
+                    .put("category", "soc_backend_parity")
+                    .put("label", "SOC backend row $index")
+                    .put("ready", index % 2 == 0)
+                    .put("value_label", "backend value $index")
+                    .put("detail", "Detailed SOC backend compatibility row $index with MediaTek Mali PowerVR coverage")
+                    .put("recommendation", "Use soc_compatibility_report before local inference decisions.")
+                    .put("tool_action", "soc_compatibility_report")
+                    .put("fraction", 0.82),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "soc_compatibility_report")
+            .put("soc_backend_feature_count", 18)
+            .put("ready_soc_backend_feature_count", 9)
+            .put("soc_backend_route_count", 1)
+            .put("soc_backend_constraint_count", 1)
+            .put("likely_mediatek", true)
+            .put("likely_snapdragon", false)
+            .put("soc_backend_matrix", backend)
+            .put(
+                "soc_backend_policy_routes",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "soc_backend_route")
+                        .put("label", "Route SOC compatibility report")
+                        .put("ready", true)
+                        .put("value_label", "soc_compatibility_report")
+                        .put("tool_action", "soc_compatibility_report"),
+                ),
+            )
+            .put(
+                "soc_backend_constraint_matrix",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "soc_backend_constraint")
+                        .put("label", "Avoid Adreno-only assumptions")
+                        .put("ready", true)
+                        .put("value_label", "SOC-neutral")
+                        .put("constraint_type", "soc_policy"),
+                ),
+            )
+            .put("cards", JSONArray().put(JSONObject().put("title", "SOC Compatibility").put("body", "18 rows")))
+            .toString()
+
+        val parsed = JSONObject(NativeToolContextCompressor.compactToolResult(result))
+        val backendMatrix = parsed.getJSONObject("soc_backend_matrix")
+        val routes = parsed.getJSONArray("soc_backend_policy_routes")
+        val constraints = parsed.getJSONArray("soc_backend_constraint_matrix")
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(18, parsed.getInt("soc_backend_feature_count"))
+        assertEquals(9, parsed.getInt("ready_soc_backend_feature_count"))
+        assertEquals(true, parsed.getBoolean("likely_mediatek"))
+        assertEquals("array", backendMatrix.getString("type"))
+        assertEquals("SOC backend row 0", backendMatrix.getJSONArray("items").getJSONObject(0).getString("label"))
+        assertEquals("soc_compatibility_report", backendMatrix.getJSONArray("items").getJSONObject(0).getString("tool_action"))
+        assertEquals("Route SOC compatibility report", routes.getJSONObject(0).getString("label"))
+        assertEquals("Avoid Adreno-only assumptions", constraints.getJSONObject(0).getString("label"))
     }
 
     @Test

@@ -12,6 +12,7 @@ class SignalIntelligenceQuickActionsTest {
 
         assertEquals("signal_awareness_report", actionsById.getValue("signal_overview").diagnosticAction)
         assertEquals("agent_environment_report", actionsById.getValue("agent_environment").diagnosticAction)
+        assertEquals("soc_compatibility_report", actionsById.getValue("soc_compatibility").diagnosticAction)
         assertEquals("wifi_analyzer_report", actionsById.getValue("wifi_analyzer").diagnosticAction)
         assertEquals("wifi_scan", actionsById.getValue("wifi_nearby").diagnosticAction)
         assertEquals("bluetooth_analyzer_report", actionsById.getValue("bluetooth_analyzer").diagnosticAction)

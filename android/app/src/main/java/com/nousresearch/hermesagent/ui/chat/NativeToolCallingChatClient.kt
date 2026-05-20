@@ -505,7 +505,7 @@ class NativeToolCallingChatClient(
             "file_write_tool", "write_file", "file_tool" -> executeFileWriteTool(toolCall)
             "android_system_tool", "android_system_action", "system_tool", "settings_tool", "phone_tool" ->
                 executeAndroidSystemTool(toolCall)
-            "android_device_diagnostics_tool", "device_diagnostics_tool", "diagnostics_tool", "resource_tool", "wifi_analyzer_tool", "bluetooth_scanner_tool", "bluetooth_analyzer_tool", "sensor_tool", "sensor_analyzer_tool", "camera_tool", "radio_signal_tool" ->
+            "android_device_diagnostics_tool", "device_diagnostics_tool", "diagnostics_tool", "resource_tool", "wifi_analyzer_tool", "bluetooth_scanner_tool", "bluetooth_analyzer_tool", "sensor_tool", "sensor_analyzer_tool", "camera_tool", "radio_signal_tool", "soc_backend_tool" ->
                 executeAndroidDeviceDiagnosticsTool(toolCall)
             "hindsight_memory_tool", "memory_tool", "recall_tool", "retain_tool" -> executeHindsightMemoryTool(toolCall)
             "android_automation_tool", "automation_tool", "tasker_tool" -> executeAndroidAutomationTool(toolCall)
@@ -1190,7 +1190,7 @@ class NativeToolCallingChatClient(
                 "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata, camera capability checks, Wi-Fi analysis/channel ratings/signal history, Bluetooth Analyzer readiness/scan-policy reports plus nearby scans/service metadata, radio capability checks, resource summaries, or Tasker-style automation. " +
                 "When writing multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
                 "For HTML/browser work: write the file with file_write_tool, then call android_automation_tool action=open_uri with data_uri set to the workspace filename. " +
-                "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings/signal history, Wi-Fi Analyzer readiness/scan-policy reports, Bluetooth Analyzer readiness/scan-policy reports and nearby devices/service metadata, camera/sensor status plus accelerometer/gyroscope hardware metadata, active overlays, tool catalog, Kai-style agent environment reports, cross-signal awareness reports, RF capability limits, MediaTek/Snapdragon/SOC context, or phone preflight checks before TikTok/Instagram/Gmail work. " +
+                "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings/signal history, Wi-Fi Analyzer readiness/scan-policy reports, Bluetooth Analyzer readiness/scan-policy reports and nearby devices/service metadata, camera/sensor status plus accelerometer/gyroscope hardware metadata, active overlays, tool catalog, Kai-style agent environment reports, cross-signal awareness reports, SOC compatibility/backend reports for MediaTek/Mali/PowerVR and non-Snapdragon devices, RF capability limits, or phone preflight checks before TikTok/Instagram/Gmail work. " +
                 "Use hindsight_memory_tool to retain, recall, reflect, and inspect promoted durable local memories before or after complex work. " +
                 "Report missing Android permissions honestly. Keep replies brief."
         } else {
@@ -1251,9 +1251,9 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, access-point detail/export rows, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service/manufacturer/proximity metadata, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, camera capability, overlay status, SOC/GPU compatibility context, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, access-point detail/export rows, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service/manufacturer/proximity metadata, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, camera capability, overlay status, SOC/GPU compatibility and backend-policy reports, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_analyzer_report, wifi_channel_rating, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, sensor_analyzer_report, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, signal_awareness_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
+                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_analyzer_report, wifi_channel_rating, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, sensor_analyzer_report, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, soc_compatibility_report, signal_awareness_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point detail/export rows. Defaults to limit, or the Wi-Fi max for wifi_ap_details/wifi_export."))
                         .put("export_format", stringProp("Wi-Fi export format for wifi_export: json, csv, or both."))
@@ -1517,6 +1517,15 @@ class NativeToolCallingChatClient(
                     "microwave",
                     "rf signal",
                     "signal strength",
+                    "soc compatibility",
+                    "soc compatibility report",
+                    "soc backend report",
+                    "soc backend",
+                    "litert backend",
+                    "gpu backend",
+                    "mali backend",
+                    "powervr backend",
+                    "mediatek compatibility",
                     "mediatek",
                     "snapdragon",
                     "soc",
@@ -1619,7 +1628,8 @@ class NativeToolCallingChatClient(
                 "sensor_tool" in lower ||
                 "sensor_analyzer_tool" in lower ||
                 "camera_tool" in lower ||
-                "radio_signal_tool" in lower
+                "radio_signal_tool" in lower ||
+                "soc_backend_tool" in lower
             ) {
                 add("android_device_diagnostics_tool")
             }
@@ -3021,6 +3031,7 @@ class NativeToolCallingChatClient(
             "camera_status",
             "radio_signal_status",
             "signal_capability_status",
+            "soc_compatibility_report",
             "signal_awareness_report",
             "agent_environment_report",
             "social_gmail_goal_preflight",
@@ -3403,6 +3414,10 @@ internal object NativeToolContextCompressor {
                 "ready_signal_awareness_count",
                 "signal_workflow_route_count",
                 "signal_constraint_count",
+                "soc_backend_feature_count",
+                "ready_soc_backend_feature_count",
+                "soc_backend_route_count",
+                "soc_backend_constraint_count",
                 "camera_count",
                 "sensor_count",
                 "sensor_catalog_count",
@@ -3494,6 +3509,9 @@ internal object NativeToolContextCompressor {
         "signal_awareness_matrix",
         "signal_workflow_routes",
         "signal_constraint_matrix",
+        "soc_backend_matrix",
+        "soc_backend_policy_routes",
+        "soc_backend_constraint_matrix",
         "cached_wifi_signal_history",
         "ai_experience_elevation_plan",
         "bluetooth_devices",

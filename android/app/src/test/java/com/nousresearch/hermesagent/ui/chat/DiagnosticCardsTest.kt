@@ -627,4 +627,40 @@ class DiagnosticCardsTest {
         assertTrue(row.detail.contains("Use sensor_snapshot"))
         assertTrue(row.fraction > 0.9f)
     }
+
+    @Test
+    fun parsesSocBackendRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "SOC Compatibility")
+                        .put("body", "Backend rows.")
+                        .put("graph_type", "soc_backend_matrix")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("category", "soc_backend_parity")
+                                    .put("label", "MediaTek/Mali/PowerVR coverage")
+                                    .put("ready", true)
+                                    .put("value_label", "MediaTek covered")
+                                    .put("detail", "GPU probe plus CPU fallback is available.")
+                                    .put("recommendation", "Use soc_compatibility_report.")
+                                    .put("fraction", 0.95),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("MediaTek/Mali/PowerVR coverage", row.label)
+        assertEquals("MediaTek covered", row.valueLabel)
+        assertTrue(row.detail.contains("soc backend parity"))
+        assertTrue(row.detail.contains("Use soc_compatibility_report"))
+        assertTrue(row.fraction > 0.9f)
+    }
 }

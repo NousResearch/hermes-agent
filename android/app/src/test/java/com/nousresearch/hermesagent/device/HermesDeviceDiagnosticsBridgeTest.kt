@@ -424,12 +424,54 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_export"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_analyzer_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("signal_awareness_report"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("soc_compatibility_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("agent_environment_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_scan"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_analyzer_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("sensor_analyzer_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_status"))
         assertTrue(result.getJSONObject("hindsight_memory_translation").has("retain"))
+    }
+
+    @Test
+    fun socCompatibilityReportExposesBackendPolicyRoutesAndMediatekCoverageCards() {
+        val result = HermesDeviceDiagnosticsBridge.socCompatibilityReportJson(context)
+        val backend = result.getJSONArray("soc_backend_matrix")
+        val routes = result.getJSONArray("soc_backend_policy_routes")
+        val constraints = result.getJSONArray("soc_backend_constraint_matrix")
+        val backendLabels = buildSet {
+            for (index in 0 until backend.length()) add(backend.getJSONObject(index).getString("label"))
+        }
+        val routeLabels = buildSet {
+            for (index in 0 until routes.length()) add(routes.getJSONObject(index).getString("label"))
+        }
+        val constraintLabels = buildSet {
+            for (index in 0 until constraints.length()) add(constraints.getJSONObject(index).getString("label"))
+        }
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("soc_compatibility_report", result.getString("action"))
+        assertTrue(result.has("android_device_identity"))
+        assertTrue(result.getJSONObject("soc_profile").has("litert_lm_backend_strategy"))
+        assertTrue(result.has("preferred_local_model"))
+        assertTrue(result.has("likely_mediatek"))
+        assertTrue(result.has("likely_snapdragon"))
+        assertTrue(result.has("likely_mali_gpu"))
+        assertTrue(result.has("supports_arm64"))
+        assertTrue(backendLabels.contains("Detected SOC family"))
+        assertTrue(backendLabels.contains("Native ABI selection"))
+        assertTrue(backendLabels.contains("LiteRT-LM accelerator policy"))
+        assertTrue(backendLabels.contains("MediaTek/Mali/PowerVR coverage"))
+        assertTrue(routeLabels.contains("Route SOC compatibility report"))
+        assertTrue(routeLabels.contains("Route full agent environment"))
+        assertTrue(constraintLabels.contains("Avoid Adreno-only assumptions"))
+        assertTrue(constraintLabels.contains("GPU probe then CPU fallback"))
+        assertTrue(constraintLabels.contains("x86 emulator is not phone GPU proof"))
+        assertTrue(result.getJSONArray("cards").toString().contains("SOC Compatibility"))
+        assertTrue(result.getInt("soc_backend_feature_count") >= 7)
+        assertTrue(result.getInt("ready_soc_backend_feature_count") >= 4)
+        assertTrue(result.getInt("soc_backend_route_count") >= 5)
+        assertTrue(result.getInt("soc_backend_constraint_count") >= 5)
     }
 
     @Test

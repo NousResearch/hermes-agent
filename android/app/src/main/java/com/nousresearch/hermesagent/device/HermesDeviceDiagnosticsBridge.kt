@@ -80,6 +80,8 @@ object HermesDeviceDiagnosticsBridge {
                 radioSignalStatusJson(appContext).toString()
             "signal_capability_status", "rf_capabilities", "radio_status", "microwave_status" ->
                 signalCapabilityStatusJson(appContext).toString()
+            "soc_compatibility_report", "soc_backend_report", "mediatek_compatibility_report", "litert_backend_report", "gpu_backend_report" ->
+                socCompatibilityReportJson(appContext).toString()
             "signal_awareness_report", "nearby_signal_report", "rf_sensor_fusion_report", "ambient_context_report" ->
                 signalAwarenessReportJson(appContext).toString()
             "agent_environment_report", "environment_report", "capability_matrix", "system_capability_report", "kai_parity_report" ->
@@ -968,6 +970,64 @@ object HermesDeviceDiagnosticsBridge {
                 JSONArray()
                     .put(card("Signal Limits", "Built-in phone APIs cover Wi-Fi, Bluetooth, audio, camera, and sensors; microwave and broad RF need external hardware."))
                     .put(card("SOC Compatibility", "Diagnostics and LiteRT policy use ABI, SOC, and GPU capability probes across MediaTek/Mali/PowerVR, Snapdragon/Adreno, Tensor, Exynos, and generic ARM devices with CPU fallback.")),
+            )
+    }
+
+    fun socCompatibilityReportJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val socProfile = socProfileJson()
+        val preferredModel = preferredLocalModelJson(appContext)
+        val backendRows = socBackendMatrixRows(socProfile, preferredModel)
+        val routeRows = socBackendRouteRows(socProfile, preferredModel)
+        val constraintRows = socBackendConstraintRows(socProfile)
+        return JSONObject()
+            .put("success", true)
+            .put("action", "soc_compatibility_report")
+            .put("report_scope", "Dedicated SOC, GPU, ABI, and LiteRT-LM backend compatibility report for non-Snapdragon Android devices.")
+            .put("android_device_identity", deviceIdentityJson())
+            .put("soc_profile", socProfile)
+            .put("preferred_local_model", preferredModel)
+            .put("likely_mediatek", socProfile.optBoolean("likely_mediatek", false))
+            .put("likely_snapdragon", socProfile.optBoolean("likely_snapdragon", false))
+            .put("likely_mali_gpu", socProfile.optBoolean("likely_mali_gpu", false))
+            .put("likely_powervr_img_gpu", socProfile.optBoolean("likely_powervr_img_gpu", false))
+            .put("likely_adreno_gpu", socProfile.optBoolean("likely_adreno_gpu", false))
+            .put("supports_arm64", socProfile.optBoolean("supports_arm64", false))
+            .put("supports_x86_64", socProfile.optBoolean("supports_x86_64", false))
+            .put("soc_backend_matrix", backendRows)
+            .put("soc_backend_policy_routes", routeRows)
+            .put("soc_backend_constraint_matrix", constraintRows)
+            .put("soc_backend_feature_count", backendRows.length())
+            .put("ready_soc_backend_feature_count", countReadyRows(backendRows))
+            .put("soc_backend_route_count", routeRows.length())
+            .put("soc_backend_constraint_count", constraintRows.length())
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "SOC Compatibility",
+                            body = "${backendRows.length()} SOC/GPU/ABI row(s) covering MediaTek, Mali, PowerVR/IMG, Snapdragon, Tensor, Exynos, Unisoc, and CPU fallback policy.",
+                            graphType = "soc_backend_matrix",
+                            rows = backendRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Backend Routes",
+                            body = "${routeRows.length()} route row(s) for choosing diagnostics, model readiness, and cross-signal context before local inference.",
+                            graphType = "soc_backend_policy_routes",
+                            rows = routeRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Native ABI Policy",
+                            body = "${constraintRows.length()} constraint row(s) for ABI coverage, GPU probing, CPU fallback, and emulator/device separation.",
+                            graphType = "soc_backend_constraint_matrix",
+                            rows = constraintRows,
+                        ),
+                    ),
             )
     }
 
@@ -2767,6 +2827,259 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Set timeout_ms and sensor_types narrowly when the workflow needs faster response.",
                     fraction = 0.75f,
                     extra = JSONObject().put("constraint_type", "runtime"),
+                ),
+            )
+    }
+
+    private fun socBackendMatrixRows(socProfile: JSONObject, preferredModel: JSONObject): JSONArray {
+        val nativeAbiCandidates = jsonStringList(socProfile.optJSONArray("native_abi_candidates"))
+        val supportedAbis = jsonStringList(socProfile.optJSONArray("supported_abis"))
+        val primaryAbi = socProfile.optString("primary_abi").ifBlank { supportedAbis.firstOrNull().orEmpty() }
+        val socFamily = socProfile.optString("soc_family")
+        val gpuFamily = socProfile.optString("gpu_family_hint")
+        val supportsArm = socProfile.optBoolean("supports_arm64", false) || socProfile.optBoolean("supports_arm", false)
+        val supportsX86 = socProfile.optBoolean("supports_x86_64", false) || socProfile.optBoolean("supports_x86", false)
+        val detectedBackend = when {
+            socProfile.optBoolean("likely_mediatek", false) -> "MediaTek covered"
+            socProfile.optBoolean("likely_mali_gpu", false) -> "Mali covered"
+            socProfile.optBoolean("likely_powervr_img_gpu", false) -> "PowerVR covered"
+            socProfile.optBoolean("likely_adreno_gpu", false) -> "Adreno covered"
+            supportsX86 && !supportsArm -> "x86 CPU fallback"
+            else -> "generic ARM covered"
+        }
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "soc_backend_parity",
+                    label = "Detected SOC family",
+                    ready = socFamily.isNotBlank() && socFamily != "unknown",
+                    valueLabel = socProfile.optString("soc_family_label").ifBlank { "unknown SOC" },
+                    detail = listOf(
+                        socProfile.optString("soc_manufacturer").ifBlank { "manufacturer unknown" },
+                        socProfile.optString("soc_model").ifBlank { "model unknown" },
+                        socProfile.optString("hardware").ifBlank { "hardware unknown" },
+                        socProfile.optString("board").ifBlank { "board unknown" },
+                    ).joinToString(" | "),
+                    recommendation = "Keep the report SOC-neutral; do not assume Snapdragon just because local inference is enabled.",
+                    fraction = if (socFamily.isNotBlank() && socFamily != "unknown") 0.95f else 0.6f,
+                    extra = JSONObject().put("source_surface", "soc_profile"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_parity",
+                    label = "GPU family hint",
+                    ready = gpuFamily.isNotBlank() && gpuFamily != "unknown",
+                    valueLabel = socProfile.optString("gpu_family_label").ifBlank { "unknown GPU" },
+                    detail = listOf(
+                        "adreno=${socProfile.optBoolean("likely_adreno_gpu", false)}",
+                        "mali=${socProfile.optBoolean("likely_mali_gpu", false)}",
+                        "powervr_img=${socProfile.optBoolean("likely_powervr_img_gpu", false)}",
+                        "xclipse=${socProfile.optBoolean("likely_xclipse_gpu", false)}",
+                    ).joinToString(" | "),
+                    recommendation = "Probe LiteRT-LM accelerators from GPU hints, then fall back to CPU when the accelerator is not accepted.",
+                    fraction = if (gpuFamily.isNotBlank() && gpuFamily != "unknown") 0.9f else 0.55f,
+                    extra = JSONObject().put("source_surface", "gpu_family_hint"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_parity",
+                    label = "Native ABI selection",
+                    ready = nativeAbiCandidates.isNotEmpty() || primaryAbi.isNotBlank(),
+                    valueLabel = primaryAbi.ifBlank { "ABI unknown" },
+                    detail = listOf(
+                        "candidates=${nativeAbiCandidates.joinToString(", ").ifBlank { "none" }}",
+                        "supported=${supportedAbis.joinToString(", ").ifBlank { "none" }}",
+                        socProfile.optString("native_abi_strategy").ifBlank { "Native ABI strategy unavailable." },
+                    ).joinToString(" | "),
+                    recommendation = "Package and choose native artifacts by ABI, not by SOC marketing name.",
+                    fraction = if (nativeAbiCandidates.isNotEmpty() || primaryAbi.isNotBlank()) 0.95f else 0.45f,
+                    extra = JSONObject().put("source_surface", "native_abi_candidates"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_parity",
+                    label = "LiteRT-LM accelerator policy",
+                    ready = true,
+                    valueLabel = socProfile.optString("litert_lm_acceleration_label").ifBlank { "GPU probe + CPU fallback" },
+                    detail = socProfile.optString("litert_lm_backend_strategy").ifBlank { "GPU-first on ARM, CPU fallback, CPU-only on x86 emulator/device builds." },
+                    recommendation = "Use this row before promising GPU acceleration or rejecting non-Snapdragon phones.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("source_surface", "litert_backend_strategy"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_parity",
+                    label = "MediaTek/Mali/PowerVR coverage",
+                    ready = true,
+                    valueLabel = detectedBackend,
+                    detail = "Dimensity/Helio, Mali/Immortalis, PowerVR/IMG, Tensor/Mali, Exynos/Xclipse, Snapdragon/Adreno, Unisoc, and generic ARM devices all use GPU probing with CPU fallback.",
+                    recommendation = "Keep MediaTek and PowerVR as first-class compatibility cases instead of treating them as unsupported outliers.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("feature_source", "MediaTek Mali PowerVR compatibility policy"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_parity",
+                    label = "Preferred local model",
+                    ready = preferredModel.optBoolean("ready", false),
+                    valueLabel = preferredModel.optString("title").ifBlank { "model import needed" },
+                    detail = listOf(
+                        preferredModel.optString("runtime_flavor").ifBlank { "unknown runtime" },
+                        preferredModel.optString("record_status").ifBlank { "no preferred record" },
+                        if (preferredModel.optBoolean("file_exists", false)) "${preferredModel.optLong("file_bytes", 0L)} bytes" else "file missing",
+                    ).joinToString(" | "),
+                    recommendation = "Import and prefer a Gemma LiteRT-LM or Qwen GGUF model before treating SOC readiness as runnable local inference.",
+                    fraction = if (preferredModel.optBoolean("ready", false)) 1f else 0.35f,
+                    extra = JSONObject().put("source_surface", "preferred_local_model"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_parity",
+                    label = "x86 emulator separation",
+                    ready = true,
+                    valueLabel = if (socProfile.optBoolean("supports_x86", false) || socProfile.optBoolean("supports_x86_64", false)) "CPU-only emulator/device" else "phone ABI path",
+                    detail = "x86/x86_64 runs prove CPU fallback and UI logic, but do not prove ARM phone GPU acceleration on Mali, PowerVR, Adreno, or Xclipse.",
+                    recommendation = "Validate ARM phone behavior separately from emulator-only runs before calling GPU compatibility done.",
+                    fraction = 0.85f,
+                    extra = JSONObject().put("constraint_type", "emulator_separation"),
+                ),
+            )
+    }
+
+    private fun socBackendRouteRows(socProfile: JSONObject, preferredModel: JSONObject): JSONArray {
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "soc_backend_route",
+                    label = "Route SOC compatibility report",
+                    ready = true,
+                    valueLabel = "soc_compatibility_report",
+                    detail = "Use for SOC family, GPU hint, ABI candidate, MediaTek/Mali/PowerVR coverage, and LiteRT-LM backend policy cards.",
+                    recommendation = "Run this report when the user asks whether a non-Snapdragon phone can use Hermes local inference.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("tool_action", "soc_compatibility_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_route",
+                    label = "Route full agent environment",
+                    ready = true,
+                    valueLabel = "agent_environment_report",
+                    detail = "Use when SOC policy needs to be interpreted alongside Kai parity, local model readiness, automation, memory, UI control, and wireless inputs.",
+                    recommendation = "Choose this route when backend compatibility is one part of a broader autonomous-agent readiness question.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "agent_environment_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_route",
+                    label = "Route cross-signal context",
+                    ready = true,
+                    valueLabel = "signal_awareness_report",
+                    detail = "Use when Wi-Fi, Bluetooth, sensors, radio limits, and SOC backend policy all need to be visible to Gemma together.",
+                    recommendation = "Run this before wireless or sensor-heavy local reasoning so backend limits are not separated from signal inputs.",
+                    fraction = 0.85f,
+                    extra = JSONObject().put("tool_action", "signal_awareness_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_route",
+                    label = "Route phone preflight",
+                    ready = preferredModel.optBoolean("ready", false),
+                    valueLabel = "social_gmail_goal_preflight",
+                    detail = "Use when SOC/backend readiness must be combined with package, accessibility, and preferred-model checks before a full phone workflow.",
+                    recommendation = "Treat missing preferred model or phone permissions as blockers even when the SOC policy itself is compatible.",
+                    fraction = if (preferredModel.optBoolean("ready", false)) 0.9f else 0.45f,
+                    extra = JSONObject().put("tool_action", "social_gmail_goal_preflight"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_route",
+                    label = "Route current signal limits",
+                    ready = true,
+                    valueLabel = "signal_capability_status",
+                    detail = "${socProfile.optString("soc_family_label").ifBlank { "Android SOC" }} backend policy can be paired with public Android radio/sensor limits.",
+                    recommendation = "Use this route when a hardware question includes AM/FM, broad RF, microwave, or sensor availability.",
+                    fraction = 0.8f,
+                    extra = JSONObject().put("tool_action", "signal_capability_status"),
+                ),
+            )
+    }
+
+    private fun socBackendConstraintRows(socProfile: JSONObject): JSONArray {
+        val supportedAbis = jsonStringList(socProfile.optJSONArray("supported_abis"))
+        val nativeAbiCandidates = jsonStringList(socProfile.optJSONArray("native_abi_candidates"))
+        val supportsArm = socProfile.optBoolean("supports_arm64", false) || socProfile.optBoolean("supports_arm", false)
+        val supportsX86 = socProfile.optBoolean("supports_x86_64", false) || socProfile.optBoolean("supports_x86", false)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "soc_backend_constraint",
+                    label = "Avoid Adreno-only assumptions",
+                    ready = true,
+                    valueLabel = "SOC-neutral",
+                    detail = "The policy recognizes MediaTek/Mali/Immortalis, PowerVR/IMG, Tensor/Mali, Exynos/Xclipse, Unisoc, Snapdragon/Adreno, and generic ARM paths.",
+                    recommendation = "Do not gate local inference support only on Qualcomm or Adreno labels.",
+                    fraction = 1f,
+                    extra = JSONObject().put("constraint_type", "soc_policy"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_constraint",
+                    label = "ARM native artifact coverage",
+                    ready = supportsArm || nativeAbiCandidates.isNotEmpty(),
+                    valueLabel = if (supportsArm) "ARM path present" else if (supportsX86) "x86 CPU fallback" else "ABI unknown",
+                    detail = "Supported ABI(s): ${supportedAbis.joinToString(", ").ifBlank { "none reported" }}. Candidate native ABI(s): ${nativeAbiCandidates.joinToString(", ").ifBlank { "none selected" }}.",
+                    recommendation = "Build and package ARM native assets for phone validation; use x86 only as emulator coverage.",
+                    fraction = if (supportsArm) 0.95f else if (supportsX86) 0.65f else 0.35f,
+                    extra = JSONObject().put("constraint_type", "native_abi"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_constraint",
+                    label = "GPU probe then CPU fallback",
+                    ready = true,
+                    valueLabel = "fallback required",
+                    detail = socProfile.optString("litert_lm_backend_strategy").ifBlank { "GPU-first on ARM devices when LiteRT-LM accepts the accelerator, then CPU fallback." },
+                    recommendation = "Treat failed GPU accelerator initialization as a fallback path, not as device incompatibility.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("constraint_type", "backend_fallback"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_constraint",
+                    label = "x86 emulator is not phone GPU proof",
+                    ready = true,
+                    valueLabel = if (supportsX86) "x86 detected" else "phone validation needed",
+                    detail = "Emulator CPU-only success does not validate ARM phone GPU delegates, SOC governors, or vendor OpenCL/Vulkan behavior.",
+                    recommendation = "Run physical ARM phone smoke tests before claiming MediaTek/Mali/PowerVR compatibility is fully green.",
+                    fraction = 0.85f,
+                    extra = JSONObject().put("constraint_type", "validation_scope"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_backend_constraint",
+                    label = "Public Android capability probes",
+                    ready = true,
+                    valueLabel = "feature API first",
+                    detail = "Hermes uses Android SDK feature, permission, sensor, Wi-Fi, Bluetooth, camera, storage, ABI, and Build fields before making backend decisions.",
+                    recommendation = "Prefer public API probes and explicit rows over hard-coded SOC brand assumptions.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("constraint_type", "android_api"),
                 ),
             )
     }
@@ -4904,6 +5217,7 @@ object HermesDeviceDiagnosticsBridge {
         "camera_status",
         "radio_signal_status",
         "signal_capability_status",
+        "soc_compatibility_report",
         "signal_awareness_report",
         "agent_environment_report",
         "social_gmail_goal_preflight",

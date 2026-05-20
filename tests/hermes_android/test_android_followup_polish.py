@@ -235,7 +235,31 @@ def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_ca
     assert '"signal_awareness_matrix"' in chat_client
     assert '"signal_workflow_routes"' in chat_client
     assert '"signal_constraint_matrix"' in chat_client
-    assert '"signal_awareness_matrix", "signal_workflow_routes", "signal_constraint_matrix" -> capabilityMatrixRow(row)' in diagnostic_cards
+    assert '"signal_awareness_matrix", "signal_workflow_routes", "signal_constraint_matrix",' in diagnostic_cards
+
+
+def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy_cards():
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    quick_actions = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
+
+    assert '"soc_compatibility_report"' in diagnostics_bridge
+    assert 'socCompatibilityReportJson(appContext)' in diagnostics_bridge
+    assert 'socBackendMatrixRows(' in diagnostics_bridge
+    assert 'socBackendRouteRows(' in diagnostics_bridge
+    assert 'socBackendConstraintRows(' in diagnostics_bridge
+    assert '"soc_backend_matrix"' in diagnostics_bridge
+    assert '"soc_backend_policy_routes"' in diagnostics_bridge
+    assert '"soc_backend_constraint_matrix"' in diagnostics_bridge
+    assert 'MediaTek/Mali/PowerVR coverage' in diagnostics_bridge
+    assert 'Avoid Adreno-only assumptions' in diagnostics_bridge
+    assert 'soc_compatibility_report' in chat_client
+    assert '"soc_backend_matrix"' in chat_client
+    assert '"soc_backend_policy_routes"' in chat_client
+    assert '"soc_backend_constraint_matrix"' in chat_client
+    assert '"soc_backend_matrix", "soc_backend_policy_routes", "soc_backend_constraint_matrix" -> capabilityMatrixRow(row)' in diagnostic_cards
+    assert 'id = "soc_compatibility"' in quick_actions
 
 
 def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan_policy_cards():

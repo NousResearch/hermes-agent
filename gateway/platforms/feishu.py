@@ -1769,9 +1769,16 @@ class FeishuAdapter(BasePlatformAdapter):
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
+        # Determine msg_type once from the full content so that all chunks use
+        # the same type.  Per-chunk _build_outbound_payload can disagree when a
+        # split lands between a plain-text preamble and a markdown-heavy body,
+        # causing the first chunk to render as raw Markdown in the Feishu
+        # client.  See #26841.
+        msg_type = self._resolve_outbound_msg_type(formatted)
+
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+                payload = self._build_chunk_payload(chunk, msg_type)
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -4222,16 +4229,32 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        """Build payload for a single-message send (no chunking)."""
+        msg_type = self._resolve_outbound_msg_type(content)
+        return msg_type, self._build_chunk_payload(content, msg_type)
+
+    @staticmethod
+    def _resolve_outbound_msg_type(content: str) -> str:
+        """Determine the Feishu msg_type for *content*.
+
+        Used once on the full (pre-chunk) text so that every chunk in a
+        multi-part send uses the same type.  See #26841.
+        """
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "text"
         if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "post"
+        return "text"
+
+    @staticmethod
+    def _build_chunk_payload(chunk: str, msg_type: str) -> str:
+        """Build the JSON payload string for *chunk* at the given *msg_type*."""
+        if msg_type == "post":
+            return _build_markdown_post_payload(chunk)
+        return json.dumps({"text": chunk}, ensure_ascii=False)
 
     async def _send_uploaded_file_message(
         self,

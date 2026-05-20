@@ -274,7 +274,7 @@ def _extract_output_tail(
     return tail
 
 
-def _looks_like_error_output(content: str) -> bool:
+def _looks_like_error_output(content: Any) -> bool:
     """Conservative stderr/error detector for tool-result previews.
 
     The old heuristic flagged any preview containing the substring "error",
@@ -283,7 +283,37 @@ def _looks_like_error_output(content: str) -> bool:
       - structured JSON with an ``error`` key
       - structured JSON with ``status`` of error/failed
       - first line starts with a classic error marker
+
+    Accepts ``str``, ``list``, ``dict``, or ``None``.  Non-string types are
+    normalised to str first so the detection logic below always works on
+    plain text:
+
+    * ``list`` — content parts of type ``text`` are extracted and joined
+      (other part types such as ``image_url`` are skipped).  This mirrors
+      the OpenAI ``list[ContentPart]`` scheme used by certain providers
+      for tool message content.
+    * ``dict`` — serialised via ``json.dumps`` so structured error output
+      can be detected by the JSON path below.
+    * everything else — coerced via ``str()``.
     """
+    if content is None:
+        return False
+
+    # Normalise non-string content to plain text for the analysis below.
+    if isinstance(content, list):
+        texts = [
+            part["text"] for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        ]
+        if texts:
+            content = "\n".join(texts)
+        else:
+            content = ""
+    elif isinstance(content, dict):
+        content = json.dumps(content)
+    elif not isinstance(content, str):
+        content = str(content)
+
     if not content:
         return False
 

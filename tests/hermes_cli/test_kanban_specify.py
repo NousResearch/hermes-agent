@@ -335,3 +335,60 @@ def test_cli_specify_author_passed_through(kanban_home, capsys):
     with kb.connect() as conn:
         comments = kb.list_comments(conn, tid)
     assert comments and comments[0].author == "custom-agent"
+
+
+class _ConnProxy:
+    def __init__(self, conn):
+        self._conn = conn
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+        return self._conn.close()
+
+    def __enter__(self):
+        return self._conn.__enter__()
+
+    def __exit__(self, *exc):
+        return self._conn.__exit__(*exc)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def _install_tracking_connect(monkeypatch):
+    opened = []
+    real_connect = kb.connect
+
+    def tracking_connect(*a, **kw):
+        proxy = _ConnProxy(real_connect(*a, **kw))
+        opened.append(proxy)
+        return proxy
+
+    monkeypatch.setattr(spec.kb, "connect", tracking_connect)
+    return opened
+
+
+def test_list_triage_ids_closes_sqlite_connection(kanban_home, monkeypatch):
+    """Regression for #28802: list_triage_ids must close its sqlite handle."""
+    opened = _install_tracking_connect(monkeypatch)
+    for _ in range(5):
+        spec.list_triage_ids()
+    assert opened
+    leaked = [p for p in opened if not p.closed]
+    assert not leaked, f"leak: {len(leaked)}/{len(opened)}"
+
+
+def test_specify_task_closes_sqlite_connection(kanban_home, monkeypatch):
+    """Regression for #28802: specify_task must close both handles."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+    opened = _install_tracking_connect(monkeypatch)
+    content = jsonlib.dumps({"title": "fresh title", "body": "fresh body"})
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid)
+    assert outcome.ok, outcome.reason
+    assert len(opened) >= 2
+    leaked = [p for p in opened if not p.closed]
+    assert not leaked, f"leak: {len(leaked)}/{len(opened)}"

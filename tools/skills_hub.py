@@ -379,14 +379,16 @@ class GitHubSource(SkillSource):
                 logger.debug(f"Failed to search {tap['repo']}: {e}")
                 continue
 
-        # Deduplicate by name, preferring higher trust levels
+        # Deduplicate by identifier, preferring higher trust levels.
+        # identifier is unique per skill; name is not (two configured taps can
+        # publish skills with the same name but different identifiers).
         _trust_rank = {"builtin": 2, "trusted": 1, "community": 0}
         seen = {}
         for r in results:
-            if r.name not in seen:
-                seen[r.name] = r
-            elif _trust_rank.get(r.trust_level, 0) > _trust_rank.get(seen[r.name].trust_level, 0):
-                seen[r.name] = r
+            if r.identifier not in seen:
+                seen[r.identifier] = r
+            elif _trust_rank.get(r.trust_level, 0) > _trust_rank.get(seen[r.identifier].trust_level, 0):
+                seen[r.identifier] = r
         results = list(seen.values())
 
         return results[:limit]

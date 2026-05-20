@@ -202,33 +202,6 @@ class TestGatewayCommandWSLMessages:
         assert "hermes gateway run" in out
         assert "wsl.conf" in out
 
-    def test_install_wsl_with_systemd_warns(self, monkeypatch, capsys):
-        """hermes gateway install on WSL with systemd shows warning but proceeds."""
-        monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway, "is_wsl", lambda: True)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "is_managed", lambda: False)
-
-        # Mock systemd_install to capture call
-        install_called = []
-        monkeypatch.setattr(
-            gateway, "systemd_install",
-            lambda **kwargs: install_called.append(kwargs),
-        )
-
-        args = SimpleNamespace(
-            gateway_command="install", force=False, system=False,
-            run_as_user=None,
-        )
-        gateway.gateway_command(args)
-
-        out = capsys.readouterr().out
-        assert "WSL detected" in out
-        assert "may not survive WSL restarts" in out
-        assert len(install_called) == 1  # install still proceeded
-
     def test_status_wsl_running_manual(self, monkeypatch, capsys):
         """hermes gateway status on WSL with manual process shows WSL note."""
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)

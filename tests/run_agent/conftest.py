@@ -32,3 +32,15 @@ def _fast_retry_backoff(monkeypatch):
         return
 
     monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    # The conversation loop was extracted out of run_agent.py into
+    # ``agent.conversation_loop``, which imports ``jittered_backoff``
+    # directly (``from agent.retry_utils import jittered_backoff``).
+    # Patching ``run_agent.jittered_backoff`` alone misses every retry
+    # path under the new module — tests that exercise rate-limit /
+    # invalid-response / server-error retries burn real wall-clock
+    # seconds per retry. Patch both for full coverage.
+    try:
+        from agent import conversation_loop as _conv_loop
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0)
+    except ImportError:
+        pass

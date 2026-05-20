@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import cli as cli_mod
 from cli import HermesCLI
+from hermes_cli.skin_engine import set_active_skin
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -149,6 +150,7 @@ class TestCLIStatusBar:
             context_length=200_000,
         )
 
+        set_active_skin("default")
         text = cli_obj._build_status_bar_text(width=60)
 
         assert "⚕" in text
@@ -159,6 +161,7 @@ class TestCLIStatusBar:
     def test_build_status_bar_text_handles_missing_agent(self):
         cli_obj = _make_cli()
 
+        set_active_skin("default")
         text = cli_obj._build_status_bar_text(width=100)
 
         assert "⚕" in text

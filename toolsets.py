@@ -306,6 +306,21 @@ TOOLSETS = {
         "includes": []
     },
 
+    "vrchat": {
+        "description": (
+            "VRChat official local OSC tools for chatbox, typing indicators, "
+            "avatar parameters, raw OSC sends, and endpoint status."
+        ),
+        "tools": [
+            "vrchat_chatbox",
+            "vrchat_typing",
+            "vrchat_avatar_param",
+            "vrchat_send_osc",
+            "vrchat_status",
+        ],
+        "includes": [],
+    },
+
 
     # Scenario-specific toolsets
     

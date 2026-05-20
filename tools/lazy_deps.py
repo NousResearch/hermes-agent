@@ -170,6 +170,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
     ),
+    # VRChat official local OSC support.
+    "tool.vrchat": ("python-osc==1.10.2",),
 }
 
 

@@ -63,6 +63,32 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
     return normalized
 
 
+def _normalize_tags(tags: Optional[Any] = None) -> List[str]:
+    """Normalize cron job tags into a unique ordered list.
+
+    Tags are free-form labels used by humans and automation to group jobs
+    (e.g. ``health``, ``leads``, ``side-projects``). Legacy or hand-edited
+    storage may contain missing, null, scalar, or mixed-list values; readers
+    should always see a safe list of non-empty strings.
+    """
+    if tags is None:
+        raw_items: List[Any] = []
+    elif isinstance(tags, str):
+        raw_items = [tags]
+    else:
+        raw_items = list(tags)
+
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = str(item or "").strip()
+        key = text.casefold()
+        if text and key not in seen:
+            normalized.append(text)
+            seen.add(key)
+    return normalized
+
+
 def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     """Return a job dict with canonical `skills` and legacy `skill` fields aligned."""
     normalized = dict(job)
@@ -104,6 +130,7 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     ensure consumers never crash while formatting or running those records.
     """
     normalized = _apply_skill_fields(job)
+    normalized["tags"] = _normalize_tags(normalized.get("tags"))
     job_id = _coerce_job_text(normalized.get("id"), "unknown")
     prompt = _coerce_job_text(normalized.get("prompt"))
     normalized["id"] = job_id
@@ -521,6 +548,7 @@ def create_job(
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
+    tags: Optional[Any] = None,
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
@@ -555,6 +583,9 @@ def create_job(
                           When set, only tools from these toolsets are loaded, reducing
                           token overhead. When omitted, all default tools are loaded.
                           Ignored when ``no_agent=True``.
+        tags: Optional human/automation labels for grouping jobs. Values are
+              trimmed, empty entries are dropped, and duplicates collapse
+              case-insensitively while preserving first spelling/order.
         workdir: Optional absolute path.  When set, the job runs as if launched
                 from that directory: AGENTS.md / CLAUDE.md / .cursorrules from
                 that directory are injected into the system prompt, and the
@@ -605,6 +636,7 @@ def create_job(
     normalized_script = normalized_script or None
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
+    normalized_tags = _normalize_tags(tags)
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
     normalized_no_agent = bool(no_agent)
@@ -660,6 +692,7 @@ def create_job(
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
+        "tags": normalized_tags,
         "workdir": normalized_workdir,
         "profile": normalized_profile,
     }
@@ -753,6 +786,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
+
+        if "tags" in updates:
+            updated["tags"] = _normalize_tags(updates.get("tags"))
 
         if "skills" in updates or "skill" in updates:
             normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))

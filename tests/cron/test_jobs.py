@@ -226,6 +226,36 @@ class TestJobCRUD:
         assert jobs[0]["prompt"] == ""
         assert jobs[0]["schedule_display"] == "every 60m"
         assert jobs[0]["state"] == "scheduled"
+        assert jobs[0]["tags"] == []
+
+    def test_create_job_normalizes_tags(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Daily side-project triage",
+            schedule="every 1d",
+            tags=[" side-projects ", "Health", "", "health", None, "leads"],
+        )
+
+        fetched = get_job(job["id"])
+
+        assert job["tags"] == ["side-projects", "Health", "leads"]
+        assert fetched is not None
+        assert fetched["tags"] == ["side-projects", "Health", "leads"]
+
+    def test_list_jobs_normalizes_legacy_scalar_tags(self, tmp_cron_dir):
+        save_jobs([
+            {
+                "id": "tagged-legacy",
+                "name": "Legacy",
+                "prompt": "Legacy job",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "enabled": True,
+                "tags": " reminders ",
+            }
+        ])
+
+        jobs = list_jobs()
+
+        assert jobs[0]["tags"] == ["reminders"]
 
     def test_remove_job(self, tmp_cron_dir):
         job = create_job(prompt="Temp job", schedule="30m")
@@ -295,6 +325,17 @@ class TestUpdateJob:
         assert updated["enabled"] is False
         fetched = get_job(job["id"])
         assert fetched["enabled"] is False
+
+    def test_update_tags_normalizes_values(self, tmp_cron_dir):
+        job = create_job(prompt="Retag me", schedule="every 1h")
+
+        updated = update_job(job["id"], {"tags": [" Health ", "health", "leads"]})
+
+        assert updated is not None
+        assert updated["tags"] == ["Health", "leads"]
+        fetched = get_job(job["id"])
+        assert fetched is not None
+        assert fetched["tags"] == ["Health", "leads"]
 
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})

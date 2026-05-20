@@ -62,19 +62,23 @@ def _ra():
     return run_agent
 
 
-def _emit_blocked_post_tool_call(
+def _emit_terminal_post_tool_call(
     agent,
     *,
     function_name: str,
     function_args: dict,
-    result: str,
+    result: Any,
     effective_task_id: str,
     tool_call_id: str,
-    error_type: str,
-    error_message: str,
+    duration_ms: int = 0,
+    status: str | None = None,
+    error_type: str | None = None,
+    error_message: str | None = None,
 ) -> None:
     try:
-        from model_tools import _emit_post_tool_call_hook
+        from model_tools import _emit_post_tool_call_hook, _tool_result_observer_fields
+        if status is None:
+            status, error_type, error_message = _tool_result_observer_fields(result)
         _emit_post_tool_call_hook(
             function_name=function_name,
             function_args=function_args,
@@ -84,8 +88,8 @@ def _emit_blocked_post_tool_call(
             tool_call_id=tool_call_id or "",
             turn_id=getattr(agent, "_current_turn_id", "") or "",
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-            duration_ms=0,
-            status="blocked",
+            duration_ms=duration_ms,
+            status=status,
             error_type=error_type,
             error_message=error_message,
         )
@@ -171,13 +175,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         if block_message is not None:
             block_result = json.dumps({"error": block_message}, ensure_ascii=False)
-            _emit_blocked_post_tool_call(
+            _emit_terminal_post_tool_call(
                 agent,
                 function_name=function_name,
                 function_args=function_args,
                 result=block_result,
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
                 error_type="plugin_block",
                 error_message=block_message,
             )
@@ -186,13 +191,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if not guardrail_decision.allows_execution:
                 block_result = agent._guardrail_block_result(guardrail_decision)
                 blocked_by_guardrail = True
-                _emit_blocked_post_tool_call(
+                _emit_terminal_post_tool_call(
                     agent,
                     function_name=function_name,
                     function_args=function_args,
                     result=block_result,
                     effective_task_id=effective_task_id,
                     tool_call_id=getattr(tool_call, "id", "") or "",
+                    status="blocked",
                     error_type="guardrail_block",
                     error_message=getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy",
                 )
@@ -653,13 +659,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             # Tool blocked by plugin policy — return error without executing.
             function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0
-            _emit_blocked_post_tool_call(
+            _emit_terminal_post_tool_call(
                 agent,
                 function_name=function_name,
                 function_args=function_args,
                 result=function_result,
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
                 error_type="plugin_block",
                 error_message=_block_msg,
             )
@@ -668,13 +675,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             # tool result for the original tool_call_id without executing.
             function_result = agent._guardrail_block_result(_guardrail_block_decision)
             tool_duration = 0.0
-            _emit_blocked_post_tool_call(
+            _emit_terminal_post_tool_call(
                 agent,
                 function_name=function_name,
                 function_args=function_args,
                 result=function_result,
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
                 error_type="guardrail_block",
                 error_message=getattr(_guardrail_block_decision, "message", None) or "Tool blocked by guardrail policy",
             )
@@ -877,6 +885,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        _executor_owns_post_hook = (
+            not _execution_blocked
+            and (
+                function_name in {"todo", "session_search", "memory", "clarify", "delegate_task"}
+                or bool(agent._context_engine_tool_names and function_name in agent._context_engine_tool_names)
+                or bool(agent._memory_manager and agent._memory_manager.has_tool(function_name))
+            )
+        )
+        if _executor_owns_post_hook:
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                duration_ms=int(tool_duration * 1000),
+            )
         if not _execution_blocked:
             function_result = agent._append_guardrail_observation(
                 function_name,

@@ -775,6 +775,16 @@ def _emit_post_tool_call_hook(
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
 
+def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str]]:
+    try:
+        parsed_result = json.loads(result) if isinstance(result, str) else result
+        if isinstance(parsed_result, dict) and parsed_result.get("error"):
+            return "error", "tool_error", str(parsed_result.get("error"))
+    except Exception:
+        pass
+    return "ok", None, None
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -919,17 +929,7 @@ def handle_function_call(
                 except Exception:
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
-        status = "ok"
-        error_type = None
-        error_message = None
-        try:
-            parsed_result = json.loads(result) if isinstance(result, str) else result
-            if isinstance(parsed_result, dict) and parsed_result.get("error"):
-                status = "error"
-                error_type = "tool_error"
-                error_message = str(parsed_result.get("error"))
-        except Exception:
-            pass
+        status, error_type, error_message = _tool_result_observer_fields(result)
 
         _emit_post_tool_call_hook(
             function_name=function_name,

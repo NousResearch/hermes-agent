@@ -2234,6 +2234,30 @@ class TestConcurrentToolExecution:
             mock_todo.assert_called_once()
         assert "ok" in result
 
+    def test_invoke_tool_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
+        """Agent-owned tool paths should close observer tool spans."""
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
+            result = agent._invoke_tool("todo", {"todos": []}, "task-1", tool_call_id="todo-1")
+
+        mock_todo.assert_called_once()
+        assert result == '{"ok":true}'
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "todo"
+        assert post_call[1]["tool_call_id"] == "todo-1"
+        assert post_call[1]["status"] == "ok"
+        assert post_call[1]["error_type"] is None
+        assert isinstance(post_call[1]["duration_ms"], int)
+
     def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
         """_invoke_tool should return error JSON when a plugin blocks the tool."""
         monkeypatch.setattr(
@@ -2313,6 +2337,32 @@ class TestConcurrentToolExecution:
         assert post_call[1]["status"] == "blocked"
         assert post_call[1]["error_type"] == "plugin_block"
         assert post_call[1]["error_message"] == "Blocked by policy"
+
+    def test_sequential_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
+        """Sequential built-in tool paths should also close observer tool spans."""
+        tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_todo.assert_called_once()
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "todo"
+        assert post_call[1]["tool_call_id"] == "todo-1"
+        assert post_call[1]["result"] == '{"ok":true}'
+        assert post_call[1]["status"] == "ok"
 
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""

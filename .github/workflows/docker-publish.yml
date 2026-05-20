@@ -100,7 +100,7 @@ jobs:
       # to gha with a per-arch scope; the push step below reuses every
       # layer from this build.
       - name: Build image (amd64, smoke test)
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
         with:
           context: .
           file: Dockerfile
@@ -134,7 +134,7 @@ jobs:
       - name: Push amd64 by digest
         id: push
         if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
         with:
           context: .
           file: Dockerfile
@@ -189,7 +189,7 @@ jobs:
       # to gha with a per-arch scope; the push step below reuses every
       # layer from this build.
       - name: Build image (arm64, smoke test)
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
         with:
           context: .
           file: Dockerfile
@@ -214,7 +214,7 @@ jobs:
       - name: Push arm64 by digest
         id: push
         if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
         with:
           context: .
           file: Dockerfile

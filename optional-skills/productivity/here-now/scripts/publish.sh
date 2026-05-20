@@ -219,9 +219,6 @@ if [[ -f "$TARGET" ]]; then
   fi
   sz=$(wc -c < "$TARGET" | tr -d ' ')
   ct=$(guess_content_type "$TARGET")
-  sz=$(wc -c < "$TARGET" | tr -d ' ')
-  ct=$(guess_content_type "$TARGET")
-  bn=$(basename "$TARGET")
   h=$(compute_sha256 "$TARGET")
   FILES_JSON=$("$JQ_BIN" -n --arg p "$bn" --argjson s "$sz" --arg c "$ct" --arg h "$h" \
     '[{"path":$p,"size":$s,"contentType":$c,"hash":$h}]')
@@ -232,9 +229,6 @@ elif [[ -d "$TARGET" ]]; then
   while IFS= read -r -d '' f; do
     rel="${f#$TARGET/}"
     should_exclude_publish_path "$rel" && continue
-    [[ "$rel" == ".DS_Store" ]] && continue
-    [[ "$(basename "$rel")" == ".DS_Store" ]] && continue
-    [[ "$rel" == ".herenow/fork-meta.json" ]] && continue
     sz=$(wc -c < "$f" | tr -d ' ')
     ct=$(guess_content_type "$f")
     h=$(compute_sha256 "$f")
@@ -420,7 +414,6 @@ STATE_TMP=$(mktemp "$STATE_DIR/state.json.XXXXXX")
 echo "$STATE" | "$JQ_BIN" '.' > "$STATE_TMP"
 chmod 600 "$STATE_TMP" 2>/dev/null || true
 mv "$STATE_TMP" "$STATE_FILE"
-echo "$STATE" | "$JQ_BIN" '.' > "$STATE_FILE"
 
 # Output
 echo "$SITE_URL"

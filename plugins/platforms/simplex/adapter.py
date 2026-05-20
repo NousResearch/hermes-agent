@@ -101,11 +101,11 @@ def _guess_extension(data: bytes) -> str:
 
 
 def _is_image_ext(ext: str) -> bool:
-    return ext.lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp")
+    return ext.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 def _is_audio_ext(ext: str) -> bool:
-    return ext.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".aac")
+    return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
 
 
 # ---------------------------------------------------------------------------
@@ -326,12 +326,12 @@ class SimplexAdapter(BasePlatformAdapter):
         # Filter out messages sent by us (direction == "snd")
         meta = chat_item.get("meta") or {}
         direction = (meta.get("itemStatus") or {}).get("type", "")
-        if direction in ("sndSent", "sndSentDirect", "sndSentViaProxy", "sndNew"):
+        if direction in {"sndSent", "sndSentDirect", "sndSentViaProxy", "sndNew"}:
             return
 
         # Determine chat type and IDs
         chat_type_raw = chat_info.get("type", "")
-        is_group = chat_type_raw in ("group", "groupInfo")
+        is_group = chat_type_raw in {"group", "groupInfo"}
 
         if is_group:
             group_info = chat_info.get("groupInfo") or chat_info.get("group") or {}
@@ -374,7 +374,7 @@ class SimplexAdapter(BasePlatformAdapter):
         media_urls: List[str] = []
         media_types: List[str] = []
         file_info = chat_item.get("file") or {}
-        if file_info and file_info.get("fileStatus") not in ("cancelled", "error"):
+        if file_info and file_info.get("fileStatus") not in {"cancelled", "error"}:
             file_id = file_info.get("fileId")
             file_name = file_info.get("fileName", "file")
             if file_id:

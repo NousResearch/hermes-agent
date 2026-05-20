@@ -286,9 +286,9 @@ def _coerce_bool(value: Any) -> Optional[bool]:
         return value
     if isinstance(value, str):
         v = value.strip().lower()
-        if v in ("true", "1", "yes", "on"):
+        if v in {"true", "1", "yes", "on"}:
             return True
-        if v in ("false", "0", "no", "off"):
+        if v in {"false", "0", "no", "off"}:
             return False
     return None
 

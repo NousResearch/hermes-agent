@@ -345,6 +345,34 @@ Add this to your `~/.hermes/.env`:
 MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
 ```
 
+## Room allowlist (`allowed_rooms`)
+
+Restrict the bot to a fixed set of Matrix rooms. When set, the bot **only** responds in rooms whose ID appears in the list — messages from any other room are silently ignored, even if the bot is mentioned.
+
+**DMs (direct chat rooms) are exempt** from this filter, so authorized users can always reach the bot one-on-one.
+
+```yaml
+matrix:
+  allowed_rooms:
+    - "!abc123def456:matrix.example.org"
+    - "!opsroom789:matrix.example.org"
+```
+
+Or via env var (comma-separated):
+
+```bash
+MATRIX_ALLOWED_ROOMS="!abc123def456:matrix.example.org,!opsroom789:matrix.example.org"
+```
+
+Behavior:
+
+- Empty / unset → no restriction (default).
+- Non-empty → room ID must be on the list. The check runs **before** any other gating (mention requirement, sender allowlist, etc.).
+- Use the room's **internal ID** (`!abc...:server`), not its alias (`#room:server`). You can find a room's internal ID in Element via Room → Settings → Advanced.
+
+See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
+
+
 :::tip
 To find a Room ID: in Element, go to the room → **Settings** → **Advanced** → the **Internal room ID** is shown there (starts with `!`).
 :::
@@ -356,6 +384,23 @@ To find a Room ID: in Element, go to the room → **Settings** → **Advanced** 
 **Cause**: The bot hasn't joined the room, or `MATRIX_ALLOWED_USERS` doesn't include your User ID.
 
 **Fix**: Invite the bot to the room — it auto-joins on invite. Verify your User ID is in `MATRIX_ALLOWED_USERS` (use the full `@user:server` format). Restart the gateway.
+
+### Bot joins rooms but silently drops every message (clock skew)
+
+**Cause**: The host's system clock is set ahead of real time. The Matrix adapter applies a 5-second startup-grace filter (`event_ts < startup_ts - 5`) to ignore events replayed from initial sync. When the wall clock is ahead, every incoming event looks "older than startup" and is dropped before reaching the message handler — the bot appears connected but never replies. See [#12614](https://github.com/NousResearch/hermes-agent/issues/12614).
+
+**Symptom**: Gateway log shows `Matrix: dropped N live events as 'too old' more than 30s after startup`.
+
+**Fix**: Sync the host clock with NTP and restart the bot:
+
+```bash
+# Debian/Ubuntu
+sudo timedatectl set-ntp true
+timedatectl status   # confirm "System clock synchronized: yes"
+
+# macOS
+sudo sntp -sS time.apple.com
+```
 
 ### "Failed to authenticate" / "whoami failed" on startup
 

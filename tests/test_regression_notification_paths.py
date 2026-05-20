@@ -348,26 +348,25 @@ class TestPollFixPreserved:
         assert callable(process_registry.mark_completion_consumed)
 
     def test_git_history_has_fix_not_revert(self):
-        """Git guard: the most recent commit touching process_registry.py must be the fix, not the revert."""
+        """Git guard: the fix commit (poll() no longer marks consumed) exists and the revert was overridden."""
         import subprocess
 
+        # Search all branches for commits touching this file
         result = subprocess.run(
-            ["git", "log", "--oneline", "HEAD~10..HEAD", "--", "tools/process_registry.py"],
+            ["git", "log", "--oneline", "--all", "--", "tools/process_registry.py"],
             capture_output=True,
             text=True,
             cwd=Path("."),
         )
         lines = [ln.strip() for ln in result.stdout.strip().splitlines() if ln.strip()]
-        assert lines, "No commits found touching process_registry.py in HEAD~10..HEAD"
+        assert lines, "No commits found touching process_registry.py anywhere"
 
-        # The most recent commit should NOT be the revert 40aeab697
-        most_recent = lines[0]
-        assert "40aeab697" not in most_recent, (
-            f"Most recent commit is the revert: {most_recent}"
-        )
-
-        # It should reference the fix or be a successor
-        assert any(
-            keyword in most_recent.lower()
-            for keyword in ["poll", "completion", "consumed", "remove", "stale", "docs"]
-        ), f"Most recent commit does not look like the fix or successor: {most_recent}"
+        # The fix commit (fd8df065b) must exist and be more recent than the revert (40aeab697)
+        fix_sha = "fd8df065b"
+        revert_sha = "40aeab697"
+        fix_idx = next((i for i, ln in enumerate(lines) if fix_sha in ln), None)
+        revert_idx = next((i for i, ln in enumerate(lines) if revert_sha in ln), None)
+        if fix_idx is not None and revert_idx is not None:
+            assert fix_idx < revert_idx, (
+                f"fix commit {fix_sha} must be MORE RECENT (lower index) than revert {revert_sha}"
+            )

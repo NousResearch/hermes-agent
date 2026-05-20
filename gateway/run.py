@@ -8545,6 +8545,7 @@ class GatewayRunner:
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
+                    session_id=agent_result.get("session_id") or session_entry.session_id,
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,

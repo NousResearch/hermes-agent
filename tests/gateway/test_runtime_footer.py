@@ -8,8 +8,10 @@ import os
 import pytest
 
 from gateway.runtime_footer import (
+    _build_footer_script_payload,
     _home_relative_cwd,
     _model_short,
+    _script_metrics_to_footer_kwargs,
     build_footer_line,
     format_runtime_footer,
     resolve_footer_config,
@@ -239,7 +241,11 @@ def test_format_footer_omits_token_breakdown_when_missing():
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {
+        "enabled": False,
+        "fields": ["model", "context_pct", "cwd"],
+        "script": None,
+    }
 
 
 
@@ -290,6 +296,73 @@ def test_resolve_ignores_malformed_config():
     user = {"display": {"runtime_footer": "on"}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is False
+
+
+def test_resolve_footer_config_carries_script_path():
+    user = {
+        "display": {
+            "runtime_footer": {
+                "enabled": True,
+                "script": "~/bin/footer-metrics.py",
+            }
+        }
+    }
+    cfg = resolve_footer_config(user, "slack")
+    assert cfg["enabled"] is True
+    assert cfg["script"] == "~/bin/footer-metrics.py"
+
+
+def test_build_footer_script_payload_contains_runtime_metrics():
+    payload = _build_footer_script_payload(
+        session_id="sess-123",
+        platform_key="slack",
+        model="copilot/gpt-5.4",
+        context_tokens=1234,
+        context_length=8000,
+        cwd="/tmp/project",
+        total_tokens=2222,
+        api_calls=5,
+        estimated_cost_usd=0.015,
+        cost_status="estimated",
+        prompt_tokens=1000,
+        completion_tokens=400,
+        cache_read_tokens=800,
+        cache_write_tokens=22,
+        reasoning_tokens=17,
+    )
+    assert payload["session_id"] == "sess-123"
+    assert payload["platform"] == "slack"
+    assert payload["metrics"]["total_tokens"] == 2222
+    assert payload["metrics"]["estimated_cost_usd"] == 0.015
+    assert payload["context"]["length"] == 8000
+
+
+def test_script_metrics_to_footer_kwargs_maps_known_fields_only():
+    kwargs = _script_metrics_to_footer_kwargs(
+        {
+            "total_tokens": 9000,
+            "api_calls": 7,
+            "estimated_cost_usd": 0.123,
+            "cost_status": "estimated",
+            "prompt_tokens": 4000,
+            "completion_tokens": 1000,
+            "cache_read_tokens": 200,
+            "cache_write_tokens": 10,
+            "reasoning_tokens": 99,
+            "ignored": "value",
+        }
+    )
+    assert kwargs == {
+        "total_tokens": 9000,
+        "api_calls": 7,
+        "estimated_cost_usd": 0.123,
+        "cost_status": "estimated",
+        "prompt_tokens": 4000,
+        "completion_tokens": 1000,
+        "cache_read_tokens": 200,
+        "cache_write_tokens": 10,
+        "reasoning_tokens": 99,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -386,3 +459,71 @@ def test_build_footer_no_data_returns_empty_even_when_enabled():
     # With no TERMINAL_CWD env either
     if not os.environ.get("TERMINAL_CWD"):
         assert out == ""
+
+
+def test_build_footer_uses_script_metrics_when_configured(tmp_path):
+    script = tmp_path / "footer_metrics.py"
+    script.write_text(
+        """
+import json, sys
+payload = json.load(sys.stdin)
+assert payload['session_id'] == 'sess-proxy'
+json.dump({
+    'total_tokens': 6789,
+    'api_calls': 4,
+    'estimated_cost_usd': 0.042,
+    'cost_status': 'estimated'
+}, sys.stdout)
+""".strip()
+    )
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["tokens", "api_calls", "cost"],
+                    "script": str(script),
+                }
+            }
+        },
+        platform_key="slack",
+        session_id="sess-proxy",
+        model="copilot/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        cwd="/tmp/project",
+    )
+    assert out == "6,789 tok · 4 calls · ~$0.042"
+
+
+def test_build_footer_script_metrics_override_missing_inline_metrics(tmp_path):
+    script = tmp_path / "footer_metrics.py"
+    script.write_text(
+        """
+import json, sys
+json.dump({
+    'prompt_tokens': 1200,
+    'completion_tokens': 300,
+    'cache_read_tokens': 50,
+    'reasoning_tokens': 25,
+}, sys.stdout)
+""".strip()
+    )
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["token_breakdown"],
+                    "script": str(script),
+                }
+            }
+        },
+        platform_key="slack",
+        session_id="sess-proxy",
+        model="copilot/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        cwd="/tmp/project",
+    )
+    assert out == "tok in 1,200 · out 300 · cache r 50 · reason 25"

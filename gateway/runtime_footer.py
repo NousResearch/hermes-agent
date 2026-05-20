@@ -9,6 +9,7 @@ Config (``~/.hermes/config.yaml``)::
       runtime_footer:
         enabled: true
         fields: [model, context_pct, tokens, api_calls, cost]
+        script: ~/bin/footer-metrics.py
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -23,6 +24,12 @@ Supported fields:
 - cost
 - token_breakdown
 
+Optional script support:
+- ``runtime_footer.script`` points to a local command or script path
+- Hermes runs it outside the model path while posting the final response
+- The script receives JSON on stdin with session/runtime metadata
+- The script may return JSON metrics on stdout to populate footer fields
+
 The footer is appended to the final response text in ``gateway/run.py`` right
 before returning the response to the adapter send path — so it only lands on
 the final message a user sees, not on tool-progress updates or streaming
@@ -31,11 +38,30 @@ partials.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import shlex
+import subprocess
+import sys
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+_KNOWN_SCRIPT_METRIC_KEYS: tuple[str, ...] = (
+    "total_tokens",
+    "api_calls",
+    "estimated_cost_usd",
+    "cost_status",
+    "prompt_tokens",
+    "completion_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+)
+_SCRIPT_TIMEOUT_SECONDS = 5
 _SEP = " · "
+
+logger = logging.getLogger(__name__)
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -136,6 +162,128 @@ def _format_token_breakdown(
 
 
 
+def _resolve_footer_script_argv(script: str) -> list[str]:
+    raw = (script or "").strip()
+    if not raw:
+        return []
+    expanded = os.path.expanduser(raw)
+    if os.path.isfile(expanded):
+        lower = expanded.lower()
+        if lower.endswith(".py"):
+            return [sys.executable, expanded]
+        if lower.endswith((".sh", ".bash")):
+            return ["bash", expanded]
+        return [expanded]
+    try:
+        return shlex.split(expanded)
+    except Exception:
+        return []
+
+
+
+def _build_footer_script_payload(
+    *,
+    session_id: Optional[str],
+    platform_key: Optional[str],
+    model: Optional[str],
+    context_tokens: int,
+    context_length: Optional[int],
+    cwd: Optional[str],
+    total_tokens: Optional[int],
+    api_calls: Optional[int],
+    estimated_cost_usd: Optional[float],
+    cost_status: Optional[str],
+    prompt_tokens: Optional[int],
+    completion_tokens: Optional[int],
+    cache_read_tokens: Optional[int],
+    cache_write_tokens: Optional[int],
+    reasoning_tokens: Optional[int],
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "session_id": session_id or "",
+        "platform": platform_key or "",
+        "model": model or "",
+        "cwd": cwd or os.environ.get("TERMINAL_CWD", ""),
+        "hermes_home": os.environ.get("HERMES_HOME", ""),
+        "context": {
+            "tokens": context_tokens,
+            "length": context_length,
+        },
+        "metrics": {
+            "total_tokens": total_tokens,
+            "api_calls": api_calls,
+            "estimated_cost_usd": estimated_cost_usd,
+            "cost_status": cost_status,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "reasoning_tokens": reasoning_tokens,
+        },
+    }
+
+
+
+def _script_metrics_to_footer_kwargs(script_output: Any) -> dict[str, Any]:
+    if not isinstance(script_output, dict):
+        return {}
+    metrics_obj = script_output.get("metrics")
+    metrics: dict[str, Any]
+    if isinstance(metrics_obj, dict):
+        metrics = metrics_obj
+    else:
+        metrics = script_output
+    return {
+        key: metrics[key]
+        for key in _KNOWN_SCRIPT_METRIC_KEYS
+        if key in metrics
+    }
+
+
+
+def _load_footer_script_metrics(script: str, payload: dict[str, Any]) -> dict[str, Any]:
+    argv = _resolve_footer_script_argv(script)
+    if not argv:
+        logger.debug("runtime_footer script could not be resolved: %r", script)
+        return {}
+
+    try:
+        proc = subprocess.run(
+            argv,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=_SCRIPT_TIMEOUT_SECONDS,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired:
+        logger.debug("runtime_footer script timed out: %s", script)
+        return {}
+    except FileNotFoundError:
+        logger.debug("runtime_footer script not found: %s", script)
+        return {}
+    except PermissionError:
+        logger.debug("runtime_footer script not executable: %s", script)
+        return {}
+    except Exception as exc:
+        logger.debug("runtime_footer script failed: %s", exc)
+        return {}
+
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        return {}
+
+    try:
+        parsed = json.loads(stdout)
+    except Exception:
+        logger.debug("runtime_footer script returned non-JSON stdout")
+        return {}
+
+    return _script_metrics_to_footer_kwargs(parsed)
+
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,
@@ -147,7 +295,7 @@ def resolve_footer_config(
         2. ``display.runtime_footer``
         3. ``display.platforms.<platform_key>.runtime_footer``
     """
-    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
+    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS), "script": None}
     cfg = (user_config or {}).get("display") or {}
 
     global_cfg = cfg.get("runtime_footer")
@@ -156,6 +304,8 @@ def resolve_footer_config(
             resolved["enabled"] = bool(global_cfg.get("enabled"))
         if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
             resolved["fields"] = [str(f) for f in global_cfg["fields"]]
+        if "script" in global_cfg:
+            resolved["script"] = str(global_cfg.get("script") or "").strip() or None
 
     if platform_key:
         platforms = cfg.get("platforms") or {}
@@ -167,6 +317,8 @@ def resolve_footer_config(
                     resolved["enabled"] = bool(plat_footer.get("enabled"))
                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
+                if "script" in plat_footer:
+                    resolved["script"] = str(plat_footer.get("script") or "").strip() or None
 
     return resolved
 
@@ -242,6 +394,7 @@ def build_footer_line(
     *,
     user_config: dict[str, Any] | None,
     platform_key: str | None,
+    session_id: Optional[str] = None,
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
@@ -265,19 +418,53 @@ def build_footer_line(
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
+
+    footer_metrics = {
+        "total_tokens": total_tokens,
+        "api_calls": api_calls,
+        "estimated_cost_usd": estimated_cost_usd,
+        "cost_status": cost_status,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "reasoning_tokens": reasoning_tokens,
+    }
+
+    script = cfg.get("script")
+    if script:
+        script_payload = _build_footer_script_payload(
+            session_id=session_id,
+            platform_key=platform_key,
+            model=model,
+            context_tokens=context_tokens,
+            context_length=context_length,
+            cwd=cwd,
+            total_tokens=total_tokens,
+            api_calls=api_calls,
+            estimated_cost_usd=estimated_cost_usd,
+            cost_status=cost_status,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+        footer_metrics.update(_load_footer_script_metrics(script, script_payload))
+
     return format_runtime_footer(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
-        total_tokens=total_tokens,
-        api_calls=api_calls,
-        estimated_cost_usd=estimated_cost_usd,
-        cost_status=cost_status,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        cache_read_tokens=cache_read_tokens,
-        cache_write_tokens=cache_write_tokens,
-        reasoning_tokens=reasoning_tokens,
+        total_tokens=footer_metrics.get("total_tokens"),
+        api_calls=footer_metrics.get("api_calls"),
+        estimated_cost_usd=footer_metrics.get("estimated_cost_usd"),
+        cost_status=footer_metrics.get("cost_status"),
+        prompt_tokens=footer_metrics.get("prompt_tokens"),
+        completion_tokens=footer_metrics.get("completion_tokens"),
+        cache_read_tokens=footer_metrics.get("cache_read_tokens"),
+        cache_write_tokens=footer_metrics.get("cache_write_tokens"),
+        reasoning_tokens=footer_metrics.get("reasoning_tokens"),
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

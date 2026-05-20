@@ -1,0 +1,11 @@
+# infra/terraform/s3-skills-bucket/terraform.tfvars.example
+#
+# Copy to terraform.tfvars and fill in your values before running:
+#   cp terraform.tfvars.example terraform.tfvars
+#   terraform plan   # review
+#   terraform apply  # after Blake approves
+
+aws_region            = "us-east-1"
+bucket_name           = "hermes-saas-skills"
+fargate_task_role_arn = "arn:aws:iam::162471567408:role/hermes-fargate-task-role"
+environment           = "prod"

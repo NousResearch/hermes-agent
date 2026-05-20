@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
@@ -257,7 +260,8 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
             key_resp = client.get(key_url, headers=headers)
             key_resp.raise_for_status()
             key_data = (key_resp.json() or {}).get("data") or {}
-        except Exception:
+        except Exception as e:
+            logger.debug("Could not fetch OpenRouter key metadata: %s", e)
             key_data = {}
     total_credits = float(credits.get("total_credits") or 0.0)
     total_usage = float(credits.get("total_usage") or 0.0)
@@ -321,6 +325,7 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
-    except Exception:
+    except Exception as e:
+        logger.debug("Account usage fetch failed for provider %r: %s", provider, e)
         return None
     return None

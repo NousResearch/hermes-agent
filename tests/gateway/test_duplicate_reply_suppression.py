@@ -259,6 +259,27 @@ class TestEmptyResponseNotSuppressed:
     for that') and then silence — the '(empty)' sentinel is swallowed by
     already_sent=True."""
 
+
+class TestPartialDeliverySkipsRetry:
+    @pytest.mark.asyncio
+    async def test_send_with_retry_does_not_replay_partially_delivered_chunks(self):
+        adapter = StubAdapter()
+        partial = SendResult(
+            success=False,
+            error="connection reset by peer",
+            raw_response={
+                "message_ids": ["msg-1", "msg-2"],
+                "partial_delivery": True,
+            },
+            retryable=True,
+        )
+        adapter.send = AsyncMock(return_value=partial)
+
+        result = await adapter._send_with_retry(chat_id="c1", content="hello")
+
+        assert result is partial
+        adapter.send.assert_awaited_once()
+
     def _make_mock_stream_consumer(self, already_sent=False, final_response_sent=False):
         return SimpleNamespace(
             already_sent=already_sent,

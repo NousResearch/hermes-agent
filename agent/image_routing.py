@@ -169,12 +169,21 @@ def _lookup_supports_vision(
     Consults the user's ``supports_vision`` override in config.yaml first
     (so custom/local models declared as vision-capable don't fall through to
     text routing in ``auto`` mode), then falls back to models.dev.
+    For providers not in the models.dev mapping (e.g. "custom"), also checks
+    the model name for vision indicators like "-image-" as a heuristic.
     """
     override = _supports_vision_override(cfg, provider, model)
     if override is not None:
         return override
     if not provider or not model:
         return None
+
+    # Quick heuristic for custom/local providers that don't appear in
+    # models.dev — names like "qwen3.6-35b-a3b-coding-image-long-gpu"
+    # are vision-capable by convention.
+    if "-image-" in model.lower():
+        return True
+
     try:
         from agent.models_dev import get_model_capabilities
         caps = get_model_capabilities(provider, model)

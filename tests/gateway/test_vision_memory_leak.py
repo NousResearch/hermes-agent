@@ -60,6 +60,30 @@ class TestEnrichMessageWithVision:
         assert "User details and preferences" not in out
         assert "System note" not in out
 
+    def test_retry_after_first_failure_succeeds(self, gateway_runner):
+        """#28972: auto-vision retries once on success=false; second attempt's
+        analysis is embedded without the kawaii fallback string."""
+        fail = json.dumps({"success": False, "error": "transient"})
+        ok = json.dumps({"success": True, "analysis": "A red bicycle."})
+        mock = AsyncMock(side_effect=[fail, ok])
+        with patch("tools.vision_tools.vision_analyze_tool", new=mock), \
+             patch("asyncio.sleep", new=AsyncMock(return_value=None)):
+            out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
+        assert "red bicycle" in out
+        assert "couldn't quite see it" not in out
+        assert mock.await_count == 2
+
+    def test_retry_both_fail_emits_fallback(self, gateway_runner):
+        """When both attempts fail, the kawaii fallback is preserved so the
+        agent can still recover with a manual vision_analyze call."""
+        fail = json.dumps({"success": False, "error": "transient"})
+        mock = AsyncMock(side_effect=[fail, fail])
+        with patch("tools.vision_tools.vision_analyze_tool", new=mock), \
+             patch("asyncio.sleep", new=AsyncMock(return_value=None)):
+            out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
+        assert "couldn't quite see it" in out
+        assert mock.await_count == 2
+
     def test_fenced_leak_stripped_plugin_header_preserved(self, gateway_runner):
         """The fenced wrapper is stripped; plugin-specific text outside the
         fence (e.g. a "## Honcho Context" header) is left to the plugin layer.

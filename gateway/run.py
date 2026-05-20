@@ -14223,6 +14223,22 @@ class GatewayRunner:
                     user_prompt=analysis_prompt,
                 )
                 result = json.loads(result_json)
+                # #28972: Discord's attachment cache occasionally lags the
+                # first auto-vision call (file exists but not yet flushed /
+                # provider URL still propagating). The manual retry from the
+                # agent always succeeds, so a single short backoff retry here
+                # removes the duplicate vision_analyze call.
+                if not result.get("success"):
+                    logger.debug(
+                        "Auto-vision first attempt failed for %s; retrying once",
+                        path,
+                    )
+                    await asyncio.sleep(1.0)
+                    result_json = await vision_analyze_tool(
+                        image_url=path,
+                        user_prompt=analysis_prompt,
+                    )
+                    result = json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
                     description = sanitize_context(description)

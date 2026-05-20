@@ -22,9 +22,26 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: ./.github/actions/nix-setup
         with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          persist-credentials: false
+
+      - name: Install Nix from trusted pinned action
+        uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
+
+      - name: Configure Cachix authenticated cache on trusted pushes
+        if: github.event_name == 'push'
+        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c # v17
+        with:
+          name: hermes-agent
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        continue-on-error: true
+
+      - name: Configure Cachix read-only cache on PRs
+        if: github.event_name == 'pull_request'
+        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c # v17
+        with:
+          name: hermes-agent
+        continue-on-error: true
 
       - name: Resolve head SHA
         if: github.event_name == 'pull_request'

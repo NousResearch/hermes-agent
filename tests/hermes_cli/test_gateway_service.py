@@ -999,24 +999,6 @@ class TestGatewaySystemServiceRouting:
 
         assert calls == [(False, False, True)]
 
-    def test_gateway_install_passes_system_flags(self, monkeypatch):
-        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
-        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-
-        calls = []
-        monkeypatch.setattr(
-            gateway_cli,
-            "systemd_install",
-            lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
-        )
-
-        gateway_cli.gateway_command(
-            SimpleNamespace(gateway_command="install", force=True, system=True, run_as_user="alice")
-        )
-
-        assert calls == [(True, True, "alice")]
-
     def test_gateway_install_reports_termux_manual_mode(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)

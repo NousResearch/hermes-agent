@@ -1109,7 +1109,12 @@ def run_doctor(args):
             ssh_port = os.getenv("TERMINAL_SSH_PORT")
             ssh_key = os.getenv("TERMINAL_SSH_KEY")
             target = f"{ssh_user}@{ssh_host}" if ssh_user else ssh_host
-            cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+            cmd = [
+                "ssh",
+                "-o", "ConnectTimeout=5",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+            ]
             if ssh_port:
                 cmd += ["-p", ssh_port]
             if ssh_key:

@@ -285,6 +285,55 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
     assert "snapshot filesystem only" in out
 
 
+def test_doctor_ssh_probe_matches_runtime_backend_options(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("model:\n  provider: auto\n", encoding="utf-8")
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_SSH_HOST", "hermes-terminal")
+    monkeypatch.setenv("TERMINAL_SSH_USER", "hermes")
+    monkeypatch.setenv("TERMINAL_SSH_PORT", "2222")
+    monkeypatch.setenv("TERMINAL_SSH_KEY", "/opt/data/ssh/hermes_terminal")
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    ssh_commands = []
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "ssh":
+            ssh_commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert ssh_commands == [[
+        "ssh",
+        "-o", "ConnectTimeout=5",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-p", "2222",
+        "-i", "/opt/data/ssh/hermes_terminal",
+        "hermes@hermes-terminal",
+        "echo ok",
+    ]]
+    assert "SSH connection to hermes-terminal" in buf.getvalue()
+
+
 # ── Memory provider section (doctor should only check the *active* provider) ──
 
 

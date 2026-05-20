@@ -67,6 +67,8 @@ object HermesDeviceDiagnosticsBridge {
                 wifiScanJson(appContext, arguments, "wifi_ap_details").toString()
             "wifi_export", "wifi_analyzer_export", "wifi_access_point_export", "export_wifi" ->
                 wifiScanJson(appContext, arguments, "wifi_export").toString()
+            "bluetooth_analyzer_report", "bluetooth_readiness_report", "bluetooth_feature_report", "bluetooth_scan_policy", "nearby_bluetooth_report" ->
+                bluetoothAnalyzerReportJson(appContext, arguments).toString()
             "bluetooth_scan", "bluetooth_scanner", "nearby_bluetooth", "ble_scan", "bluetooth_signals" ->
                 bluetoothScanJson(appContext, arguments).toString()
             "sensor_snapshot", "sensors", "sensor_status", "sample_sensors", "motion_sensors" ->
@@ -562,6 +564,123 @@ object HermesDeviceDiagnosticsBridge {
                         ),
                     ),
             )
+    }
+
+    fun bluetoothAnalyzerReportJson(context: Context, arguments: JSONObject = JSONObject()): JSONObject {
+        val appContext = context.applicationContext
+        val bluetoothManager = appContext.getSystemService(BluetoothManager::class.java)
+        val adapter = bluetoothManager?.adapter ?: runCatching { BluetoothAdapter.getDefaultAdapter() }.getOrNull()
+        val packageManager = appContext.packageManager
+        val permissionStatus = bluetoothPermissionStatusJson(appContext)
+        val bluetoothAvailable = adapter != null || packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH)
+        val bluetoothLeSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
+        val bluetoothEnabled = adapter?.let { runCatching { it.isEnabled }.getOrDefault(false) } ?: false
+        val canReadAnyBluetoothRows = adapter != null &&
+            (permissionStatus.optBoolean("can_read_paired_devices", false) || permissionStatus.optBoolean("can_scan_nearby_devices", false))
+        val passiveArguments = JSONObject(arguments.toString()).put("refresh", false)
+        val scanResult = if (canReadAnyBluetoothRows) {
+            bluetoothScanJson(appContext, passiveArguments)
+        } else {
+            null
+        }
+        val scanSucceeded = scanResult?.optBoolean("success", false) == true
+        val devices = scanResult?.optJSONArray("bluetooth_devices") ?: JSONArray()
+        val metadataSummary = scanResult?.optJSONArray("bluetooth_metadata_summary") ?: JSONArray()
+        val serviceUuidCount = scanResult?.optInt("bluetooth_service_uuid_count", bluetoothDistinctStringCount(devices, "service_uuids"))
+            ?: bluetoothDistinctStringCount(devices, "service_uuids")
+        val manufacturerIdCount = scanResult?.optInt("bluetooth_manufacturer_id_count", bluetoothDistinctStringCount(devices, "manufacturer_ids"))
+            ?: bluetoothDistinctStringCount(devices, "manufacturer_ids")
+        val rssiDeviceCount = bluetoothRssiDeviceCount(devices)
+        val scanStatus = bluetoothScanStatusJson(
+            bluetoothAvailable = bluetoothAvailable,
+            bluetoothLeSupported = bluetoothLeSupported,
+            bluetoothEnabled = bluetoothEnabled,
+            permissionStatus = permissionStatus,
+            scanResult = scanResult,
+            returnedDeviceCount = devices.length(),
+            metadataCount = metadataSummary.length(),
+            serviceUuidCount = serviceUuidCount,
+            manufacturerIdCount = manufacturerIdCount,
+            rssiDeviceCount = rssiDeviceCount,
+        )
+        val featureRows = bluetoothAnalyzerFeatureRows(
+            bluetoothAvailable = bluetoothAvailable,
+            bluetoothLeSupported = bluetoothLeSupported,
+            bluetoothEnabled = bluetoothEnabled,
+            permissionStatus = permissionStatus,
+            deviceCount = devices.length(),
+            metadataCount = metadataSummary.length(),
+            serviceUuidCount = serviceUuidCount,
+            manufacturerIdCount = manufacturerIdCount,
+            rssiDeviceCount = rssiDeviceCount,
+            categoryCount = bluetoothDistinctCategoryCount(devices),
+        )
+        val routeRows = bluetoothAnalyzerWorkflowRows(
+            permissionStatus = permissionStatus,
+            deviceCount = devices.length(),
+            serviceUuidCount = serviceUuidCount,
+            manufacturerIdCount = manufacturerIdCount,
+            rssiDeviceCount = rssiDeviceCount,
+        )
+        val policyRows = bluetoothScanPolicyRows(
+            bluetoothAvailable = bluetoothAvailable,
+            bluetoothLeSupported = bluetoothLeSupported,
+            bluetoothEnabled = bluetoothEnabled,
+            permissionStatus = permissionStatus,
+            scanStatus = scanStatus,
+            scanSucceeded = scanSucceeded,
+        )
+        val result = if (scanSucceeded) JSONObject(scanResult.toString()) else JSONObject()
+        val cards = JSONArray()
+            .put(
+                graphCard(
+                    title = "Bluetooth Analyzer Readiness",
+                    body = "${featureRows.length()} feature row(s) covering paired inventory, BLE nearby scans, RSSI proximity, service UUIDs, manufacturer IDs, category hints, card rendering, and safety boundaries.",
+                    graphType = "bluetooth_analyzer_feature_matrix",
+                    rows = featureRows,
+                ),
+            )
+            .put(
+                graphCard(
+                    title = "Bluetooth Analyzer Routes",
+                    body = "${routeRows.length()} route row(s) for choosing nearby scan, paired inventory, proximity explanation, service/manufacturer metadata, or scan-policy flows.",
+                    graphType = "bluetooth_analyzer_workflow_routes",
+                    rows = routeRows,
+                ),
+            )
+            .put(
+                graphCard(
+                    title = "Bluetooth Scan Policy",
+                    body = "${policyRows.length()} service, enablement, permission, legacy-location, scan-cadence, and privacy row(s) for honest Bluetooth analysis.",
+                    graphType = "bluetooth_scan_policy_matrix",
+                    rows = policyRows,
+                ),
+            )
+        scanResult?.optJSONArray("cards")?.let { scanCards ->
+            for (index in 0 until scanCards.length()) {
+                cards.put(scanCards.getJSONObject(index))
+            }
+        }
+        return result
+            .put("success", true)
+            .put("action", "bluetooth_analyzer_report")
+            .put("report_scope", "Bluetooth Analyzer readiness and routing report for paired devices, nearby BLE devices, RSSI proximity graphs, service UUIDs, manufacturer IDs, category metadata, scan cadence, permissions, and privacy boundaries.")
+            .put("bluetooth_scan_permission_status", permissionStatus)
+            .put("bluetooth_scan_status", scanStatus)
+            .put("bluetooth_devices", devices)
+            .put("bluetooth_metadata_summary", metadataSummary)
+            .put("bluetooth_analyzer_feature_matrix", featureRows)
+            .put("bluetooth_analyzer_workflow_routes", routeRows)
+            .put("bluetooth_scan_policy_matrix", policyRows)
+            .put("bluetooth_device_count", devices.length())
+            .put("bluetooth_metadata_count", metadataSummary.length())
+            .put("bluetooth_service_uuid_count", serviceUuidCount)
+            .put("bluetooth_manufacturer_id_count", manufacturerIdCount)
+            .put("bluetooth_analyzer_feature_count", featureRows.length())
+            .put("ready_bluetooth_analyzer_feature_count", countReadyRows(featureRows))
+            .put("bluetooth_analyzer_workflow_route_count", routeRows.length())
+            .put("bluetooth_scan_policy_count", policyRows.length())
+            .put("cards", cards)
     }
 
     fun sensorSnapshotJson(context: Context, arguments: JSONObject = JSONObject()): JSONObject {
@@ -1709,6 +1828,304 @@ object HermesDeviceDiagnosticsBridge {
             )
     }
 
+    private fun bluetoothAnalyzerFeatureRows(
+        bluetoothAvailable: Boolean,
+        bluetoothLeSupported: Boolean,
+        bluetoothEnabled: Boolean,
+        permissionStatus: JSONObject,
+        deviceCount: Int,
+        metadataCount: Int,
+        serviceUuidCount: Int,
+        manufacturerIdCount: Int,
+        rssiDeviceCount: Int,
+        categoryCount: Int,
+    ): JSONArray {
+        val canReadPaired = permissionStatus.optBoolean("can_read_paired_devices", false)
+        val canScanNearby = permissionStatus.optBoolean("can_scan_nearby_devices", false)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_parity",
+                    label = "Identify paired devices",
+                    ready = bluetoothAvailable && canReadPaired,
+                    valueLabel = if (deviceCount > 0) "$deviceCount device row(s)" else if (canReadPaired) "inventory ready" else "permission gated",
+                    detail = "Hermes can read bonded-device identity, type, class, and pairing metadata when Android grants Bluetooth connect access.",
+                    recommendation = "Use bluetooth_scan for paired-device inventory before explaining remembered headsets, wearables, controllers, or beacons.",
+                    fraction = if (bluetoothAvailable && canReadPaired) 0.9f else 0.4f,
+                    extra = JSONObject()
+                        .put("feature_source", "Android bonded devices")
+                        .put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_parity",
+                    label = "Scan nearby BLE devices",
+                    ready = bluetoothLeSupported && bluetoothEnabled && canScanNearby,
+                    valueLabel = when {
+                        bluetoothLeSupported && bluetoothEnabled && canScanNearby -> "BLE scan ready"
+                        !bluetoothLeSupported -> "no BLE feature"
+                        !bluetoothEnabled -> "Bluetooth disabled"
+                        else -> "permission gated"
+                    },
+                    detail = "Nearby BLE rows come from Android BluetoothLeScanner and can include advertisements, RSSI, service UUIDs, manufacturer IDs, and connectability hints.",
+                    recommendation = "Use refresh=true on bluetooth_scan only when the user needs a fresh nearby-device sample.",
+                    fraction = if (bluetoothLeSupported && bluetoothEnabled && canScanNearby) 0.95f else if (bluetoothLeSupported) 0.45f else 0.2f,
+                    extra = JSONObject()
+                        .put("feature_source", "Android BluetoothLeScanner")
+                        .put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_parity",
+                    label = "RSSI proximity graph",
+                    ready = rssiDeviceCount > 0 || (bluetoothLeSupported && canScanNearby),
+                    valueLabel = if (rssiDeviceCount > 0) "$rssiDeviceCount RSSI row(s)" else "scan route ready",
+                    detail = "Bluetooth graph cards convert RSSI and optional TX power into proximity labels and distance estimates when Android exposes them.",
+                    recommendation = "Use bluetooth_scan for proximity or beacon-strength questions, and explain when paired rows do not expose RSSI.",
+                    fraction = if (rssiDeviceCount > 0) 1f else if (bluetoothLeSupported && canScanNearby) 0.75f else 0.35f,
+                    extra = JSONObject()
+                        .put("feature_source", "BLE RSSI metadata")
+                        .put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_parity",
+                    label = "Service UUID metadata",
+                    ready = serviceUuidCount > 0 || (bluetoothLeSupported && canScanNearby),
+                    valueLabel = if (serviceUuidCount > 0) "$serviceUuidCount UUID group(s)" else "advertisement gated",
+                    detail = "Service UUIDs help the agent infer device role, such as heart-rate, battery, HID, audio, beacon, or vendor service surfaces.",
+                    recommendation = "Prefer service UUID rows before claiming a device capability; tell the user when Android did not expose them.",
+                    fraction = if (serviceUuidCount > 0) 1f else if (bluetoothLeSupported && canScanNearby) 0.7f else 0.35f,
+                    extra = JSONObject()
+                        .put("feature_source", "BLE advertisement metadata")
+                        .put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_parity",
+                    label = "Manufacturer ID metadata",
+                    ready = manufacturerIdCount > 0 || (bluetoothLeSupported && canScanNearby),
+                    valueLabel = if (manufacturerIdCount > 0) "$manufacturerIdCount manufacturer group(s)" else "advertisement gated",
+                    detail = "Manufacturer IDs and payload byte counts help identify beacon/vendor-specific devices without connecting to them.",
+                    recommendation = "Use manufacturer summary rows for beacon and vendor analysis, while avoiding overconfident identity claims from partial advertisements.",
+                    fraction = if (manufacturerIdCount > 0) 1f else if (bluetoothLeSupported && canScanNearby) 0.7f else 0.35f,
+                    extra = JSONObject()
+                        .put("feature_source", "BLE manufacturer data")
+                        .put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_parity",
+                    label = "Device category hints",
+                    ready = categoryCount > 0 || metadataCount > 0 || canReadPaired || canScanNearby,
+                    valueLabel = if (categoryCount > 0) "$categoryCount category group(s)" else "class inference ready",
+                    detail = "Hermes groups Bluetooth class, device type, and metadata summary rows so Gemma can reason about audio, wearable, HID, beacon, and unknown devices.",
+                    recommendation = "Use category rows as hints, not final identity, because Android metadata can be sparse or vendor-specific.",
+                    fraction = if (categoryCount > 0 || metadataCount > 0) 0.9f else if (canReadPaired || canScanNearby) 0.7f else 0.35f,
+                    extra = JSONObject()
+                        .put("feature_source", "Android Bluetooth class and summary rows")
+                        .put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_parity",
+                    label = "Gemma-readable Bluetooth cards",
+                    ready = true,
+                    valueLabel = "${deviceCount + metadataCount} card row(s)",
+                    detail = "Bluetooth analyzer reports create top-level expandable cards for readiness, routes, scan policy, nearby RSSI rows, and metadata summaries.",
+                    recommendation = "Show Bluetooth cards before long explanations when the user asks what nearby devices or metadata the agent can see.",
+                    fraction = 0.9f,
+                    extra = JSONObject()
+                        .put("feature_source", "Hermes diagnostic cards")
+                        .put("tool_action", "bluetooth_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_parity",
+                    label = "Bluetooth safety boundary",
+                    ready = true,
+                    valueLabel = "metadata only",
+                    detail = "Hermes reports Android-exposed Bluetooth metadata and does not pair, connect, track people, exploit devices, or bypass OS permissions.",
+                    recommendation = "Keep analysis scoped to user-authorized nearby/paired metadata and explain missing permission or hardware gates directly.",
+                    fraction = 1f,
+                    extra = JSONObject().put("feature_source", "Bluetooth privacy boundary"),
+                ),
+            )
+    }
+
+    private fun bluetoothAnalyzerWorkflowRows(
+        permissionStatus: JSONObject,
+        deviceCount: Int,
+        serviceUuidCount: Int,
+        manufacturerIdCount: Int,
+        rssiDeviceCount: Int,
+    ): JSONArray {
+        val canReadPaired = permissionStatus.optBoolean("can_read_paired_devices", false)
+        val canScanNearby = permissionStatus.optBoolean("can_scan_nearby_devices", false)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_route",
+                    label = "Route nearby Bluetooth scan",
+                    ready = canScanNearby,
+                    valueLabel = "bluetooth_scan",
+                    detail = "Use when the user asks what Bluetooth or BLE devices are nearby and a fresh RSSI/advertisement sample is useful.",
+                    recommendation = "Set refresh=true only for an explicit fresh nearby scan; otherwise reuse passive report rows.",
+                    fraction = if (canScanNearby) 0.95f else 0.45f,
+                    extra = JSONObject().put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_route",
+                    label = "Route paired-device inventory",
+                    ready = canReadPaired,
+                    valueLabel = "bluetooth_scan",
+                    detail = "Use for bonded headsets, watches, controllers, keyboards, cars, and other devices Android already knows.",
+                    recommendation = "Ask for Bluetooth connect access before promising paired-device names on Android 12+.",
+                    fraction = if (canReadPaired) 0.9f else 0.4f,
+                    extra = JSONObject().put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_route",
+                    label = "Route proximity explanation",
+                    ready = rssiDeviceCount > 0 || canScanNearby,
+                    valueLabel = "bluetooth_scan",
+                    detail = "Use when the answer depends on RSSI, proximity labels, TX power distance estimates, or strongest-nearby ordering.",
+                    recommendation = "Explain RSSI as a rough proximity indicator, not a precise location fix.",
+                    fraction = if (rssiDeviceCount > 0) 1f else if (canScanNearby) 0.75f else 0.35f,
+                    extra = JSONObject().put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_route",
+                    label = "Route service/manufacturer metadata",
+                    ready = serviceUuidCount > 0 || manufacturerIdCount > 0 || canScanNearby || deviceCount > 0,
+                    valueLabel = "bluetooth_scan",
+                    detail = "Use for service UUID, service data UUID, manufacturer ID, payload byte count, class, category, and connectability rows.",
+                    recommendation = "Prefer metadata rows before naming a device role; note sparse advertisements when UUIDs or manufacturer IDs are absent.",
+                    fraction = if (serviceUuidCount > 0 || manufacturerIdCount > 0) 1f else if (canScanNearby || deviceCount > 0) 0.7f else 0.35f,
+                    extra = JSONObject().put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_route",
+                    label = "Route scan policy explanation",
+                    ready = true,
+                    valueLabel = "bluetooth_analyzer_report",
+                    detail = "Use before repeated scans so the agent can explain Bluetooth enablement, permissions, legacy location gates, and scan cadence.",
+                    recommendation = "Prefer this report for permission or policy questions instead of firing a fresh BLE scan.",
+                    fraction = 0.85f,
+                    extra = JSONObject().put("tool_action", "bluetooth_analyzer_report"),
+                ),
+            )
+    }
+
+    private fun bluetoothScanPolicyRows(
+        bluetoothAvailable: Boolean,
+        bluetoothLeSupported: Boolean,
+        bluetoothEnabled: Boolean,
+        permissionStatus: JSONObject,
+        scanStatus: JSONObject,
+        scanSucceeded: Boolean,
+    ): JSONArray {
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "bluetooth_scan_policy",
+                    label = "Bluetooth service availability",
+                    ready = bluetoothAvailable,
+                    valueLabel = if (bluetoothAvailable) "service present" else "no Bluetooth service",
+                    detail = "Android must expose a Bluetooth adapter or service before Hermes can read paired or nearby Bluetooth metadata.",
+                    recommendation = "Report missing Bluetooth hardware or service honestly instead of inventing nearby device rows.",
+                    fraction = if (bluetoothAvailable) 1f else 0.1f,
+                    extra = JSONObject().put("constraint_type", "hardware_service"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_scan_policy",
+                    label = "Bluetooth enabled state",
+                    ready = bluetoothEnabled,
+                    valueLabel = if (bluetoothEnabled) "enabled" else "disabled or unreadable",
+                    detail = "Nearby BLE scans require Bluetooth to be enabled; paired metadata can also be limited when Android blocks adapter state reads.",
+                    recommendation = "Ask the user to enable Bluetooth before promising a fresh nearby scan.",
+                    fraction = if (bluetoothEnabled) 0.95f else 0.4f,
+                    extra = JSONObject().put("constraint_type", "adapter_state"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_scan_policy",
+                    label = "Connect and scan permissions",
+                    ready = permissionStatus.optBoolean("can_read_paired_devices", false) || permissionStatus.optBoolean("can_scan_nearby_devices", false),
+                    valueLabel = when {
+                        permissionStatus.optBoolean("can_read_paired_devices", false) && permissionStatus.optBoolean("can_scan_nearby_devices", false) -> "connect and scan granted"
+                        permissionStatus.optBoolean("can_read_paired_devices", false) -> "paired only"
+                        permissionStatus.optBoolean("can_scan_nearby_devices", false) -> "scan only"
+                        else -> "permission gated"
+                    },
+                    detail = "Android 12+ separates BLUETOOTH_CONNECT for paired devices from BLUETOOTH_SCAN for nearby BLE scans.",
+                    recommendation = "Use app settings when the user wants Bluetooth analysis and connect/scan permissions are missing.",
+                    fraction = if (permissionStatus.optBoolean("can_read_paired_devices", false) && permissionStatus.optBoolean("can_scan_nearby_devices", false)) 0.95f else if (permissionStatus.optBoolean("can_read_paired_devices", false) || permissionStatus.optBoolean("can_scan_nearby_devices", false)) 0.7f else 0.35f,
+                    extra = JSONObject()
+                        .put("constraint_type", "permission")
+                        .put("permission_gate", "Bluetooth connect and scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_scan_policy",
+                    label = "Legacy location gate",
+                    ready = !permissionStatus.optBoolean("requires_location_for_legacy_scan", false),
+                    valueLabel = if (permissionStatus.optBoolean("requires_location_for_legacy_scan", false)) "location needed" else "not blocking",
+                    detail = "Android versions before 12 can require fine location and enabled location services before BLE scan results are exposed.",
+                    recommendation = "Explain legacy location requirements when scan rows are missing on older devices.",
+                    fraction = if (permissionStatus.optBoolean("requires_location_for_legacy_scan", false)) 0.45f else 0.85f,
+                    extra = JSONObject()
+                        .put("constraint_type", "permission")
+                        .put("permission_gate", "fine location and location services"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_scan_policy",
+                    label = "Active scan cadence",
+                    ready = true,
+                    valueLabel = if (scanSucceeded) "passive context reused" else "no active scan",
+                    detail = "bluetooth_analyzer_report does not force a BLE refresh; it reuses paired/passive rows and names scan availability before any active sampling.",
+                    recommendation = "Use timeout_ms and refresh=true only on bluetooth_scan when an active nearby sample is warranted.",
+                    fraction = 0.85f,
+                    extra = JSONObject()
+                        .put("constraint_type", "scan_cadence")
+                        .put("scan_error", scanStatus.opt("scan_error") ?: JSONObject.NULL),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_scan_policy",
+                    label = "Analysis and privacy boundary",
+                    ready = true,
+                    valueLabel = if (bluetoothLeSupported) "metadata only" else "no BLE metadata",
+                    detail = "Hermes analyzes Android-exposed paired and advertisement metadata; it does not connect, pair, track identities, or bypass the OS permission model.",
+                    recommendation = "Keep Bluetooth answers scoped to observable metadata and user-authorized troubleshooting.",
+                    fraction = 1f,
+                    extra = JSONObject().put("constraint_type", "privacy_safety"),
+                ),
+            )
+    }
+
     private fun signalWorkflowRouteRows(
         diagnostics: JSONObject,
         signalStatus: JSONObject,
@@ -2481,6 +2898,62 @@ object HermesDeviceDiagnosticsBridge {
             values.addAll(jsonStringList(row, key))
         }
         return values.size
+    }
+
+    private fun bluetoothRssiDeviceCount(devices: JSONArray): Int {
+        var count = 0
+        for (index in 0 until devices.length()) {
+            val row = devices.optJSONObject(index) ?: continue
+            if (jsonIntOrNull(row, "rssi_dbm") != null) count += 1
+        }
+        return count
+    }
+
+    private fun bluetoothDistinctCategoryCount(devices: JSONArray): Int {
+        val values = linkedSetOf<String>()
+        for (index in 0 until devices.length()) {
+            val row = devices.optJSONObject(index) ?: continue
+            row.optString("device_category")
+                .ifBlank { row.optString("major_device_class") }
+                .ifBlank { row.optString("device_type") }
+                .takeIf { it.isNotBlank() && it != "unknown" }
+                ?.let(values::add)
+        }
+        return values.size
+    }
+
+    private fun bluetoothScanStatusJson(
+        bluetoothAvailable: Boolean,
+        bluetoothLeSupported: Boolean,
+        bluetoothEnabled: Boolean,
+        permissionStatus: JSONObject,
+        scanResult: JSONObject?,
+        returnedDeviceCount: Int,
+        metadataCount: Int,
+        serviceUuidCount: Int,
+        manufacturerIdCount: Int,
+        rssiDeviceCount: Int,
+    ): JSONObject {
+        val scanError = when {
+            scanResult == null -> JSONObject.NULL
+            scanResult.has("scan_error") -> scanResult.opt("scan_error") ?: JSONObject.NULL
+            scanResult.has("error") -> scanResult.optString("error")
+            else -> JSONObject.NULL
+        }
+        return JSONObject()
+            .put("bluetooth_available", bluetoothAvailable)
+            .put("bluetooth_le_supported", bluetoothLeSupported)
+            .put("bluetooth_enabled", bluetoothEnabled)
+            .put("refresh_requested", scanResult?.optBoolean("refresh_requested", false) ?: false)
+            .put("refresh_accepted", scanResult?.optBoolean("refresh_accepted", false) ?: false)
+            .put("scan_error", scanError)
+            .put("can_read_paired_devices", permissionStatus.optBoolean("can_read_paired_devices", false))
+            .put("can_scan_nearby_devices", permissionStatus.optBoolean("can_scan_nearby_devices", false))
+            .put("returned_device_count", returnedDeviceCount)
+            .put("metadata_summary_count", metadataCount)
+            .put("rssi_device_count", rssiDeviceCount)
+            .put("service_uuid_count", serviceUuidCount)
+            .put("manufacturer_id_count", manufacturerIdCount)
     }
 
     private fun bluetoothSummarySortKey(summaryType: String): Int = when (summaryType) {
@@ -3916,6 +4389,7 @@ object HermesDeviceDiagnosticsBridge {
         "wifi_channel_rating",
         "wifi_ap_details",
         "wifi_export",
+        "bluetooth_analyzer_report",
         "bluetooth_scan",
         "sensor_snapshot",
         "camera_status",

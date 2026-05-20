@@ -451,6 +451,75 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun compactsBluetoothAnalyzerReportWithoutDroppingPolicyRoutes() {
+        val features = JSONArray()
+        repeat(18) { index ->
+            features.put(
+                JSONObject()
+                    .put("category", "bluetooth_analyzer_parity")
+                    .put("label", "Bluetooth analyzer feature $index")
+                    .put("ready", index % 2 == 0)
+                    .put("value_label", "value $index")
+                    .put("detail", "Detailed Bluetooth analyzer feature row $index with scan, service UUID, manufacturer, and proximity context.")
+                    .put("recommendation", "Route through the matching Bluetooth diagnostic action.")
+                    .put("feature_source", "Android BluetoothLeScanner")
+                    .put("tool_action", "bluetooth_scan")
+                    .put("fraction", 0.82),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "bluetooth_analyzer_report")
+            .put("bluetooth_analyzer_feature_count", 18)
+            .put("ready_bluetooth_analyzer_feature_count", 9)
+            .put("bluetooth_analyzer_workflow_route_count", 1)
+            .put("bluetooth_scan_policy_count", 1)
+            .put("bluetooth_analyzer_feature_matrix", features)
+            .put(
+                "bluetooth_analyzer_workflow_routes",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "bluetooth_analyzer_route")
+                        .put("label", "Route nearby Bluetooth scan")
+                        .put("ready", true)
+                        .put("value_label", "bluetooth_scan")
+                        .put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                "bluetooth_scan_policy_matrix",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "bluetooth_scan_policy")
+                        .put("label", "Connect and scan permissions")
+                        .put("ready", true)
+                        .put("value_label", "connect and scan granted")
+                        .put("constraint_type", "permission")
+                        .put("permission_gate", "Bluetooth connect and scan"),
+                ),
+            )
+            .put("cards", JSONArray().put(JSONObject().put("title", "Bluetooth Analyzer Readiness").put("body", "18 rows")))
+            .toString()
+
+        val parsed = JSONObject(NativeToolContextCompressor.compactToolResult(result))
+        val featureMatrix = parsed.getJSONObject("bluetooth_analyzer_feature_matrix")
+        val routes = parsed.getJSONArray("bluetooth_analyzer_workflow_routes")
+        val policies = parsed.getJSONArray("bluetooth_scan_policy_matrix")
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(18, parsed.getInt("bluetooth_analyzer_feature_count"))
+        assertEquals(9, parsed.getInt("ready_bluetooth_analyzer_feature_count"))
+        assertEquals("array", featureMatrix.getString("type"))
+        assertEquals("Bluetooth analyzer feature 0", featureMatrix.getJSONArray("items").getJSONObject(0).getString("label"))
+        assertEquals("Android BluetoothLeScanner", featureMatrix.getJSONArray("items").getJSONObject(0).getString("feature_source"))
+        assertEquals("bluetooth_scan", featureMatrix.getJSONArray("items").getJSONObject(0).getString("tool_action"))
+        assertEquals("Route nearby Bluetooth scan", routes.getJSONObject(0).getString("label"))
+        assertEquals("Connect and scan permissions", policies.getJSONObject(0).getString("label"))
+        assertEquals("permission", policies.getJSONObject(0).getString("constraint_type"))
+        assertEquals("Bluetooth connect and scan", policies.getJSONObject(0).getString("permission_gate"))
+    }
+
+    @Test
     fun compactsBluetoothAndRadioDiagnosticRowsWithoutDroppingSignalMetadata() {
         val devices = JSONArray()
         repeat(30) { index ->

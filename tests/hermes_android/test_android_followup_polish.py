@@ -262,6 +262,28 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     assert ':app:compileDebugAndroidTestKotlin' in workflow
 
 
+def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and_scan_policy_cards():
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+
+    assert '"bluetooth_analyzer_report"' in diagnostics_bridge
+    assert 'bluetoothAnalyzerReportJson(appContext' in diagnostics_bridge
+    assert 'bluetoothAnalyzerFeatureRows(' in diagnostics_bridge
+    assert 'bluetoothAnalyzerWorkflowRows(' in diagnostics_bridge
+    assert 'bluetoothScanPolicyRows(' in diagnostics_bridge
+    assert '"bluetooth_analyzer_feature_matrix"' in diagnostics_bridge
+    assert '"bluetooth_analyzer_workflow_routes"' in diagnostics_bridge
+    assert '"bluetooth_scan_policy_matrix"' in diagnostics_bridge
+    assert 'Bluetooth Analyzer readiness' in diagnostics_bridge
+    assert 'bluetooth_analyzer_report' in chat_client
+    assert '"bluetooth_analyzer_feature_matrix"' in chat_client
+    assert '"bluetooth_analyzer_workflow_routes"' in chat_client
+    assert '"bluetooth_scan_policy_matrix"' in chat_client
+    assert '"bluetooth_analyzer_feature_matrix", "bluetooth_analyzer_workflow_routes", "bluetooth_scan_policy_matrix"' in diagnostic_cards
+    assert 'capabilityMatrixRow(row)' in diagnostic_cards
+
+
 def test_android_linux_subsystem_reapplies_executable_bits_before_reusing_cached_prefix():
     bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesLinuxSubsystemBridge.kt").read_text(encoding="utf-8")
     linux_subsystem = (REPO_ROOT / "hermes_android/linux_subsystem.py").read_text(encoding="utf-8")

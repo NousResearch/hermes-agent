@@ -555,4 +555,40 @@ class DiagnosticCardsTest {
         assertTrue(row.detail.contains("Use wifi_channel_rating"))
         assertTrue(row.fraction > 0.9f)
     }
+
+    @Test
+    fun parsesBluetoothAnalyzerReadinessRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Bluetooth Analyzer Readiness")
+                        .put("body", "Readiness rows.")
+                        .put("graph_type", "bluetooth_analyzer_feature_matrix")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("category", "bluetooth_analyzer_parity")
+                                    .put("label", "RSSI proximity graph")
+                                    .put("ready", true)
+                                    .put("value_label", "12 device row(s)")
+                                    .put("detail", "Bluetooth RSSI proximity rows are available.")
+                                    .put("recommendation", "Use bluetooth_scan.")
+                                    .put("fraction", 0.91),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("RSSI proximity graph", row.label)
+        assertEquals("12 device row(s)", row.valueLabel)
+        assertTrue(row.detail.contains("bluetooth analyzer parity"))
+        assertTrue(row.detail.contains("Use bluetooth_scan"))
+        assertTrue(row.fraction > 0.9f)
+    }
 }

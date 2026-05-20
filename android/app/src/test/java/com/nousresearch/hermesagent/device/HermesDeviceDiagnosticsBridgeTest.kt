@@ -389,6 +389,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("signal_awareness_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("agent_environment_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_scan"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_analyzer_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_status"))
         assertTrue(result.getJSONObject("hindsight_memory_translation").has("retain"))
     }
@@ -429,6 +430,45 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getInt("wifi_analyzer_feature_count") >= 8)
         assertTrue(result.getInt("wifi_analyzer_workflow_route_count") >= 6)
         assertTrue(result.getInt("wifi_scan_policy_count") >= 5)
+    }
+
+    @Test
+    fun bluetoothAnalyzerReportExposesReadinessRoutesAndScanPolicyWithoutForcingRefresh() {
+        val result = HermesDeviceDiagnosticsBridge.bluetoothAnalyzerReportJson(context)
+        val features = result.getJSONArray("bluetooth_analyzer_feature_matrix")
+        val routes = result.getJSONArray("bluetooth_analyzer_workflow_routes")
+        val policies = result.getJSONArray("bluetooth_scan_policy_matrix")
+        val featureLabels = buildSet {
+            for (index in 0 until features.length()) add(features.getJSONObject(index).getString("label"))
+        }
+        val routeLabels = buildSet {
+            for (index in 0 until routes.length()) add(routes.getJSONObject(index).getString("label"))
+        }
+        val policyLabels = buildSet {
+            for (index in 0 until policies.length()) add(policies.getJSONObject(index).getString("label"))
+        }
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("bluetooth_analyzer_report", result.getString("action"))
+        assertTrue(result.has("bluetooth_scan_permission_status"))
+        assertTrue(result.has("bluetooth_scan_status"))
+        assertFalse(result.getJSONObject("bluetooth_scan_status").getBoolean("refresh_requested"))
+        assertTrue(featureLabels.contains("Identify paired devices"))
+        assertTrue(featureLabels.contains("Scan nearby BLE devices"))
+        assertTrue(featureLabels.contains("RSSI proximity graph"))
+        assertTrue(featureLabels.contains("Service UUID metadata"))
+        assertTrue(featureLabels.contains("Manufacturer ID metadata"))
+        assertTrue(featureLabels.contains("Bluetooth safety boundary"))
+        assertTrue(routeLabels.contains("Route nearby Bluetooth scan"))
+        assertTrue(routeLabels.contains("Route service/manufacturer metadata"))
+        assertTrue(routeLabels.contains("Route scan policy explanation"))
+        assertTrue(policyLabels.contains("Connect and scan permissions"))
+        assertTrue(policyLabels.contains("Active scan cadence"))
+        assertTrue(policyLabels.contains("Analysis and privacy boundary"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Bluetooth Analyzer Readiness"))
+        assertTrue(result.getInt("bluetooth_analyzer_feature_count") >= 8)
+        assertTrue(result.getInt("bluetooth_analyzer_workflow_route_count") >= 5)
+        assertTrue(result.getInt("bluetooth_scan_policy_count") >= 6)
     }
 
     @Test

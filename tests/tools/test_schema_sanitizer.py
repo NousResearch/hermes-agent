@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 
 from tools.schema_sanitizer import (
+    sanitize_function_parameters_schema,
     sanitize_tool_schemas,
     strip_pattern_and_format,
     strip_slash_enum,
@@ -96,6 +97,76 @@ def test_anyof_nested_objects_sanitized():
     variants = out[0]["function"]["parameters"]["properties"]["opt"]["anyOf"]
     assert variants[0] == {"type": "object", "properties": {}}
     assert variants[1] == {"type": "string"}
+
+
+def test_root_anyof_keeps_union_properties_visible():
+    tools = [_tool("t", {
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+            {
+                "type": "object",
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"],
+            },
+        ]
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    assert params["type"] == "object"
+    assert params["properties"]["path"]["type"] == "string"
+    assert params["properties"]["url"]["type"] == "string"
+    assert "anyOf" not in params
+    assert "required" not in params
+
+
+def test_root_oneof_preserves_shared_required_only():
+    tools = [_tool("t", {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                "required": ["mode", "path"],
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string"},
+                    "url": {"type": "string"},
+                },
+                "required": ["mode", "url"],
+            },
+        ]
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    assert params["type"] == "object"
+    assert params["properties"]["mode"]["type"] == "string"
+    assert params["properties"]["path"]["type"] == "string"
+    assert params["properties"]["url"]["type"] == "string"
+    assert params["required"] == ["mode"]
+    assert "oneOf" not in params
+
+
+def test_sanitize_function_parameters_schema_drops_empty_allof():
+    params = sanitize_function_parameters_schema(
+        {
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "allOf": [],
+        },
+        tool_name="empty_allof",
+    )
+
+    assert params["type"] == "object"
+    assert "x" in params["properties"]
+    assert "allOf" not in params
 
 
 def test_missing_parameters_gets_default_object_schema():

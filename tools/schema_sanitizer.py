@@ -36,6 +36,22 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_TOP_LEVEL_FUNCTION_SCHEMA_FORBIDDEN_KEYS = frozenset(
+    {
+        "anyOf",
+        "oneOf",
+        "allOf",
+        "not",
+        "enum",
+        "if",
+        "then",
+        "else",
+        "dependentRequired",
+        "dependentSchemas",
+        "dependencies",
+    }
+)
+
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
     """Return a copy of ``tools`` with each tool's parameter schema sanitized.
@@ -68,64 +84,229 @@ def _sanitize_single_tool(tool: dict) -> dict:
         fn["parameters"] = {"type": "object", "properties": {}}
         return out
 
-    fn["parameters"] = _sanitize_node(params, path=fn.get("name", "<tool>"))
-    # After recursion, guarantee the top-level is an object with properties.
-    top = fn["parameters"]
+    top = _sanitize_node(params, path=fn.get("name", "<tool>"))
     if not isinstance(top, dict):
         fn["parameters"] = {"type": "object", "properties": {}}
     else:
-        if top.get("type") != "object":
-            top["type"] = "object"
-        if "properties" not in top or not isinstance(top.get("properties"), dict):
-            top["properties"] = {}
-    # Final pass: collapse nullable anyOf/oneOf unions that the recursive
-    # sanitizer above leaves intact (it only handles the array-form
-    # ``type: [X, "null"]``). Keep the ``nullable: true`` hint so runtime
-    # argument coercion (``model_tools._schema_allows_null``) can still
-    # map a model-emitted ``"null"`` string to Python ``None``.
-    fn["parameters"] = strip_nullable_unions(fn["parameters"], keep_nullable_hint=True)
-    # Strip top-level combinators that strict backends (OpenAI's Codex
-    # endpoint at chatgpt.com/backend-api/codex) reject outright. Nested
-    # combinators inside properties are preserved.
-    fn["parameters"] = _strip_top_level_combinators(
-        fn["parameters"], path=fn.get("name", "<tool>")
+        fn["parameters"] = sanitize_function_parameters_schema(top, tool_name=fn.get("name"))
+    return out
+
+
+def sanitize_function_parameters_schema(parameters: dict, tool_name: str | None = None) -> dict:
+    """Return a provider-safe function-parameters schema."""
+    original_required = []
+    if isinstance(parameters.get("required"), list):
+        original_required = [r for r in parameters["required"] if isinstance(r, str)]
+
+    top = strip_nullable_unions(
+        _sanitize_node(parameters, path=tool_name or "<tool>"),
+        keep_nullable_hint=True,
     )
-    return out
+    if not isinstance(top, dict):
+        return {"type": "object", "properties": {}}
+
+    sanitized = copy.deepcopy(top)
+    if sanitized.get("type") != "object":
+        sanitized["type"] = "object"
+    if "properties" not in sanitized or not isinstance(sanitized.get("properties"), dict):
+        sanitized["properties"] = {}
+
+    sanitized = _flatten_top_level_union_for_function_schema(
+        sanitized,
+        tool_name=tool_name,
+    )
+    sanitized = _flatten_top_level_allof_for_function_schema(
+        sanitized,
+        tool_name=tool_name,
+    )
+
+    if original_required:
+        merged_required = list(sanitized.get("required") or [])
+        seen_required = set(r for r in merged_required if isinstance(r, str))
+        for name in original_required:
+            if name in sanitized["properties"] and name not in seen_required:
+                merged_required.append(name)
+                seen_required.add(name)
+        if merged_required:
+            sanitized["required"] = merged_required
+
+    removed = [key for key in _TOP_LEVEL_FUNCTION_SCHEMA_FORBIDDEN_KEYS if key in sanitized]
+    for key in removed:
+        sanitized.pop(key, None)
+
+    if removed:
+        logger.debug(
+            "schema_sanitizer[%s]: dropped unsupported top-level function-schema keys: %s",
+            tool_name or "<tool>",
+            ", ".join(sorted(removed)),
+        )
+
+    if isinstance(sanitized.get("required"), list):
+        props = sanitized.get("properties") or {}
+        valid = [r for r in sanitized["required"] if isinstance(r, str) and r in props]
+        if not valid:
+            sanitized.pop("required", None)
+        elif len(valid) != len(sanitized["required"]):
+            sanitized["required"] = valid
+
+    return sanitized
 
 
-_TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
+def _flatten_top_level_union_for_function_schema(
+    schema: dict,
+    *,
+    tool_name: str | None = None,
+) -> dict:
+    for keyword in ("oneOf", "anyOf"):
+        branches = schema.get(keyword)
+        if not isinstance(branches, list) or not branches:
+            continue
+
+        merged = copy.deepcopy(schema)
+        merged.setdefault("type", "object")
+        merged.setdefault("properties", {})
+        if not isinstance(merged.get("properties"), dict):
+            merged["properties"] = {}
+
+        branch_required_sets: list[set[str]] = []
+        saw_object_branch = False
+
+        for idx, branch in enumerate(branches):
+            if not isinstance(branch, dict):
+                continue
+
+            branch_type = branch.get("type")
+            branch_props = branch.get("properties")
+            if branch_type not in (None, "object") and not isinstance(branch_props, dict):
+                logger.debug(
+                    "schema_sanitizer[%s]: leaving non-object %s[%d] constraints unmerged",
+                    tool_name or "<tool>",
+                    keyword,
+                    idx,
+                )
+                continue
+
+            saw_object_branch = True
+            if isinstance(branch_props, dict):
+                merged["properties"].update(copy.deepcopy(branch_props))
+
+            branch_required = branch.get("required")
+            if isinstance(branch_required, list):
+                branch_required_sets.append(
+                    {name for name in branch_required if isinstance(name, str)}
+                )
+            else:
+                branch_required_sets.append(set())
+
+            for dict_key in ("patternProperties", "$defs", "definitions"):
+                branch_value = branch.get(dict_key)
+                if not isinstance(branch_value, dict):
+                    continue
+                existing = merged.get(dict_key)
+                if not isinstance(existing, dict):
+                    merged[dict_key] = copy.deepcopy(branch_value)
+                else:
+                    existing.update(copy.deepcopy(branch_value))
+
+            if "additionalProperties" not in merged and "additionalProperties" in branch:
+                merged["additionalProperties"] = copy.deepcopy(branch["additionalProperties"])
+
+        if not saw_object_branch:
+            return merged
+
+        original_required = []
+        if isinstance(merged.get("required"), list):
+            original_required = [name for name in merged["required"] if isinstance(name, str)]
+
+        shared_required: set[str] = set()
+        if branch_required_sets:
+            shared_required = set.intersection(*branch_required_sets)
+
+        deduped_required = []
+        seen_required = set()
+        for name in [*original_required, *sorted(shared_required)]:
+            if name in merged["properties"] and name not in seen_required:
+                deduped_required.append(name)
+                seen_required.add(name)
+
+        if deduped_required:
+            merged["required"] = deduped_required
+        else:
+            merged.pop("required", None)
+
+        merged.pop(keyword, None)
+        return merged
+
+    return schema
 
 
-def _strip_top_level_combinators(params: dict, *, path: str = "<tool>") -> dict:
-    """Drop combinator keywords from the top-level of a function parameters schema.
+def _flatten_top_level_allof_for_function_schema(
+    schema: dict,
+    *,
+    tool_name: str | None = None,
+) -> dict:
+    all_of = schema.get("allOf")
+    if not isinstance(all_of, list) or not all_of:
+        cleaned = copy.deepcopy(schema)
+        cleaned.pop("allOf", None)
+        return cleaned
 
-    OpenAI's Codex backend (``chatgpt.com/backend-api/codex``) is stricter
-    than the public Functions API and rejects requests with::
+    merged = copy.deepcopy(schema)
+    merged.setdefault("type", "object")
+    merged.setdefault("properties", {})
+    if not isinstance(merged.get("properties"), dict):
+        merged["properties"] = {}
 
-        Invalid schema for function 'X': schema must have type 'object' and
-        not have 'oneOf'/'anyOf'/'allOf'/'enum'/'not' at the top level.
+    merged_required = []
+    if isinstance(merged.get("required"), list):
+        merged_required.extend(r for r in merged["required"] if isinstance(r, str))
 
-    These keywords are typically used for conditional required-fields hints
-    (``allOf: [{if: ..., then: {required: [...]}}]``). Removing them at the
-    top level discards the hint but does not change which argument *values*
-    are valid — the tool handler always re-validates required fields.
+    for idx, branch in enumerate(all_of):
+        if not isinstance(branch, dict):
+            continue
 
-    Only the *top* level is stripped; combinators nested inside a property's
-    schema are preserved (the strict rule only applies to the outermost
-    parameters object).
-    """
-    if not isinstance(params, dict):
-        return params
-    out = dict(params)
-    for key in _TOP_LEVEL_FORBIDDEN_KEYS:
-        if key in out:
+        branch_type = branch.get("type")
+        branch_props = branch.get("properties")
+        branch_required = branch.get("required")
+
+        if branch_type not in (None, "object"):
             logger.debug(
-                "schema_sanitizer[%s]: stripped top-level %r combinator "
-                "from tool parameters (strict-backend compat)",
-                path, key,
+                "schema_sanitizer[%s]: leaving non-object allOf[%d] constraints unmerged",
+                tool_name or "<tool>",
+                idx,
             )
-            out.pop(key, None)
-    return out
+            continue
+
+        if isinstance(branch_props, dict):
+            merged["properties"].update(copy.deepcopy(branch_props))
+
+        if isinstance(branch_required, list):
+            merged_required.extend(r for r in branch_required if isinstance(r, str))
+
+        for dict_key in ("patternProperties", "$defs", "definitions"):
+            branch_value = branch.get(dict_key)
+            if not isinstance(branch_value, dict):
+                continue
+            existing = merged.get(dict_key)
+            if not isinstance(existing, dict):
+                merged[dict_key] = copy.deepcopy(branch_value)
+            else:
+                existing.update(copy.deepcopy(branch_value))
+
+        if "additionalProperties" not in merged and "additionalProperties" in branch:
+            merged["additionalProperties"] = copy.deepcopy(branch["additionalProperties"])
+
+    if merged_required:
+        deduped = []
+        seen = set()
+        for name in merged_required:
+            if name not in seen:
+                seen.add(name)
+                deduped.append(name)
+        merged["required"] = deduped
+
+    merged.pop("allOf", None)
+    return merged
 
 
 def strip_nullable_unions(

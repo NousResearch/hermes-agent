@@ -98,9 +98,10 @@ def _coerce_bool(raw: Any, default: bool = False) -> bool:
 
 
 def _iter_candidates(root: Path, suffix: str) -> Iterable[Path]:
+    if root.suffix == suffix and root.exists():
+        yield root
+        return
     if root.is_file():
-        if root.suffix == suffix:
-            yield root
         return
 
     seen: set[Path] = set()
@@ -553,13 +554,13 @@ def handle_macos_list_schemes(args: dict, **kw) -> str:
             )
 
         payload = _json_loads_or_error(completed.stdout)
-        details = payload.get("project") or payload.get("workspace")
         return tool_result(
             {
                 "success": True,
                 "command": shlex.join(command),
                 "container": container,
-                "project": details,
+                "project": payload.get("project") or payload.get("workspace"),
+                "workspace": payload.get("workspace"),
             }
         )
     except subprocess.TimeoutExpired as exc:

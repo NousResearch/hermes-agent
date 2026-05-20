@@ -87,6 +87,17 @@ class TestInspect:
         assert len(result["xcode_projects"]) == 1
         assert result["has_package_swift"] is True
 
+    def test_accepts_explicit_xcode_container_path(self, tools_mod, tmp_path):
+        project = tmp_path / "MyApp" / "App.xcodeproj"
+        project.mkdir(parents=True)
+
+        result = json.loads(tools_mod.handle_macos_inspect_project({"path": str(project)}))
+
+        assert result["success"] is True
+        assert result["recommended_container"] == str(project)
+        assert result["recommended_container_type"] == "project"
+        assert result["xcode_projects"] == [str(project)]
+
     def test_errors_when_path_missing(self, tools_mod, tmp_path):
         result = json.loads(
             tools_mod.handle_macos_inspect_project({"path": str(tmp_path / "missing")})
@@ -154,6 +165,7 @@ class TestListSchemes:
         result = json.loads(tools_mod.handle_macos_list_schemes({"path": str(repo)}))
         assert result["success"] is True
         assert result["project"]["schemes"] == ["App"]
+        assert result["workspace"]["schemes"] == ["App"]
 
     def test_surfaces_xcodebuild_failure(self, tools_mod, tmp_path, monkeypatch):
         repo = tmp_path / "ProjectRepo"

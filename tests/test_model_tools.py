@@ -13,6 +13,7 @@ from model_tools import (
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
 )
+from tools.schema_sanitizer import sanitize_function_parameters_schema, sanitize_tool_schemas
 
 
 # =========================================================================
@@ -315,6 +316,67 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+
+class TestToolSchemaSanitization:
+    def test_sanitize_tool_schemas_drops_top_level_composition_keywords(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "description": "test",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"action": {"type": "string"}},
+                        "required": ["action"],
+                        "allOf": [
+                            {
+                                "if": {
+                                    "properties": {"action": {"const": "add"}},
+                                    "required": ["action"],
+                                },
+                                "then": {"required": ["content"]},
+                            }
+                        ],
+                    },
+                },
+            }
+        ]
+
+        result = sanitize_tool_schemas(tools)
+        params = result[0]["function"]["parameters"]
+
+        assert params["type"] == "object"
+        assert "action" in params["properties"]
+        assert "allOf" not in params
+        assert "if" not in params
+        assert "then" not in params
+
+    def test_sanitize_function_parameters_schema_root_anyof_keeps_union_properties(self):
+        params = sanitize_function_parameters_schema(
+            {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                    {
+                        "type": "object",
+                        "properties": {"url": {"type": "string"}},
+                        "required": ["url"],
+                    },
+                ]
+            },
+            tool_name="root_anyof",
+        )
+
+        assert params["type"] == "object"
+        assert params["properties"]["path"]["type"] == "string"
+        assert params["properties"]["url"]["type"] == "string"
+        assert "anyOf" not in params
+        assert "required" not in params
 
 
 # =========================================================================

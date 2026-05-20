@@ -668,6 +668,40 @@ def _handle_create(args: dict, **kw) -> str:
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
     skills = args.get("skills")
+    subscribe = args.get("subscribe")
+    if subscribe is not None and not isinstance(subscribe, dict):
+        return tool_error(
+            f"subscribe must be an object with platform/chat_id, got {type(subscribe).__name__}"
+        )
+    if isinstance(subscribe, dict):
+        platform = str(subscribe.get("platform") or "").strip()
+        chat_id = str(subscribe.get("chat_id") or "").strip()
+        if not platform or not chat_id:
+            return tool_error(
+                "subscribe.platform and subscribe.chat_id are required when subscribe is provided"
+            )
+        normalized_subscribe: dict[str, str] = {
+            "platform": platform,
+            "chat_id": chat_id,
+        }
+        thread_id = str(subscribe.get("thread_id") or "").strip()
+        if thread_id:
+            normalized_subscribe["thread_id"] = thread_id
+        user_id = str(subscribe.get("user_id") or "").strip()
+        if user_id:
+            normalized_subscribe["user_id"] = user_id
+        subscribe = normalized_subscribe
+    elif not subscribe:
+        sub_platform = os.environ.get("HERMES_NOTIFY_PLATFORM")
+        sub_chat_id = os.environ.get("HERMES_NOTIFY_CHAT_ID")
+        if sub_platform and sub_chat_id:
+            subscribe = {
+                "platform": sub_platform,
+                "chat_id": sub_chat_id,
+            }
+            sub_thread = os.environ.get("HERMES_NOTIFY_THREAD_ID")
+            if sub_thread:
+                subscribe["thread_id"] = sub_thread
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
         skills = [skills]
@@ -702,6 +736,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                subscribe=subscribe,
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
@@ -1165,6 +1200,36 @@ KANBAN_CREATE_SCHEMA = {
                     "The names must match skills installed on the "
                     "assignee's profile."
                 ),
+            },
+            "subscribe": {
+                "type": "object",
+                "description": (
+                    "Optional notification subscription to create "
+                    "alongside the task. When omitted, the tool falls "
+                    "back to HERMES_NOTIFY_PLATFORM, "
+                    "HERMES_NOTIFY_CHAT_ID, and "
+                    "HERMES_NOTIFY_THREAD_ID when those gateway env "
+                    "vars are present."
+                ),
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "description": "Platform name such as telegram, discord, or feishu.",
+                    },
+                    "chat_id": {
+                        "type": "string",
+                        "description": "Chat or channel id for the subscription.",
+                    },
+                    "thread_id": {
+                        "type": "string",
+                        "description": "Optional thread or topic id for threaded platforms.",
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": "Optional user id for per-user notification flows.",
+                    },
+                },
+                "required": ["platform", "chat_id"],
             },
             "board": _board_schema_prop(),
         },

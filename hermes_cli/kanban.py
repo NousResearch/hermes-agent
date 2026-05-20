@@ -118,7 +118,6 @@ def board_placement_error(
                 return None
             tokens = tokens[i + 1:]
             break
-            i += 1
         else:
             return None
     if _has_misplaced_board_flag(tokens):

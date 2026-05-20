@@ -53,6 +53,16 @@ Verification:
 git -C /opt/data/repos/gbrain status --short
 find /opt/data/memories -maxdepth 1 -mindepth 1 -printf '%f\n' | sort
 find /opt/data/gbrain-content -maxdepth 1 -mindepth 1 -printf '%f\n' | sort
+
+# Runtime readiness is separate from source/content layout:
+for c in gbrain bun node npm; do
+  if command -v "$c" >/dev/null 2>&1; then
+    echo "$c=$(command -v "$c")"
+    "$c" --version 2>/dev/null | head -1 || true
+  else
+    echo "$c=missing"
+  fi
+done
 ```
 
 Expected:
@@ -60,6 +70,7 @@ Expected:
 - `/opt/data/memories` has only native memory files plus locks/git metadata.
 - `/opt/data/gbrain-content` has durable markdown content directories.
 - `/opt/data/repos/gbrain` is a clean source checkout.
+- `gbrain` on PATH means Hermes can invoke the CLI directly; a clean `/opt/data/repos/gbrain` checkout alone does **not** prove runtime CLI readiness. If `gbrain=missing` and `bun=missing`, the pull-in/layout is good but install/linking still remains before direct `gbrain` calls will work.
 
 ## Pitfalls
 

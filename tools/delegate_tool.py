@@ -1076,6 +1076,28 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    # Resolve request overrides: inherit parent overrides, then let
+    # delegation.temperature tune the child without affecting the parent.
+    child_request_overrides = dict(getattr(parent_agent, "request_overrides", None) or {})
+    try:
+        if "temperature" in delegation_cfg:
+            delegation_temperature = delegation_cfg.get("temperature")
+            if delegation_temperature is not None and str(delegation_temperature).strip() != "":
+                parsed_temperature = float(delegation_temperature)
+                if 0 <= parsed_temperature <= 2:
+                    child_request_overrides["temperature"] = parsed_temperature
+                else:
+                    logger.warning(
+                        "Invalid delegation.temperature %r; expected a number between 0 and 2",
+                        delegation_temperature,
+                    )
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "Invalid delegation.temperature %r; expected a number between 0 and 2: %s",
+            delegation_cfg.get("temperature"),
+            exc,
+        )
+
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
@@ -1116,6 +1138,7 @@ def _build_child_agent(
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
+        request_overrides=child_request_overrides,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,

@@ -414,6 +414,32 @@ class TestDelegateTask(unittest.TestCase):
         mock_child.thinking_callback("deliberating...")
         parent.tool_progress_callback.assert_not_called()
 
+    def test_child_applies_delegation_temperature_override(self):
+        parent = _make_mock_parent(depth=0)
+        parent.request_overrides = {"parallel_tool_calls": False}
+
+        with patch("tools.delegate_tool._load_config", return_value={"temperature": 0.7}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use creative temperature",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["request_overrides"], {
+            "parallel_tool_calls": False,
+            "temperature": 0.7,
+        })
+
 
 class TestToolNamePreservation(unittest.TestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""

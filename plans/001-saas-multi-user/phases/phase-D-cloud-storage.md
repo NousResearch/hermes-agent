@@ -1,6 +1,6 @@
 # Phase D: Cloud Storage Backend
 
-**Status**: TODO
+**Status**: Complete (code shipped; S3 bucket terraform apply pending Blake approval)
 **Depends on**: Phase 0
 **Blocks**: Phase E
 
@@ -53,14 +53,16 @@ The approach is a **thin protocol abstraction**: define `StorageBackend` as a Py
 
 ## Acceptance Criteria
 
-- [ ] `StorageBackend` is a `Protocol` with `get_or_create_conversation`, `append_message`, `get_conversation_history`, `search_sessions`
-- [ ] `SQLiteBackend` satisfies the protocol and all existing session tests pass
-- [ ] `NeonBackend` connects to Neon via `NEON_DATABASE_URL`, sets `app.tenant_id` per connection
-- [ ] Cross-tenant reads blocked: User A's messages not returned for User B's tenant_id via RLS
-- [ ] History survives simulated container restart (messages retrieved from Neon after reconnect)
-- [ ] `HERMES_MODE=local` → SQLiteBackend selected (no Neon connection attempted)
-- [ ] `HERMES_MODE=saas` + `NEON_DATABASE_URL` set → NeonBackend selected
-- [ ] `pytest tests/test_storage_sqlite.py tests/test_storage_neon.py -v` — all pass
+- [x] `StorageBackend` is a `Protocol` with `get_or_create_conversation`, `append_message`, `get_conversation_history`, `search_sessions` — `hermes_storage/backend.py`
+- [x] `SQLiteBackend` satisfies the protocol and all existing session tests pass — 18/18 tests pass
+- [x] `NeonBackend` connects to Neon via `NEON_DATABASE_URL`, sets `app.tenant_id` per connection — live verified
+- [x] Cross-tenant reads blocked: User A's messages not returned for User B's tenant_id via RLS — `test_live_cross_tenant_rls_isolation` passes
+- [x] History survives simulated container restart (messages retrieved from Neon after reconnect) — `test_live_history_survives_reconnect` passes
+- [x] `HERMES_MODE=local` → SQLiteBackend selected (no Neon connection attempted) — factory tests pass
+- [x] `HERMES_MODE=saas` + `NEON_DATABASE_URL` set → NeonBackend selected — factory tests pass
+- [x] `pytest tests/test_storage_sqlite.py tests/test_storage_neon.py -v` — 41/41 unit tests pass; 5/5 live tests pass
+- [x] S3SkillSource with tenant-prefix isolation — `hermes_storage/s3_skills.py` + 31 tests pass
+- [ ] S3 bucket terraform apply (USER APPROVAL PENDING) — `terraform plan: 8 to add, 0 to change`
 
 ## Key Code
 

@@ -24,6 +24,56 @@ from tools.vision_tools import (
 )
 
 
+class _FakeStreamResponse:
+    def __init__(self, chunks, *, headers=None, url="https://example.com/final.png"):
+        self._chunks = list(chunks)
+        self.headers = headers or {}
+        self.url = url
+        self.content_accessed = False
+
+    @property
+    def content(self):
+        self.content_accessed = True
+        raise AssertionError("download should stream chunks instead of reading content")
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_bytes(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeStreamContext:
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeAsyncClient:
+    def __init__(self, response=None, stream_error=None):
+        self.response = response
+        self.stream_error = stream_error
+        self.stream_calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def stream(self, method, url, **kwargs):
+        self.stream_calls.append((method, url, kwargs))
+        if self.stream_error:
+            raise self.stream_error
+        return _FakeStreamContext(self.response)
+
+
 # ---------------------------------------------------------------------------
 # _validate_image_url — urlparse-based validation
 # ---------------------------------------------------------------------------
@@ -272,10 +322,7 @@ class TestErrorLoggingExcInfo:
         from tools.vision_tools import _download_image
 
         with patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.get = AsyncMock(side_effect=ConnectionError("network down"))
+            mock_client = _FakeAsyncClient(stream_error=ConnectionError("network down"))
             mock_client_cls.return_value = mock_client
 
             dest = tmp_path / "image.jpg"
@@ -475,28 +522,65 @@ class TestVisionSafetyGuards:
                 }
             raise AssertionError(f"unexpected URL checked: {url}")
 
-        class FakeResponse:
-            url = "https://blocked.test/final.png"
-            headers = {"content-length": "24"}
-            content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
-
-            def raise_for_status(self):
-                return None
+        response = _FakeStreamResponse(
+            [b"\x89PNG\r\n\x1a\n", b"\x00" * 16],
+            headers={"content-length": "24"},
+            url="https://blocked.test/final.png",
+        )
 
         with (
             patch("tools.vision_tools.check_website_access", side_effect=fake_check),
             patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
             pytest.raises(PermissionError, match="Blocked by website policy"),
         ):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.get = AsyncMock(return_value=FakeResponse())
-            mock_client_cls.return_value = mock_client
+            mock_client_cls.return_value = _FakeAsyncClient(response)
 
             await _download_image("https://allowed.test/cat.png", tmp_path / "cat.png", max_retries=1)
 
         assert not (tmp_path / "cat.png").exists()
+        assert response.content_accessed is False
+
+    @pytest.mark.asyncio
+    async def test_download_streams_image_without_loading_full_response(self, tmp_path):
+        from tools.vision_tools import _download_image
+
+        response = _FakeStreamResponse(
+            [b"\x89PNG\r\n\x1a\n", b"image-bytes"],
+            headers={"content-length": "19"},
+            url="https://example.com/final.png",
+        )
+
+        with (
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client_cls.return_value = _FakeAsyncClient(response)
+            dest = await _download_image("https://example.com/cat.png", tmp_path / "cat.png", max_retries=1)
+
+        assert dest.read_bytes() == b"\x89PNG\r\n\x1a\nimage-bytes"
+        assert response.content_accessed is False
+
+    @pytest.mark.asyncio
+    async def test_download_rejects_image_when_stream_exceeds_limit(self, tmp_path):
+        from tools.vision_tools import _download_image
+
+        response = _FakeStreamResponse(
+            [b"12345", b"67890", b"!"],
+            headers={},
+            url="https://example.com/final.png",
+        )
+
+        with (
+            patch("tools.vision_tools._VISION_MAX_DOWNLOAD_BYTES", 10),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            pytest.raises(ValueError, match="Image too large"),
+        ):
+            mock_client_cls.return_value = _FakeAsyncClient(response)
+            await _download_image("https://example.com/cat.png", tmp_path / "cat.png", max_retries=1)
+
+        assert not (tmp_path / "cat.png").exists()
+        assert response.content_accessed is False
 
 
 # ---------------------------------------------------------------------------

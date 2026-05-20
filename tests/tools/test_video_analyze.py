@@ -21,6 +21,53 @@ from tools.vision_tools import (
 )
 
 
+class _FakeVideoStreamResponse:
+    def __init__(self, chunks, *, headers=None, url="https://example.com/final.mp4"):
+        self._chunks = list(chunks)
+        self.headers = headers or {}
+        self.url = url
+        self.content_accessed = False
+
+    @property
+    def content(self):
+        self.content_accessed = True
+        raise AssertionError("download should stream chunks instead of reading content")
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_bytes(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeVideoStreamContext:
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeVideoAsyncClient:
+    def __init__(self, response):
+        self.response = response
+        self.stream_calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def stream(self, method, url, **kwargs):
+        self.stream_calls.append((method, url, kwargs))
+        return _FakeVideoStreamContext(self.response)
+
+
 # ---------------------------------------------------------------------------
 # _detect_video_mime_type
 # ---------------------------------------------------------------------------
@@ -307,6 +354,57 @@ class TestVideoAnalyzeTool:
         assert content[1]["type"] == "video_url"
         assert "video_url" in content[1]
         assert content[1]["video_url"]["url"].startswith("data:video/mp4;base64,")
+
+
+class TestDownloadVideo:
+    """Remote video download safety checks."""
+
+    def _run(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_download_streams_video_without_loading_full_response(self, tmp_path):
+        from tools.vision_tools import _download_video
+
+        response = _FakeVideoStreamResponse(
+            [b"\x00\x00\x00\x18ftyp", b"video-bytes"],
+            headers={"content-length": "18"},
+            url="https://example.com/final.mp4",
+        )
+
+        with (
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client_cls.return_value = _FakeVideoAsyncClient(response)
+            dest = self._run(
+                _download_video("https://example.com/clip.mp4", tmp_path / "clip.mp4", max_retries=1)
+            )
+
+        assert dest.read_bytes() == b"\x00\x00\x00\x18ftypvideo-bytes"
+        assert response.content_accessed is False
+
+    def test_download_rejects_video_when_stream_exceeds_limit(self, tmp_path):
+        from tools.vision_tools import _download_video
+
+        response = _FakeVideoStreamResponse(
+            [b"12345", b"67890", b"!"],
+            headers={},
+            url="https://example.com/final.mp4",
+        )
+
+        with (
+            patch("tools.vision_tools._MAX_VIDEO_BASE64_BYTES", 10),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            pytest.raises(ValueError, match="Video too large"),
+        ):
+            mock_client_cls.return_value = _FakeVideoAsyncClient(response)
+            self._run(
+                _download_video("https://example.com/clip.mp4", tmp_path / "clip.mp4", max_retries=1)
+            )
+
+        assert not (tmp_path / "clip.mp4").exists()
+        assert response.content_accessed is False
 
 
 # ---------------------------------------------------------------------------

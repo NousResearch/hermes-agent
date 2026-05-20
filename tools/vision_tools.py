@@ -74,6 +74,55 @@ _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 
+async def _stream_download_to_file(
+    client: httpx.AsyncClient,
+    url: str,
+    destination: Path,
+    *,
+    headers: dict[str, str],
+    max_bytes: int,
+    media_label: str,
+) -> None:
+    """Stream an HTTP response to disk while enforcing a byte limit."""
+    try:
+        async with client.stream("GET", url, headers=headers) as response:
+            response.raise_for_status()
+
+            cl = response.headers.get("content-length")
+            if cl:
+                try:
+                    content_length = int(cl)
+                except ValueError:
+                    content_length = None
+                if content_length is not None and content_length > max_bytes:
+                    raise ValueError(
+                        f"{media_label} too large ({content_length} bytes, max {max_bytes})"
+                    )
+
+            final_url = str(response.url)
+            blocked = check_website_access(final_url)
+            if blocked:
+                raise PermissionError(blocked["message"])
+
+            bytes_written = 0
+            with destination.open("wb") as f:
+                async for chunk in response.aiter_bytes():
+                    if not chunk:
+                        continue
+                    bytes_written += len(chunk)
+                    if bytes_written > max_bytes:
+                        raise ValueError(
+                            f"{media_label} too large ({bytes_written} bytes, max {max_bytes})"
+                        )
+                    f.write(chunk)
+    except Exception:
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _validate_image_url(url: str) -> bool:
     """
     Basic validation of image URL format.
@@ -178,34 +227,17 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:
-                response = await client.get(
+                await _stream_download_to_file(
+                    client,
                     image_url,
+                    destination,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "image/*,*/*;q=0.8",
                     },
+                    max_bytes=_VISION_MAX_DOWNLOAD_BYTES,
+                    media_label="Image",
                 )
-                response.raise_for_status()
-
-                # Reject overly large images early via Content-Length header.
-                cl = response.headers.get("content-length")
-                if cl and int(cl) > _VISION_MAX_DOWNLOAD_BYTES:
-                    raise ValueError(
-                        f"Image too large ({int(cl)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
-                    )
-
-                final_url = str(response.url)
-                blocked = check_website_access(final_url)
-                if blocked:
-                    raise PermissionError(blocked["message"])
-                
-                # Save the image content (double-check actual size)
-                body = response.content
-                if len(body) > _VISION_MAX_DOWNLOAD_BYTES:
-                    raise ValueError(
-                        f"Image too large ({len(body)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
-                    )
-                destination.write_bytes(body)
             
             return destination
         except Exception as e:
@@ -1118,32 +1150,17 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:
-                response = await client.get(
+                await _stream_download_to_file(
+                    client,
                     video_url,
+                    destination,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "video/*,*/*;q=0.8",
                     },
+                    max_bytes=_MAX_VIDEO_BASE64_BYTES,
+                    media_label="Video",
                 )
-                response.raise_for_status()
-
-                cl = response.headers.get("content-length")
-                if cl and int(cl) > _MAX_VIDEO_BASE64_BYTES:
-                    raise ValueError(
-                        f"Video too large ({int(cl)} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
-                    )
-
-                final_url = str(response.url)
-                blocked = check_website_access(final_url)
-                if blocked:
-                    raise PermissionError(blocked["message"])
-
-                body = response.content
-                if len(body) > _MAX_VIDEO_BASE64_BYTES:
-                    raise ValueError(
-                        f"Video too large ({len(body)} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
-                    )
-                destination.write_bytes(body)
 
             return destination
         except Exception as e:

@@ -203,6 +203,13 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_approval_action)
 
+            # Register Block Kit action handlers for Artemis job-match cards
+            # (S-0511-08). Save writes to ~/.hermes/artemis/<user_id>/shortlist.json;
+            # Skip is fire-and-forget ack. Both post a hard-coded follow-up
+            # message — Coach LLM is not in the click loop.
+            self._app.action("job_card_save")(self._handle_job_card_save)
+            self._app.action("job_card_skip")(self._handle_job_card_skip)
+
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token)
             self._socket_mode_task = asyncio.create_task(self._handler.start_async())
@@ -1224,6 +1231,107 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Clean up stale approval state
         self._approval_resolved.pop(msg_ts, None)
+
+    # ----- Artemis job-match card buttons (S-0511-08) -----
+
+    async def _handle_job_card_save(self, ack, body, action) -> None:
+        """Save click — write to ~/.hermes/artemis/<user_id>/shortlist.json.
+
+        Schema must stay in sync with Artemis `mcp-server/tools/shortlist.py`.
+        Both sides use the same atomic write (tmp + Path.replace) and dedup
+        by job_id. Drift risk acknowledged in S-0511-08 spec; refactor to
+        share via plugin if pilot succeeds.
+        """
+        await ack()
+        try:
+            payload = json.loads(action.get("value") or "{}")
+        except (TypeError, ValueError):
+            logger.warning("[Slack] job_card_save: malformed value payload")
+            return
+
+        user_id = (body.get("user") or {}).get("id", "")
+        channel_id = (body.get("channel") or {}).get("id", "")
+        job_id = payload.get("job_id", "")
+        if not (user_id and channel_id and job_id):
+            logger.warning(
+                "[Slack] job_card_save: missing user_id / channel_id / job_id"
+            )
+            return
+
+        from hermes_constants import get_hermes_home
+        shortlist_path = (
+            get_hermes_home() / "artemis" / user_id / "shortlist.json"
+        )
+
+        try:
+            entries: list[dict[str, Any]] = []
+            if shortlist_path.exists():
+                try:
+                    entries = json.loads(shortlist_path.read_text(encoding="utf-8"))
+                    if not isinstance(entries, list):
+                        entries = []
+                except (OSError, json.JSONDecodeError):
+                    entries = []
+
+            already = any(
+                isinstance(e, dict) and e.get("job_id") == job_id
+                for e in entries
+            )
+
+            if not already:
+                from datetime import datetime, timezone
+                saved_at = (
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="microseconds")
+                    .replace("+00:00", "Z")
+                )
+                entries.append({
+                    "job_id": job_id,
+                    "title": payload.get("title", ""),
+                    "company": payload.get("company", ""),
+                    "location": payload.get("location", ""),
+                    "url": payload.get("url", ""),
+                    "saved_at": saved_at,
+                })
+                shortlist_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = shortlist_path.with_suffix(shortlist_path.suffix + ".tmp")
+                tmp.write_text(
+                    json.dumps(entries, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                tmp.replace(shortlist_path)
+
+            logger.info(
+                "[Slack] job_card_save: user=%s job=%s is_new=%s",
+                user_id, job_id, not already,
+            )
+
+            try:
+                await self._get_client(channel_id).chat_postMessage(
+                    channel=channel_id,
+                    text="Saved to your shortlist.",
+                )
+            except Exception as exc:
+                logger.warning("[Slack] job_card_save ack post failed: %s", exc)
+
+        except Exception as exc:
+            logger.error("[Slack] job_card_save handler failed: %s", exc, exc_info=True)
+
+    async def _handle_job_card_skip(self, ack, body, action) -> None:
+        """Skip click — fire-and-forget ack. Phase 1 does not persist skipped jobs."""
+        await ack()
+        channel_id = (body.get("channel") or {}).get("id", "")
+        if not channel_id:
+            return
+        job_id = action.get("value", "")
+        logger.info("[Slack] job_card_skip: job=%s", job_id)
+        try:
+            await self._get_client(channel_id).chat_postMessage(
+                channel=channel_id,
+                text="Dropped from this list.",
+            )
+        except Exception as exc:
+            logger.warning("[Slack] job_card_skip ack post failed: %s", exc)
 
     # ----- Thread context fetching -----
 

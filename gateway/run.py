@@ -6612,6 +6612,10 @@ class GatewayRunner:
                         "iteration": iteration,
                         "tool_names": _names,
                         "tools": prev_tools,
+                        # chat_id lets hooks post unsolicited messages (e.g. the
+                        # Artemis job-match-cards hook needs it to render Block
+                        # Kit cards after Coach calls render_job_match_cards).
+                        "chat_id": source.chat_id,
                     }),
                     _loop_for_step,
                 )

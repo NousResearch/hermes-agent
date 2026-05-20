@@ -1,10 +1,10 @@
-"""Yuanbao recall: branch A2 (content-match) works without JSONL message_id."""
+"""Yuanbao recall: branch A (content-match) works against DB-only transcripts."""
 from gateway.session import SessionStore
 from gateway.config import GatewayConfig
 
 
-def test_recall_falls_through_to_content_match_without_message_id(tmp_path, monkeypatch):
-    """When transcript has no message_id field, A2 content-match still works.
+def test_recall_content_match_finds_target_in_db_transcript(tmp_path, monkeypatch):
+    """state.db doesn't preserve message_id, so recall uses content-match.
 
     Pin DEFAULT_DB_PATH to tmp_path so SessionDB() can't write to the real
     ~/.hermes/state.db. (Module-level constant snapshot, see test_load_transcript_db_only.)
@@ -20,12 +20,11 @@ def test_recall_falls_through_to_content_match_without_message_id(tmp_path, monk
     store.append_to_transcript(sid, {"role": "user", "content": "sensitive content", "timestamp": 1.0})
     store.append_to_transcript(sid, {"role": "assistant", "content": "ack", "timestamp": 2.0})
 
-    # The post-PR state: load_transcript returns DB-only, no message_id field.
+    # DB-only history carries no platform message_id (PR #29211 dropped that path).
     history = store.load_transcript(sid)
-    assert all("message_id" not in msg for msg in history), \
-        "DB-only history should not carry message_id"
+    assert all("message_id" not in msg for msg in history)
 
-    # Branch A2: content match should still find the message
+    # Branch A: content match finds the target row that recall would redact.
     target = next((m for m in history
                    if m.get("role") == "user" and m.get("content") == "sensitive content"), None)
     assert target is not None

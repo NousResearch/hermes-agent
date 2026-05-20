@@ -1410,32 +1410,24 @@ class RecallGuardMiddleware(InboundMiddleware):
             logger.warning("[%s] Recall: failed to resolve session: %s", adapter.name, exc)
             return
 
-        # Load transcript from canonical store (state.db).
-        #
-        # Branch A1 below tries to match the recalled message by its platform
-        # `message_id`. state.db does NOT preserve `message_id` (only its own
-        # autoincrement primary key), so A1 will not match for any message
-        # persisted post-DB-canonical (i.e. all messages going forward). Recall
-        # falls through to A2 (content match) or B (system redaction note), both
-        # of which work DB-only.
-        #
-        # TODO: add a `platform_message_id` column to state.db messages to restore
-        # exact-id matching. Tracked separately.
+        # Load transcript from canonical store (state.db). See Branch A below
+        # for why we can no longer match by platform `message_id`.
         try:
             transcript = store.load_transcript(sid)
         except Exception as exc:
             logger.warning("[%s] Recall: failed to load transcript: %s", adapter.name, exc)
             return
 
-        # Branch A: redact — try message_id first, then content fallback.
-        # Observed messages have message_id; agent-processed @bot messages
-        # only have content (run.py doesn't write message_id to transcript).
+        # Branch A: content-match redaction. state.db does NOT preserve the
+        # platform `message_id` (only its own autoincrement primary key), so we
+        # cannot redact by exact id. Match by content instead. Most yuanbao
+        # recalls carry the recalled text via `recalled_content`, which is
+        # sufficient for any non-duplicate message.
+        #
+        # TODO: add a `platform_message_id` column to state.db messages to
+        # restore exact-id matching. Tracked separately.
         target = None
-        for entry in transcript:
-            if entry.get("message_id") == recalled_id:
-                target = entry
-                break
-        if target is None and recalled_content:
+        if recalled_content:
             for entry in transcript:
                 if entry.get("role") == "user" and entry.get("content") == recalled_content:
                     target = entry
@@ -1444,7 +1436,7 @@ class RecallGuardMiddleware(InboundMiddleware):
             target["content"] = cls._REDACTED
             try:
                 store.rewrite_transcript(sid, transcript)
-                logger.info("[%s] Recall: redacted msg_id=%s (branch A)", adapter.name, recalled_id)
+                logger.info("[%s] Recall: redacted msg_id=%s (branch A: content match)", adapter.name, recalled_id)
             except Exception as exc:
                 logger.warning("[%s] Recall: rewrite_transcript failed: %s", adapter.name, exc)
             return

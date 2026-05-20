@@ -6,6 +6,9 @@ enabled:
   - drug-discovery
   - darwinian-evolver
   - arxiv
+  - kanban
+  - kanban-orchestrator
+  - kanban-paper-nexus
   - scientific-writing
   - scientific-visualization
   - literature-review

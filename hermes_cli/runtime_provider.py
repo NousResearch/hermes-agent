@@ -582,10 +582,13 @@ def _resolve_named_custom_runtime(
         if pool_result:
             pool_result["source"] = "direct-alias"
             return pool_result
+        _da_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
+        _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
         api_key_candidates = [
             (explicit_api_key or "").strip(),
-            os.getenv("OPENAI_API_KEY", "").strip(),
-            os.getenv("OPENROUTER_API_KEY", "").strip(),
+            # Gate env key fallbacks on authoritative hosts (#28660)
+            (os.getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""),
+            (os.getenv("OPENROUTER_API_KEY", "").strip() if _da_is_openrouter  else ""),
         ]
         api_key = next(
             (c for c in api_key_candidates if has_usable_secret(c)),
@@ -621,12 +624,16 @@ def _resolve_named_custom_runtime(
             pool_result["model"] = model_name
         return pool_result
 
+    _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
+    _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
     api_key_candidates = [
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
         os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
-        os.getenv("OPENAI_API_KEY", "").strip(),
-        os.getenv("OPENROUTER_API_KEY", "").strip(),
+        # Gate provider env keys on their authoritative hosts — sending
+        # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
+        (os.getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),
+        (os.getenv("OPENROUTER_API_KEY", "").strip() if _cp_is_openrouter  else ""),
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
@@ -707,7 +714,15 @@ def _resolve_openrouter_runtime(
     # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated
     # provider (issues #420, #560).
     _is_openrouter_url = base_url_host_matches(base_url, "openrouter.ai")
-    if _is_openrouter_url:
+    # Also treat explicitly-configured OpenRouter mirrors/proxies as OpenRouter
+    # for key selection — if the user set OPENROUTER_BASE_URL or requested
+    # provider=openrouter explicitly, OPENROUTER_API_KEY should still be used.
+    _is_openrouter_context = _is_openrouter_url or (
+        requested_norm == "openrouter"
+        and (env_openrouter_base_url or base_url == env_openrouter_base_url)
+        and base_url == (env_openrouter_base_url or "").rstrip("/")
+    )
+    if _is_openrouter_context:
         api_key_candidates = [
             explicit_api_key,
             os.getenv("OPENROUTER_API_KEY"),

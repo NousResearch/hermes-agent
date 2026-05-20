@@ -554,25 +554,6 @@ class TestExtractReasoning:
         assert result == "from structured field"
 
 
-class TestCleanSessionContent:
-    def test_none_passthrough(self):
-        assert AIAgent._clean_session_content(None) is None
-
-    def test_scratchpad_converted(self):
-        text = "<REASONING_SCRATCHPAD>think</REASONING_SCRATCHPAD> answer"
-        result = AIAgent._clean_session_content(text)
-        assert "<REASONING_SCRATCHPAD>" not in result
-        assert "<think>" in result
-
-    def test_extra_newlines_cleaned(self):
-        text = "\n\n\n<think>x</think>\n\n\nafter"
-        result = AIAgent._clean_session_content(text)
-        # Should not have excessive newlines around think block
-        assert "\n\n\n" not in result
-        # Content after think block must be preserved
-        assert "after" in result
-
-
 class TestGetMessagesUpToLastAssistant:
     def test_empty_list(self, agent):
         assert agent._get_messages_up_to_last_assistant([]) == []

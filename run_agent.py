@@ -168,7 +168,6 @@ from agent.tool_result_classification import (
     file_mutation_result_landed,
 )
 from agent.trajectory import (
-    convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
 from agent.message_sanitization import (
@@ -1504,16 +1503,6 @@ class AIAgent:
         """Forwarder — see ``agent.agent_runtime_helpers.dump_api_request_debug``."""
         from agent.agent_runtime_helpers import dump_api_request_debug
         return dump_api_request_debug(self, api_kwargs, reason=reason, error=error)
-
-    @staticmethod
-    def _clean_session_content(content: str) -> str:
-        """Convert REASONING_SCRATCHPAD to think tags and clean up whitespace."""
-        if not content:
-            return content
-        content = convert_scratchpad_to_think(content)
-        content = re.sub(r'\n+(<think>)', r'\n\1', content)
-        content = re.sub(r'(</think>)\n+', r'\1\n', content)
-        return content.strip()
 
 
     def interrupt(self, message: str = None) -> None:

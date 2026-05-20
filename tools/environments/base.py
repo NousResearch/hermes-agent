@@ -22,6 +22,7 @@ from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +167,7 @@ def _load_json_store(path: Path) -> dict:
 
 def _save_json_store(path: Path, data: dict) -> None:
     """Write *data* as pretty-printed JSON to *path*."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_json_write(path, data)
 
 
 def _file_mtime_key(host_path: str) -> tuple[float, int] | None:

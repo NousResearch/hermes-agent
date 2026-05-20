@@ -274,7 +274,50 @@ def _extract_output_tail(
     return tail
 
 
-def _looks_like_error_output(content: str) -> bool:
+def _normalize_tool_content(content: Any) -> str:
+    """Coerce a tool message ``content`` value to a string for inspection.
+
+    OpenAI-style multimodal messages may pass ``content`` as a list of
+    ``{"type": "text", "text": "..."}`` (and/or image) parts.  Older or
+    custom providers may pass a dict or raw object.  Return a best-effort
+    string so downstream heuristics (error detection, byte counting) do
+    not crash with ``AttributeError`` on non-string content.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                else:
+                    # Fall back to a stable serialization for non-text parts
+                    # (e.g. image_url) so byte counts stay meaningful.
+                    try:
+                        parts.append(json.dumps(part, ensure_ascii=False))
+                    except Exception:
+                        parts.append(str(part))
+            else:
+                parts.append(str(part))
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str):
+            return text
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except Exception:
+            return str(content)
+    return str(content)
+
+
+def _looks_like_error_output(content: Any) -> bool:
     """Conservative stderr/error detector for tool-result previews.
 
     The old heuristic flagged any preview containing the substring "error",
@@ -286,6 +329,11 @@ def _looks_like_error_output(content: str) -> bool:
     """
     if not content:
         return False
+
+    if not isinstance(content, str):
+        content = _normalize_tool_content(content)
+        if not content:
+            return False
 
     head = content.lstrip()
     if head.startswith("{") or head.startswith("["):
@@ -1653,7 +1701,7 @@ def _run_single_child(
                         if tc_id:
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
-                    content = msg.get("content", "")
+                    content = _normalize_tool_content(msg.get("content", ""))
                     is_error = _looks_like_error_output(content)
                     result_meta = {
                         "result_bytes": len(content),

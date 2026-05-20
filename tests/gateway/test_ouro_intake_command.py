@@ -878,3 +878,29 @@ def test_bo062_hermes_generated_question_override_survives_answer_merge(hermes_h
     assert question["source"] == "hermes_generated_from_upstream_question_contract"
     assert question["id"].startswith("upstream_generated_")
     assert sessions[started.session_id]["values"]["generated_question"] == "Where should the A+B v1 stop before worker dispatch?"
+
+
+def test_bo062_question_contract_command_renders_provider_bridge_packet_without_calling_provider(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    started = handle_ouro_intake_command(
+        'goal:"Improve existing gateway intake" project:bo tenant:kanban context:"Hermes gateway existing runtime"',
+        actor="tester",
+    )
+
+    rendered = handle_ouro_intake_command(f"question session:{started.session_id}", actor="tester")
+
+    assert rendered.action == "question_contract_rendered"
+    assert rendered.mutated is False
+    assert rendered.dispatched is False
+    assert "Question generation packet" in rendered.message
+    assert "```json upstream_question_contract" in rendered.message
+    assert "```text provider_prompt" in rendered.message
+    assert "generated-question:<one Socratic question>" in rendered.message
+    assert "requires_provider_question" in rendered.message
+    assert "upstream_question_provider_call=false" in rendered.message
+
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    session = sessions[started.session_id]
+    assert session["upstream_question_provider_call"] is False
+    assert session["last_question"]["source"] == "hermes_gateway_fallback"

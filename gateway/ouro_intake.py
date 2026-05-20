@@ -129,6 +129,7 @@ def _help_message() -> str:
         "Usage:\n"
         "  /ouro-intake goal:<text> project:<bo|dc|ws|rs> [tenant:<name>] [context:<text>]\n"
         "  /ouro-intake answer session:<id> answer:<text>\n"
+        "  /ouro-intake question session:<id>\n"
         "  /ouro-intake seed session:<id>\n"
         "  /ouro-intake admit session:<id>\n"
         "  /ouro-intake cancel [session:<id>]\n"
@@ -136,7 +137,6 @@ def _help_message() -> str:
         "Boundary: admission only. executor_dispatch=forbidden_during_admission; "
         "no worker, repo mutation, PR, gateway restart, secret/env change, or live rollout is approved."
     )
-
 
 def _split_tokens(raw_args: str) -> list[str]:
     try:
@@ -808,6 +808,71 @@ def _format_restate(session_id: str, values: dict[str, Any], review: dict[str, A
         "맞으면 `승인`이라고 답해주세요. 아니면 수정할 내용을 그대로 보내면 됩니다. Seed는 승인 전까지 막혀 있습니다."
     )
 
+def _render_question_contract(raw_args: str) -> OuroIntakeResult:
+    """Render the persisted upstream question contract as a provider bridge packet.
+
+    The gateway deliberately does not call a provider here.  This command only
+    exposes the vendored upstream InterviewEngine prompt contract in a shape an
+    external Hermes/model step can consume, then feed back through
+    `generated-question:<text>` or `hermes-question:<text>`.
+    """
+
+    parsed = _parse_args(raw_args)
+    session_id = str(parsed.get("session_id") or "").strip()
+    sessions = _load_sessions()
+    session = sessions.get(session_id)
+    if not session_id or not isinstance(session, dict):
+        return OuroIntakeResult(
+            action="error",
+            error="unknown_session",
+            message="Missing or unknown session. No provider call was made.",
+        )
+    contract = session.get("upstream_question_contract") if isinstance(session.get("upstream_question_contract"), dict) else {}
+    if not contract:
+        return OuroIntakeResult(
+            action="error",
+            error="missing_question_contract",
+            session_id=session_id,
+            message=f"Session {session_id} has no upstream question contract. No provider call was made.",
+        )
+    prompt = str(contract.get("system_prompt") or "").strip()
+    packet = {
+        "session_id": session_id,
+        "source": "vendored_q00_ouroboros_interview_prompt_contract",
+        "upstream_question_provider_call": False,
+        "adapter": "hermes_external_provider_bridge_packet",
+        "response_format": "generated-question:<one Socratic question>",
+        "constraints": [
+            "Ask exactly one Socratic question.",
+            "Do not browse, inspect repos, call tools, dispatch workers, mutate Kanban, or create PRs.",
+            "Question text must fit on one line and should reduce the weakest remaining ambiguity.",
+        ],
+        "last_question_source": (session.get("last_question") or {}).get("source") if isinstance(session.get("last_question"), dict) else None,
+        "requires_provider_question": contract.get("requires_provider_question"),
+        "round_number": contract.get("round_number"),
+    }
+    return OuroIntakeResult(
+        action="question_contract_rendered",
+        mutated=False,
+        dispatched=False,
+        session_id=session_id,
+        message=(
+            f"Question generation packet for /ouro-intake session {session_id}.\n"
+            "upstream_question_provider_call=false; gateway did not call a provider.\n"
+            "Return the generated question through `generated-question:<one Socratic question>` on the next answer/start turn.\n\n"
+            "```json upstream_question_contract\n"
+            + json.dumps(contract, indent=2, sort_keys=True, ensure_ascii=False)
+            + "\n```\n"
+            "```json provider_bridge_packet\n"
+            + json.dumps(packet, indent=2, sort_keys=True, ensure_ascii=False)
+            + "\n```\n"
+            "```text provider_prompt\n"
+            + prompt
+            + "\n```"
+        ),
+    )
+
+
 def _ontology_for(values: dict[str, Any]) -> dict[str, Any]:
     project = str(values.get("project") or "bo").strip().lower()
     return {
@@ -1453,10 +1518,12 @@ def handle_ouro_intake_command(raw_args: str = "", *, actor: str | None = None, 
     # tokens would turn `answer:"multi word"` into `answer:multi word`, causing
     # only the first word to bind to the key and losing the actual interview
     # answer that reduces ambiguity.
-    rest = raw_args[len(raw_args.split(maxsplit=1)[0]) :].strip() if subcommand in {"start", "answer", "continue", "seed", "show", "admit", "cancel", "stop", "exit", "quit"} else raw_args
+    rest = raw_args[len(raw_args.split(maxsplit=1)[0]) :].strip() if subcommand in {"start", "answer", "continue", "question", "question-contract", "seed", "show", "admit", "cancel", "stop", "exit", "quit"} else raw_args
 
     if subcommand in {"answer", "continue"}:
         return _answer_interview(rest, actor=actor)
+    if subcommand in {"question", "question-contract"}:
+        return _render_question_contract(rest)
     if subcommand in {"seed", "show"}:
         return _show_or_seed(rest, actor=actor)
     if subcommand in {"cancel", "stop", "exit", "quit"}:

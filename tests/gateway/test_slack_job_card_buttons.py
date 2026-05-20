@@ -70,11 +70,18 @@ def hermes_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _click_body(user_id="U0FIXTURE01", channel_id="D1"):
+def _click_body(user_id="U0FIXTURE01", channel_id="D1", message_ts="1.0", thread_ts=None):
+    """Build a Slack interaction body. By default ts is the cards message;
+    thread_ts is set when the cards landed inside a thread (post-S-0511-08
+    thread fix). When thread_ts is None, ack lands in the same thread as
+    the card's parent (handler falls back to message ts)."""
+    message = {"ts": message_ts}
+    if thread_ts is not None:
+        message["thread_ts"] = thread_ts
     return {
         "user": {"id": user_id, "name": "howiehuang"},
         "channel": {"id": channel_id},
-        "message": {"ts": "1.0"},
+        "message": message,
     }
 
 
@@ -152,6 +159,34 @@ class TestJobCardSave:
         assert dst.endswith("shortlist.json")
 
     @pytest.mark.asyncio
+    async def test_ack_threads_under_card_when_thread_ts_present(self, hermes_home):
+        """When the card was posted in a thread, the ack stays in that thread."""
+        adapter = _make_adapter()
+        adapter._team_clients["T1"].chat_postMessage = AsyncMock()
+        ack = AsyncMock()
+
+        action = {"action_id": "job_card_save", "value": _save_value("job-A")}
+        body = _click_body(message_ts="2.0", thread_ts="1.5")
+        await adapter._handle_job_card_save(ack, body, action)
+
+        post_kwargs = adapter._team_clients["T1"].chat_postMessage.call_args[1]
+        assert post_kwargs.get("thread_ts") == "1.5"
+
+    @pytest.mark.asyncio
+    async def test_ack_falls_back_to_card_ts_when_no_thread_ts(self, hermes_home):
+        """If card was posted as a root message (legacy), ack threads under the card itself."""
+        adapter = _make_adapter()
+        adapter._team_clients["T1"].chat_postMessage = AsyncMock()
+        ack = AsyncMock()
+
+        action = {"action_id": "job_card_save", "value": _save_value("job-A")}
+        body = _click_body(message_ts="3.0", thread_ts=None)
+        await adapter._handle_job_card_save(ack, body, action)
+
+        post_kwargs = adapter._team_clients["T1"].chat_postMessage.call_args[1]
+        assert post_kwargs.get("thread_ts") == "3.0"
+
+    @pytest.mark.asyncio
     async def test_malformed_value_swallowed(self, hermes_home):
         adapter = _make_adapter()
         adapter._team_clients["T1"].chat_postMessage = AsyncMock()
@@ -169,19 +204,67 @@ class TestJobCardSave:
 
 class TestJobCardSkip:
     @pytest.mark.asyncio
-    async def test_posts_ack_no_persistence(self, hermes_home):
+    async def test_posts_ack_no_persistence_when_not_in_shortlist(self, hermes_home):
+        """Skip on a job that was never Saved → 'Dropped from this list.', no file."""
         adapter = _make_adapter()
         adapter._team_clients["T1"].chat_postMessage = AsyncMock()
         ack = AsyncMock()
 
         action = {"action_id": "job_card_skip", "value": "job-A"}
-        await adapter._handle_job_card_skip(ack, _click_body(), action)
+        await adapter._handle_job_card_skip(ack, _click_body(message_ts="2.0", thread_ts="1.5"), action)
         ack.assert_called_once()
 
         post_kwargs = adapter._team_clients["T1"].chat_postMessage.call_args[1]
         assert post_kwargs["text"] == "Dropped from this list."
-        assert post_kwargs["channel"] == "D1"
+        assert post_kwargs.get("thread_ts") == "1.5"
 
-        # No file write on Skip
+        # No file write when there was nothing to remove
         path = hermes_home / "artemis" / "U0FIXTURE01" / "shortlist.json"
         assert not path.exists()
+
+    @pytest.mark.asyncio
+    async def test_removes_job_from_shortlist_when_present(self, hermes_home):
+        """Skip after Save → removes the entry; ack says 'Removed from your shortlist.'"""
+        adapter = _make_adapter()
+        adapter._team_clients["T1"].chat_postMessage = AsyncMock()
+        ack = AsyncMock()
+
+        # Pre-seed shortlist with the job
+        save_action = {"action_id": "job_card_save", "value": _save_value("job-A")}
+        await adapter._handle_job_card_save(ack, _click_body(), save_action)
+
+        path = hermes_home / "artemis" / "U0FIXTURE01" / "shortlist.json"
+        assert len(json.loads(path.read_text())) == 1
+
+        # Now Skip should remove it
+        skip_action = {"action_id": "job_card_skip", "value": "job-A"}
+        await adapter._handle_job_card_skip(ack, _click_body(message_ts="2.0", thread_ts="1.5"), skip_action)
+
+        entries = json.loads(path.read_text())
+        assert len(entries) == 0, "Skip after Save should remove the entry"
+
+        # Ack text reflects the removal
+        last_call = adapter._team_clients["T1"].chat_postMessage.call_args[1]
+        assert last_call["text"] == "Removed from your shortlist."
+        assert last_call.get("thread_ts") == "1.5"
+
+    @pytest.mark.asyncio
+    async def test_skip_preserves_other_entries(self, hermes_home):
+        """Skip removes only the matching job_id, leaves others untouched."""
+        adapter = _make_adapter()
+        adapter._team_clients["T1"].chat_postMessage = AsyncMock()
+        ack = AsyncMock()
+
+        # Pre-seed two entries
+        await adapter._handle_job_card_save(ack, _click_body(), {"action_id": "job_card_save", "value": _save_value("job-A")})
+        await adapter._handle_job_card_save(ack, _click_body(), {"action_id": "job_card_save", "value": _save_value("job-B", title="Other PM")})
+
+        path = hermes_home / "artemis" / "U0FIXTURE01" / "shortlist.json"
+        assert len(json.loads(path.read_text())) == 2
+
+        # Skip job-A only
+        await adapter._handle_job_card_skip(ack, _click_body(), {"action_id": "job_card_skip", "value": "job-A"})
+
+        entries = json.loads(path.read_text())
+        assert len(entries) == 1
+        assert entries[0]["job_id"] == "job-B"

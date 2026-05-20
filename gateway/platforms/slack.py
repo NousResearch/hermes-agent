@@ -1251,6 +1251,10 @@ class SlackAdapter(BasePlatformAdapter):
 
         user_id = (body.get("user") or {}).get("id", "")
         channel_id = (body.get("channel") or {}).get("id", "")
+        # Thread anchor — the cards live in a thread reply to the user's
+        # original message; the ack should stay in the same thread.
+        msg = body.get("message") or {}
+        thread_ts = msg.get("thread_ts") or msg.get("ts")
         job_id = payload.get("job_id", "")
         if not (user_id and channel_id and job_id):
             logger.warning(
@@ -1307,10 +1311,13 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
             try:
-                await self._get_client(channel_id).chat_postMessage(
-                    channel=channel_id,
-                    text="Saved to your shortlist.",
-                )
+                ack_kwargs = {
+                    "channel": channel_id,
+                    "text": "Saved to your shortlist.",
+                }
+                if thread_ts:
+                    ack_kwargs["thread_ts"] = thread_ts
+                await self._get_client(channel_id).chat_postMessage(**ack_kwargs)
             except Exception as exc:
                 logger.warning("[Slack] job_card_save ack post failed: %s", exc)
 
@@ -1318,18 +1325,63 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] job_card_save handler failed: %s", exc, exc_info=True)
 
     async def _handle_job_card_skip(self, ack, body, action) -> None:
-        """Skip click — fire-and-forget ack. Phase 1 does not persist skipped jobs."""
+        """Skip click — dismiss this card from the list.
+
+        If the job was previously Saved (present in shortlist.json), Skip
+        removes it (Save's undo). If not present, ack is the original
+        'Dropped from this list.' — no persistence change.
+        """
         await ack()
         channel_id = (body.get("channel") or {}).get("id", "")
         if not channel_id:
             return
+        # Thread anchor — keep ack in the same thread as the card.
+        msg = body.get("message") or {}
+        thread_ts = msg.get("thread_ts") or msg.get("ts")
+        user_id = (body.get("user") or {}).get("id", "")
         job_id = action.get("value", "")
-        logger.info("[Slack] job_card_skip: job=%s", job_id)
-        try:
-            await self._get_client(channel_id).chat_postMessage(
-                channel=channel_id,
-                text="Dropped from this list.",
+
+        removed = False
+        if user_id and job_id:
+            from hermes_constants import get_hermes_home
+            shortlist_path = (
+                get_hermes_home() / "artemis" / user_id / "shortlist.json"
             )
+            try:
+                if shortlist_path.exists():
+                    try:
+                        entries = json.loads(shortlist_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        entries = []
+                    if isinstance(entries, list):
+                        new_entries = [
+                            e for e in entries
+                            if not (isinstance(e, dict) and e.get("job_id") == job_id)
+                        ]
+                        if len(new_entries) < len(entries):
+                            tmp = shortlist_path.with_suffix(shortlist_path.suffix + ".tmp")
+                            tmp.write_text(
+                                json.dumps(new_entries, ensure_ascii=False, indent=2),
+                                encoding="utf-8",
+                            )
+                            tmp.replace(shortlist_path)
+                            removed = True
+            except Exception as exc:
+                logger.warning("[Slack] job_card_skip shortlist update failed: %s", exc)
+
+        logger.info("[Slack] job_card_skip: job=%s removed_from_shortlist=%s", job_id, removed)
+        try:
+            ack_text = (
+                "Removed from your shortlist." if removed
+                else "Dropped from this list."
+            )
+            ack_kwargs = {
+                "channel": channel_id,
+                "text": ack_text,
+            }
+            if thread_ts:
+                ack_kwargs["thread_ts"] = thread_ts
+            await self._get_client(channel_id).chat_postMessage(**ack_kwargs)
         except Exception as exc:
             logger.warning("[Slack] job_card_skip ack post failed: %s", exc)
 

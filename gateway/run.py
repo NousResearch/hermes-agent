@@ -6604,6 +6604,13 @@ class GatewayRunner:
                         _names.append(_t.get("name") or "")
                     else:
                         _names.append(str(_t))
+                # Resolve a thread anchor for hooks that post out-of-band:
+                # use the explicit thread_id when present, else fall back to
+                # the original message_id so DM top-level messages still get
+                # threaded replies (same convention as gateway/run.py:4443).
+                # SessionSource only carries thread_id; event.message_id is
+                # passed as event_message_id to _run_agent.
+                _hook_thread_ts = getattr(source, "thread_id", None) or event_message_id
                 asyncio.run_coroutine_threadsafe(
                     _hooks_ref.emit("agent:step", {
                         "platform": source.platform.value if source.platform else "",
@@ -6616,6 +6623,9 @@ class GatewayRunner:
                         # Artemis job-match-cards hook needs it to render Block
                         # Kit cards after Coach calls render_job_match_cards).
                         "chat_id": source.chat_id,
+                        # thread_ts lets hooks post threaded under the user's
+                        # trigger message rather than as new channel posts.
+                        "thread_ts": _hook_thread_ts,
                     }),
                     _loop_for_step,
                 )

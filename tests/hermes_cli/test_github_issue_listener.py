@@ -7,6 +7,7 @@ import time
 
 import hermes_cli.github_issue_listener as github_issue_listener
 from hermes_cli.github_issue_listener import (
+    DEFAULT_WIP_COMMENT_BODY,
     GitHubIssueListener,
     IssueRef,
     IssueState,
@@ -26,6 +27,7 @@ class FakeGitHub:
         self.assignee_updates = []
         self.clear_assignee_updates = []
         self.execution_mode_updates = []
+        self.project_status_updates = []
 
     def list_assigned_issues(self, owner, repo, assignee):
         return list(self.issues)
@@ -62,6 +64,10 @@ class FakeGitHub:
         self.execution_mode_updates.append((project_owner, project_number, owner, repo, issue_number, mode))
         return {"updated": True, "mode": mode}
 
+    def set_project_status(self, project_owner, project_number, owner, repo, issue_number, status):
+        self.project_status_updates.append((project_owner, project_number, owner, repo, issue_number, status))
+        return {"updated": True, "status": status}
+
 
 class FakeRunner:
     def __init__(self, response="done", session_id="session-1"):
@@ -72,6 +78,16 @@ class FakeRunner:
     def run_issue_turn(self, prompt, *, session_id):
         self.calls.append((prompt, session_id))
         return session_id or self.session_id, self.response
+
+
+class ObservingRunner(FakeRunner):
+    def __init__(self, github: FakeGitHub):
+        super().__init__(response="done", session_id="session-1")
+        self.github = github
+
+    def run_issue_turn(self, prompt, *, session_id):
+        assert self.github.added_comments[0][3] == DEFAULT_WIP_COMMENT_BODY
+        return super().run_issue_turn(prompt, session_id=session_id)
 
 
 def issue(number=9, owner="ryanleeai", repo="tasks", assignee="wingboot", state="open"):
@@ -122,12 +138,53 @@ def test_poll_starts_assigned_issue_and_records_session(tmp_path: Path):
 
     assert result["results"][0]["action"] == "ran"
     assert runner.calls[0][1] is None
-    assert github.added_comments[0][3] == "Implemented a first step."
+    assert github.added_comments[0][3] == DEFAULT_WIP_COMMENT_BODY
+    assert github.added_comments[1][3] == "Implemented a first step."
     state = store.get(IssueRef("ryanleeai", "tasks", 9))
     assert state is not None
     assert state.session_id == "new-session"
-    assert state.last_comment_id_seen == 100
+    assert state.last_comment_id_seen == 999
     assert state.status == "idle"
+
+
+def test_poll_posts_wip_comment_before_running_hermes(tmp_path: Path):
+    github = FakeGitHub()
+    github.issues = [issue(9)]
+    github.comments = {9: [comment(100, "seungjaeryanlee", "ready")]}
+    runner = ObservingRunner(github)
+    store = ListenerStore(tmp_path / "listener.db")
+
+    GitHubIssueListener(
+        github=github,
+        runner=runner,
+        store=store,
+        owner="ryanleeai",
+        repo="tasks",
+        assignee="wingboot",
+    ).poll_once()
+
+    assert runner.calls
+
+
+def test_project_poll_sets_in_progress_before_running_hermes(tmp_path: Path):
+    github = FakeGitHub()
+    github.issues = [issue(9, owner="ryanleeai", repo="lyrv")]
+    github.comments = {9: [comment(100, "seungjaeryanlee", "ready")]}
+    runner = ObservingRunner(github)
+    store = ListenerStore(tmp_path / "listener.db")
+
+    GitHubIssueListener(
+        github=github,
+        runner=runner,
+        store=store,
+        owner="ryanleeai",
+        repo="tasks",
+        assignee="wingboot",
+        project_owner="ryanleeai",
+        project_number=1,
+    ).poll_once()
+
+    assert github.project_status_updates == [("ryanleeai", 1, "ryanleeai", "lyrv", 9, "In Progress")]
 
 
 def test_poll_continues_existing_session_after_human_reply(tmp_path: Path):
@@ -240,7 +297,8 @@ def test_waiting_marker_assigns_back_to_human(tmp_path: Path):
         human_assignee="seungjaeryanlee",
     ).poll_once()
 
-    assert github.added_comments[0][3] == "Need a decision."
+    assert github.added_comments[0][3] == DEFAULT_WIP_COMMENT_BODY
+    assert github.added_comments[1][3] == "Need a decision."
     assert github.assignee_updates == [("ryanleeai", "tasks", 9, ["seungjaeryanlee"])]
     state = store.get(IssueRef("ryanleeai", "tasks", 9))
     assert state is not None
@@ -264,7 +322,8 @@ def test_ready_to_close_marker_assigns_back_to_human(tmp_path: Path):
         human_assignee="seungjaeryanlee",
     ).poll_once()
 
-    assert github.added_comments[0][3] == "Ready for review."
+    assert github.added_comments[0][3] == DEFAULT_WIP_COMMENT_BODY
+    assert github.added_comments[1][3] == "Ready for review."
     assert github.assignee_updates == [("ryanleeai", "tasks", 9, ["seungjaeryanlee"])]
     state = store.get(IssueRef("ryanleeai", "tasks", 9))
     assert state is not None
@@ -418,7 +477,7 @@ def test_worker_process_completes_claim_and_clears_running_state(tmp_path: Path)
     assert state.status == "idle"
     assert state.current_run_id is None
     assert state.worker_pid is None
-    assert state.last_comment_id_seen == 100
+    assert state.last_comment_id_seen == 999
 
 
 def test_poll_skips_stale_running_issue_when_worker_pid_is_alive(monkeypatch, tmp_path: Path):
@@ -486,7 +545,8 @@ def test_stale_dead_worker_can_be_reclaimed(tmp_path: Path, monkeypatch):
     ).poll_once()
 
     assert result["results"][0]["action"] == "ran"
-    assert github.added_comments[0][3] == "reclaimed"
+    assert github.added_comments[0][3] == DEFAULT_WIP_COMMENT_BODY
+    assert github.added_comments[1][3] == "reclaimed"
     state = store.get(ref)
     assert state is not None
     assert state.status == "idle"

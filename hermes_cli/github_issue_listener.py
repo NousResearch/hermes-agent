@@ -33,6 +33,7 @@ from hermes_constants import get_hermes_home
 
 WAITING_MARKER = "[HERMES_WAITING_FOR_RYAN]"
 READY_TO_CLOSE_MARKER = "[HERMES_READY_TO_CLOSE]"
+DEFAULT_WIP_COMMENT_BODY = "Hermes picked this up and is working on it now."
 DEFAULT_STALE_AFTER_SECONDS = 60 * 60
 DEFAULT_STATE_DB = get_hermes_home() / "github_issue_listener.db"
 
@@ -72,6 +73,9 @@ class GitHubAPI(Protocol):
     def add_comment(self, owner: str, repo: str, issue_number: int, body: str) -> dict[str, Any]: ...
     def set_assignees(self, owner: str, repo: str, issue_number: int, assignees: list[str]) -> dict[str, Any]: ...
     def clear_assignees(self, owner: str, repo: str, issue_number: int, assignees: list[str]) -> dict[str, Any]: ...
+    def set_project_status(
+        self, project_owner: str, project_number: int, owner: str, repo: str, issue_number: int, status: str
+    ) -> dict[str, Any]: ...
     def set_project_execution_mode(
         self, project_owner: str, project_number: int, owner: str, repo: str, issue_number: int, mode: str
     ) -> dict[str, Any]: ...
@@ -285,9 +289,28 @@ class GitHubRESTClient:
     def set_project_execution_mode(
         self, project_owner: str, project_number: int, owner: str, repo: str, issue_number: int, mode: str
     ) -> dict[str, Any]:
+        return self._set_project_single_select_field(
+            project_owner, project_number, owner, repo, issue_number, "Execution mode", mode
+        )
+
+    def set_project_status(
+        self, project_owner: str, project_number: int, owner: str, repo: str, issue_number: int, status: str
+    ) -> dict[str, Any]:
+        return self._set_project_single_select_field(project_owner, project_number, owner, repo, issue_number, "Status", status)
+
+    def _set_project_single_select_field(
+        self,
+        project_owner: str,
+        project_number: int,
+        owner: str,
+        repo: str,
+        issue_number: int,
+        field_name: str,
+        option_name: str,
+    ) -> dict[str, Any]:
         after: str | None = None
         project_id: str | None = None
-        execution_mode_field_id: str | None = None
+        field_id: str | None = None
         option_id: str | None = None
         item_id: str | None = None
 
@@ -300,13 +323,13 @@ class GitHubRESTClient:
             if not project:
                 raise RuntimeError(f"GitHub Project not found: {project_owner}/{project_number}")
             project_id = project_id or project.get("id")
-            if execution_mode_field_id is None:
+            if field_id is None:
                 for field in ((project.get("fields") or {}).get("nodes") or []):
-                    if (field or {}).get("name") != "Execution mode":
+                    if (field or {}).get("name") != field_name:
                         continue
-                    execution_mode_field_id = field.get("id")
+                    field_id = field.get("id")
                     for option in field.get("options") or []:
-                        if str(option.get("name") or "").lower() == mode.lower():
+                        if str(option.get("name") or "").lower() == option_name.lower():
                             option_id = option.get("id")
                             break
                     break
@@ -330,19 +353,19 @@ class GitHubRESTClient:
 
         if not item_id:
             return {"updated": False, "reason": "project_item_not_found"}
-        if not project_id or not execution_mode_field_id or not option_id:
-            return {"updated": False, "reason": "execution_mode_field_or_option_not_found"}
+        if not project_id or not field_id or not option_id:
+            return {"updated": False, "reason": "single_select_field_or_option_not_found", "field": field_name}
 
         self._graphql(
             _PROJECT_UPDATE_SINGLE_SELECT_MUTATION,
             {
                 "projectId": project_id,
                 "itemId": item_id,
-                "fieldId": execution_mode_field_id,
+                "fieldId": field_id,
                 "optionId": option_id,
             },
         )
-        return {"updated": True, "mode": mode, "item_id": item_id}
+        return {"updated": True, "field": field_name, "value": option_name, "item_id": item_id}
 
     def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -716,6 +739,7 @@ class GitHubIssueListener:
         human_assignee: str | None = None,
         project_owner: str | None = None,
         project_number: int | None = None,
+        wip_comment_body: str | None = DEFAULT_WIP_COMMENT_BODY,
         stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS,
         dry_run: bool = False,
         dispatch_background: bool = False,
@@ -730,10 +754,34 @@ class GitHubIssueListener:
         self.human_assignee = human_assignee
         self.project_owner = project_owner
         self.project_number = project_number
+        self.wip_comment_body = wip_comment_body
         self.stale_after_seconds = stale_after_seconds
         self.dry_run = dry_run
         self.dispatch_background = dispatch_background
         self.worker_dispatcher = worker_dispatcher
+
+    def notify_work_started(self, ref: IssueRef, *, newest_comment_id: int | None) -> dict[str, Any]:
+        """Publish early user-visible WIP signals immediately after claiming."""
+        result: dict[str, Any] = {}
+        if self.project_owner and self.project_number is not None:
+            result["project_status"] = self.github.set_project_status(
+                self.project_owner, self.project_number, ref.owner, ref.repo, ref.number, "In Progress"
+            )
+        if self.wip_comment_body:
+            comment = self.github.add_comment(ref.owner, ref.repo, ref.number, self.wip_comment_body)
+            result["wip_comment_id"] = comment.get("id")
+            try:
+                comment_id = int(comment.get("id") or 0) or None
+            except (TypeError, ValueError):
+                comment_id = None
+            if comment_id:
+                newest_comment_id = max(newest_comment_id or 0, comment_id)
+
+        claimed = self.store.get(ref) or IssueState(ref.owner, ref.repo, ref.number)
+        claimed.last_comment_id_seen = newest_comment_id
+        self.store.upsert(claimed)
+        result["newest_comment_id"] = newest_comment_id
+        return result
 
     def run_claimed_issue(self, ref: IssueRef, *, run_id: str) -> dict[str, Any]:
         state = self.store.get(ref)
@@ -748,7 +796,13 @@ class GitHubIssueListener:
             session_id, response = self.runner.run_issue_turn(prompt, session_id=state.session_id)
             status, comment_body = strip_markers(response)
             if comment_body:
-                self.github.add_comment(ref.owner, ref.repo, ref.number, comment_body)
+                added_comment = self.github.add_comment(ref.owner, ref.repo, ref.number, comment_body)
+                try:
+                    added_comment_id = int(added_comment.get("id") or 0) or None
+                except (TypeError, ValueError):
+                    added_comment_id = None
+                if added_comment_id:
+                    newest_comment_id = max(newest_comment_id or 0, added_comment_id)
             updated_issue = self.github.get_issue(ref.owner, ref.repo, ref.number)
             issue_closed = (updated_issue.get("state") or "").lower() == "closed"
             next_state = self.store.get(ref) or IssueState(ref.owner, ref.repo, ref.number)
@@ -829,6 +883,8 @@ class GitHubIssueListener:
                 results.append({"issue": ref.key, "action": "dry_run_claimed"})
                 continue
 
+            start_notification = self.notify_work_started(ref, newest_comment_id=newest_comment_id)
+
             if self.dispatch_background:
                 dispatcher = self.worker_dispatcher
                 if dispatcher is None:
@@ -851,10 +907,19 @@ class GitHubIssueListener:
                 dispatched.worker_started_at = time.time()
                 dispatched.log_path = log_path
                 self.store.upsert(dispatched)
-                results.append({"issue": ref.key, "action": "dispatched", "run_id": run_id, "pid": pid, "log_path": log_path})
+                results.append({
+                    "issue": ref.key,
+                    "action": "dispatched",
+                    "run_id": run_id,
+                    "pid": pid,
+                    "log_path": log_path,
+                    "start_notification": start_notification,
+                })
                 continue
 
-            results.append(self.run_claimed_issue(ref, run_id=run_id))
+            run_result = self.run_claimed_issue(ref, run_id=run_id)
+            run_result["start_notification"] = start_notification
+            results.append(run_result)
         return {"checked": len(issues), "results": results}
 
 

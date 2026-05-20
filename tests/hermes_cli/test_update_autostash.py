@@ -15,6 +15,8 @@ def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch,
         calls.append((cmd, kwargs))
         if cmd[-2:] == ["status", "--porcelain"]:
             return SimpleNamespace(stdout="", returncode=0)
+        if "rev-list" in cmd:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
@@ -22,7 +24,8 @@ def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch,
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
 
     assert stash_ref is None
-    assert [cmd[-2:] for cmd, _ in calls] == [["status", "--porcelain"]]
+    local_calls = [cmd for cmd, kwargs in calls if kwargs.get("cwd") == tmp_path]
+    assert [cmd[-2:] for cmd in local_calls] == [["status", "--porcelain"]]
 
 
 def test_stash_local_changes_if_needed_returns_specific_stash_commit(monkeypatch, tmp_path):
@@ -38,6 +41,8 @@ def test_stash_local_changes_if_needed_returns_specific_stash_commit(monkeypatch
             return SimpleNamespace(stdout="Saved working directory\n", returncode=0)
         if cmd[-3:] == ["rev-parse", "--verify", "refs/stash"]:
             return SimpleNamespace(stdout="abc123\n", returncode=0)
+        if "rev-list" in cmd:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
@@ -45,9 +50,10 @@ def test_stash_local_changes_if_needed_returns_specific_stash_commit(monkeypatch
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
 
     assert stash_ref == "abc123"
-    assert calls[1][0][-2:] == ["ls-files", "--unmerged"]
-    assert calls[2][0][1:4] == ["stash", "push", "--include-untracked"]
-    assert calls[3][0][-3:] == ["rev-parse", "--verify", "refs/stash"]
+    local_calls = [cmd for cmd, kwargs in calls if kwargs.get("cwd") == tmp_path]
+    assert local_calls[1][-2:] == ["ls-files", "--unmerged"]
+    assert local_calls[2][1:4] == ["stash", "push", "--include-untracked"]
+    assert local_calls[3][-3:] == ["rev-parse", "--verify", "refs/stash"]
 
 
 def test_resolve_stash_selector_returns_matching_entry(monkeypatch, tmp_path):
@@ -283,6 +289,8 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
             return SimpleNamespace(stdout="Saved working directory\n", returncode=0)
         if cmd[-3:] == ["rev-parse", "--verify", "refs/stash"]:
             raise CalledProcessError(returncode=128, cmd=cmd)
+        if "rev-list" in cmd:
+            return SimpleNamespace(stdout="0\n", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)

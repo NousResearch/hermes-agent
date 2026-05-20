@@ -32,8 +32,8 @@ async def _main(args: Any) -> int:
     from engine.dispatcher.kanban import KanbanDispatcher  # noqa: PLC0415
 
     engine = get_engine()
-    poller = CronPoller(engine, interval_s=args.interval)
-    dispatcher = KanbanDispatcher(engine, interval_s=args.interval)
+    poller = CronPoller(engine, poll_interval_s=args.interval)
+    dispatcher = KanbanDispatcher(engine)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

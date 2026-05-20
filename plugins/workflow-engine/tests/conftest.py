@@ -39,3 +39,8 @@ def _register(dotted: str, path: Path) -> None:
 _register("plugins.workflow_engine", _PLUGIN_DIR)
 _register("plugins.workflow_engine.dashboard", _PLUGIN_DIR / "dashboard")
 _register("plugins.workflow_engine.engine", _PLUGIN_DIR / "engine")
+
+# monkeypatch.setattr resolves "plugins.workflow_engine.X" by walking
+# getattr chains. Ensure the attribute is set on the plugins namespace too.
+import plugins as _plugins_mod  # noqa: E402
+_plugins_mod.workflow_engine = sys.modules["plugins.workflow_engine"]

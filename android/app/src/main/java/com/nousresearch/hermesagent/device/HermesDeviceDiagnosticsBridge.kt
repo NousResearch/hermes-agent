@@ -3858,6 +3858,7 @@ object HermesDeviceDiagnosticsBridge {
     }
 
     private fun hasUsageStatsAccess(context: Context): Boolean {
+        if (isRobolectricRuntime()) return false
         return runCatching {
             val appOps = context.getSystemService(AppOpsManager::class.java) ?: return@runCatching false
             val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -3868,6 +3869,26 @@ object HermesDeviceDiagnosticsBridge {
             }
             mode == AppOpsManager.MODE_ALLOWED
         }.getOrDefault(false)
+    }
+
+    internal fun isRobolectricRuntime(
+        fingerprint: String = Build.FINGERPRINT.orEmpty(),
+        model: String = Build.MODEL.orEmpty(),
+        manufacturer: String = Build.MANUFACTURER.orEmpty(),
+        brand: String = Build.BRAND.orEmpty(),
+        device: String = Build.DEVICE.orEmpty(),
+        product: String = Build.PRODUCT.orEmpty(),
+    ): Boolean {
+        val buildValues = listOf(fingerprint, model, manufacturer, brand, device, product)
+            .map { it.lowercase(Locale.US) }
+        val hasRobolectricClass = runCatching {
+            Class.forName(
+                "org.robolectric.RuntimeEnvironment",
+                false,
+                HermesDeviceDiagnosticsBridge::class.java.classLoader,
+            )
+        }.isSuccess
+        return hasRobolectricClass || buildValues.any { it.contains("robolectric") }
     }
 
     private fun openSettingsJson(context: Context, action: String, message: String): JSONObject {

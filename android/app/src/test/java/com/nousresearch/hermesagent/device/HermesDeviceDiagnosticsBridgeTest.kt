@@ -262,6 +262,15 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun statusJsonAvoidsUsageStatsAppOpsInRobolectric() {
+        val status = HermesDeviceDiagnosticsBridge.statusJson(context)
+
+        assertTrue(HermesDeviceDiagnosticsBridge.isRobolectricRuntime())
+        assertFalse(status.getBoolean("usage_access_granted"))
+        assertTrue(status.has("available_actions"))
+    }
+
+    @Test
     fun summarizesBluetoothMetadataForAgentAndCards() {
         assertEquals("near", HermesDeviceDiagnosticsBridge.bluetoothProximityLabel(-48))
         assertEquals("room", HermesDeviceDiagnosticsBridge.bluetoothProximityLabel(-67))

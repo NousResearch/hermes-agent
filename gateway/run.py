@@ -634,6 +634,7 @@ if _config_path.exists():
                 "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
                 "docker_env": "TERMINAL_DOCKER_ENV",
                 "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+                "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
                 "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
@@ -655,6 +656,18 @@ if _config_path.exists():
                         os.environ[_env_var] = json.dumps(_val)
                     else:
                         os.environ[_env_var] = str(_val)
+
+        # Config-Runtime Contract validation (Phase 1).
+        # Cross-checks the loaded config against the declared binding registry.
+        # Purely additive observability — warnings only, no behavior change.
+        try:
+            from hermes_cli.config_contracts import validate_config_bindings
+            _contract_warnings = validate_config_bindings(_cfg)
+            for _cw in _contract_warnings:
+                logger.warning("Config contract: %s", _cw)
+        except Exception:
+            pass  # Never block startup on contract validation failure
+
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
         # Auxiliary model/direct-endpoint overrides (vision, web_extract).

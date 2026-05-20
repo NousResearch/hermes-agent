@@ -1255,6 +1255,20 @@ def init_agent(
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length
 
+    # Check custom_providers per-model max_tokens (symmetric to context_length above)
+    if agent.max_tokens is None and _custom_providers:
+        try:
+            from hermes_cli.config import get_custom_provider_max_tokens
+            _cp_max_tokens = get_custom_provider_max_tokens(
+                model=agent.model,
+                base_url=agent.base_url,
+                custom_providers=_custom_providers,
+            )
+            if _cp_max_tokens:
+                agent.max_tokens = int(_cp_max_tokens)
+        except Exception:
+            pass
+
     agent._ensure_lmstudio_runtime_loaded(_config_context_length)
 
 

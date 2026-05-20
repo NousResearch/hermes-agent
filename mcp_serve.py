@@ -40,6 +40,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from agent.memory_fabric_bridge import (
+    create_memory_write_proposal,
+    export_memory_snapshot,
+    memory_bridge_status as get_memory_bridge_status,
+    memory_federation_audit as get_memory_federation_audit,
+    memory_federation_gate as get_memory_federation_gate,
+    memory_federation_status as get_memory_federation_status,
+    memory_ledger_intelligence as get_memory_ledger_intelligence,
+    memory_operation_ledger as get_memory_operation_ledger,
+    memory_policy_apply_execute as execute_memory_policy_apply_plan,
+    memory_policy_apply_plan as get_memory_policy_apply_plan,
+    memory_policy_autotune as get_memory_policy_autotune,
+    memory_policy_outcome_monitor as get_memory_policy_outcome_monitor,
+    memory_policy_proposal_create as create_memory_policy_proposal,
+    memory_policy_proposal_decision as decide_memory_policy_proposal,
+    memory_policy_proposal_ledger as get_memory_policy_proposal_ledger,
+    memory_policy_stale_closure_execute_plan as get_memory_policy_stale_closure_execute_plan,
+    memory_policy_stale_closure_handoff_bundle as get_memory_policy_stale_closure_handoff_bundle,
+    memory_policy_stale_closure_payload_preview as get_memory_policy_stale_closure_payload_preview,
+    memory_policy_stale_resolution_preview as get_memory_policy_stale_resolution_preview,
+    read_memory_graph,
+    search_memory_fabric,
+)
+
 logger = logging.getLogger("hermes.mcp_serve")
 
 # ---------------------------------------------------------------------------
@@ -817,6 +841,439 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                         })
 
         return json.dumps({"count": len(channels), "channels": channels}, indent=2)
+
+    # -- Memory Fabric -----------------------------------------------------
+
+    @mcp.tool()
+    def memory_bridge_status() -> str:
+        """Inspect Hermes shared Memory Fabric surfaces and write policy."""
+        return json.dumps(get_memory_bridge_status(), ensure_ascii=False, indent=2)
+
+    @mcp.tool()
+    def memory_federation_status() -> str:
+        """Inspect Hermes/OpenClaw/Codex shared memory wiring."""
+        return json.dumps(get_memory_federation_status(), ensure_ascii=False, indent=2)
+
+    @mcp.tool()
+    def memory_federation_audit(log_limit: int = 200) -> str:
+        """Audit shared memory wiring from config, logs, and ledgers."""
+        log_limit = _coerce_int(log_limit, default=200, minimum=20, maximum=2000)
+        return json.dumps(
+            get_memory_federation_audit(log_limit=log_limit),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_federation_gate(
+        client: str = "codex",
+        operation: str = "search",
+        target_scope: str = "project",
+        channel_id: str = "",
+        log_limit: int = 200,
+    ) -> str:
+        """Evaluate a memory operation against the federation governance gate."""
+        log_limit = _coerce_int(log_limit, default=200, minimum=20, maximum=2000)
+        return json.dumps(
+            get_memory_federation_gate(
+                client=client,
+                operation=operation,
+                target_scope=target_scope,
+                channel_id=channel_id,
+                log_limit=log_limit,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_operation_ledger(
+        limit: int = 50,
+        client: str = "",
+        operation: str = "",
+        decision: str = "",
+        event_type: str = "",
+    ) -> str:
+        """Read the memory operation audit ledger."""
+        limit = _coerce_int(limit, default=50, minimum=1, maximum=500)
+        return json.dumps(
+            get_memory_operation_ledger(
+                limit=limit,
+                client=client,
+                operation=operation,
+                decision=decision,
+                event_type=event_type,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_ledger_intelligence(
+        limit: int = 500,
+        client: str = "",
+        operation: str = "",
+    ) -> str:
+        """Analyze memory operation ledger patterns and risks."""
+        limit = _coerce_int(limit, default=500, minimum=20, maximum=5000)
+        return json.dumps(
+            get_memory_ledger_intelligence(
+                limit=limit,
+                client=client,
+                operation=operation,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_autotune(
+        limit: int = 500,
+        client: str = "",
+        operation: str = "",
+        mode: str = "conservative",
+    ) -> str:
+        """Generate read-only memory policy tuning suggestions."""
+        limit = _coerce_int(limit, default=500, minimum=20, maximum=5000)
+        return json.dumps(
+            get_memory_policy_autotune(
+                limit=limit,
+                client=client,
+                operation=operation,
+                mode=mode,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_proposal_create(
+        source_agent: str = "codex",
+        limit: int = 500,
+        client: str = "",
+        operation: str = "",
+        mode: str = "conservative",
+        suggestion_id: str = "",
+    ) -> str:
+        """Create governed policy proposals from policy-autotune suggestions."""
+        limit = _coerce_int(limit, default=500, minimum=20, maximum=5000)
+        return json.dumps(
+            create_memory_policy_proposal(
+                source_agent=source_agent,
+                limit=limit,
+                client=client,
+                operation=operation,
+                mode=mode,
+                suggestion_id=suggestion_id,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_proposal_ledger(
+        limit: int = 50,
+        status: str = "",
+        proposal_id: str = "",
+    ) -> str:
+        """Read current memory policy proposal state."""
+        limit = _coerce_int(limit, default=50, minimum=1, maximum=500)
+        return json.dumps(
+            get_memory_policy_proposal_ledger(
+                limit=limit,
+                status=status,
+                proposal_id=proposal_id,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_proposal_decision(
+        proposal_id: str,
+        decision: str,
+        reviewer: str = "codex",
+        rationale: str = "",
+    ) -> str:
+        """Record approve/reject/defer for a policy proposal without applying it."""
+        return json.dumps(
+            decide_memory_policy_proposal(
+                proposal_id=proposal_id,
+                decision=decision,
+                reviewer=reviewer,
+                rationale=rationale,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_apply_plan(
+        limit: int = 50,
+        status: str = "approved",
+        proposal_id: str = "",
+    ) -> str:
+        """Build a dry-run plan for applying approved memory policy proposals."""
+        limit = _coerce_int(limit, default=50, minimum=1, maximum=500)
+        return json.dumps(
+            get_memory_policy_apply_plan(
+                limit=limit,
+                status=status,
+                proposal_id=proposal_id,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_apply_execute(
+        limit: int = 50,
+        proposal_id: str = "",
+        execute: bool = False,
+        confirm_token: str = "",
+        actor: str = "codex",
+    ) -> str:
+        """Guardedly execute non-mutating checks from approved policy plans."""
+        limit = _coerce_int(limit, default=50, minimum=1, maximum=500)
+        return json.dumps(
+            execute_memory_policy_apply_plan(
+                limit=limit,
+                proposal_id=proposal_id,
+                execute=execute,
+                confirm_token=confirm_token,
+                actor=actor,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_outcome_monitor(
+        limit: int = 100,
+        stale_after_hours: int = 72,
+    ) -> str:
+        """Monitor policy proposal lifecycle outcomes without applying policy."""
+        limit = _coerce_int(limit, default=100, minimum=1, maximum=500)
+        stale_after_hours = _coerce_int(
+            stale_after_hours,
+            default=72,
+            minimum=1,
+            maximum=8760,
+        )
+        return json.dumps(
+            get_memory_policy_outcome_monitor(
+                limit=limit,
+                stale_after_hours=stale_after_hours,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_stale_resolution_preview(
+        limit: int = 50,
+        stale_after_hours: int = 72,
+        proposal_id: str = "",
+    ) -> str:
+        """Preview safe stale policy proposal resolutions without writing state."""
+        limit = _coerce_int(limit, default=50, minimum=1, maximum=500)
+        stale_after_hours = _coerce_int(
+            stale_after_hours,
+            default=72,
+            minimum=1,
+            maximum=8760,
+        )
+        return json.dumps(
+            get_memory_policy_stale_resolution_preview(
+                limit=limit,
+                stale_after_hours=stale_after_hours,
+                proposal_id=proposal_id,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_stale_closure_payload_preview(
+        limit: int = 50,
+        stale_after_hours: int = 72,
+        proposal_id: str = "",
+    ) -> str:
+        """Preview deterministic human-review closure payloads without writing state."""
+        limit = _coerce_int(limit, default=50, minimum=1, maximum=500)
+        stale_after_hours = _coerce_int(
+            stale_after_hours,
+            default=72,
+            minimum=1,
+            maximum=8760,
+        )
+        return json.dumps(
+            get_memory_policy_stale_closure_payload_preview(
+                limit=limit,
+                stale_after_hours=stale_after_hours,
+                proposal_id=proposal_id,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_stale_closure_execute_plan(
+        limit: int = 50,
+        stale_after_hours: int = 72,
+        proposal_id: str = "",
+    ) -> str:
+        """Build a read-only, plan-only gate preview for stale closure decisions."""
+        limit = _coerce_int(limit, default=50, minimum=1, maximum=500)
+        stale_after_hours = _coerce_int(
+            stale_after_hours,
+            default=72,
+            minimum=1,
+            maximum=8760,
+        )
+        return json.dumps(
+            get_memory_policy_stale_closure_execute_plan(
+                limit=limit,
+                stale_after_hours=stale_after_hours,
+                proposal_id=proposal_id,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_policy_stale_closure_handoff_bundle(
+        limit: int = 50,
+        stale_after_hours: int = 72,
+        proposal_id: str = "",
+    ) -> str:
+        """Build a read-only human handoff bundle for stale closure decisions."""
+        limit = _coerce_int(limit, default=50, minimum=1, maximum=500)
+        stale_after_hours = _coerce_int(
+            stale_after_hours,
+            default=72,
+            minimum=1,
+            maximum=8760,
+        )
+        return json.dumps(
+            get_memory_policy_stale_closure_handoff_bundle(
+                limit=limit,
+                stale_after_hours=stale_after_hours,
+                proposal_id=proposal_id,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_fabric_search(
+        query: str,
+        scope: str = "all",
+        limit: int = 8,
+    ) -> str:
+        """Search Hermes shared memory without mutating it."""
+        limit = _coerce_int(limit, default=8, minimum=1, maximum=50)
+        return json.dumps(
+            search_memory_fabric(query, scope=scope, limit=limit),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_graph_read(
+        node_id: str = "",
+        query: str = "",
+        kind: str = "",
+        limit: int = 10,
+        include_edges: bool = True,
+    ) -> str:
+        """Read Memory Graph nodes with provenance and optional edges."""
+        limit = _coerce_int(limit, default=10, minimum=1, maximum=100)
+        return json.dumps(
+            read_memory_graph(
+                node_id=node_id,
+                query=query,
+                kind=kind,
+                limit=limit,
+                include_edges=bool(include_edges),
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_write_proposal(
+        source_agent: str,
+        target_scope: str,
+        content: str,
+        rationale: str = "",
+        project: str = "",
+        tags: str = "",
+    ) -> str:
+        """Create a governed write proposal instead of mutating durable memory."""
+        gate = get_memory_federation_gate(
+            client=source_agent or "codex",
+            operation="write_proposal",
+            target_scope=target_scope,
+            log_limit=200,
+        )
+        if gate.get("decision") != "allow":
+            return json.dumps(
+                {
+                    "success": False,
+                    "action": "memory_write_proposal",
+                    "error": f"Blocked by memory_federation_gate: {gate.get('decision')}",
+                    "gate": gate,
+                    "read_only_memory": True,
+                    "would_mutate_memory": False,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        return json.dumps(
+            create_memory_write_proposal(
+                source_agent=source_agent,
+                target_scope=target_scope,
+                content=content,
+                rationale=rationale,
+                project=project,
+                tags=tags,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @mcp.tool()
+    def memory_snapshot_export(
+        scope: str = "all",
+        limit: int = 500,
+        client: str = "codex",
+    ) -> str:
+        """Export a portable memory snapshot for backup or read-only cache."""
+        limit = _coerce_int(limit, default=500, minimum=1, maximum=5000)
+        gate = get_memory_federation_gate(
+            client=client or "codex",
+            operation="snapshot_export",
+            log_limit=200,
+        )
+        if gate.get("decision") != "allow":
+            return json.dumps(
+                {
+                    "success": False,
+                    "action": "memory_snapshot_export",
+                    "error": f"Blocked by memory_federation_gate: {gate.get('decision')}",
+                    "gate": gate,
+                    "read_only_memory": True,
+                    "would_mutate_memory": False,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        return json.dumps(
+            export_memory_snapshot(scope=scope, limit=limit),
+            ensure_ascii=False,
+            indent=2,
+        )
 
     # -- permissions_list_open ---------------------------------------------
 

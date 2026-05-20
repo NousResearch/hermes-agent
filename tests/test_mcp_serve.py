@@ -518,6 +518,14 @@ def _run_tool(server, name, args=None):
     return json.loads(result) if isinstance(result, str) else result
 
 
+def _write_policy_events(home: Path, events: list[dict]) -> tuple[Path, str]:
+    policy_path = home / "memory" / "policy" / "memory_policy_proposals.jsonl"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    before_policy = "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n"
+    policy_path.write_text(before_policy, encoding="utf-8")
+    return policy_path, before_policy
+
+
 @pytest.fixture
 def _event_loop():
     """Ensure an event loop exists for sync tests calling async tools."""
@@ -934,6 +942,18 @@ class TestToolRegistration:
             "conversations_list", "conversation_get", "messages_read",
             "attachments_fetch", "events_poll", "events_wait",
             "messages_send", "channels_list",
+            "memory_bridge_status", "memory_fabric_search", "memory_graph_read",
+            "memory_write_proposal", "memory_snapshot_export",
+            "memory_federation_status", "memory_federation_audit",
+            "memory_federation_gate", "memory_operation_ledger",
+            "memory_ledger_intelligence", "memory_policy_autotune",
+            "memory_policy_proposal_create", "memory_policy_proposal_ledger",
+            "memory_policy_proposal_decision", "memory_policy_apply_plan",
+            "memory_policy_apply_execute", "memory_policy_outcome_monitor",
+            "memory_policy_stale_resolution_preview",
+            "memory_policy_stale_closure_payload_preview",
+            "memory_policy_stale_closure_execute_plan",
+            "memory_policy_stale_closure_handoff_bundle",
             "permissions_list_open", "permissions_respond",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
@@ -942,6 +962,148 @@ class TestToolRegistration:
         server, _ = mcp_server_e2e
         for tool in server._tool_manager.list_tools():
             assert tool.description, f"Tool {tool.name} has no description"
+
+    def test_memory_policy_apply_execute_defaults_to_dry_run(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(
+            server,
+            "memory_policy_apply_execute",
+            {"limit": 5},
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+        assert result["did_execute"] is False
+        assert result["would_modify_config"] is False
+
+    def test_memory_policy_outcome_monitor_is_read_only(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(
+            server,
+            "memory_policy_outcome_monitor",
+            {"limit": 5, "stale_after_hours": 24},
+        )
+
+        assert result["success"] is True
+        assert result["policy"]["monitor_is_read_only"] is True
+        assert result["read_only_memory"] is True
+        assert result["would_modify_config"] is False
+
+    def test_memory_policy_stale_resolution_preview_is_read_only(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(
+            server,
+            "memory_policy_stale_resolution_preview",
+            {"limit": 5, "stale_after_hours": 24},
+        )
+
+        assert result["success"] is True
+        assert result["preview_type"] == "hermes_memory_policy_stale_resolution_preview"
+        assert result["dry_run"] is True
+        assert result["policy"]["preview_is_read_only"] is True
+        assert result["policy"]["does_not_append_ledger"] is True
+        assert result["read_only_memory"] is True
+        assert result["would_modify_config"] is False
+
+    def test_memory_policy_stale_closure_payload_preview_is_read_only(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(
+            server,
+            "memory_policy_stale_closure_payload_preview",
+            {"limit": 5, "stale_after_hours": 24},
+        )
+
+        assert result["success"] is True
+        assert result["preview_type"] == "hermes_memory_policy_stale_closure_payload_preview"
+        assert result["dry_run"] is True
+        assert result["preview_only"] is True
+        assert result["policy"]["preview_is_read_only"] is True
+        assert result["policy"]["does_not_append_ledger"] is True
+        assert result["policy"]["can_auto_apply"] is False
+        assert result["read_only_memory"] is True
+        assert result["would_modify_config"] is False
+
+    def test_memory_policy_stale_closure_execute_plan_is_read_only(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(
+            server,
+            "memory_policy_stale_closure_execute_plan",
+            {"limit": 5, "stale_after_hours": 24},
+        )
+
+        assert result["success"] is True
+        assert result["plan_type"] == "hermes_memory_policy_stale_closure_execute_plan"
+        assert result["dry_run"] is True
+        assert result["preview_only"] is True
+        assert result["policy"]["plan_is_read_only"] is True
+        assert result["policy"]["does_not_call_policy_proposal_decision"] is True
+        assert result["policy"]["does_not_append_ledger"] is True
+        assert result["policy"]["eligible_for_auto_execute"] is False
+        assert result["read_only_memory"] is True
+        assert result["would_modify_config"] is False
+
+    def test_memory_policy_stale_closure_execute_plan_returns_deterministic_mcp_json(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        home = Path(os.environ["HERMES_HOME"])
+        policy_path, before_policy = _write_policy_events(
+            home,
+            [
+                {
+                    "event_type": "policy_proposal_created",
+                    "proposal_id": "memory-policy-proposal-keep-blocked",
+                    "suggestion_id": "external_auto_recall.keep_blocked",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "would_modify_config": False,
+                    "would_write_memory": False,
+                }
+            ],
+        )
+
+        result = _run_tool(
+            server,
+            "memory_policy_stale_closure_execute_plan",
+            {
+                "limit": 5,
+                "stale_after_hours": 1,
+                "proposal_id": "memory-policy-proposal-keep-blocked",
+            },
+        )
+        item = result["plans"][0]
+
+        assert result["success"] is True
+        assert result["plan_count"] == 1
+        assert item["proposal_id"] == "memory-policy-proposal-keep-blocked"
+        assert item["stale_reason"]
+        assert item["recommended_action"]
+        assert item["safety_notes"]
+        assert item["required_ledger_evidence"]
+        assert item["approval_requirement"] == "human_privacy_review_required_before_any_exact_channel_allowlist_change"
+        assert item["dry_run_no_write_marker"] == "dry_run_preview_no_write"
+        assert item["target_ledger_path"] == str(policy_path)
+        assert item["rollback_or_noop_statement"]
+        assert item["plan_only"] is True
+        assert item["will_not_execute"] is True
+        assert item["does_not_call_policy_proposal_decision"] is True
+        assert policy_path.read_text(encoding="utf-8") == before_policy
+
+    def test_memory_policy_stale_closure_handoff_bundle_is_read_only(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(
+            server,
+            "memory_policy_stale_closure_handoff_bundle",
+            {"limit": 5, "stale_after_hours": 24},
+        )
+
+        assert result["success"] is True
+        assert result["bundle_type"] == "hermes_memory_policy_stale_closure_handoff_bundle"
+        assert result["dry_run"] is True
+        assert result["preview_only"] is True
+        assert result["policy"]["bundle_is_read_only"] is True
+        assert result["policy"]["does_not_call_policy_proposal_decision"] is True
+        assert result["policy"]["does_not_append_ledger"] is True
+        assert result["policy"]["eligible_for_auto_execute"] is False
+        assert result["read_only_memory"] is True
+        assert result["would_modify_config"] is False
 
 
 # ---------------------------------------------------------------------------

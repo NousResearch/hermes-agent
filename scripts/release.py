@@ -337,6 +337,7 @@ AUTHOR_MAP = {
     "zhekinmaksim@gmail.com": "Zhekinmaksim",
     "obafemiferanmi1999@gmail.com": "KvnGz",
     "159539633+MottledShadow@users.noreply.github.com": "MottledShadow",
+    "18210507492@126.com": "qindongliang",
     "aludwin+gh@gmail.com": "adamludwin",
     "ngusev@astralinux.ru": "NikolayGusev-astra",
     "liuguangyong201@hellobike.com": "liuguangyong93",

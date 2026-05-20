@@ -560,3 +560,74 @@ class TestEnumNullStripping:
         assert db_type["type"] == "string"
         assert db_type["enum"] == ["mysql", "postgresql"], \
             "null/empty enum values must be stripped after anyOf collapse"
+
+
+class TestUnionListType:
+    """JSON Schema permits ``type`` as a list for union types
+    (e.g. ``["number", "string"]`` or ``["string", "null"]``).  Older code
+    crashed with ``TypeError: unhashable type: 'list'`` because it did
+    ``node["type"] not in {None, ""}``.  Regression for issue #28291.
+    """
+
+    def test_union_list_type_does_not_crash(self):
+        # Reproduction from issue #28291: lcm_grep style tool with union type.
+        params = {
+            "type": "object",
+            "properties": {
+                "time_from": {
+                    "type": ["number", "string"],
+                    "description": "Optional timestamp",
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        # First non-null entry wins; Moonshot does not accept list types.
+        assert out["properties"]["time_from"]["type"] == "number"
+
+    def test_nullable_union_collapses_to_non_null(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "name": {"type": ["string", "null"]},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["name"]["type"] == "string"
+
+    def test_top_level_union_type_normalized(self):
+        # Top-level type list also must not crash, and top level is forced
+        # to "object" by sanitize_moonshot_tool_parameters anyway.
+        params = {"type": ["object", "null"], "properties": {}}
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["type"] == "object"
+
+    def test_enum_with_union_type_does_not_crash(self):
+        # Regression for the sibling bug at the old line 125 — enum cleanup
+        # was unguarded against non-string node_type.
+        params = {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": ["string", "number"],
+                    "enum": ["fast", "slow", 1, 2],
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        mode = out["properties"]["mode"]
+        # Collapsed to the first non-null member.
+        assert mode["type"] == "string"
+        # enum still present (cleanup runs after type collapse, against a
+        # concrete scalar type).
+        assert "enum" in mode
+
+    def test_all_null_union_falls_through_to_inference(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "weird": {"type": ["null"], "properties": {"x": {"type": "string"}}},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        # Degenerate union → inference picks "object" from properties.
+        assert out["properties"]["weird"]["type"] == "object"

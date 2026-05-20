@@ -144,7 +144,7 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
     # empty, drop it entirely.
     if "enum" in repaired and isinstance(repaired["enum"], list):
         node_type = repaired.get("type")
-        if node_type in {"string", "integer", "number", "boolean"}:
+        if isinstance(node_type, str) and node_type in {"string", "integer", "number", "boolean"}:
             cleaned = [v for v in repaired["enum"]
                        if v is not None and v != ""]
             if cleaned:
@@ -165,9 +165,24 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
 
 
 def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
-    """Infer a reasonable ``type`` if this schema node has none."""
-    if "type" in node and node["type"] not in {None, ""}:
-        return node
+    """Infer a reasonable ``type`` if this schema node has none.
+
+    JSON Schema allows ``type`` to be a list for union types
+    (e.g. ``["number", "string"]`` or ``["string", "null"]``).  Moonshot's
+    flavored schema validator does not accept list-typed nodes, so we
+    collapse the union to a single non-``"null"`` member.  If every
+    member is ``"null"`` (degenerate) we fall through to inference.
+    """
+    if "type" in node:
+        t = node["type"]
+        if isinstance(t, list):
+            non_null = [s for s in t
+                        if isinstance(s, str) and s != "null" and s != ""]
+            if non_null:
+                return {**node, "type": non_null[0]}
+            # All entries were null/empty/invalid — fall through to inference.
+        elif t not in (None, ""):
+            return node
 
     # Heuristic: presence of ``properties`` → object, ``items`` → array, ``enum``
     # → type of first enum value, else fall back to ``string`` (safest scalar).

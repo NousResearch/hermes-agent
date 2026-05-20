@@ -4,6 +4,11 @@ Greenfield Computer Use exposes explicit ``computer_use_*`` tools. There is no
 model-facing catch-all action dispatcher; each tool name carries intent so
 policy, approvals, logging, and the future Swift app can reason about calls
 without reverse-parsing an ``action`` field.
+
+Keep the ``registry.register(...)`` calls as top-level expressions. Hermes'
+built-in discovery intentionally imports only modules with literal top-level
+registrations so tool discovery stays cheap and deterministic in long-lived
+CLI/gateway runtimes.
 """
 
 from __future__ import annotations
@@ -44,53 +49,156 @@ _COMMON_TARGET = {
     "capture_after": {"type": "boolean", "description": "Take and return app state after the action."},
 }
 
-_TOOL_SPECS = [
-    ("computer_use_list_apps", "List macOS apps/windows available to Computer Use.", {}, [], "list_apps"),
-    ("computer_use_get_app_state", "Get app/window state. Call this before and after every action.", {
+_LIST_APPS_DESCRIPTION = "List macOS apps/windows available to Computer Use."
+_GET_APP_STATE_DESCRIPTION = "Get app/window state. Call this before and after every action."
+_CLICK_DESCRIPTION = "Click an element or coordinate in the current app state."
+_PERFORM_SECONDARY_ACTION_DESCRIPTION = "Perform an accessibility secondary action on an element, e.g. show menu."
+_SCROLL_DESCRIPTION = "Scroll in an app/window or element."
+_DRAG_DESCRIPTION = "Drag from one element/coordinate to another."
+_TYPE_TEXT_DESCRIPTION = "Type text into the targeted app/window."
+_SET_VALUE_DESCRIPTION = "Set a value on an element, including text fields, selects, popups, and sliders."
+_PRESS_KEY_DESCRIPTION = "Press a key or key combo in the targeted app/window."
+_SELECT_TEXT_DESCRIPTION = "Select text in an element or text field."
+
+registry.register(
+    name="computer_use_list_apps",
+    toolset="computer_use",
+    schema=_schema("computer_use_list_apps", _LIST_APPS_DESCRIPTION, {}, []),
+    handler=lambda args, **kw: _handle("list_apps", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_LIST_APPS_DESCRIPTION,
+    override=True,
+)
+
+registry.register(
+    name="computer_use_get_app_state",
+    toolset="computer_use",
+    schema=_schema("computer_use_get_app_state", _GET_APP_STATE_DESCRIPTION, {
         "app": _COMMON_TARGET["app"],
         "mode": {"type": "string", "enum": ["som", "vision", "ax"], "description": "som: screenshot + accessibility elements; ax: tree only; vision: screenshot only."},
-    }, [], "get_app_state"),
-    ("computer_use_click", "Click an element or coordinate in the current app state.", {
-        **_COMMON_TARGET,
+    }, []),
+    handler=lambda args, **kw: _handle("get_app_state", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_GET_APP_STATE_DESCRIPTION,
+    override=True,
+)
+
+registry.register(
+    name="computer_use_click",
+    toolset="computer_use",
+    schema=_schema("computer_use_click", _CLICK_DESCRIPTION, {
+        **deepcopy(_COMMON_TARGET),
         "button": {"type": "string", "enum": ["left", "right"], "description": "Mouse button; alias for mouse_button."},
         "mouse_button": {"type": "string", "enum": ["left", "right"], "description": "Codex-compatible alias for button."},
         "click_count": {"type": "integer", "minimum": 1, "maximum": 2},
-    }, ["app"], "click"),
-    ("computer_use_perform_secondary_action", "Perform an accessibility secondary action on an element, e.g. show menu.", {
-        **_COMMON_TARGET,
+    }, ["app"]),
+    handler=lambda args, **kw: _handle("click", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_CLICK_DESCRIPTION,
+    override=True,
+)
+
+registry.register(
+    name="computer_use_perform_secondary_action",
+    toolset="computer_use",
+    schema=_schema("computer_use_perform_secondary_action", _PERFORM_SECONDARY_ACTION_DESCRIPTION, {
+        **deepcopy(_COMMON_TARGET),
         "secondary_action": {"type": "string", "description": "AX action name, e.g. AXShowMenu or AXPress."},
-    }, ["app", "element"], "perform_secondary_action"),
-    ("computer_use_scroll", "Scroll in an app/window or element.", {
-        **_COMMON_TARGET,
+    }, ["app", "element"]),
+    handler=lambda args, **kw: _handle("perform_secondary_action", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_PERFORM_SECONDARY_ACTION_DESCRIPTION,
+    override=True,
+)
+
+registry.register(
+    name="computer_use_scroll",
+    toolset="computer_use",
+    schema=_schema("computer_use_scroll", _SCROLL_DESCRIPTION, {
+        **deepcopy(_COMMON_TARGET),
         "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
         "amount": {"type": "integer", "description": "Wheel ticks; pages is preferred for Codex-style page scrolling."},
         "pages": {"type": "number", "description": "Codex-compatible scroll distance in pages; converted to wheel ticks."},
-    }, ["app", "direction"], "scroll"),
-    ("computer_use_drag", "Drag from one element/coordinate to another.", {
+    }, ["app", "direction"]),
+    handler=lambda args, **kw: _handle("scroll", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_SCROLL_DESCRIPTION,
+    override=True,
+)
+
+registry.register(
+    name="computer_use_drag",
+    toolset="computer_use",
+    schema=_schema("computer_use_drag", _DRAG_DESCRIPTION, {
         "app": _COMMON_TARGET["app"],
         "from_element": {"type": "integer"},
         "to_element": {"type": "integer"},
         "from_coordinate": _COMMON_TARGET["coordinate"],
         "to_coordinate": _COMMON_TARGET["coordinate"],
         "capture_after": _COMMON_TARGET["capture_after"],
-    }, ["app"], "drag"),
-    ("computer_use_type_text", "Type text into the targeted app/window.", {
+    }, ["app"]),
+    handler=lambda args, **kw: _handle("drag", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_DRAG_DESCRIPTION,
+    override=True,
+)
+
+registry.register(
+    name="computer_use_type_text",
+    toolset="computer_use",
+    schema=_schema("computer_use_type_text", _TYPE_TEXT_DESCRIPTION, {
         "app": _COMMON_TARGET["app"],
         "text": {"type": "string"},
         "capture_after": _COMMON_TARGET["capture_after"],
-    }, ["app", "text"], "type_text"),
-    ("computer_use_set_value", "Set a value on an element, including text fields, selects, popups, and sliders.", {
+    }, ["app", "text"]),
+    handler=lambda args, **kw: _handle("type_text", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_TYPE_TEXT_DESCRIPTION,
+    override=True,
+)
+
+registry.register(
+    name="computer_use_set_value",
+    toolset="computer_use",
+    schema=_schema("computer_use_set_value", _SET_VALUE_DESCRIPTION, {
         "app": _COMMON_TARGET["app"],
         "element": _COMMON_TARGET["element"],
         "value": {"type": "string"},
         "capture_after": _COMMON_TARGET["capture_after"],
-    }, ["app", "element", "value"], "set_value"),
-    ("computer_use_press_key", "Press a key or key combo in the targeted app/window.", {
+    }, ["app", "element", "value"]),
+    handler=lambda args, **kw: _handle("set_value", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_SET_VALUE_DESCRIPTION,
+    override=True,
+)
+
+registry.register(
+    name="computer_use_press_key",
+    toolset="computer_use",
+    schema=_schema("computer_use_press_key", _PRESS_KEY_DESCRIPTION, {
         "app": _COMMON_TARGET["app"],
         "key": {"type": "string", "description": "Key or combo, e.g. Return, Escape, cmd+s."},
         "capture_after": _COMMON_TARGET["capture_after"],
-    }, ["app", "key"], "press_key"),
-    ("computer_use_select_text", "Select text in an element or text field.", {
+    }, ["app", "key"]),
+    handler=lambda args, **kw: _handle("press_key", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_PRESS_KEY_DESCRIPTION,
+    override=True,
+)
+
+registry.register(
+    name="computer_use_select_text",
+    toolset="computer_use",
+    schema=_schema("computer_use_select_text", _SELECT_TEXT_DESCRIPTION, {
         "app": _COMMON_TARGET["app"],
         "element": _COMMON_TARGET["element"],
         "text": {"type": "string", "description": "Exact text to select, if supported."},
@@ -99,21 +207,13 @@ _TOOL_SPECS = [
         "suffix": {"type": "string", "description": "Optional text expected immediately after target text."},
         "cursor": {"type": "string", "enum": ["before", "after"], "description": "Place cursor before/after selection when backend supports it."},
         "capture_after": _COMMON_TARGET["capture_after"],
-    }, ["app", "element"], "select_text"),
-]
-
-for tool_name, description, properties, required, action in _TOOL_SPECS:
-    registry.register(
-        name=tool_name,
-        toolset="computer_use",
-        schema=_schema(tool_name, description, deepcopy(properties), required),
-        handler=lambda args, _action=action, **kw: _handle(_action, args, **kw),
-        check_fn=check_computer_use_requirements,
-        requires_env=[],
-        description=description,
-        override=True,
-    )
-
+    }, ["app", "element"]),
+    handler=lambda args, **kw: _handle("select_text", args, **kw),
+    check_fn=check_computer_use_requirements,
+    requires_env=[],
+    description=_SELECT_TEXT_DESCRIPTION,
+    override=True,
+)
 
 __all__ = [
     "handle_computer_use",

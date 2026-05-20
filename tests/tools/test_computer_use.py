@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock, patch
@@ -57,6 +58,24 @@ class TestRegistration:
         assert self.EXPECTED <= set(registry._tools)
         assert "computer_use" not in registry._tools
         assert all(registry._tools[name].toolset == "computer_use" for name in self.EXPECTED)
+
+    def test_builtin_discovery_registers_explicit_tools_in_fresh_runtime(self):
+        code = """
+import json
+from tools.registry import discover_builtin_tools, registry
+registry._tools.clear()
+discover_builtin_tools()
+print(json.dumps(sorted(name for name in registry._tools if name.startswith('computer_use'))))
+"""
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=os.getcwd(),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        discovered = set(json.loads(proc.stdout))
+        assert discovered == self.EXPECTED
 
     def test_schemas_are_openai_function_format(self):
         import tools.computer_use_tool  # noqa: F401

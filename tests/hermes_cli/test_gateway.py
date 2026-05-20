@@ -553,7 +553,7 @@ def test_gateway_install_can_decline_start_now_and_startup(monkeypatch):
 
 
 def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):
-    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles=False: set())
     monkeypatch.setattr(gateway, "is_windows", lambda: False)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
@@ -578,6 +578,36 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway.find_gateway_pids() == [321]
+
+
+def test_get_service_pids_default_scope_current_profile(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "get_service_name", lambda: "hermes-gateway")
+
+    def fake_run(cmd, **kwargs):
+        joined = " ".join(str(part) for part in cmd)
+        if "list-units" in joined:
+            if "--user" not in cmd:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "hermes-gateway.service loaded active running Hermes Gateway\n"
+                    "hermes-gateway-coder.service loaded active running Hermes Gateway\n"
+                ),
+                stderr="",
+            )
+        if "show" in joined and "--property=MainPID" in cmd:
+            service = cmd[cmd.index("show") + 1]
+            pid = "11111" if service == "hermes-gateway.service" else "22222"
+            return SimpleNamespace(returncode=0, stdout=f"{pid}\n", stderr="")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._get_service_pids() == {11111}
+    assert gateway._get_service_pids(all_profiles=True) == {11111, 22222}
 
 
 # ---------------------------------------------------------------------------

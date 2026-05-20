@@ -493,7 +493,10 @@ class TestLaunchdServiceRecovery:
 
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
-        assert "--replace" in plist_path.read_text(encoding="utf-8")
+        plist_text = plist_path.read_text(encoding="utf-8")
+        assert "<string>gateway</string>" in plist_text
+        assert "<string>run</string>" in plist_text
+        assert "--replace" not in plist_text
         assert calls[:2] == [
             ["launchctl", "bootout", f"{domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
@@ -1618,7 +1621,22 @@ class TestProfileArg:
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
         unit = gateway_cli.generate_systemd_unit(system=False)
         assert "--profile mybot" in unit
-        assert "gateway run --replace" in unit
+        assert "gateway run" in unit
+        assert "--replace" not in unit
+
+    def test_systemd_unit_includes_default_profile_explicitly(self, tmp_path, monkeypatch):
+        """Default profile service ExecStart should not depend on active_profile."""
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: default_home)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "--profile default" in unit
+        assert "gateway run" in unit
+        assert "--replace" not in unit
 
     def test_launchd_plist_includes_profile(self, tmp_path, monkeypatch):
         """generate_launchd_plist should include --profile in ProgramArguments for named profiles."""
@@ -1630,6 +1648,42 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+        assert "<string>--replace</string>" not in plist
+
+    def test_launchd_plist_includes_default_profile_explicitly(self, tmp_path, monkeypatch):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: default_home)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<string>--profile</string>" in plist
+        assert "<string>default</string>" in plist
+        assert "<string>--replace</string>" not in plist
+
+    def test_gateway_run_args_for_profile_omit_replace(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/venv/bin/python")
+
+        assert gateway_cli._gateway_run_args_for_profile("default") == [
+            "/venv/bin/python",
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "default",
+            "gateway",
+            "run",
+        ]
+        assert gateway_cli._gateway_run_args_for_profile("mybot") == [
+            "/venv/bin/python",
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "mybot",
+            "gateway",
+            "run",
+        ]
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

@@ -69,18 +69,23 @@ class ProfileGatewayProcess:
     path: Path
     pid: int
 
-def _get_service_pids() -> set:
+def _get_service_pids(all_profiles: bool = False) -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
     Used to avoid killing freshly-restarted service processes when sweeping
     for stale manual gateway processes after a service restart.  Relies on the
     service manager having committed the new PID before the restart command
     returns (true for both systemd and launchd in practice).
+
+    By default this is scoped to the current Hermes profile, matching
+    ``find_gateway_pids()`` status semantics. Pass ``all_profiles=True`` for
+    cross-profile sweeps such as update restarts.
     """
     pids: set = set()
 
     # --- systemd (Linux): user and system scopes ---
     if supports_systemd_services():
+        current_unit_name = f"{get_service_name()}.service"
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
                 result = subprocess.run(
@@ -93,6 +98,8 @@ def _get_service_pids() -> set:
                     if not parts or not parts[0].endswith(".service"):
                         continue
                     svc = parts[0]
+                    if not all_profiles and svc != current_unit_name:
+                        continue
                     try:
                         show = subprocess.run(
                             scope_args + ["show", svc,
@@ -529,7 +536,7 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
             pass
-    for pid in _get_service_pids():
+    for pid in _get_service_pids(all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)
     for pid in _scan_gateway_pids(_exclude, all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)
@@ -563,9 +570,8 @@ def find_profile_gateway_processes(
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
     args = [get_python_path(), "-m", "hermes_cli.main"]
-    if profile != "default":
-        args.extend(["--profile", profile])
-    args.extend(["gateway", "run", "--replace"])
+    args.extend(["--profile", profile])
+    args.extend(["gateway", "run"])
     return args
 
 
@@ -1310,6 +1316,25 @@ def _profile_arg(hermes_home: str | None = None) -> str:
             return f"--profile {parts[0]}"
     except ValueError:
         pass
+    return ""
+
+
+def _service_profile_arg(hermes_home: str | None = None) -> str:
+    """Return an explicit profile arg for managed gateway service commands.
+
+    Service managers start long-lived gateway owners outside the user's shell
+    context. Passing ``--profile default`` for the default profile keeps those
+    processes from falling back to a sticky ``active_profile`` file when some
+    startup path has not propagated ``HERMES_HOME`` yet. Custom HERMES_HOME
+    paths still rely on the environment because they do not have a profile name.
+    """
+    profile_arg = _profile_arg(hermes_home)
+    if profile_arg:
+        return profile_arg
+
+    home = Path(hermes_home or str(get_hermes_home())).resolve()
+    if home.name == ".hermes":
+        return "--profile default"
     return ""
 
 
@@ -2165,7 +2190,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
-        profile_arg = _profile_arg(hermes_home)
+        profile_arg = _service_profile_arg(hermes_home)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
@@ -2187,7 +2212,7 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2212,7 +2237,7 @@ WantedBy=multi-user.target
 """
 
     hermes_home = str(get_hermes_home().resolve())
-    profile_arg = _profile_arg(hermes_home)
+    profile_arg = _service_profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
@@ -2225,7 +2250,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -2787,7 +2812,7 @@ def generate_launchd_plist() -> str:
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
-    profile_arg = _profile_arg(hermes_home)
+    profile_arg = _service_profile_arg(hermes_home)
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
@@ -2819,7 +2844,6 @@ def generate_launchd_plist() -> str:
     prog_args.extend([
         "<string>gateway</string>",
         "<string>run</string>",
-        "<string>--replace</string>",
     ])
     prog_args_xml = "\n        ".join(prog_args)
 

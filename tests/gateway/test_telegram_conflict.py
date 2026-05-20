@@ -111,7 +111,14 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     ok = await adapter.connect()
 
     assert ok is True
-    bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    # The adapter no longer pre-clears webhooks externally — PTB's
+    # Updater._bootstrap() calls delete_webhook itself, governed by
+    # bootstrap_retries. The kwargs passed to start_polling are what
+    # matters here.
+    bot.delete_webhook.assert_not_awaited()
+    start_kwargs = updater.start_polling.await_args.kwargs
+    assert start_kwargs["drop_pending_updates"] is True
+    assert start_kwargs["bootstrap_retries"] == 3
     assert callable(captured["error_callback"])
 
     conflict = type("Conflict", (Exception,), {})
@@ -243,7 +250,11 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
 
 
 @pytest.mark.asyncio
-async def test_connect_clears_webhook_before_polling(monkeypatch):
+async def test_connect_delegates_webhook_clear_to_ptb_bootstrap(monkeypatch):
+    """Adapter no longer pre-clears webhooks externally — PTB's
+    Updater._bootstrap() calls delete_webhook itself during start_polling,
+    governed by ``bootstrap_retries``. Adapter's job is just to pass the
+    right kwargs to start_polling."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
 
     monkeypatch.setattr(
@@ -284,7 +295,14 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
     ok = await adapter.connect()
 
     assert ok is True
-    bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    # No external pre-flight delete_webhook call:
+    bot.delete_webhook.assert_not_awaited()
+    # And start_polling is invoked with the kwargs that govern PTB's
+    # internal bootstrap (delete_webhook + getMe), including the retry
+    # budget that protects against transient bootstrap-time failures:
+    start_kwargs = updater.start_polling.await_args.kwargs
+    assert start_kwargs["drop_pending_updates"] is True
+    assert start_kwargs["bootstrap_retries"] == 3
 
 
 @pytest.mark.asyncio

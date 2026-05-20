@@ -1518,11 +1518,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             else:
                 # ── Polling mode (default) ───────────────────────────
-                # Clear any stale webhook first so polling doesn't inherit a
-                # previous webhook registration and silently stop receiving updates.
-                delete_webhook = getattr(self._bot, "delete_webhook", None)
-                if callable(delete_webhook):
-                    await delete_webhook(drop_pending_updates=False)
+                # PTB's Updater._bootstrap() unconditionally calls
+                # bot.delete_webhook(drop_pending_updates=...) inside a
+                # network_retry_loop bounded by ``bootstrap_retries`` (see
+                # telegram.ext._updater in PTB 22.6, ~L686+L705). Calling
+                # delete_webhook explicitly here would be redundant — and
+                # would do so with drop_pending_updates=False, which is
+                # then overridden by start_polling(drop_pending_updates=True)
+                # below, making the external call's flag wasted work.
 
                 loop = asyncio.get_running_loop()
 
@@ -1540,9 +1543,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Store reference for retry use in _handle_polling_conflict
                 self._polling_error_callback_ref = _polling_error_callback
 
+                # bootstrap_retries=3: PTB's default is 0 (fail-fast on the
+                # very first bootstrap call). A single transient 5xx from
+                # Telegram during ``getMe`` / ``delete_webhook`` then aborts
+                # adapter startup and requires a gateway restart to recover.
+                # Three retries tolerates the common transient case without
+                # masking persistent auth/network failures. The reconnect
+                # paths (_handle_polling_network_error, _handle_polling_conflict)
+                # have their own outer back-off ladders and intentionally
+                # keep bootstrap_retries at the default so they don't compound.
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=True,
+                    bootstrap_retries=3,
                     error_callback=_polling_error_callback,
                 )
             

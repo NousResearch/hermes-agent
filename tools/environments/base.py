@@ -609,6 +609,7 @@ class BaseEnvironment(ABC):
             )
 
         try:
+            _poll_sleep = 0.005
             while proc.poll() is None:
                 _iter_count += 1
                 if is_interrupted():
@@ -662,7 +663,17 @@ class BaseEnvironment(ABC):
                     _last_heartbeat = time.monotonic()
                     _cb_was_none = _cb_now_none
 
-                time.sleep(0.2)
+                # Adaptive poll: start at 5ms so fast commands (echo, pwd,
+                # date, cat short files) return in ~6ms instead of being
+                # stuck waiting for the next 200ms tick. Back off
+                # exponentially toward 200ms so long-running commands
+                # (builds, tests, sleeps) don't pay measurable CPU in the
+                # poll loop. For an `echo` this saves ~195ms per tool call;
+                # for a 10s build the steady-state poll rate is identical
+                # to the old behavior.
+                time.sleep(_poll_sleep)
+                if _poll_sleep < 0.2:
+                    _poll_sleep = min(_poll_sleep * 1.5, 0.2)
         except (KeyboardInterrupt, SystemExit):
             # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
             # while we were polling.  The local backend spawns subprocesses

@@ -3074,6 +3074,8 @@ def select_provider_and_model(args=None):
         _model_flow_minimax_oauth(config, current_model, args=args)
     elif selected_provider == "google-gemini-cli":
         _model_flow_google_gemini_cli(config, current_model)
+    elif selected_provider == "google-antigravity":
+        _model_flow_google_antigravity(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -3609,6 +3611,271 @@ _DEFAULT_QWEN_PORTAL_MODELS = [
 
 
 
+def _model_flow_google_antigravity(_config, current_model=""):
+    """Google Antigravity OAuth via Antigravity Code Assist."""
+    from hermes_cli.auth import (
+        DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL,
+        get_antigravity_oauth_auth_status,
+        resolve_antigravity_oauth_runtime_credentials,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+    )
+    from hermes_cli.models import provider_model_ids
+
+    status = get_antigravity_oauth_auth_status()
+    if not status.get("logged_in"):
+        try:
+            from agent.antigravity_oauth import resolve_project_id_from_env, start_oauth_flow
+
+            env_project = resolve_project_id_from_env()
+            start_oauth_flow(force_relogin=True, project_id=env_project)
+        except Exception as exc:
+            print(f"OAuth login failed: {exc}")
+            return
+
+    try:
+        creds = resolve_antigravity_oauth_runtime_credentials(force_refresh=False)
+        project_id = creds.get("project_id", "")
+        if project_id:
+            print(f"  Using Antigravity project: {project_id}")
+    except Exception as exc:
+        print(f"Failed to resolve Antigravity credentials: {exc}")
+        return
+
+    models = provider_model_ids("google-antigravity")
+    default = current_model or (models[0] if models else "gemini-3-flash-agent")
+    selected = _prompt_model_selection(models, current_model=default)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider(
+            "google-antigravity", DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL
+        )
+        print(
+            f"Default model set to: {selected} (via Google Antigravity OAuth / Code Assist)"
+        )
+    else:
+        print("No change.")
+
+
+def _model_flow_custom(config):
+    """Custom endpoint: collect URL, API key, and model name.
+
+    Automatically saves the endpoint to ``custom_providers`` in config.yaml
+    so it appears in the provider menu on subsequent runs.
+    """
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import get_env_value, load_config, save_config
+
+    current_url = get_env_value("OPENAI_BASE_URL") or ""
+    current_key = get_env_value("OPENAI_API_KEY") or ""
+
+    print("Custom OpenAI-compatible endpoint configuration:")
+    if current_url:
+        print(f"  Current URL: {current_url}")
+    if current_key:
+        print(f"  Current key: {current_key[:8]}...")
+    print()
+
+    try:
+        base_url = input(
+            f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: "
+        ).strip()
+        import getpass
+
+        api_key = getpass.getpass(
+            f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if not base_url and not current_url:
+        print("No URL provided. Cancelled.")
+        return
+
+    # Validate URL format
+    effective_url = base_url or current_url
+    if not effective_url.startswith(("http://", "https://")):
+        print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
+        return
+
+    effective_key = api_key or current_key
+
+    # Hint: most local model servers (Ollama, vLLM, llama.cpp) require /v1
+    # in the base URL for OpenAI-compatible chat completions.  Prompt the
+    # user if the URL looks like a local server without /v1.
+    _url_lower = effective_url.rstrip("/").lower()
+    _looks_local = any(
+        h in _url_lower
+        for h in ("localhost", "127.0.0.1", "0.0.0.0", ":11434", ":8080", ":5000")
+    )
+    if _looks_local and not _url_lower.endswith("/v1"):
+        print()
+        print(f"  Hint: Did you mean to add /v1 at the end?")
+        print(f"  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
+        print(f"  e.g. {effective_url.rstrip('/')}/v1")
+        try:
+            _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            _add_v1 = "n"
+        if _add_v1 in {"", "y", "yes"}:
+            effective_url = effective_url.rstrip("/") + "/v1"
+            if base_url:
+                base_url = effective_url
+            print(f"  Updated URL: {effective_url}")
+        print()
+
+    from hermes_cli.models import probe_api_models
+
+    probe = probe_api_models(effective_key, effective_url)
+    if probe.get("used_fallback") and probe.get("resolved_base_url"):
+        print(
+            f"Warning: endpoint verification worked at {probe['resolved_base_url']}/models, "
+            f"not the exact URL you entered. Saving the working base URL instead."
+        )
+        effective_url = probe["resolved_base_url"]
+        if base_url:
+            base_url = effective_url
+    elif probe.get("models") is not None:
+        print(
+            f"Verified endpoint via {probe.get('probed_url')} "
+            f"({len(probe.get('models') or [])} model(s) visible)"
+        )
+    else:
+        print(
+            f"Warning: could not verify this endpoint via {probe.get('probed_url')}. "
+            f"Hermes will still save it."
+        )
+        if probe.get("suggested_base_url"):
+            suggested = probe["suggested_base_url"]
+            if suggested.endswith("/v1"):
+                print(
+                    f"  If this server expects /v1 in the path, try base URL: {suggested}"
+                )
+            else:
+                print(f"  If /v1 should not be in the base URL, try: {suggested}")
+
+    # Prompt for API compatibility mode explicitly so codex-compatible custom
+    # providers don't silently fall back to chat_completions.
+    current_model_cfg = config.get("model")
+    current_api_mode = ""
+    if isinstance(current_model_cfg, dict):
+        current_api_mode = str(current_model_cfg.get("api_mode") or "").strip()
+    api_mode = _prompt_custom_api_mode_selection(
+        effective_url,
+        current_api_mode=current_api_mode,
+    )
+    if api_mode:
+        print(f"  API mode: {api_mode}")
+    else:
+        print("  API mode: auto-detect")
+
+    # Select model — use probe results when available, fall back to manual input
+    model_name = ""
+    detected_models = probe.get("models") or []
+    try:
+        if len(detected_models) == 1:
+            print(f"  Detected model: {detected_models[0]}")
+            confirm = input("  Use this model? [Y/n]: ").strip().lower()
+            if confirm in {"", "y", "yes"}:
+                model_name = detected_models[0]
+            else:
+                model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+        elif len(detected_models) > 1:
+            print("  Available models:")
+            for i, m in enumerate(detected_models, 1):
+                print(f"    {i}. {m}")
+            pick = input(
+                f"  Select model [1-{len(detected_models)}] or type name: "
+            ).strip()
+            if pick.isdigit() and 1 <= int(pick) <= len(detected_models):
+                model_name = detected_models[int(pick) - 1]
+            elif pick:
+                model_name = pick
+        else:
+            model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+
+        context_length_str = input(
+            "Context length in tokens [leave blank for auto-detect]: "
+        ).strip()
+
+        # Prompt for a display name — shown in the provider menu on future runs
+        default_name = _auto_provider_name(effective_url)
+        display_name = input(f"Display name [{default_name}]: ").strip() or default_name
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    context_length = None
+    if context_length_str:
+        try:
+            context_length = int(
+                context_length_str.replace(",", "")
+                .replace("k", "000")
+                .replace("K", "000")
+            )
+            if context_length <= 0:
+                context_length = None
+        except ValueError:
+            print(f"Invalid context length: {context_length_str} — will auto-detect.")
+            context_length = None
+
+    if model_name:
+        _save_model_choice(model_name)
+
+        # Update config and deactivate any OAuth provider
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "custom"
+        model["base_url"] = effective_url
+        if effective_key:
+            model["api_key"] = effective_key
+        if api_mode:
+            model["api_mode"] = api_mode
+        else:
+            model.pop("api_mode", None)
+        save_config(cfg)
+        deactivate_provider()
+
+        # Sync the caller's config dict so the setup wizard's final
+        # save_config(config) preserves our model settings.  Without
+        # this, the wizard overwrites model.provider/base_url with
+        # the stale values from its own config dict (#4172).
+        config["model"] = dict(model)
+
+        print(f"Default model set to: {model_name} (via {effective_url})")
+    else:
+        if base_url or api_key:
+            deactivate_provider()
+        # Even without a model name, persist the custom endpoint on the
+        # caller's config dict so the setup wizard doesn't lose it.
+        _caller_model = config.get("model")
+        if not isinstance(_caller_model, dict):
+            _caller_model = {"default": _caller_model} if _caller_model else {}
+        _caller_model["provider"] = "custom"
+        _caller_model["base_url"] = effective_url
+        if effective_key:
+            _caller_model["api_key"] = effective_key
+        if api_mode:
+            _caller_model["api_mode"] = api_mode
+        else:
+            _caller_model.pop("api_mode", None)
+        config["model"] = _caller_model
+        print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+
+    # Auto-save to custom_providers so it appears in the menu next time
+    _save_custom_provider(
+        effective_url,
+        effective_key,
+        model_name or "",
+        context_length=context_length,
+        name=display_name,
+        api_mode=api_mode,
+    )
 
 
 def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "") -> Optional[str]:
@@ -11248,6 +11515,24 @@ def cmd_logs(args):
         since=getattr(args, "since", None),
         component=getattr(args, "component", None),
     )
+
+
+def _build_provider_choices() -> list[str]:
+    """Build the --provider choices list from CANONICAL_PROVIDERS + 'auto'."""
+    try:
+        from hermes_cli.models import CANONICAL_PROVIDERS as _cp
+        return ["auto"] + [p.slug for p in _cp]
+    except Exception:
+        # Fallback: static list guarantees the CLI always works
+        return [
+            "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
+            "anthropic", "gemini", "google-gemini-cli", "google-antigravity", "xai", "bedrock", "azure-foundry",
+            "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
+            "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
+            "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
+        ]
+
+
 # Top-level subcommands that argparse knows about WITHOUT running plugin
 # discovery.  Used to short-circuit eager plugin imports (which can take
 # 500ms+ pulling in google.cloud.pubsub_v1, aiohttp, grpc, etc.) when the

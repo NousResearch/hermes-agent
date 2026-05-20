@@ -111,6 +111,19 @@ hermes model
 
 This uses browser PKCE login and the Cloud Code Assist backend. It can be useful for users who want Gemini CLI-style OAuth, but Hermes shows an explicit warning because Google may treat use of the Gemini CLI OAuth client from third-party software as a policy violation. For production or lowest-risk usage, prefer the API-key provider above.
 
+Hermes also supports `google-antigravity` for Antigravity Code Assist:
+
+```bash
+hermes model
+# → Choose "Google Antigravity (OAuth)"
+```
+
+That provider uses a separate Antigravity OAuth login and stores separate
+credentials at `~/.hermes/auth/antigravity_oauth.json`. Its model picker uses
+live Antigravity model discovery, so the list reflects the signed-in account's
+subscription and can include Antigravity-only Gemini agent models plus other
+entitled model families.
+
 ## Available Models
 
 The `hermes model` picker shows Gemini models maintained in Hermes' provider registry. Common choices include:
@@ -193,6 +206,7 @@ The doctor checks:
 
 - Whether `GOOGLE_API_KEY` or `GEMINI_API_KEY` is available
 - Whether Gemini OAuth credentials exist for `google-gemini-cli`
+- Whether Antigravity OAuth credentials exist for `google-antigravity`
 - Whether configured provider credentials can be resolved
 
 For OAuth quota usage, run this inside a Hermes session:

@@ -91,9 +91,11 @@ class MattermostAdapter(BasePlatformAdapter):
         self._closing = False
 
         # Reply mode: "thread" to nest replies, "off" for flat messages.
+        # Mattermost is noisy without threads; make the safe/default behavior
+        # stay in the triggering post's thread unless explicitly disabled.
         self._reply_mode: str = (
             config.extra.get("reply_mode", "")
-            or os.getenv("MATTERMOST_REPLY_MODE", "off")
+            or os.getenv("MATTERMOST_REPLY_MODE", "thread")
         ).lower()
         no_thread_raw = config.extra.get("no_thread_channels") or []
         if isinstance(no_thread_raw, str):
@@ -310,10 +312,16 @@ class MattermostAdapter(BasePlatformAdapter):
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Send a typing indicator."""
+        """Send a typing indicator, scoped to a thread when Mattermost supports it."""
+        payload = {"channel_id": chat_id}
+        thread_id = None
+        if metadata:
+            thread_id = metadata.get("thread_id") or metadata.get("mattermost_root_id")
+        if thread_id:
+            payload["parent_id"] = str(thread_id)
         await self._api_post(
             f"users/{self._bot_user_id}/typing",
-            {"channel_id": chat_id},
+            payload,
         )
 
     async def edit_message(

@@ -81,6 +81,11 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "telegram" and thread_id:
         return None
+    if platform == "mattermost" and thread_id:
+        # Mattermost posts require root_id to point at the thread root. For a
+        # user's reply inside an existing thread, event.message_id is the child
+        # post; using it as root_id can fork replies into the channel/new lane.
+        return str(thread_id)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)

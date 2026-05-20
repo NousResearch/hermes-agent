@@ -179,6 +179,48 @@ class TestMakeRunEnvHomeInjection:
         assert result["HERMES_HOME"] == str(profile)
         assert result["HOME"] == str(profile / "home")
 
+    def test_macos_keychains_symlink_created_for_profile_home(self, tmp_path, monkeypatch):
+        real_home = tmp_path / "real-home"
+        real_keychains = real_home / "Library" / "Keychains"
+        real_keychains.mkdir(parents=True)
+        hermes_home = tmp_path / "hermes"
+        profile_home = hermes_home / "home"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", str(real_home))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        import tools.environments.local as local_env
+        monkeypatch.setattr(local_env, "_IS_MACOS", True)
+
+        result = local_env._make_run_env({})
+
+        linked_keychains = profile_home / "Library" / "Keychains"
+        assert result["HOME"] == str(profile_home)
+        assert linked_keychains.is_symlink()
+        assert linked_keychains.resolve() == real_keychains
+
+    def test_macos_keychains_symlink_preserves_existing_profile_path(self, tmp_path, monkeypatch):
+        real_home = tmp_path / "real-home"
+        (real_home / "Library" / "Keychains").mkdir(parents=True)
+        hermes_home = tmp_path / "hermes"
+        profile_home = hermes_home / "home"
+        existing_keychains = profile_home / "Library" / "Keychains"
+        existing_keychains.mkdir(parents=True)
+        sentinel = existing_keychains / "profile-only.keychain-db"
+        sentinel.write_text("keep me")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", str(real_home))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        import tools.environments.local as local_env
+        monkeypatch.setattr(local_env, "_IS_MACOS", True)
+
+        local_env._make_run_env({})
+
+        assert not existing_keychains.is_symlink()
+        assert sentinel.read_text() == "keep me"
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_subprocess_env() injection
@@ -230,6 +272,26 @@ class TestSanitizeSubprocessEnvHomeInjection:
 
         assert result["HERMES_HOME"] == str(profile)
         assert result["HOME"] == str(profile / "home")
+
+    def test_macos_keychains_symlink_created_for_background_env(self, tmp_path, monkeypatch):
+        real_home = tmp_path / "real-home"
+        real_keychains = real_home / "Library" / "Keychains"
+        real_keychains.mkdir(parents=True)
+        hermes_home = tmp_path / "hermes"
+        profile_home = hermes_home / "home"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import tools.environments.local as local_env
+        monkeypatch.setattr(local_env, "_IS_MACOS", True)
+
+        base_env = {"HOME": str(real_home), "PATH": "/usr/bin"}
+        result = local_env._sanitize_subprocess_env(base_env)
+
+        linked_keychains = profile_home / "Library" / "Keychains"
+        assert result["HOME"] == str(profile_home)
+        assert linked_keychains.is_symlink()
+        assert linked_keychains.resolve() == real_keychains
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
+_IS_MACOS = platform.system() == "Darwin"
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,48 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
+def _link_macos_keychains_into_profile_home(
+    profile_home: str | None,
+    real_home: str | None,
+) -> None:
+    """Expose the user's macOS login keychains inside an isolated profile HOME.
+
+    Hermes profile HOME isolation keeps git/ssh/npm/gh state scoped to the
+    active profile by pointing subprocess ``HOME`` at ``$HERMES_HOME/home``.
+    On macOS, however, many CLIs ask the system keychain APIs to load the
+    default login keychain from ``$HOME/Library/Keychains``. If we rewrite
+    ``HOME`` without making that path visible, tools such as Claude Code report
+    "not logged in" despite the user being authenticated in their real shell.
+
+    We intentionally link only ``Library/Keychains`` rather than the whole
+    ``Library`` tree, preserving profile isolation for ordinary config files
+    while keeping OS-managed credentials reachable. Existing profile paths are
+    never replaced: users may deliberately maintain a profile-specific keychain
+    directory or symlink.
+    """
+    if not _IS_MACOS or not profile_home or not real_home:
+        return
+
+    try:
+        profile_home_path = Path(profile_home).expanduser()
+        real_keychains = Path(real_home).expanduser() / "Library" / "Keychains"
+        if not real_keychains.exists():
+            return
+
+        profile_library = profile_home_path / "Library"
+        profile_keychains = profile_library / "Keychains"
+        if profile_keychains.exists() or profile_keychains.is_symlink():
+            return
+
+        profile_library.mkdir(parents=True, exist_ok=True)
+        profile_keychains.symlink_to(real_keychains, target_is_directory=True)
+    except OSError:
+        logger.debug(
+            "Failed to link macOS Keychains into isolated profile HOME",
+            exc_info=True,
+        )
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -211,6 +254,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
     if _profile_home:
+        _link_macos_keychains_into_profile_home(_profile_home, sanitized.get("HOME"))
         sanitized["HOME"] = _profile_home
 
     return sanitized
@@ -315,6 +359,7 @@ def _make_run_env(env: dict) -> dict:
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
     if _profile_home:
+        _link_macos_keychains_into_profile_home(_profile_home, run_env.get("HOME"))
         run_env["HOME"] = _profile_home
 
     # Inject ContextVar-based session vars into subprocess env.

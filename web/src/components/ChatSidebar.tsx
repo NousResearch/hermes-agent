@@ -232,10 +232,10 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         }
 
         setTools((prev) =>
-          prev.map((t) =>
-            t.status === "running" && t.name === p.name
-              ? { ...t, preview: p.preview }
-              : t,
+          prev.map((tool) =>
+            tool.status === "running" && tool.name === p.name
+              ? { ...tool, preview: p.preview }
+              : tool,
           ),
         );
       } else if (type === "tool.complete") {
@@ -253,17 +253,17 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         }
 
         setTools((prev) =>
-          prev.map((t) =>
-            t.tool_id === p.tool_id
+          prev.map((tool) =>
+            tool.tool_id === p.tool_id
               ? {
-                  ...t,
+                  ...tool,
                   status: p.error ? "error" : "done",
                   summary: p.summary,
                   error: p.error,
                   inline_diff: p.inline_diff,
                   completedAt: Date.now(),
                 }
-              : t,
+              : tool,
           ),
         );
       }
@@ -369,7 +369,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
               {t.chatSidebar.noToolCalls}
             </div>
           ) : (
-            tools.map((t) => <ToolCall key={t.id} tool={t} />)
+            tools.map((tool) => <ToolCall key={tool.id} tool={tool} />)
           )}
         </div>
       </Card>

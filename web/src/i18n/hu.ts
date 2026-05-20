@@ -76,7 +76,7 @@ export const hu: Translations = {
       achievements: "Achievements",
       example: "Example",
       kanban: "Kanban",
-keys: "Kulcsok",
+      keys: "Kulcsok",
       logs: "Naplók",
       models: "Modellek",
       profiles: "profilok: több ügynök",
@@ -98,7 +98,7 @@ keys: "Kulcsok",
     statusOverview: "Állapot áttekintése",
     system: "Rendszer",
     webUi: "Web UI",
-loadingChat: "Loading chat…",
+    loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

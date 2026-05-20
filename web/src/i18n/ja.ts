@@ -76,7 +76,7 @@ export const ja: Translations = {
       achievements: "Achievements",
       example: "Example",
       kanban: "Kanban",
-keys: "キー",
+      keys: "キー",
       logs: "ログ",
       models: "モデル",
       profiles: "プロファイル : マルチエージェント",
@@ -98,7 +98,7 @@ keys: "キー",
     statusOverview: "ステータス概要",
     system: "システム",
     webUi: "Web UI",
-loadingChat: "Loading chat…",
+    loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

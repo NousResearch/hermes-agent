@@ -76,7 +76,7 @@ export const zhHant: Translations = {
       achievements: "成就",
       example: "示例",
       kanban: "看板",
-keys: "金鑰",
+      keys: "金鑰",
       logs: "日誌",
       models: "模型",
       profiles: "多代理設定檔",
@@ -98,7 +98,7 @@ keys: "金鑰",
     statusOverview: "狀態總覽",
     system: "系統",
     webUi: "管理面板",
-loadingChat: "正在加载对话…",
+    loadingChat: "正在載入對話…",
   },
 
   chatSidebar: {

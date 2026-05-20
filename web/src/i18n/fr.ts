@@ -76,7 +76,7 @@ export const fr: Translations = {
       achievements: "Achievements",
       example: "Example",
       kanban: "Kanban",
-keys: "Clés",
+      keys: "Clés",
       logs: "Journaux",
       models: "Modèles",
       profiles: "profils : multi agents",
@@ -98,7 +98,7 @@ keys: "Clés",
     statusOverview: "Aperçu de l'état",
     system: "Système",
     webUi: "Web UI",
-loadingChat: "Loading chat…",
+    loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

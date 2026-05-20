@@ -76,7 +76,7 @@ export const tr: Translations = {
       achievements: "Achievements",
       example: "Example",
       kanban: "Kanban",
-keys: "Anahtarlar",
+      keys: "Anahtarlar",
       logs: "Günlükler",
       models: "Modeller",
       profiles: "profiller : çoklu agent",
@@ -98,7 +98,7 @@ keys: "Anahtarlar",
     statusOverview: "Durum özeti",
     system: "Sistem",
     webUi: "Web UI",
-loadingChat: "Loading chat…",
+    loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

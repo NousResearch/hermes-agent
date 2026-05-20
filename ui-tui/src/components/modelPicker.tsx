@@ -269,7 +269,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>ti('modelPicker.loading')</Text>
+    return <Text color={t.color.muted}>{ti('modelPicker.loading')}</Text>
   }
 
   if (err) {
@@ -284,7 +284,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   if (!providers.length) {
     return (
       <Box flexDirection="column">
-        <Text color={t.color.muted}>ti('modelPicker.noProviders')</Text>
+        <Text color={t.color.muted}>{ti('modelPicker.noProviders')}</Text>
         <OverlayHint t={t}>{ti('picker.cancel')}</OverlayHint>
       </Box>
     )
@@ -328,7 +328,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           <Text color={t.color.muted} wrap="truncate-end"> </Text>
         )}
 
-        <OverlayHint t={t}>ti('modelPicker.keyHint')</OverlayHint>
+        <OverlayHint t={t}>{ti('modelPicker.keyHint')}</OverlayHint>
       </Box>
     )
   }
@@ -354,7 +354,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         <Text color={t.color.muted} wrap="truncate-end"> </Text>
 
         {keySaving ? (
-          <Text color={t.color.muted} wrap="truncate-end">ti('modelPicker.disconnecting')</Text>
+          <Text color={t.color.muted} wrap="truncate-end">{ti('modelPicker.disconnecting')}</Text>
         ) : (
           <OverlayHint t={t}>{ti('picker.confirmHint')}</OverlayHint>
         )}
@@ -440,11 +440,11 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent} wrap="truncate-end">
-        ti('modelPicker.selectModel')
+        {ti('modelPicker.selectModel')}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {names[providerIdx] || ti('modelPicker.unknownProvider')} · Esc back
+        {ti('modelPicker.providerBack', { provider: names[providerIdx] || ti('modelPicker.unknownProvider') })}
       </Text>
       <Text color={t.color.label} wrap="truncate-end">
         {provider?.warning ? `${ti('common.warning')}: ${provider.warning}` : ' '}
@@ -460,7 +460,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         if (!row) {
           return !models.length && i === 0 ? (
             <Text color={t.color.muted} key="empty" wrap="truncate-end">
-              ti('modelPicker.noModels')
+              {ti('modelPicker.noModels')}
             </Text>
           ) : (
             <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">

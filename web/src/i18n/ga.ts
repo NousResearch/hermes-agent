@@ -76,7 +76,7 @@ export const ga: Translations = {
       achievements: "Achievements",
       example: "Example",
       kanban: "Kanban",
-keys: "Eochracha",
+      keys: "Eochracha",
       logs: "Logaí",
       models: "Samhlacha",
       profiles: "próifílí : il-agents",
@@ -98,7 +98,7 @@ keys: "Eochracha",
     statusOverview: "Forbhreathnú stádais",
     system: "Córas",
     webUi: "Web UI",
-loadingChat: "Loading chat…",
+    loadingChat: "Loading chat…",
   },
 
   chatSidebar: {

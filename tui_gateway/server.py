@@ -773,7 +773,7 @@ def resolve_skin() -> dict:
 
 
 def resolve_language() -> str:
-    """返回 TUI 应使用的语言代码。优先级：HERMES_LANGUAGE 环境变量 > display.language 配置 > 'en' 默认值。"""
+    """Resolve the language code used by TUI-facing gateway metadata."""
     try:
         from agent.i18n import get_language
         return get_language()
@@ -4408,11 +4408,27 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
     }
 )
 
-_TUI_EXTRA: list[tuple[str, str, str]] = [
-    ("/compact", "Toggle compact display mode", "TUI"),
-    ("/logs", "Show recent gateway log lines", "TUI"),
-    ("/mouse", "Toggle mouse/wheel tracking [on|off|toggle]", "TUI"),
+_TUI_EXTRA_META: dict[str, tuple[str, str]] = {
+    "/compact": ("Toggle compact display mode", "切换紧凑显示模式"),
+    "/details": ("Control agent detail visibility", "控制 Agent 详情可见性"),
+    "/logs": ("Show recent gateway log lines", "显示最近的网关日志"),
+    "/mouse": (
+        "Toggle mouse/wheel tracking [on|off|toggle]",
+        "切换鼠标/滚轮追踪 [on|off|toggle]",
+    ),
+}
+
+_TUI_EXTRA: list[tuple[str, str]] = [
+    ("/compact", "TUI"),
+    ("/logs", "TUI"),
+    ("/mouse", "TUI"),
 ]
+
+
+def _tui_extra_meta(command: str) -> str:
+    """Return localized metadata for TUI-only slash commands."""
+    en, zh = _TUI_EXTRA_META[command]
+    return zh if resolve_language().lower().startswith("zh") else en
 
 # Commands that queue messages onto _pending_input in the CLI.
 # In the TUI the slash worker subprocess has no reader for that queue,
@@ -4465,7 +4481,8 @@ def _(rid, params: dict) -> dict:
                 cat_order.append(cat)
             cat_map[cat].append([c, desc])
 
-        for name, desc, cat in _TUI_EXTRA:
+        for name, cat in _TUI_EXTRA:
+            desc = _tui_extra_meta(name)
             all_pairs.append([name, desc])
             if cat not in cat_map:
                 cat_map[cat] = []
@@ -5271,26 +5288,8 @@ def _(rid, params: dict) -> dict:
         ][:30]
         text_lower = text.lower()
         extras = [
-            {
-                "text": "/compact",
-                "display": "/compact",
-                "meta": "切换紧凑显示模式",
-            },
-            {
-                "text": "/details",
-                "display": "/details",
-                "meta": "控制 Agent 详情可见性",
-            },
-            {
-                "text": "/logs",
-                "display": "/logs",
-                "meta": "显示最近的网关日志",
-            },
-            {
-                "text": "/mouse",
-                "display": "/mouse",
-                "meta": "切换鼠标/滚轮追踪 [on|off|toggle]",
-            },
+            {"text": command, "display": command, "meta": _tui_extra_meta(command)}
+            for command in _TUI_EXTRA_META
         ]
         for extra in extras:
             if extra["text"].startswith(text_lower) and not any(

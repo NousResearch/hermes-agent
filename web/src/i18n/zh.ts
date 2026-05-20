@@ -97,7 +97,7 @@ export const zh: Translations = {
     statusOverview: "状态概览",
     system: "系统",
     webUi: "管理面板",
-loadingChat: "正在加载对话…",
+    loadingChat: "正在加载对话…",
   },
 
   chatSidebar: {

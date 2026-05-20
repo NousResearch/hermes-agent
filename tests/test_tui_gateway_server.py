@@ -1536,6 +1536,48 @@ def test_complete_slash_includes_tui_mouse_command():
     assert any(item["text"] == "/mouse" for item in resp["result"]["items"])
 
 
+def test_complete_slash_tui_extra_meta_respects_language(monkeypatch):
+    monkeypatch.setattr(server, "resolve_language", lambda: "en")
+    resp_en = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/com"}}
+    )
+    assert isinstance(resp_en, dict)
+    result_en = resp_en.get("result")
+    assert isinstance(result_en, dict)
+
+    compact_en = next(item for item in result_en["items"] if item["text"] == "/compact")
+    assert compact_en["meta"] == "Toggle compact display mode"
+
+    monkeypatch.setattr(server, "resolve_language", lambda: "zh")
+    resp_zh = server.handle_request(
+        {"id": "2", "method": "complete.slash", "params": {"text": "/com"}}
+    )
+    assert isinstance(resp_zh, dict)
+    result_zh = resp_zh.get("result")
+    assert isinstance(result_zh, dict)
+
+    compact_zh = next(item for item in result_zh["items"] if item["text"] == "/compact")
+    assert compact_zh["meta"] == "切换紧凑显示模式"
+
+
+def test_commands_catalog_tui_extra_meta_respects_language(monkeypatch):
+    monkeypatch.setattr(server, "resolve_language", lambda: "en")
+    resp_en = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+    tui_en = next(c for c in resp_en["result"]["categories"] if c["name"] == "TUI")
+    compact_en = next(item for item in tui_en["pairs"] if item[0] == "/compact")
+    assert compact_en[1] == "Toggle compact display mode"
+
+    monkeypatch.setattr(server, "resolve_language", lambda: "zh")
+    resp_zh = server.handle_request(
+        {"id": "2", "method": "commands.catalog", "params": {}}
+    )
+    tui_zh = next(c for c in resp_zh["result"]["categories"] if c["name"] == "TUI")
+    compact_zh = next(item for item in tui_zh["pairs"] if item[0] == "/compact")
+    assert compact_zh[1] == "切换紧凑显示模式"
+
+
 def test_complete_slash_details_args():
     resp_root = server.handle_request(
         {"id": "0", "method": "complete.slash", "params": {"text": "/details"}}

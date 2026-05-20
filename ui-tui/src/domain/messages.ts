@@ -29,7 +29,7 @@ export const userDisplay = (text: string, locale: Locale = 'en') => {
   const words = first.split(/\s+/).filter(Boolean)
   const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
 
-  return `${prefix || translate(locale, 'transcript.messageFallback')}${translate(locale, 'transcript.longMessage')}`
+  return `${prefix || translate(locale, 'transcript.messageFallback')} ${translate(locale, 'transcript.longMessage')}`
 }
 
 export const toTranscriptMessages = (rows: unknown): Msg[] => {

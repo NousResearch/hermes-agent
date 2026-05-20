@@ -284,7 +284,7 @@ export const coreCommands: SlashCommand[] = [
         const mode = reset ? null : parseDetailsMode(second)
 
         if (!reset && !mode) {
-          return transcript.sys(translate(ctx.ui.locale, 'sys.helpDetailSection'))
+          return transcript.sys(translate(ctx.ui.locale, 'sys.usageDetailsSection'))
         }
 
         const { [first]: _drop, ...rest } = ui.sections

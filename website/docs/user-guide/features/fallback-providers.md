@@ -64,6 +64,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | StepFun | `stepfun` | `STEPFUN_API_KEY` (optional: `STEPFUN_BASE_URL`) |
 | Ollama Cloud | `ollama-cloud` | `OLLAMA_API_KEY` |
 | Google Gemini (OAuth) | `google-gemini-cli` | `hermes model` (Google OAuth; optional: `HERMES_GEMINI_PROJECT_ID`) |
+| Google Antigravity (OAuth) | `google-antigravity` | `hermes model` (Antigravity OAuth; optional: `HERMES_ANTIGRAVITY_PROJECT_ID`) |
 | Google AI Studio | `gemini` | `GOOGLE_API_KEY` (alias: `GEMINI_API_KEY`) |
 | xAI (Grok) | `xai` (alias `grok`) | `XAI_API_KEY` (optional: `XAI_BASE_URL`) |
 | xAI Grok OAuth (SuperGrok) | `xai-oauth` (alias `grok-oauth`) | `hermes model` → xAI Grok OAuth (browser login; SuperGrok subscription) |

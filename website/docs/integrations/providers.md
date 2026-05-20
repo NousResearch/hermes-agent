@@ -42,6 +42,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
 | **Google Gemini (OAuth)** | `hermes model` → "Google Gemini (OAuth)" (provider: `google-gemini-cli`, free tier supported, browser PKCE login) |
+| **Google Antigravity (OAuth)** | `hermes model` → "Google Antigravity (OAuth)" (provider: `google-antigravity`, aliases: `antigravity`, `antigravity-oauth`, `agy`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
@@ -136,6 +137,64 @@ HERMES_GEMINI_CLIENT_SECRET=...   # optional for Desktop clients
 Register a **Desktop app** OAuth client at
 [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
 with the Generative Language API enabled.
+
+### Google Antigravity via OAuth (`google-antigravity`)
+
+The `google-antigravity` provider uses Antigravity's Code Assist backend and
+Antigravity OAuth scopes. It is a native Hermes integration: Hermes runs its
+own browser PKCE login, stores credentials under
+`~/.hermes/auth/antigravity_oauth.json`, and talks directly to the Antigravity
+Code Assist endpoints. It does not shell out to `agy` for inference, and it
+does not depend on the Antigravity CLI's local token storage.
+
+**Quick start:**
+
+```bash
+hermes model
+# -> pick "Google Antigravity (OAuth)"
+# -> browser opens to accounts.google.com, sign in
+# -> pick one of the models available to your Antigravity account
+```
+
+Hermes discovers Antigravity models from `fetchAvailableModels` after login.
+The visible list depends on the authenticated account and subscription, and can
+include Antigravity-only Gemini agent models plus Claude and GPT-OSS entries
+when the account is entitled. If live discovery fails, Hermes falls back to a
+small curated list so the provider remains selectable.
+
+Supported aliases:
+
+```text
+google-antigravity
+google-antigravity-oauth
+antigravity
+antigravity-oauth
+antigravity-cli
+agy
+agy-cli
+```
+
+Optional overrides:
+
+```bash
+HERMES_ANTIGRAVITY_CLIENT_ID=your-client.apps.googleusercontent.com
+HERMES_ANTIGRAVITY_CLIENT_SECRET=...
+HERMES_ANTIGRAVITY_CLI_PATH=/path/to/agy
+HERMES_ANTIGRAVITY_PROJECT_ID=your-project
+```
+
+If the client ID/secret are not set explicitly, Hermes tries to discover the
+desktop OAuth client credentials from the installed Antigravity CLI (`agy`) on
+`PATH`, `HERMES_ANTIGRAVITY_CLI_PATH`, or common Antigravity install/cache
+locations. Those client credentials are used only to start and refresh Hermes'
+own OAuth session; Hermes still keeps its access/refresh tokens in `~/.hermes`.
+
+:::note Windows credential storage
+The Antigravity CLI may keep its own login in platform-specific storage such as
+Windows Credential Manager. Hermes intentionally keeps separate credentials in
+`~/.hermes` so development profiles and production Hermes profiles do not share
+tokens accidentally.
+:::
 
 :::info Codex Note
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
@@ -1466,7 +1525,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `google-antigravity`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

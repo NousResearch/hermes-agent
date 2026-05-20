@@ -2188,6 +2188,8 @@ def select_provider_and_model(args=None):
         _model_flow_minimax_oauth(config, current_model, args=args)
     elif selected_provider == "google-gemini-cli":
         _model_flow_google_gemini_cli(config, current_model)
+    elif selected_provider == "google-antigravity":
+        _model_flow_google_antigravity(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -3325,6 +3327,53 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
         )
         print(
             f"Default model set to: {selected} (via Google Gemini OAuth / Code Assist)"
+        )
+    else:
+        print("No change.")
+
+
+def _model_flow_google_antigravity(_config, current_model=""):
+    """Google Antigravity OAuth via Antigravity Code Assist."""
+    from hermes_cli.auth import (
+        DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL,
+        get_antigravity_oauth_auth_status,
+        resolve_antigravity_oauth_runtime_credentials,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+    )
+    from hermes_cli.models import provider_model_ids
+
+    status = get_antigravity_oauth_auth_status()
+    if not status.get("logged_in"):
+        try:
+            from agent.antigravity_oauth import resolve_project_id_from_env, start_oauth_flow
+
+            env_project = resolve_project_id_from_env()
+            start_oauth_flow(force_relogin=True, project_id=env_project)
+        except Exception as exc:
+            print(f"OAuth login failed: {exc}")
+            return
+
+    try:
+        creds = resolve_antigravity_oauth_runtime_credentials(force_refresh=False)
+        project_id = creds.get("project_id", "")
+        if project_id:
+            print(f"  Using Antigravity project: {project_id}")
+    except Exception as exc:
+        print(f"Failed to resolve Antigravity credentials: {exc}")
+        return
+
+    models = provider_model_ids("google-antigravity")
+    default = current_model or (models[0] if models else "gemini-3-flash-agent")
+    selected = _prompt_model_selection(models, current_model=default)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider(
+            "google-antigravity", DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL
+        )
+        print(
+            f"Default model set to: {selected} (via Google Antigravity OAuth / Code Assist)"
         )
     else:
         print("No change.")
@@ -10387,7 +10436,7 @@ def _build_provider_choices() -> list[str]:
         # Fallback: static list guarantees the CLI always works
         return [
             "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
-            "anthropic", "gemini", "google-gemini-cli", "xai", "bedrock", "azure-foundry",
+            "anthropic", "gemini", "google-gemini-cli", "google-antigravity", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
             "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
             "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",

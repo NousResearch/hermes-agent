@@ -705,6 +705,11 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
+                # Discord.py handles websocket reconnects internally after the
+                # adapter's initial connect() has already returned. Refresh the
+                # runtime status on every READY so /platforms and gateway status
+                # don't show a stale "connected" timestamp from process start.
+                adapter_self._mark_connected()
 
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
@@ -715,6 +720,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 adapter_self._post_connect_task = asyncio.create_task(
                     adapter_self._run_post_connect_initialization()
                 )
+
+            @self._client.event
+            async def on_resumed():
+                logger.info("[%s] Discord gateway session resumed", adapter_self.name)
+                adapter_self._mark_connected()
+
+            @self._client.event
+            async def on_disconnect():
+                logger.warning("[%s] Discord gateway disconnected", adapter_self.name)
+                adapter_self._mark_disconnected()
 
             @self._client.event
             async def on_message(message: DiscordMessage):

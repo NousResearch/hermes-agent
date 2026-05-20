@@ -575,6 +575,19 @@ async def get_status():
     # Prefer the detailed health endpoint response (has full state) when the
     # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
+    if runtime is not None and gateway_pid is not None and remote_health_body is None:
+        # Local runtime files are written by the live gateway process.  After
+        # abrupt restarts / --replace handoffs, gateway.pid can point at the
+        # new process while gateway_state.json still contains the previous
+        # process's platform snapshot.  Do not surface stale per-platform
+        # presence (e.g. Discord "connected" timestamps) for the new process.
+        try:
+            runtime_pid = int(runtime.get("pid", 0) or 0)
+            current_pid = int(gateway_pid)
+        except (TypeError, ValueError):
+            runtime_pid = current_pid = 0
+        if runtime_pid and runtime_pid != current_pid:
+            runtime = None
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
 
@@ -599,9 +612,11 @@ async def get_status():
             if gateway_state in {None, "stopped"}:
                 gateway_state = "running"
 
-    # If there was no runtime info at all but the health probe confirmed alive,
-    # ensure we still report the gateway as running (no shared volume scenario).
-    if gateway_running and gateway_state is None and remote_health_body is not None:
+    # If there was no trustworthy runtime info but liveness confirmed alive,
+    # ensure we still report the gateway as running.  This covers both remote
+    # health checks with no shared volume and local stale gateway_state.json
+    # snapshots whose PID no longer matches gateway.pid.
+    if gateway_running and gateway_state is None:
         gateway_state = "running"
 
     active_sessions = 0

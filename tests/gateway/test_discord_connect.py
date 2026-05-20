@@ -183,6 +183,45 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
 
 @pytest.mark.asyncio
+async def test_discord_gateway_events_refresh_runtime_status(monkeypatch):
+    """Discord.py may reconnect internally after connect() returns; event
+    handlers must refresh runtime status so user-facing platform status is not
+    stuck at the original process-start timestamp.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        created["bot"] = FakeBot(intents=intents, allowed_mentions=allowed_mentions)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    mark_connected = MagicMock()
+    mark_disconnected = MagicMock()
+    monkeypatch.setattr(adapter, "_mark_connected", mark_connected)
+    monkeypatch.setattr(adapter, "_mark_disconnected", mark_disconnected)
+
+    assert await adapter.connect() is True
+    mark_connected.assert_called_once()
+
+    await created["bot"]._events["on_resumed"]()
+    assert mark_connected.call_count == 2
+
+    await created["bot"]._events["on_disconnect"]()
+    mark_disconnected.assert_called_once()
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monkeypatch):
     """Regression for #18187: calling connect() twice without disconnect() in
     between (e.g. during an in-process reconnect attempt) must close the old

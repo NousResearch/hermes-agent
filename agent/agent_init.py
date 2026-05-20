@@ -901,7 +901,8 @@ def init_agent(
     hermes_home = get_hermes_home()
     agent.logs_dir = hermes_home / "sessions"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
-    agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
+    # session_log_file removed — state.db is the canonical message store.
+    # logs_dir retained for request_dump_*.json (debug breadcrumb path).
     
     # Track conversation messages for session logging
     agent._session_messages: List[Dict[str, Any]] = []

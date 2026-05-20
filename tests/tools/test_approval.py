@@ -35,14 +35,46 @@ class TestSmartApproval:
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
         )
-        with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
+        with (
+            mock_patch("hermes_cli.config.load_config", return_value={"approvals": {}}),
+            mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call,
+        ):
             result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
 
         assert result == "approve"
         mock_call.assert_called_once()
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
-        assert mock_call.call_args.kwargs["max_tokens"] == 16
+        assert mock_call.call_args.kwargs["max_tokens"] == 128
+
+    def test_smart_approval_reads_max_tokens_from_config(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
+        )
+        config = {"approvals": {"smart_max_tokens": 256}}
+        with (
+            mock_patch("hermes_cli.config.load_config", return_value=config),
+            mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call,
+        ):
+            _smart_approve("python -c \"print('hi')\"", "script execution via -c flag")
+
+        assert mock_call.call_args.kwargs["max_tokens"] == 256
+
+    def test_smart_approval_falls_back_on_invalid_max_tokens(self):
+        """Non-integer or sub-1 values in config fall back to the default budget."""
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
+        )
+        for bad_value in ("not-an-int", 0, -5):
+            config = {"approvals": {"smart_max_tokens": bad_value}}
+            with (
+                mock_patch("hermes_cli.config.load_config", return_value=config),
+                mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call,
+            ):
+                _smart_approve("python -c \"print('hi')\"", "script execution via -c flag")
+            assert mock_call.call_args.kwargs["max_tokens"] == 128, (
+                f"expected fallback to 128 for {bad_value!r}, got {mock_call.call_args.kwargs['max_tokens']}"
+            )
 
 
 class TestDetectDangerousRm:

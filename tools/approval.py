@@ -940,6 +940,9 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+_SMART_APPROVE_DEFAULT_MAX_TOKENS = 128
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
 
@@ -951,6 +954,15 @@ def _smart_approve(command: str, description: str) -> str:
     """
     try:
         from agent.auxiliary_client import call_llm
+
+        try:
+            smart_max_tokens = int(
+                _get_approval_config().get("smart_max_tokens", _SMART_APPROVE_DEFAULT_MAX_TOKENS)
+            )
+            if smart_max_tokens < 1:
+                smart_max_tokens = _SMART_APPROVE_DEFAULT_MAX_TOKENS
+        except (ValueError, TypeError):
+            smart_max_tokens = _SMART_APPROVE_DEFAULT_MAX_TOKENS
 
         prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
 
@@ -970,7 +982,7 @@ Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
             task="approval",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
-            max_tokens=16,
+            max_tokens=smart_max_tokens,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()

@@ -2429,6 +2429,15 @@ class AIAgent:
         rd = msg.get("reasoning_details")
         if isinstance(rd, list) and rd:
             return True
+        # Codex Responses encrypted-reasoning list form. Codex returns
+        # ``codex_reasoning_items`` (a list of ``{"type": "reasoning",
+        # "encrypted_content": ...}`` dicts) on reasoning-only turns; without
+        # this branch, an Anthropic-family fallback after a Codex empty turn
+        # ends up sending an assistant scaffold that Anthropic rejects with
+        # "does not support assistant message prefill" (#29205).
+        cri = msg.get("codex_reasoning_items")
+        if isinstance(cri, list) and cri:
+            return True
         return False
 
     @staticmethod

@@ -104,6 +104,43 @@ class TestIsThinkingOnlyAssistant:
         }
         assert AIAgent._is_thinking_only_assistant(msg)
 
+    def test_codex_reasoning_items_list_form_detected(self):
+        # Codex Responses returns encrypted reasoning items on empty turns;
+        # without this branch, the message survives the sanitizer and breaks
+        # Anthropic fallback with "does not support assistant message
+        # prefill" (#29205).
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "encrypted_content": "<opaque>"},
+            ],
+        }
+        assert AIAgent._is_thinking_only_assistant(msg)
+
+    def test_codex_reasoning_items_with_visible_text_is_not_thinking_only(self):
+        # Defensive: if Codex did surface a final text alongside reasoning
+        # items, the turn carries a real answer and must survive.
+        msg = {
+            "role": "assistant",
+            "content": "Final answer.",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "encrypted_content": "<opaque>"},
+            ],
+        }
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
+    def test_codex_reasoning_items_empty_list_is_not_thinking_only(self):
+        # An empty list is not "reasoning-only" — there is no reasoning to
+        # justify dropping the turn.  Leave the empty turn for the orphan-
+        # tool / empty-turn sanitizers to handle.
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [],
+        }
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
     def test_user_message_never_thinking_only(self):
         assert not AIAgent._is_thinking_only_assistant({"role": "user", "content": ""})
 

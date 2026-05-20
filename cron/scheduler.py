@@ -566,7 +566,13 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+    status_hint: str = "ok",
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -574,6 +580,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
+
+    ``status_hint`` (``'ok'`` or ``'error'``): forwarded into the adapter
+    ``metadata`` via the polymorphic ``adapter.build_delivery_metadata(...)``
+    hook on :class:`gateway.platforms.base.BasePlatformAdapter`. The default
+    hook implementation ignores this value (it is forwarded purely for the
+    benefit of overriding adapters that want to stamp run-completion
+    records). Defaults to ``"ok"``; ``tick()`` overrides with ``"error"``
+    when ``run_job`` returns ``success=False``.
 
     Returns None on success, or an error string on failure.
     """
@@ -666,7 +680,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            base_metadata = {"thread_id": thread_id} if thread_id else None
+            # Polymorphic hook; default returns base_metadata unchanged.
+            # See gateway/platforms/base.py:BasePlatformAdapter.build_delivery_metadata.
+            try:
+                send_metadata = runtime_adapter.build_delivery_metadata(
+                    job=job,
+                    status_hint=status_hint,
+                    base_metadata=base_metadata,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Job '%s': build_delivery_metadata on %s failed (%s); using base metadata",
+                    job["id"], platform_name, e,
+                )
+                send_metadata = dict(base_metadata) if base_metadata else None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -1882,7 +1910,10 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result(
+                            job, deliver_content, adapters=adapters, loop=loop,
+                            status_hint="ok" if success else "error",
+                        )
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)

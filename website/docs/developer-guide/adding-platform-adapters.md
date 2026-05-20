@@ -325,6 +325,33 @@ Why this hook is necessary: built-in platforms (Telegram, Discord, Slack, etc.) 
 
 The function receives the same `pconfig` and `chat_id` that the live adapter would, plus optional `thread_id`, `media_files`, and `force_document` keyword arguments. Returning `{"success": True, "message_id": ...}` is treated as a successful delivery; returning `{"error": "..."}` surfaces the message in cron's `delivery_errors`. Exceptions raised inside the function are caught by the dispatcher and reported as `Plugin standalone send failed: <reason>`. Reference implementations live in `plugins/platforms/{irc,teams,google_chat}/adapter.py`.
 
+### Enriching delivery metadata
+
+Cron jobs hand the delivery payload to your adapter's `send()` method along with a `metadata` dict. By default this is `{"thread_id": <id>}` (or `None` when no thread is set). If your adapter needs richer metadata — e.g., a webhook fallback that consumes `job_id`, `job_name`, run status, or the originating chat — override the optional `build_delivery_metadata` hook on `BasePlatformAdapter`:
+
+```python
+class MyAdapter(BasePlatformAdapter):
+    def build_delivery_metadata(
+        self,
+        job: Dict[str, Any],
+        status_hint: str = "ok",
+        base_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        meta = dict(base_metadata) if base_metadata else {}
+        meta.update({
+            "job_id": job.get("id", ""),
+            "job_name": job.get("name") or job.get("id", ""),
+            "status": status_hint,
+        })
+        return meta
+```
+
+The scheduler calls this in `cron.scheduler._deliver_result` after building the base metadata; the returned dict becomes the `metadata=` kwarg passed to your `adapter.send()`. The base-class default returns `base_metadata` unchanged, so adapters that don't care about cron-specific enrichment see no change. The call is exception-guarded — if your override raises, the scheduler logs a warning and falls back to `base_metadata`, mirroring the `_run_processing_hook` safety pattern.
+
+This hook is only invoked on the in-gateway live-adapter delivery path — i.e., when `cron.scheduler` resolves a `runtime_adapter` from the `adapters` dict and the gateway's event loop is running. The out-of-process `standalone_sender_fn` path (used when cron runs as a separate process from the gateway) still receives the existing `thread_id` / `media_files` / `force_document` keyword arguments and does not call `build_delivery_metadata`. If your adapter needs metadata enrichment in both paths, mirror the logic in your `standalone_sender_fn` implementation.
+
+`status_hint` is `"ok"` when the cron run succeeded and `"error"` when `run_job` reported failure; ignore it if you don't need it.
+
 ## Surfacing Env Vars in `hermes config`
 
 `hermes_cli/config.py` scans `plugins/platforms/*/plugin.yaml` at import time and auto-populates `OPTIONAL_ENV_VARS` from `requires_env` and (optional) `optional_env` blocks. Use the rich-dict form to contribute proper descriptions, prompts, password flags, and URLs — the CLI setup UI picks them up for free.

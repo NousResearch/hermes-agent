@@ -196,6 +196,14 @@ The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful
 
 Cron deliveries are NOT mirrored into gateway session conversation history. They exist only in the cron job's own session. This prevents message alternation violations in the target chat's conversation.
 
+### Adapter Metadata Enrichment
+
+Before calling `adapter.send(..., metadata=<dict>)`, the scheduler invokes the adapter's optional `build_delivery_metadata(job, status_hint, base_metadata)` hook on `BasePlatformAdapter`. Adapters override it to attach extra fields the platform's send/webhook path needs (e.g., `job_id`, `job_name`, `status`, `ran_at`); the base implementation returns `base_metadata` unchanged.
+
+`status_hint` is set by `tick()` to `"ok"` or `"error"` based on the run's success state. The hook call is wrapped in an exception guard — a misbehaving override logs a warning and falls back to `base_metadata`, mirroring the `BasePlatformAdapter._run_processing_hook` safety pattern. See [Adding Platform Adapters → Enriching delivery metadata](./adding-platform-adapters.md#enriching-delivery-metadata) for the override template.
+
+The hook only fires on the live-adapter delivery path inside the gateway process; cron deliveries that route through `standalone_sender_fn` (out-of-process, e.g., `hermes cron run` invoked separately from `hermes gateway`) continue to use the existing keyword-argument shape and bypass the hook.
+
 ## Recursion Guard
 
 Cron-run sessions have the `cronjob` toolset disabled. This prevents:

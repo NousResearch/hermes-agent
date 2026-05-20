@@ -599,6 +599,7 @@ class TestDeliverResultWrapping:
         from concurrent.futures import Future
 
         adapter = AsyncMock()
+        adapter.build_delivery_metadata = lambda **kw: kw.get('base_metadata') or {}
         adapter.send.return_value = MagicMock(success=True)
         adapter.send_voice.return_value = MagicMock(success=True)
 
@@ -650,6 +651,7 @@ class TestDeliverResultWrapping:
         from concurrent.futures import Future
 
         adapter = AsyncMock()
+        adapter.build_delivery_metadata = lambda **kw: kw.get('base_metadata') or {}
         adapter.send.return_value = MagicMock(success=True)
         adapter.send_image_file.return_value = MagicMock(success=True)
 
@@ -693,6 +695,7 @@ class TestDeliverResultWrapping:
         from concurrent.futures import Future
 
         adapter = AsyncMock()
+        adapter.build_delivery_metadata = lambda **kw: kw.get('base_metadata') or {}
         adapter.send_voice.return_value = MagicMock(success=True)
 
         pconfig = MagicMock()
@@ -737,6 +740,7 @@ class TestDeliverResultWrapping:
         from concurrent.futures import Future
 
         adapter = AsyncMock()
+        adapter.build_delivery_metadata = lambda **kw: kw.get('base_metadata') or {}
         adapter.send.return_value = MagicMock(success=True)
 
         pconfig = MagicMock()
@@ -2414,6 +2418,11 @@ class TestDeliverResultTimeoutCancelsFuture:
         )
         adapter = MagicMock()
         adapter.send = AsyncMock(return_value=send_result)
+        # Mirror BasePlatformAdapter.build_delivery_metadata default: return
+        # base_metadata unchanged. Without this, MagicMock auto-creates the
+        # attribute and the new metadata arg passed to adapter.send becomes a
+        # MagicMock instance instead of the expected {'thread_id': ...} dict.
+        adapter.build_delivery_metadata = lambda **kw: kw.get('base_metadata') or {}
 
         pconfig = MagicMock()
         pconfig.enabled = True
@@ -2454,6 +2463,155 @@ class TestDeliverResultTimeoutCancelsFuture:
             "Hello world",
             metadata={"thread_id": "7072"},
         )
+
+
+class TestDeliverResultBuildDeliveryMetadataHook:
+    """End-to-end tests that the live-adapter delivery path actually
+    routes through ``adapter.build_delivery_metadata(...)`` and forwards
+    its return value into ``adapter.send(metadata=...)``. Also exercises
+    the exception-guard fallback to ``base_metadata`` when the hook
+    raises.
+    """
+
+    def test_live_adapter_delivery_uses_build_delivery_metadata(self):
+        """The hook is called once with the expected kwargs and its
+        enriched return value is the exact ``metadata`` arg handed to
+        ``adapter.send``."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        enriched = {"thread_id": "456", "job_id": "j1", "status": "ok"}
+
+        send_result = SendResult(success=True, message_id="1")
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.build_delivery_metadata = MagicMock(return_value=enriched)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        completed_future = Future()
+        completed_future.set_result(send_result)
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        job = {
+            "id": "j1",
+            "name": "hook-job",
+            "deliver": "telegram:123:456",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        adapter.build_delivery_metadata.assert_called_once()
+        hook_kwargs = adapter.build_delivery_metadata.call_args.kwargs
+        assert hook_kwargs["job"] == job
+        assert hook_kwargs["status_hint"] == "ok"
+        assert hook_kwargs["base_metadata"] == {"thread_id": "456"}
+
+        adapter.send.assert_called_once()
+        send_kwargs = adapter.send.call_args.kwargs
+        assert send_kwargs["metadata"] == enriched
+
+    def test_live_adapter_delivery_metadata_hook_failure_falls_back_to_base_metadata(self):
+        """If the override raises, ``_deliver_result`` swallows the
+        exception, logs a warning, and still sends with the unenriched
+        ``base_metadata`` so the delivery completes."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(success=True, message_id="1")
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.build_delivery_metadata = MagicMock(
+            side_effect=RuntimeError("simulated")
+        )
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        completed_future = Future()
+        completed_future.set_result(send_result)
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        job = {
+            "id": "j2",
+            "name": "hook-failure-job",
+            "deliver": "telegram:123:789",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        adapter.build_delivery_metadata.assert_called_once()
+        adapter.send.assert_called_once()
+        send_kwargs = adapter.send.call_args.kwargs
+        assert send_kwargs["metadata"] == {"thread_id": "789"}
+
+    def test_tick_failed_run_forwards_status_hint_error(self, tmp_path):
+        """When ``run_job`` returns ``success=False``, ``tick()`` must
+        invoke ``_deliver_result`` with ``status_hint='error'`` so
+        adapter overrides can mark the run as failed."""
+        from cron.scheduler import tick
+
+        job = {
+            "id": "failed-job",
+            "name": "monitor",
+            "prompt": "do something",
+            "schedule": "every 1h",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "telegram",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+            "last_status": None,
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "boom")), \
+             patch("cron.scheduler._deliver_result") as deliver_mock:
+            tick(verbose=False)
+
+        deliver_mock.assert_called_once()
+        kwargs = deliver_mock.call_args.kwargs
+        assert kwargs["status_hint"] == "error"
 
 
 class TestSendMediaTimeoutCancelsFuture:

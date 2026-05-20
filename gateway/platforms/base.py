@@ -2466,6 +2466,45 @@ class BasePlatformAdapter(ABC):
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes."""
 
+    # ── Cron delivery metadata enrichment hook ─────────────────────────────
+    # Subclasses override to enrich metadata for cron-job deliveries (e.g.
+    # an adapter with an offline-delivery webhook may add job_id, job_name,
+    # status, ran_at, and origin so the webhook can reconstruct a
+    # run-complete payload). The cron scheduler calls this polymorphically
+    # so no per-platform branches are needed in scheduler code. Default
+    # returns base_metadata unchanged (or an empty dict if base_metadata
+    # is None).
+    def build_delivery_metadata(
+        self,
+        job: Dict[str, Any],
+        status_hint: str = "ok",
+        base_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Build the metadata kwarg for ``adapter.send()`` during cron delivery.
+
+        Args:
+            job: The cron job dict.
+            status_hint: ``'ok' | 'error'`` — run status forwarded by the
+                scheduler.
+            base_metadata: Pre-existing metadata (e.g. ``{"thread_id": ...}``).
+
+        Returns:
+            Default: a copy of ``base_metadata``, or ``None`` if
+            ``base_metadata`` is ``None``. Preserves the upstream pre-hook
+            behavior where adapters that don't override get
+            ``metadata=None`` when no metadata is configured.
+            Subclasses: enriched dict for their adapter's ``send()`` to
+            consume.
+
+        Note:
+            Sync (not async) because the cron scheduler dispatch path
+            calling this hook is synchronous. The neighboring
+            ``on_processing_start`` / ``on_processing_complete`` are
+            async because they're called from the gateway's async
+            message-processing loop.
+        """
+        return dict(base_metadata) if base_metadata is not None else None
+
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)

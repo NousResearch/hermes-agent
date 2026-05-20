@@ -87,3 +87,38 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_load_hermes_dotenv_respects_hermes_home_env(tmp_path, monkeypatch):
+    """Without an explicit hermes_home, load_hermes_dotenv must honor HERMES_HOME.
+
+    Regression test for issue #18060 — env_loader previously inlined the
+    fallback to ``Path.home() / ".hermes"`` and missed whitespace stripping
+    in HERMES_HOME, causing Docker/profile/test isolation to leak.
+    """
+    home = tmp_path / "custom-hermes"
+    home.mkdir()
+    (home / ".env").write_text("ISO_VAR=from-custom-home\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("ISO_VAR", raising=False)
+
+    loaded = load_hermes_dotenv()
+
+    assert loaded == [home / ".env"]
+    assert os.getenv("ISO_VAR") == "from-custom-home"
+
+
+def test_load_hermes_dotenv_strips_whitespace_in_hermes_home(tmp_path, monkeypatch):
+    """HERMES_HOME with surrounding whitespace must be stripped — regression #18060."""
+    home = tmp_path / "ws-home"
+    home.mkdir()
+    (home / ".env").write_text("WS_VAR=stripped-ok\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", f"  {home}  ")
+    monkeypatch.delenv("WS_VAR", raising=False)
+
+    loaded = load_hermes_dotenv()
+
+    assert loaded == [home / ".env"]
+    assert os.getenv("WS_VAR") == "stripped-ok"

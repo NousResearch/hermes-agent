@@ -15,7 +15,15 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-_HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+try:
+    from hermes_constants import get_hermes_home
+except ImportError:
+    def get_hermes_home() -> Path:  # type: ignore[misc]
+        val = os.environ.get("HERMES_HOME", "").strip()
+        return Path(val) if val else Path.home() / ".hermes"
+
+
+_HERMES_HOME = get_hermes_home()
 DATA_DIR = _HERMES_HOME / "skills" / "productivity" / "memento-flashcards" / "data"
 CARDS_FILE = DATA_DIR / "cards.json"
 

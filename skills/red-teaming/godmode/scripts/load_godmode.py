@@ -17,7 +17,14 @@ Usage in execute_code:
 import os, sys
 from pathlib import Path
 
-_gm_scripts_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "red-teaming" / "godmode" / "scripts"
+
+def _gm_resolve_hermes_home() -> Path:
+    """Mirror ``hermes_constants.get_hermes_home()`` for scripts loaded via exec()."""
+    val = os.environ.get("HERMES_HOME", "").strip()
+    return Path(val) if val else Path.home() / ".hermes"
+
+
+_gm_scripts_dir = _gm_resolve_hermes_home() / "skills" / "red-teaming" / "godmode" / "scripts"
 
 _gm_old_argv = sys.argv
 sys.argv = ["_godmode_loader"]
@@ -40,6 +47,7 @@ for _gm_script in ["parseltongue.py", "godmode_race.py", "auto_jailbreak.py"]:
 sys.argv = _gm_old_argv
 
 # Cleanup loader vars
-for _gm_cleanup in ['_gm_scripts_dir', '_gm_old_argv', '_gm_load', '_gm_ns', '_gm_k',
-                     '_gm_v', '_gm_script', '_gm_path', '_gm_cleanup']:
+for _gm_cleanup in ['_gm_resolve_hermes_home', '_gm_scripts_dir', '_gm_old_argv',
+                     '_gm_load', '_gm_ns', '_gm_k', '_gm_v', '_gm_script',
+                     '_gm_path', '_gm_cleanup']:
     globals().pop(_gm_cleanup, None)

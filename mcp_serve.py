@@ -61,11 +61,9 @@ except ImportError:
 
 def _get_sessions_dir() -> Path:
     """Return the sessions directory using HERMES_HOME."""
-    try:
-        from hermes_constants import get_hermes_home
-        return get_hermes_home() / "sessions"
-    except ImportError:
-        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "sessions"
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "sessions"
 
 
 def _get_session_db():
@@ -97,13 +95,9 @@ def _load_sessions_index() -> dict:
 
 def _load_channel_directory() -> dict:
     """Load the cached channel directory for available targets."""
-    try:
-        from hermes_constants import get_hermes_home
-        directory_file = get_hermes_home() / "channel_directory.json"
-    except ImportError:
-        directory_file = Path(
-            os.environ.get("HERMES_HOME", Path.home() / ".hermes")
-        ) / "channel_directory.json"
+    from hermes_constants import get_hermes_home
+
+    directory_file = get_hermes_home() / "channel_directory.json"
 
     if not directory_file.exists():
         return {}
@@ -361,11 +355,9 @@ class EventBridge:
             self._cached_sessions_index = _load_sessions_index()
 
         # Check if state.db has changed
-        try:
-            from hermes_constants import get_hermes_home
-            db_file = get_hermes_home() / "state.db"
-        except ImportError:
-            db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+        from hermes_constants import get_hermes_home
+
+        db_file = get_hermes_home() / "state.db"
 
         try:
             db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0

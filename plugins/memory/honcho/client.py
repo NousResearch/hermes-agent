@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from hermes_cli.profiles import _get_default_hermes_home
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -59,6 +58,24 @@ def resolve_global_config_path() -> Path:
     return Path.home() / ".honcho" / "config.json"
 
 
+def _get_default_root() -> Path:
+    """Return the Hermes root for the default profile via the already-stripped get_hermes_home().
+
+    Mirrors get_default_hermes_root() but avoids re-reading HERMES_HOME without
+    .strip(), so a whitespace-padded env var resolves correctly here too.
+    """
+    native_home = Path.home() / ".hermes"
+    home = get_hermes_home()
+    try:
+        home.resolve().relative_to(native_home.resolve())
+        return native_home
+    except ValueError:
+        pass
+    if home.parent.name == "profiles":
+        return home.parent.parent
+    return home
+
+
 def resolve_config_path() -> Path:
     """Return the active Honcho config path.
 
@@ -73,8 +90,10 @@ def resolve_config_path() -> Path:
     if local_path.exists():
         return local_path
 
-    # Default profile's config — host blocks accumulate here via setup/clone
-    default_path = _get_default_hermes_home() / "honcho.json"
+    # Default profile's config — host blocks accumulate here via setup/clone.
+    # Use _get_default_root() so Docker (HERMES_HOME=/data) and custom
+    # deployments resolve to their own root, not the host's ~/.hermes.
+    default_path = _get_default_root() / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
 

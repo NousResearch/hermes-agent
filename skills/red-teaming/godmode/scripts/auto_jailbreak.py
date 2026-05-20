@@ -26,6 +26,13 @@ try:
 except ImportError:
     OpenAI = None
 
+
+def _resolve_hermes_home() -> Path:
+    """Mirror ``hermes_constants.get_hermes_home()`` for scripts loaded via exec()."""
+    val = os.environ.get("HERMES_HOME", "").strip()
+    return Path(val) if val else Path.home() / ".hermes"
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Load sibling modules
 # ═══════════════════════════════════════════════════════════════════
@@ -35,7 +42,7 @@ try:
     _SKILL_DIR = Path(__file__).resolve().parent.parent
 except NameError:
     # __file__ not defined when loaded via exec() — search standard paths
-    _SKILL_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "red-teaming" / "godmode"
+    _SKILL_DIR = _resolve_hermes_home() / "skills" / "red-teaming" / "godmode"
 
 _SCRIPTS_DIR = _SKILL_DIR / "scripts"
 _TEMPLATES_DIR = _SKILL_DIR / "templates"
@@ -57,7 +64,7 @@ if _race_path.exists():
 # Hermes config paths
 # ═══════════════════════════════════════════════════════════════════
 
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+HERMES_HOME = _resolve_hermes_home()
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 PREFILL_PATH = HERMES_HOME / "prefill.json"
 

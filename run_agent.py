@@ -2434,9 +2434,14 @@ class AIAgent:
         # "encrypted_content": ...}`` dicts) on reasoning-only turns; without
         # this branch, an Anthropic-family fallback after a Codex empty turn
         # ends up sending an assistant scaffold that Anthropic rejects with
-        # "does not support assistant message prefill" (#29205).
+        # "does not support assistant message prefill" (#29205). Require at
+        # least one reasoning item so non-reasoning junk in the list does not
+        # trip the predicate.
         cri = msg.get("codex_reasoning_items")
-        if isinstance(cri, list) and cri:
+        if isinstance(cri, list) and any(
+            isinstance(item, dict) and item.get("type") == "reasoning"
+            for item in cri
+        ):
             return True
         return False
 

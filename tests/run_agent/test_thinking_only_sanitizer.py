@@ -141,6 +141,17 @@ class TestIsThinkingOnlyAssistant:
         }
         assert not AIAgent._is_thinking_only_assistant(msg)
 
+    def test_codex_reasoning_items_without_reasoning_type_is_not_thinking_only(self):
+        # Junk items (non-dicts, or dicts whose type is not "reasoning") must
+        # not trip the predicate — there is nothing to justify dropping the
+        # turn as reasoning-only.
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [None, "x", {"type": "other"}],
+        }
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
     def test_user_message_never_thinking_only(self):
         assert not AIAgent._is_thinking_only_assistant({"role": "user", "content": ""})
 

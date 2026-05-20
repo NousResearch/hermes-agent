@@ -2,6 +2,31 @@
 
 Production deployment of llama.cpp server with OpenAI-compatible API.
 
+## Direct from Hugging Face Hub
+
+Prefer the model repo's local-app page first:
+
+```text
+https://huggingface.co/<repo>?local-app=llama.cpp
+```
+
+If the page shows an exact snippet, copy it. If not, use one of these forms:
+
+```bash
+# Choose a quant label directly from the Hub repo
+llama-server -hf bartowski/Llama-3.2-3B-Instruct-GGUF:Q8_0
+```
+
+```bash
+# Pin an exact GGUF file from the repo tree
+llama-server \
+    --hf-repo microsoft/Phi-3-mini-4k-instruct-gguf \
+    --hf-file Phi-3-mini-4k-instruct-q4.gguf \
+    -c 4096
+```
+
+Use the file-specific form when the repo has custom naming or when you already extracted the exact filename from the tree API.
+
 ## Server Modes
 
 ### llama-server

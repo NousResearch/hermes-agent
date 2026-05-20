@@ -1,5 +1,5 @@
 ---
-sidebar_position: 4
+sidebar_position: 5
 title: "Using Hermes as a Python Library"
 description: "Embed AIAgent in your own Python scripts, web apps, or automation pipelines — no CLI required"
 ---
@@ -81,7 +81,8 @@ print(f"Messages exchanged: {len(result['messages'])}")
 The returned dictionary contains:
 - **`final_response`** — The agent's final text reply
 - **`messages`** — The complete message history (system, user, assistant, tool calls)
-- **`task_id`** — The task identifier used for VM isolation
+
+(The `task_id` you pass in is stored on the agent instance for VM isolation but isn't echoed back in the return dict.)
 
 You can also pass a custom system message that overrides the ephemeral system prompt for that call:
 

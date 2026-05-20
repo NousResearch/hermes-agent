@@ -14,6 +14,8 @@
 | Random dark holes in output | Font missing Unicode glyphs | Validate palettes at init |
 | Audio-visual desync | Frame timing accumulation | Use integer frame counter, compute t fresh each frame |
 | Single-color flat output | Hue field shape mismatch | Ensure h,s,v arrays all (rows,cols) before hsv2rgb |
+| Text unreadable over busy bg | No contrast between text and background | Use `apply_text_backdrop()` (composition.md) + `reverse_vignette` shader (shaders.md) |
+| Text garbled/mirrored | Kaleidoscope or mirror shader applied to text scene | **Never apply kaleidoscope, mirror_h/v/quad/diag to scenes with readable text** — radial folding destroys legibility. Apply these only to background layers or text-free scenes |
 
 Common bugs, gotchas, and platform-specific issues encountered during ASCII video development.
 

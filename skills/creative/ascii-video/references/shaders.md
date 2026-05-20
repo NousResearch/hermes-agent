@@ -834,6 +834,39 @@ def sh_vignette(c, s=0.22):
     return np.clip(c * _vig_cache[k][:,:,None], 0, 255).astype(np.uint8)
 ```
 
+#### Reverse Vignette
+
+Inverted vignette: darkens the **center** and leaves edges bright. Useful when text is centered over busy backgrounds — creates a natural dark zone for readability without a hard-edged box.
+
+Combine with `apply_text_backdrop()` (see composition.md) for per-frame glyph-aware darkening.
+
+```python
+_rvignette_cache = {}
+
+def sh_reverse_vignette(c, strength=0.5):
+    """Center darkening, edge brightening. Cached."""
+    k = ('rv', c.shape[0], c.shape[1], round(strength, 2))
+    if k not in _rvignette_cache:
+        h, w = c.shape[:2]
+        Y = np.linspace(-1, 1, h)[:, None]
+        X = np.linspace(-1, 1, w)[None, :]
+        d = np.sqrt(X**2 + Y**2)
+        # Invert: bright at edges, dark at center
+        mask = np.clip(1.0 - (1.0 - d * 0.7) * strength, 0.2, 1.0)
+        _rvignette_cache[k] = mask[:, :, np.newaxis].astype(np.float32)
+    return np.clip(c.astype(np.float32) * _rvignette_cache[k], 0, 255).astype(np.uint8)
+```
+
+| Param | Default | Effect |
+|-------|---------|--------|
+| `strength` | 0.5 | 0 = no effect, 1.0 = center nearly black |
+
+Add to ShaderChain dispatch:
+```python
+elif name == "reverse_vignette":
+    return sh_reverse_vignette(canvas, kwargs.get("strength", 0.5))
+```
+
 #### Contrast
 ```python
 def sh_contrast(c, factor=1.3):

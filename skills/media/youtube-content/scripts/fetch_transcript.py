@@ -48,7 +48,11 @@ def format_timestamp(seconds: float) -> str:
 
 
 def fetch_transcript(video_id: str, languages: list = None):
-    """Fetch transcript segments from YouTube."""
+    """Fetch transcript segments from YouTube.
+
+    Returns a list of dicts with 'text', 'start', and 'duration' keys.
+    Compatible with youtube-transcript-api v1.x.
+    """
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
@@ -56,9 +60,17 @@ def fetch_transcript(video_id: str, languages: list = None):
               file=sys.stderr)
         sys.exit(1)
 
+    api = YouTubeTranscriptApi()
     if languages:
-        return YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
-    return YouTubeTranscriptApi.get_transcript(video_id)
+        result = api.fetch(video_id, languages=languages)
+    else:
+        result = api.fetch(video_id)
+
+    # v1.x returns FetchedTranscriptSnippet objects; normalize to dicts
+    return [
+        {"text": seg.text, "start": seg.start, "duration": seg.duration}
+        for seg in result
+    ]
 
 
 def main():

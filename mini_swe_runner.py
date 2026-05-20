@@ -38,9 +38,29 @@ from typing import List, Dict, Any, Optional, Literal
 
 import fire
 from dotenv import load_dotenv
+from agent.tool_dispatch_helpers import make_tool_result_message
 
 # Load environment variables
 load_dotenv()
+
+
+def _effective_temperature_for_model(
+    model: str,
+    base_url: Optional[str] = None,
+) -> Optional[float]:
+    """Return a fixed temperature for models with strict sampling contracts.
+
+    Returns ``None`` when the model manages temperature server-side (Kimi);
+    callers must omit the ``temperature`` kwarg entirely in that case.
+    """
+    try:
+        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
+    except Exception:
+        return None
+    result = _fixed_temperature_for_model(model, base_url)
+    if result is OMIT_TEMPERATURE:
+        return None  # caller must omit temperature
+    return result
 
 
 
@@ -217,7 +237,7 @@ class MiniSWERunner:
         # Tool definition
         self.tools = [TERMINAL_TOOL_DEFINITION]
         
-        print(f"🤖 Mini-SWE Runner initialized")
+        print("🤖 Mini-SWE Runner initialized")
         print(f"   Model: {self.model}")
         print(f"   Environment: {self.env_type}")
         if self.env_type != "local":
@@ -233,7 +253,7 @@ class MiniSWERunner:
             cwd=self.cwd,
             timeout=self.command_timeout
         )
-        print(f"✅ Environment ready")
+        print("✅ Environment ready")
     
     def _cleanup_env(self):
         """Cleanup the execution environment."""
@@ -365,7 +385,7 @@ class MiniSWERunner:
                         except (json.JSONDecodeError, AttributeError):
                             pass
                         
-                        tool_response = f"<tool_response>\n"
+                        tool_response = "<tool_response>\n"
                         tool_response += json.dumps({
                             "tool_call_id": tool_msg.get("tool_call_id", ""),
                             "name": msg["tool_calls"][len(tool_responses)]["function"]["name"] \
@@ -442,12 +462,20 @@ Complete the user's task step by step."""
                 
                 # Make API call
                 try:
-                    response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=api_messages,
-                        tools=self.tools,
-                        timeout=300.0
+                    api_kwargs = {
+                        "model": self.model,
+                        "messages": api_messages,
+                        "tools": self.tools,
+                        "timeout": 300.0,
+                    }
+                    fixed_temperature = _effective_temperature_for_model(
+                        self.model,
+                        str(getattr(self.client, "base_url", "") or ""),
                     )
+                    if fixed_temperature is not None:
+                        api_kwargs["temperature"] = fixed_temperature
+
+                    response = self.client.chat.completions.create(**api_kwargs)
                 except Exception as e:
                     self.logger.error(f"API call failed: {e}")
                     break
@@ -505,15 +533,13 @@ Complete the user's task step by step."""
                         
                         # Check for task completion signal
                         if "MINI_SWE_AGENT_FINAL_OUTPUT" in result["output"]:
-                            print(f"   ✅ Task completion signal detected!")
+                            print("   ✅ Task completion signal detected!")
                             completed = True
                         
                         # Add tool response
-                        messages.append({
-                            "role": "tool",
-                            "content": result_json,
-                            "tool_call_id": tc.id
-                        })
+                        messages.append(make_tool_result_message(
+                            tc.function.name, result_json, tc.id,
+                        ))
                         
                         print(f"   ✅ exit_code={result['exit_code']}, output={len(result['output'])} chars")
                     
@@ -530,7 +556,7 @@ Complete the user's task step by step."""
                         "content": final_response
                     })
                     completed = True
-                    print(f"🎉 Agent finished (no more tool calls)")
+                    print("🎉 Agent finished (no more tool calls)")
                     break
             
             if api_call_count >= self.max_iterations:

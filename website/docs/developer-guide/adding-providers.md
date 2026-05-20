@@ -28,7 +28,7 @@ A built-in provider has to line up across a few layers:
    - `api_key`
    - `source`
 3. `run_agent.py` uses `api_mode` to decide how requests are built and sent.
-4. `hermes_cli/models.py`, `hermes_cli/main.py`, and `hermes_cli/setup.py` make the provider show up in the CLI.
+4. `hermes_cli/models.py` and `hermes_cli/main.py` make the provider show up in the CLI. (`hermes_cli/setup.py` delegates to `main.py` automatically — no changes needed there.)
 5. `agent/auxiliary_client.py` and `agent/model_metadata.py` keep side tasks and token budgeting working.
 
 The important abstraction is `api_mode`.
@@ -78,17 +78,60 @@ This path includes everything from Path A plus:
 2. `hermes_cli/models.py`
 3. `hermes_cli/runtime_provider.py`
 4. `hermes_cli/main.py`
-5. `hermes_cli/setup.py`
-6. `agent/auxiliary_client.py`
-7. `agent/model_metadata.py`
-8. tests
-9. user-facing docs under `website/docs/`
+5. `agent/auxiliary_client.py`
+6. `agent/model_metadata.py`
+7. tests
+8. user-facing docs under `website/docs/`
+
+:::tip
+`hermes_cli/setup.py` does **not** need changes. The setup wizard delegates provider/model selection to `select_provider_and_model()` in `main.py` — any provider added there is automatically available in `hermes setup`.
+:::
 
 ### Additional for native / non-OpenAI providers
 
 10. `agent/<provider>_adapter.py`
 11. `run_agent.py`
 12. `pyproject.toml` if a provider SDK is required
+
+## Fast path: Simple API-key providers
+
+If your provider is just an OpenAI-compatible endpoint that authenticates with a single API key, you do not need to touch `auth.py`, `runtime_provider.py`, `main.py`, or any of the other files in the full checklist below.
+
+All you need is:
+
+1. A plugin directory under `plugins/model-providers/<your-provider>/` containing:
+   - `__init__.py` — calls `register_provider(profile)` at module-level
+   - `plugin.yaml` — manifest (name, kind: model-provider, version, description)
+2. That's it. Provider plugins auto-load the first time anything calls `get_provider_profile()` or `list_providers()` — bundled plugins (this repo) and user plugins at `$HERMES_HOME/plugins/model-providers/` both get picked up.
+
+When you add a plugin and it calls `register_provider()`, the following wire up automatically:
+
+1. `PROVIDER_REGISTRY` entry in `auth.py` (credential resolution, env-var lookup)
+2. `api_mode` set to `chat_completions`
+3. `base_url` sourced from the config or the declared env var
+4. `env_vars` checked in priority order for the API key
+5. `fallback_models` list registered for the provider
+6. `--provider` CLI flag accepts the provider id
+7. `hermes model` menu includes the provider
+8. `hermes setup` wizard delegates to `main.py` automatically
+9. `provider:model` alias syntax works
+10. Runtime resolver returns the correct `base_url` and `api_key`
+11. `HERMES_INFERENCE_PROVIDER` env-var override accepts the provider id
+12. Fallback model activation can switch into the provider cleanly
+
+User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override bundled plugins of the same name (last-writer-wins in `register_provider()`) — so third parties can monkey-patch or replace any built-in profile without editing the repo.
+
+See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a template, and the full [Model Provider Plugin guide](/docs/developer-guide/model-provider-plugin) for field reference, hook idioms, and end-to-end examples.
+
+## Full path: OAuth and complex providers
+
+Use the full checklist below when your provider needs any of the following:
+
+- OAuth or token refresh (Nous Portal, Codex, Google Gemini, Qwen Portal, Copilot)
+- A non-OpenAI API shape that requires a new adapter (Anthropic Messages, Codex Responses)
+- Custom endpoint detection or multi-region probing (z.ai, Kimi)
+- A curated static model catalog or live `/models` fetch
+- Provider-specific `hermes model` menu entries with bespoke auth flows
 
 ## Step 1: Pick one canonical provider id
 
@@ -185,29 +228,22 @@ If the provider is OpenAI-compatible, `api_mode` should usually stay `chat_compl
 
 Be careful with API-key precedence. Hermes already contains logic to avoid leaking an OpenRouter key to unrelated endpoints. A new provider should be equally explicit about which key goes to which base URL.
 
-## Step 5: Wire the CLI in `hermes_cli/main.py` and `hermes_cli/setup.py`
+## Step 5: Wire the CLI in `hermes_cli/main.py`
 
-A provider is not discoverable until it shows up in the interactive flows.
+A provider is not discoverable until it shows up in the interactive `hermes model` flow.
 
-Update:
+Update these in `hermes_cli/main.py`:
 
-### `hermes_cli/main.py`
-
-- `provider_labels`
-- provider dispatch inside the `model` command
+- `provider_labels` dict
+- `providers` list in `select_provider_and_model()`
+- provider dispatch (`if selected_provider == ...`)
 - `--provider` argument choices
 - login/logout choices if the provider supports those flows
 - a `_model_flow_<provider>()` function, or reuse `_model_flow_api_key_provider()` if it fits
 
-### `hermes_cli/setup.py`
-
-- `provider_choices`
-- auth branch for the provider
-- model-selection branch
-- any provider-specific explanatory text
-- any place where a provider should be excluded from OpenRouter-only prompts or routing settings
-
-If you only update one of these files, `hermes model` and `hermes setup` will drift.
+:::tip
+`hermes_cli/setup.py` does not need changes — it calls `select_provider_and_model()` from `main.py`, so your new provider appears in both `hermes model` and `hermes setup` automatically.
+:::
 
 ## Step 6: Keep auxiliary calls working
 
@@ -257,7 +293,7 @@ Search for `api_mode` and audit every switch point. At minimum, verify:
 - `__init__` chooses the new `api_mode`
 - client construction works for the provider
 - `_build_api_kwargs()` knows how to format requests
-- `_api_call_with_interrupt()` dispatches to the right client call
+- `_interruptible_api_call()` dispatches to the right client call
 - interrupt / client rebuild paths work
 - response validation accepts the provider's shape
 - finish-reason extraction is correct
@@ -353,8 +389,7 @@ Use this if the provider is standard chat completions.
 - [ ] aliases added in `hermes_cli/auth.py` and `hermes_cli/models.py`
 - [ ] model catalog added in `hermes_cli/models.py`
 - [ ] runtime branch added in `hermes_cli/runtime_provider.py`
-- [ ] CLI wiring added in `hermes_cli/main.py`
-- [ ] setup wiring added in `hermes_cli/setup.py`
+- [ ] CLI wiring added in `hermes_cli/main.py` (setup.py inherits automatically)
 - [ ] aux model added in `agent/auxiliary_client.py`
 - [ ] context lengths added in `agent/model_metadata.py`
 - [ ] runtime / CLI tests updated
@@ -412,7 +447,7 @@ If you are hunting for all the places a provider touches, search these symbols:
 - `_PROVIDER_MODELS`
 - `resolve_runtime_provider`
 - `_model_flow_`
-- `provider_choices`
+- `select_provider_and_model`
 - `api_mode`
 - `_API_KEY_PROVIDER_AUX_MODELS`
 - `self.client.`

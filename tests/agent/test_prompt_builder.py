@@ -5,23 +5,31 @@ import importlib
 import logging
 import sys
 
+import pytest
+
 from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
     _parse_skill_file,
-    _read_skill_conditions,
     _skill_should_show,
     _find_hermes_md,
     _find_git_root,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
+    build_nous_subscription_prompt,
     build_context_files_prompt,
+    build_environment_hints,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    TOOL_USE_ENFORCEMENT_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_MODELS,
+    OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
+    WSL_ENVIRONMENT_HINT,
 )
+from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
 
 # =========================================================================
@@ -192,7 +200,7 @@ class TestParseSkillFile:
         )
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             is_compat, _, _ = _parse_skill_file(skill_file)
         assert is_compat is False
@@ -233,6 +241,14 @@ class TestPromptBuilderImports:
 
 
 class TestBuildSkillsSystemPrompt:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        """Ensure the in-process skills prompt cache doesn't leak between tests."""
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
     def test_empty_when_no_skills_dir(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         result = build_skills_system_prompt()
@@ -283,7 +299,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             result = build_skills_system_prompt()
 
@@ -302,7 +318,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             result = build_skills_system_prompt()
 
@@ -330,13 +346,31 @@ class TestBuildSkillsSystemPrompt:
         from unittest.mock import patch
 
         with patch(
-            "tools.skills_tool._get_disabled_skill_names",
+            "agent.prompt_builder.get_disabled_skill_names",
             return_value={"old-tool"},
         ):
             result = build_skills_system_prompt()
 
         assert "web-search" in result
         assert "old-tool" not in result
+
+    def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: cached-skill\ndescription: Cached skill\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "cached-skill" in first
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  disabled: [cached-skill]\n"
+        )
+
+        second = build_skills_system_prompt()
+        assert "cached-skill" not in second
 
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -395,6 +429,62 @@ class TestBuildSkillsSystemPrompt:
         assert "backend-skill" in result
 
 
+class TestBuildNousSubscriptionPrompt:
+    def test_includes_active_subscription_features(self, monkeypatch):
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.get_nous_subscription_features",
+            lambda config=None: NousSubscriptionFeatures(
+                subscribed=True,
+                nous_auth_present=True,
+                provider_is_nous=True,
+                features={
+                    "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
+                    "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
+                    "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
+                    "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
+                    "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
+                },
+            ),
+        )
+
+        prompt = build_nous_subscription_prompt({"web_search", "browser_navigate"})
+
+        assert "Browser Use" in prompt
+        assert "Modal execution is optional" in prompt
+        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys" in prompt
+
+    def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.get_nous_subscription_features",
+            lambda config=None: NousSubscriptionFeatures(
+                subscribed=False,
+                nous_auth_present=False,
+                provider_is_nous=False,
+                features={
+                    "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                    "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                    "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                    "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
+                    "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),
+                },
+            ),
+        )
+
+        prompt = build_nous_subscription_prompt({"image_generate"})
+
+        assert "suggest Nous subscription as one option" in prompt
+        assert "Do not mention subscription unless" in prompt
+
+    def test_feature_flag_off_returns_empty_prompt(self, monkeypatch):
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: False)
+
+        prompt = build_nous_subscription_prompt({"web_search"})
+
+        assert prompt == ""
+
+
 # =========================================================================
 # Context files prompt builder
 # =========================================================================
@@ -409,7 +499,7 @@ class TestBuildContextFilesPrompt:
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Project Context" in result
-        assert "# Hermes ☤" in result
+        assert "Hermes Agent" in result
 
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
@@ -464,14 +554,15 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "ESLint" in result
 
-    def test_recursive_agents_md(self, tmp_path):
+    def test_agents_md_top_level_only(self, tmp_path):
+        """AGENTS.md is loaded from cwd only — subdirectory copies are ignored."""
         (tmp_path / "AGENTS.md").write_text("Top level instructions.")
         sub = tmp_path / "src"
         sub.mkdir()
         (sub / "AGENTS.md").write_text("Src-specific instructions.")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Top level" in result
-        assert "Src-specific" in result
+        assert "Src-specific" not in result
 
     # --- .hermes.md / HERMES.md discovery ---
 
@@ -560,9 +651,17 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Lowercase claude rules" in result
 
+    @pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="APFS default volume is case-insensitive; CLAUDE.md and claude.md alias the same path",
+    )
     def test_claude_md_uppercase_takes_priority(self, tmp_path):
-        (tmp_path / "CLAUDE.md").write_text("From uppercase.")
-        (tmp_path / "claude.md").write_text("From lowercase.")
+        uppercase = tmp_path / "CLAUDE.md"
+        lowercase = tmp_path / "claude.md"
+        uppercase.write_text("From uppercase.")
+        lowercase.write_text("From lowercase.")
+        if uppercase.samefile(lowercase):
+            pytest.skip("filesystem is case-insensitive")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "From uppercase" in result
         assert "From lowercase" not in result
@@ -689,66 +788,170 @@ class TestPromptBuilderConstants:
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
+        assert "api_server" in PLATFORM_HINTS
+        assert "webui" in PLATFORM_HINTS
+
+    def test_cli_hint_does_not_suggest_media_tags(self):
+        # Regression: MEDIA:/path tags are intercepted only by messaging
+        # gateway platforms. On the CLI they render as literal text and
+        # confuse users. The CLI hint must steer the agent away from them.
+        cli_hint = PLATFORM_HINTS["cli"]
+        assert "MEDIA:" in cli_hint, (
+            "CLI hint should mention MEDIA: in order to tell the agent "
+            "NOT to use it (negative guidance)."
+        )
+        # Must contain explicit "don't" language near the MEDIA reference.
+        assert any(
+            marker in cli_hint.lower()
+            for marker in ("do not emit media", "not intercepted", "do not", "don't")
+        ), "CLI hint should explicitly discourage MEDIA: tags."
+        # Messaging hints should still advertise MEDIA: positively (sanity
+        # check that this test is calibrated correctly).
+        assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
+
+    def test_platform_hints_mattermost(self):
+        hint = PLATFORM_HINTS["mattermost"]
+        assert "Mattermost" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_matrix(self):
+        hint = PLATFORM_HINTS["matrix"]
+        assert "Matrix" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_feishu(self):
+        hint = PLATFORM_HINTS["feishu"]
+        assert "Feishu" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_webui(self):
+        hint = PLATFORM_HINTS["webui"]
+        assert "WebUI" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+        assert "absolute" in hint
+
+
+# =========================================================================
+# Environment hints
+# =========================================================================
+
+class TestEnvironmentHints:
+    def test_wsl_hint_constant_mentions_mnt(self):
+        assert "/mnt/c/" in WSL_ENVIRONMENT_HINT
+        assert "WSL" in WSL_ENVIRONMENT_HINT
+
+    def test_build_environment_hints_on_wsl(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "/mnt/" in result
+        assert "WSL" in result
+        # WSL block still carries the always-on host info ahead of it.
+        assert "User home directory:" in result
+
+    def test_build_environment_hints_on_linux_local(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys, platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert result != ""
+        assert "Host: Linux" in result
+        assert "6.8.0-generic" in result
+        assert "User home directory:" in result
+        assert "Current working directory:" in result
+        # Linux must NOT get the Windows-specific callouts.
+        assert "PowerShell" not in result
+        assert "hostname" not in result
+        assert "WSL" not in result
+
+    def test_build_environment_hints_on_windows_local(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host: Windows" in result
+        assert "User home directory:" in result
+        # Two Windows-specific callouts that must ALWAYS appear together:
+        # hostname warning + bash-not-PowerShell warning.
+        assert "hostname" in result
+        assert "NOT the username" in result
+        assert "bash" in result
+        assert "PowerShell" in result
+
+    def test_build_environment_hints_on_macos_local(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host: macOS" in result
+        assert "User home directory:" in result
+        # macOS must NOT get the Windows-specific callouts.
+        assert "PowerShell" not in result
+        assert "hostname" not in result
+
+    def test_build_environment_hints_suppresses_host_on_docker_backend(self, monkeypatch):
+        """Docker/remote backends must hide host info — the agent can only touch the backend."""
+        import agent.prompt_builder as _pb
+        import sys
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        # Force the probe to fail so we exercise the static fallback path
+        # deterministically (the live probe would try to spin up docker).
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: None)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        # Host suppression: none of the local-backend lines should appear.
+        assert "Host: Windows" not in result
+        assert "User home directory:" not in result
+        assert "PowerShell" not in result
+        # Backend info must appear instead.
+        assert "Terminal backend: docker" in result
+        assert "inside" in result.lower()
+
+    def test_build_environment_hints_uses_live_probe_when_available(self, monkeypatch):
+        """When the probe succeeds, its output must appear in the hint block."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        fake_probe_output = "  OS: Linux 6.8.0\n  User: root\n  Home: /root\n  Working directory: /workspace"
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: fake_probe_output)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Terminal backend: modal" in result
+        assert "Linux 6.8.0" in result
+        assert "/workspace" in result
+
+    def test_remote_backend_list_covers_known_sandboxes(self):
+        """Regression guard: if someone adds a remote backend, they must list it here."""
+        import agent.prompt_builder as _pb
+        for backend in ("docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox"):
+            assert backend in _pb._REMOTE_TERMINAL_BACKENDS, (
+                f"{backend!r} must be in _REMOTE_TERMINAL_BACKENDS so its host "
+                f"info is suppressed in the system prompt"
+            )
 
 
 # =========================================================================
 # Conditional skill activation
 # =========================================================================
-
-class TestReadSkillConditions:
-    def test_no_conditions_returns_empty_lists(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: test\ndescription: A skill\n---\n")
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == []
-        assert conditions["requires_toolsets"] == []
-        assert conditions["fallback_for_tools"] == []
-        assert conditions["requires_tools"] == []
-
-    def test_reads_fallback_for_toolsets(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: ddg\ndescription: DuckDuckGo\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == ["web"]
-
-    def test_reads_requires_toolsets(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["requires_toolsets"] == ["terminal"]
-
-    def test_reads_multiple_conditions(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: test\ndescription: Test\nmetadata:\n  hermes:\n    fallback_for_toolsets: [browser]\n    requires_tools: [terminal]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == ["browser"]
-        assert conditions["requires_tools"] == ["terminal"]
-
-    def test_missing_file_returns_empty(self, tmp_path):
-        conditions = _read_skill_conditions(tmp_path / "missing.md")
-        assert conditions == {}
-
-    def test_logs_condition_read_failures_and_returns_empty(self, tmp_path, monkeypatch, caplog):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: broken\n---\n")
-
-        def boom(*args, **kwargs):
-            raise OSError("read exploded")
-
-        monkeypatch.setattr(type(skill_file), "read_text", boom)
-        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
-            conditions = _read_skill_conditions(skill_file)
-
-        assert conditions == {}
-        assert "Failed to read skill conditions" in caplog.text
-        assert str(skill_file) in caplog.text
-
 
 class TestSkillShouldShow:
     def test_no_filter_info_always_shows(self):
@@ -803,6 +1006,13 @@ class TestSkillShouldShow:
 
 
 class TestBuildSkillsSystemPromptConditional:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
     def test_fallback_skill_hidden_when_primary_available(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
@@ -878,3 +1088,110 @@ class TestBuildSkillsSystemPromptConditional:
         )
         result = build_skills_system_prompt()
         assert "duckduckgo" in result
+
+    def test_null_metadata_does_not_crash(self, monkeypatch, tmp_path):
+        """Regression: metadata key present but null should not AttributeError."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "general" / "safe-skill"
+        skill_dir.mkdir(parents=True)
+        # YAML `metadata:` with no value parses as {"metadata": None}
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: safe-skill\ndescription: Survives null metadata\nmetadata:\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "safe-skill" in result
+
+    def test_null_hermes_under_metadata_does_not_crash(self, monkeypatch, tmp_path):
+        """Regression: metadata.hermes present but null should not crash."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "general" / "nested-null"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: nested-null\ndescription: Null hermes key\nmetadata:\n  hermes:\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "nested-null" in result
+
+
+# =========================================================================
+# Tool-use enforcement guidance
+# =========================================================================
+
+
+class TestToolUseEnforcementGuidance:
+    def test_guidance_mentions_tool_calls(self):
+        assert "tool call" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+
+    def test_guidance_forbids_description_only(self):
+        assert "describe" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "promise" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+
+    def test_guidance_requires_action(self):
+        assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+
+    def test_enforcement_models_includes_gpt(self):
+        assert "gpt" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_codex(self):
+        assert "codex" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_grok(self):
+        assert "grok" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_qwen(self):
+        assert "qwen" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_deepseek(self):
+        assert "deepseek" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_is_tuple(self):
+        assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
+
+
+class TestOpenAIModelExecutionGuidance:
+    """Tests for GPT/Codex-specific execution discipline guidance."""
+
+    def test_guidance_covers_tool_persistence(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "tool_persistence" in text
+        assert "retry" in text
+        assert "empty" in text or "partial" in text
+
+    def test_guidance_covers_prerequisite_checks(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "prerequisite" in text
+        assert "dependency" in text
+
+    def test_guidance_covers_verification(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "verification" in text or "verify" in text
+        assert "correctness" in text
+
+    def test_guidance_covers_missing_context(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "missing_context" in text or "missing context" in text
+        assert "hallucinate" in text or "guess" in text
+
+    def test_guidance_uses_xml_tags(self):
+        assert "<tool_persistence>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "</tool_persistence>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "<verification>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "</verification>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+
+    def test_guidance_is_string(self):
+        assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)
+        assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
+
+
+# =========================================================================
+# Budget warning history stripping
+# =========================================================================
+
+
+

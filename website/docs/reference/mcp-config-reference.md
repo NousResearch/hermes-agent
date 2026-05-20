@@ -28,6 +28,7 @@ mcp_servers:
     enabled: true
     timeout: 120
     connect_timeout: 60
+    supports_parallel_tool_calls: false
     tools:
       include: []
       exclude: []
@@ -47,7 +48,10 @@ mcp_servers:
 | `enabled` | bool | both | Skip the server entirely when false |
 | `timeout` | number | both | Tool call timeout |
 | `connect_timeout` | number | both | Initial connection timeout |
+| `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
 | `tools` | mapping | both | Filtering and utility-tool policy |
+| `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
+| `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 
 ## `tools` policy keys
 
@@ -213,3 +217,33 @@ Utility tools follow the same prefixing pattern:
 - `mcp_<server>_read_resource`
 - `mcp_<server>_list_prompts`
 - `mcp_<server>_get_prompt`
+
+### Name sanitization
+
+Hyphens (`-`) and dots (`.`) in both server names and tool names are replaced with underscores before registration. This ensures tool names are valid identifiers for LLM function-calling APIs.
+
+For example, a server named `my-api` exposing a tool called `list-items.v2` becomes:
+
+```text
+mcp_my_api_list_items_v2
+```
+
+Keep this in mind when writing `include` / `exclude` filters — use the **original** MCP tool name (with hyphens/dots), not the sanitized version.
+
+## OAuth 2.1 authentication
+
+For HTTP servers that require OAuth, set `auth: oauth` on the server entry:
+
+```yaml
+mcp_servers:
+  protected_api:
+    url: "https://mcp.example.com/mcp"
+    auth: oauth
+```
+
+Behavior:
+- Hermes uses the MCP SDK's OAuth 2.1 PKCE flow (metadata discovery, dynamic client registration, token exchange, and refresh)
+- On first connect, a browser window opens for authorization
+- Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` and reused across sessions
+- Token refresh is automatic; re-authorization only happens when refresh fails
+- Only applies to HTTP/StreamableHTTP transport (`url`-based servers)

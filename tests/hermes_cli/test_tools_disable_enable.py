@@ -134,6 +134,23 @@ class TestToolsMixedTargets:
         assert "web" not in saved["platform_toolsets"]["cli"]
         assert "create_issue" in saved["mcp_servers"]["github"]["tools"]["exclude"]
 
+    def test_builtin_toggle_does_not_persist_implicit_mcp_defaults(self):
+        config = {
+            "platform_toolsets": {"cli": ["web", "memory"]},
+            "mcp_servers": {"exa": {"url": "https://mcp.exa.ai/mcp"}},
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(Namespace(
+                tools_action="disable",
+                names=["web"],
+                platform="cli",
+            ))
+        saved = mock_save.call_args[0][0]
+        assert "web" not in saved["platform_toolsets"]["cli"]
+        assert "memory" in saved["platform_toolsets"]["cli"]
+        assert "exa" not in saved["platform_toolsets"]["cli"]
+
 
 # ── List output ──────────────────────────────────────────────────────────────
 

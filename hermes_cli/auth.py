@@ -78,6 +78,7 @@ ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+DEFAULT_OPENAI_OAUTH_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
 MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
 MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
@@ -96,6 +97,7 @@ STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+OPENAI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -187,6 +189,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.openai.com/v1",
         api_key_env_vars=("OPENAI_API_KEY",),
         base_url_env_var="OPENAI_BASE_URL",
+    ),
+    "openai-oauth": ProviderConfig(
+        id="openai-oauth",
+        name="OpenAI (OAuth)",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_OPENAI_OAUTH_BASE_URL,
     ),
     "xai-oauth": ProviderConfig(
         id="xai-oauth",
@@ -1483,6 +1491,8 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "openai-oauth": "openai-oauth", "openai-subscription": "openai-oauth",
+        "chatgpt-oauth": "openai-oauth",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
         "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
@@ -1899,6 +1909,119 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
 
 def _qwen_cli_auth_path() -> Path:
     return Path.home() / ".qwen" / "oauth_creds.json"
+
+
+def _read_openai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+    """Read OpenAI OAuth tokens from Hermes auth store (~/.hermes/auth.json)."""
+    if _lock:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+    else:
+        auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "openai-oauth")
+    if not state:
+        raise AuthError(
+            "No OpenAI OAuth credentials stored. Run `hermes auth add openai-oauth`.",
+            provider="openai-oauth",
+            code="openai_oauth_auth_missing",
+            relogin_required=True,
+        )
+    tokens = state.get("tokens")
+    if not isinstance(tokens, dict):
+        raise AuthError(
+            "OpenAI OAuth state is missing tokens. Re-authenticate with `hermes auth add openai-oauth`.",
+            provider="openai-oauth",
+            code="openai_oauth_auth_invalid_shape",
+            relogin_required=True,
+        )
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise AuthError(
+            "OpenAI OAuth state is missing access_token. Re-authenticate with `hermes auth add openai-oauth`.",
+            provider="openai-oauth",
+            code="openai_oauth_access_missing",
+            relogin_required=True,
+        )
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        raise AuthError(
+            "OpenAI OAuth state is missing refresh_token. Re-authenticate with `hermes auth add openai-oauth`.",
+            provider="openai-oauth",
+            code="openai_oauth_refresh_missing",
+            relogin_required=True,
+        )
+    return {
+        "tokens": tokens,
+        "last_refresh": state.get("last_refresh"),
+        "account_id": state.get("account_id"),
+    }
+
+
+def _save_openai_oauth_tokens(
+    tokens: Dict[str, str],
+    *,
+    account_id: str = "",
+    last_refresh: str | None = None,
+) -> None:
+    """Save OpenAI OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
+    if last_refresh is None:
+        last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "openai-oauth") or {}
+        state["tokens"] = tokens
+        state["last_refresh"] = last_refresh
+        state["auth_mode"] = "chatgpt"
+        if account_id:
+            state["account_id"] = account_id
+        _save_provider_state(auth_store, "openai-oauth", state)
+        _save_auth_store(auth_store)
+
+
+def _openai_oauth_access_token_is_expiring(access_token: Any, skew_seconds: int) -> bool:
+    claims = _decode_jwt_claims(access_token)
+    exp = claims.get("exp")
+    if not isinstance(exp, (int, float)):
+        return False
+    return float(exp) <= (time.time() + max(0, int(skew_seconds)))
+
+
+def _import_openai_oauth_external_tokens() -> Optional[Dict[str, Any]]:
+    """Best-effort import from a local external OAuth cache.
+
+    This is explicit setup-time convenience only, not a runtime dependency.
+    """
+    override = os.getenv("HERMES_OPENAI_OAUTH_AUTH_PATH", "").strip()
+    auth_path = Path(override).expanduser() if override else (Path.home() / ".local" / "share" / "opencode" / "auth.json")
+    if not auth_path.is_file():
+        return None
+    try:
+        payload = json.loads(auth_path.read_text())
+        state = payload.get("openai") if isinstance(payload, dict) else None
+        if not isinstance(state, dict):
+            return None
+        access_token = str(state.get("access") or "").strip()
+        refresh_token = str(state.get("refresh") or "").strip()
+        if not access_token or not refresh_token:
+            return None
+        if _openai_oauth_access_token_is_expiring(access_token, 0):
+            return None
+        account_id = str(state.get("accountId") or "").strip()
+        if not account_id:
+            claims = _decode_jwt_claims(access_token)
+            auth_claims = claims.get("https://api.openai.com/auth")
+            if isinstance(auth_claims, dict):
+                account_id = str(auth_claims.get("chatgpt_account_id") or "").strip()
+        return {
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+            },
+            "account_id": account_id,
+            "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+    except Exception:
+        return None
 
 
 def _read_qwen_cli_tokens() -> Dict[str, Any]:
@@ -3681,6 +3804,61 @@ def _pool_codex_access_token() -> str:
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
     return ""
+
+
+def resolve_openai_oauth_runtime_credentials(
+    *,
+    force_refresh: bool = False,
+    refresh_if_expiring: bool = True,
+    refresh_skew_seconds: int = OPENAI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+) -> Dict[str, Any]:
+    """Resolve runtime credentials for Hermes-owned OpenAI OAuth."""
+    data = _read_openai_oauth_tokens()
+    tokens = dict(data["tokens"])
+    access_token = str(tokens.get("access_token", "") or "").strip()
+    refresh_timeout_seconds = float(os.getenv("HERMES_OPENAI_OAUTH_REFRESH_TIMEOUT_SECONDS", "20"))
+
+    should_refresh = bool(force_refresh)
+    if (not should_refresh) and refresh_if_expiring:
+        should_refresh = _openai_oauth_access_token_is_expiring(access_token, refresh_skew_seconds)
+    if should_refresh:
+        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+            data = _read_openai_oauth_tokens(_lock=False)
+            tokens = dict(data["tokens"])
+            access_token = str(tokens.get("access_token", "") or "").strip()
+
+            should_refresh = bool(force_refresh)
+            if (not should_refresh) and refresh_if_expiring:
+                should_refresh = _openai_oauth_access_token_is_expiring(access_token, refresh_skew_seconds)
+
+            if should_refresh:
+                refreshed = refresh_codex_oauth_pure(
+                    str(tokens.get("access_token", "") or ""),
+                    str(tokens.get("refresh_token", "") or ""),
+                    timeout_seconds=refresh_timeout_seconds,
+                )
+                tokens["access_token"] = refreshed["access_token"]
+                tokens["refresh_token"] = refreshed["refresh_token"]
+                access_token = str(tokens.get("access_token", "") or "").strip()
+                _save_openai_oauth_tokens(
+                    tokens,
+                    account_id=str(data.get("account_id") or ""),
+                    last_refresh=refreshed.get("last_refresh"),
+                )
+
+    base_url = (
+        os.getenv("HERMES_OPENAI_OAUTH_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_OPENAI_OAUTH_BASE_URL
+    )
+    return {
+        "provider": "openai-oauth",
+        "base_url": base_url,
+        "api_key": access_token,
+        "source": "hermes-auth-store",
+        "last_refresh": data.get("last_refresh"),
+        "auth_mode": "chatgpt",
+        "account_id": str(data.get("account_id") or "").strip() or None,
+    }
 
 
 # =============================================================================
@@ -5590,10 +5768,33 @@ def get_codex_auth_status() -> Dict[str, Any]:
             "auth_mode": creds.get("auth_mode"),
             "source": creds.get("source"),
             "api_key": creds.get("api_key"),
+            "account_id": creds.get("account_id"),
         }
     except AuthError as exc:
         return {
             "logged_in": False,
+            "auth_store": str(_auth_file_path()),
+            "error": str(exc),
+        }
+
+
+def get_openai_oauth_auth_status() -> Dict[str, Any]:
+    try:
+        creds = resolve_openai_oauth_runtime_credentials(refresh_if_expiring=False)
+        return {
+            "logged_in": True,
+            "provider": "openai-oauth",
+            "auth_store": str(_auth_file_path()),
+            "last_refresh": creds.get("last_refresh"),
+            "auth_mode": creds.get("auth_mode"),
+            "source": creds.get("source"),
+            "api_key": creds.get("api_key"),
+            "account_id": creds.get("account_id"),
+        }
+    except AuthError as exc:
+        return {
+            "logged_in": False,
+            "provider": "openai-oauth",
             "auth_store": str(_auth_file_path()),
             "error": str(exc),
         }
@@ -5713,6 +5914,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    if target == "openai-oauth":
+        return get_openai_oauth_auth_status()
     if target == "xai-oauth":
         return get_xai_oauth_auth_status()
     if target == "qwen-oauth":
@@ -6257,6 +6460,15 @@ def _login_openai_codex(
 ) -> None:
     """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
 
+    _OPENAI_CODEX_CONTEXT_NOTE = (
+        "  Note: ChatGPT OAuth runs through Codex backend limits. For the same GPT-5 "
+        "slug, the direct OpenAI API can expose a larger context window. Use provider "
+        "`openai` with an API key when you need maximum OpenAI context."
+    )
+
+    def _print_openai_codex_context_note() -> None:
+        print(_OPENAI_CODEX_CONTEXT_NOTE)
+
     del args, pconfig  # kept for parity with other provider login helpers
 
     # Check for existing Hermes-owned credentials
@@ -6279,6 +6491,7 @@ def _login_openai_codex(
                     print()
                     print("Login successful!")
                     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                    _print_openai_codex_context_note()
                     return
             else:
                 print("Existing Codex credentials are expired. Starting fresh login...")
@@ -6303,6 +6516,7 @@ def _login_openai_codex(
                 print("Credentials imported. Note: if Codex CLI refreshes its token,")
                 print("Hermes will keep working independently with its own session.")
                 print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                _print_openai_codex_context_note()
                 return
 
     # Run a fresh device code flow — Hermes gets its own OAuth session
@@ -6321,6 +6535,97 @@ def _login_openai_codex(
     from hermes_constants import display_hermes_home as _dhh
     print(f"  Auth state: {_dhh()}/auth.json")
     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+    _print_openai_codex_context_note()
+
+
+def _login_openai_oauth(
+    args,
+    pconfig: ProviderConfig,
+    *,
+    force_new_login: bool = False,
+) -> None:
+    """OpenAI OAuth login for Hermes-owned auth store.
+
+    Primary path: Hermes runs its own OpenAI device-code flow and stores the
+    resulting tokens under provider ``openai-oauth`` in ~/.hermes/auth.json.
+
+    Optional convenience path: if a local external OAuth cache exists, import
+    it once into Hermes-owned storage so runtime no longer depends on that
+    external file.
+    """
+    del args, pconfig
+
+    if not force_new_login:
+        try:
+            existing = resolve_openai_oauth_runtime_credentials(refresh_if_expiring=False)
+            api_key = existing.get("api_key", "")
+            if isinstance(api_key, str) and api_key and not _openai_oauth_access_token_is_expiring(api_key, 60):
+                print("Existing OpenAI OAuth credentials found in Hermes auth store.")
+                try:
+                    reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    reuse = "y"
+                if reuse in {"", "y", "yes"}:
+                    config_path = _update_config_for_provider(
+                        "openai-oauth",
+                        existing.get("base_url", DEFAULT_OPENAI_OAUTH_BASE_URL),
+                    )
+                    print()
+                    print("Login successful!")
+                    print(f"  Config updated: {config_path} (model.provider=openai-oauth)")
+                    return
+        except AuthError:
+            pass
+
+    if not force_new_login:
+        imported = _import_openai_oauth_external_tokens()
+        if imported:
+            print("Found a local OpenAI OAuth cache on disk.")
+            try:
+                do_import = input("Import these credentials into Hermes? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "n"
+            if do_import in {"y", "yes"}:
+                _save_openai_oauth_tokens(
+                    imported["tokens"],
+                    account_id=str(imported.get("account_id") or ""),
+                    last_refresh=imported.get("last_refresh"),
+                )
+                config_path = _update_config_for_provider("openai-oauth", DEFAULT_OPENAI_OAUTH_BASE_URL)
+                print()
+                print("Credentials imported into Hermes auth store.")
+                print(f"  Config updated: {config_path} (model.provider=openai-oauth)")
+                return
+
+    print()
+    print("Signing in to OpenAI OAuth...")
+    print("(Hermes creates its own session and stores it in ~/.hermes/auth.json)")
+    print()
+
+    creds = _codex_device_code_login()
+    account_id = ""
+    try:
+        claims = _decode_jwt_claims(creds["tokens"].get("access_token", ""))
+        auth_claims = claims.get("https://api.openai.com/auth")
+        if isinstance(auth_claims, dict):
+            account_id = str(auth_claims.get("chatgpt_account_id") or "").strip()
+    except Exception:
+        account_id = ""
+
+    _save_openai_oauth_tokens(
+        creds["tokens"],
+        account_id=account_id,
+        last_refresh=creds.get("last_refresh"),
+    )
+    config_path = _update_config_for_provider(
+        "openai-oauth",
+        creds.get("base_url", DEFAULT_OPENAI_OAUTH_BASE_URL),
+    )
+    print()
+    print("Login successful!")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  Auth state: {_dhh()}/auth.json")
+    print(f"  Config updated: {config_path} (model.provider=openai-oauth)")
 
 
 def _login_xai_oauth(

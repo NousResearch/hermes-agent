@@ -470,6 +470,29 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     return headers
 
 
+def _openai_oauth_headers(access_token: str, account_id: Optional[str] = None) -> Dict[str, str]:
+    """Headers for Hermes-owned OpenAI OAuth calls to ChatGPT Codex backend."""
+    headers = {
+        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+        "originator": "hermes",
+    }
+    acct_id = account_id
+    if (not acct_id) and isinstance(access_token, str) and access_token.strip():
+        try:
+            import base64
+
+            parts = access_token.split(".")
+            if len(parts) >= 2:
+                payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+                acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+        except Exception:
+            acct_id = None
+    if isinstance(acct_id, str) and acct_id:
+        headers["ChatGPT-Account-Id"] = acct_id
+    return headers
+
+
 def _to_openai_base_url(base_url: str) -> str:
     """Normalize an Anthropic-style base URL to OpenAI-compatible format.
 
@@ -3476,6 +3499,42 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    if provider == "openai-oauth":
+        if not model:
+            logger.warning(
+                "resolve_provider_client: openai-oauth requested without a "
+                "model; pass model explicitly."
+            )
+            return None, None
+        try:
+            from hermes_cli.auth import resolve_openai_oauth_runtime_credentials
+
+            creds = resolve_openai_oauth_runtime_credentials(refresh_if_expiring=False)
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: openai-oauth requested but credentials "
+                "could not be resolved: %s", exc,
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model, provider)
+        base_url = str(creds.get("base_url") or explicit_base_url or _CODEX_AUX_BASE_URL).rstrip("/")
+        api_key = str(creds.get("api_key") or explicit_api_key or "")
+        account_id = str(creds.get("account_id") or "").strip() or None
+        saved_api_mode = api_mode
+        try:
+            if not api_mode:
+                api_mode = "codex_responses"
+            client = OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                default_headers=_openai_oauth_headers(api_key, account_id),
+            )
+            client = _wrap_if_needed(client, final_model, base_url, api_key)
+        finally:
+            api_mode = saved_api_mode
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── xAI Grok OAuth (loopback PKCE → Responses API) ───────────────
     # Without this branch, an xai-oauth main provider falls through to the
     # generic ``oauth_external`` arm below and returns ``(None, None)``,
@@ -3894,6 +3953,15 @@ def resolve_provider_client(
             return resolve_provider_client("nous", model, async_mode)
         if provider == "openai-codex":
             return resolve_provider_client("openai-codex", model, async_mode)
+        if provider == "openai-oauth":
+            return resolve_provider_client(
+                "openai-oauth",
+                model,
+                async_mode,
+                explicit_base_url=explicit_base_url,
+                explicit_api_key=explicit_api_key,
+                api_mode=api_mode,
+            )
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
         # Other OAuth providers not directly supported

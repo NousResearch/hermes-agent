@@ -320,6 +320,58 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
+
+class TestOpenAIOAuthContextLength:
+    def test_gpt_5_4_uses_known_high_context(self):
+        from agent.model_metadata import get_model_context_length
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.4",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-oauth",
+            )
+        assert ctx == 1_050_000
+
+    def test_gpt_5_5_uses_known_small_context(self):
+        from agent.model_metadata import get_model_context_length
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.5",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-oauth",
+            )
+        assert ctx == 272_000
+
+    def test_provider_scoped_cache_does_not_leak_from_codex(self, tmp_path, monkeypatch):
+        from agent import model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        import yaml as _yaml
+        base_url = "https://chatgpt.com/backend-api/codex"
+        cache_file.write_text(_yaml.dump({"context_lengths": {
+            f"gpt-5.4@{base_url}": 272_000,
+        }}))
+
+        with patch("agent.model_metadata.requests.post") as mock_post, \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = mm.get_model_context_length(
+                model="gpt-5.4",
+                base_url=base_url,
+                api_key="fake-token",
+                provider="openai-oauth",
+            )
+
+        assert ctx == 1_050_000
+        mock_post.assert_not_called()
+
     def test_non_codex_providers_unaffected(self):
         """Resolving gpt-5.5 on non-Codex providers must NOT use the Codex
         272k override — OpenRouter / direct OpenAI API have different limits.

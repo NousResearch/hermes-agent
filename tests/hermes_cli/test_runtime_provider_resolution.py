@@ -173,6 +173,30 @@ def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     assert resolved["requested_provider"] == "qwen-oauth"
 
 
+def test_resolve_runtime_provider_openai_oauth(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-oauth")
+    monkeypatch.setattr(
+        rp,
+        "resolve_openai_oauth_runtime_credentials",
+        lambda: {
+            "provider": "openai-oauth",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "oauth-token",
+            "source": "hermes-auth-store",
+            "account_id": "acct-123",
+        },
+    )
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+
+    resolved = rp.resolve_runtime_provider(requested="openai-oauth")
+
+    assert resolved["provider"] == "openai-oauth"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert resolved["api_key"] == "oauth-token"
+    assert resolved["requested_provider"] == "openai-oauth"
+
+
 def test_resolve_runtime_provider_uses_qwen_pool_entry(monkeypatch):
     class _Entry:
         access_token = "pool-qwen-token"

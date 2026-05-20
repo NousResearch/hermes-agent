@@ -93,6 +93,13 @@ def _codex_curated_models() -> list[str]:
     return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
 
 
+def _openai_oauth_curated_models() -> list[str]:
+    models = _codex_curated_models()
+    if "gpt-5.4" in models:
+        models = ["gpt-5.4"] + [m for m in models if m != "gpt-5.4"]
+    return models
+
+
 # Static fallback for xAI when the models.dev disk cache is empty (fresh
 # install, offline first run, etc.). Mirrors the xAI-direct model IDs from
 # $HERMES_HOME/models_dev_cache.json as of 2026-04-28. Whenever xAI renames
@@ -210,6 +217,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o-mini",
     ],
     "openai-codex": _codex_curated_models(),
+    "openai-oauth": _openai_oauth_curated_models(),
     "xai-oauth": _xai_curated_models(),
     "copilot-acp": [
         "copilot-acp",
@@ -909,6 +917,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
+    ProviderEntry("openai-oauth",   "OpenAI (OAuth)",           "OpenAI via Hermes-owned OAuth session (experimental)"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
     ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),
@@ -2060,6 +2069,21 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             access_token = None
         return get_codex_model_ids(access_token=access_token)
+    if normalized == "openai-oauth":
+        from hermes_cli.codex_models import get_codex_model_ids
+
+        access_token = None
+        try:
+            from hermes_cli.auth import resolve_openai_oauth_runtime_credentials
+
+            creds = resolve_openai_oauth_runtime_credentials(refresh_if_expiring=True)
+            access_token = creds.get("api_key")
+        except Exception:
+            access_token = None
+        models = get_codex_model_ids(access_token=access_token)
+        if "gpt-5.4" in models:
+            models = ["gpt-5.4"] + [m for m in models if m != "gpt-5.4"]
+        return models
     if normalized == "xai-oauth":
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
     if normalized in {"copilot", "copilot-acp"}:

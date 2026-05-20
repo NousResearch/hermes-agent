@@ -41,6 +41,35 @@ class TestResolveDisplayContextLength:
             "Codex OAuth's 272K cap must win over models.dev's 1.05M for gpt-5.5"
         )
 
+    def test_openai_oauth_gpt_5_4_keeps_high_context(self):
+        """gpt-5.4 on openai-oauth should show the high effective context
+        for that experimental provider path."""
+        fake_mi = _FakeModelInfo(1_050_000)
+        with patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=1_050_000,
+        ):
+            ctx = resolve_display_context_length(
+                "gpt-5.4",
+                "openai-oauth",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="",
+                model_info=fake_mi,
+            )
+        assert ctx == 1_050_000
+
+
+def test_context_detection_suffix_defaults_to_detected():
+    from hermes_cli.model_switch import format_context_detection_suffix
+
+    assert format_context_detection_suffix(None) == " (detected)"
+
+
+def test_context_detection_suffix_uses_config_label_when_present():
+    from hermes_cli.model_switch import format_context_detection_suffix
+
+    assert format_context_detection_suffix(123456) == " (config)"
+
     def test_falls_back_to_model_info_when_resolver_returns_none(self):
         fake_mi = _FakeModelInfo(1_048_576)
         with patch(

@@ -3422,6 +3422,12 @@ class AIAgent:
                 singleton_now = resolve_codex_runtime_credentials(
                     refresh_if_expiring=False,
                 )
+            elif self.provider == "openai-oauth":
+                from hermes_cli.auth import resolve_openai_oauth_runtime_credentials
+
+                singleton_now = resolve_openai_oauth_runtime_credentials(
+                    refresh_if_expiring=False,
+                )
             else:
                 from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
 
@@ -3448,6 +3454,10 @@ class AIAgent:
                 from hermes_cli.auth import resolve_codex_runtime_credentials
 
                 creds = resolve_codex_runtime_credentials(force_refresh=force)
+            elif self.provider == "openai-oauth":
+                from hermes_cli.auth import resolve_openai_oauth_runtime_credentials
+
+                creds = resolve_openai_oauth_runtime_credentials(force_refresh=force)
             else:
                 from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
 
@@ -3618,10 +3628,24 @@ class AIAgent:
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         elif base_url_host_matches(base_url, "chatgpt.com"):
-            from agent.auxiliary_client import _codex_cloudflare_headers
-            self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
-                self._client_kwargs.get("api_key", "")
-            )
+            if self.provider == "openai-oauth":
+                from agent.auxiliary_client import _openai_oauth_headers
+                account_id = None
+                try:
+                    from hermes_cli.auth import resolve_openai_oauth_runtime_credentials
+
+                    _oauth_creds = resolve_openai_oauth_runtime_credentials(refresh_if_expiring=False)
+                    account_id = _oauth_creds.get("account_id")
+                except Exception:
+                    account_id = None
+                self._client_kwargs["default_headers"] = _openai_oauth_headers(
+                    self._client_kwargs.get("api_key", ""), account_id,
+                )
+            else:
+                from agent.auxiliary_client import _codex_cloudflare_headers
+                self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
+                    self._client_kwargs.get("api_key", "")
+                )
         else:
             # No URL-specific headers — check profile.default_headers before clearing.
             _ph_headers = None

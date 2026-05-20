@@ -33,7 +33,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "openai-oauth", "xai-oauth", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
 
 
 def _get_custom_provider_names() -> list:
@@ -321,6 +321,46 @@ def auth_add_command(args) -> None:
         entry = next((item for item in pool.entries() if item.source == "device_code"), None)
         shown_label = entry.label if entry is not None else label
         print(f'Saved {provider} OAuth device-code credentials: "{shown_label}"')
+        return
+
+    if provider == "openai-oauth":
+        imported = auth_mod._import_openai_oauth_external_tokens()
+        if imported:
+            tokens = imported["tokens"]
+            account_id = str(imported.get("account_id") or "")
+            last_refresh = imported.get("last_refresh")
+        else:
+            creds = auth_mod._codex_device_code_login()
+            tokens = dict(creds["tokens"])
+            last_refresh = creds.get("last_refresh")
+            account_id = ""
+            try:
+                claims = auth_mod._decode_jwt_claims(tokens.get("access_token", ""))
+                auth_claims = claims.get("https://api.openai.com/auth")
+                if isinstance(auth_claims, dict):
+                    account_id = str(auth_claims.get("chatgpt_account_id") or "").strip()
+            except Exception:
+                account_id = ""
+
+        auth_mod._save_openai_oauth_tokens(tokens, account_id=account_id, last_refresh=last_refresh)
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            tokens["access_token"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:openai_oauth",
+            access_token=tokens["access_token"],
+            refresh_token=tokens.get("refresh_token"),
+            base_url=auth_mod.DEFAULT_OPENAI_OAUTH_BASE_URL,
+            last_refresh=last_refresh,
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
     if provider == "xai-oauth":

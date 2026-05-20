@@ -3132,6 +3132,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "status_fn": None,  # dispatched via auth.get_codex_auth_status
     },
     {
+        "id": "openai-oauth",
+        "name": "OpenAI (OAuth)",
+        "flow": "external",
+        "cli_command": "hermes auth add openai-oauth",
+        "docs_url": "https://platform.openai.com/docs",
+        "status_fn": None,
+    },
+    {
         "id": "qwen-oauth",
         "name": "Qwen (via Qwen CLI)",
         "flow": "external",
@@ -3194,6 +3202,17 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "token_preview": _truncate_token(raw.get("api_key")),
                 "expires_at": None,
                 "has_refresh_token": False,
+                "last_refresh": raw.get("last_refresh"),
+            }
+        if provider_id == "openai-oauth":
+            raw = hauth.get_openai_oauth_auth_status()
+            return {
+                "logged_in": bool(raw.get("logged_in")),
+                "source": raw.get("source") or "openai_oauth",
+                "source_label": raw.get("auth_mode") or "OpenAI OAuth",
+                "token_preview": _truncate_token(raw.get("api_key")),
+                "expires_at": None,
+                "has_refresh_token": True,
                 "last_refresh": raw.get("last_refresh"),
             }
         if provider_id == "qwen-oauth":

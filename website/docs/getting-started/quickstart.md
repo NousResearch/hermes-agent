@@ -142,6 +142,10 @@ Good defaults:
 | **GitHub Copilot ACP** | Copilot ACP agent backend (spawns local `copilot` CLI) | `hermes model` (requires `copilot` CLI + `copilot login`) |
 | **Custom Endpoint** | VLLM, SGLang, Ollama, or any OpenAI-compatible API | Set base URL + API key |
 
+:::note OpenAI Codex context limits
+`openai-codex` is Hermes' stable ChatGPT/Codex OAuth lane. `openai-oauth` is a separate experimental OpenAI OAuth lane that can detect a different effective context budget on the same backend. Keep them distinct when comparing context limits or auth behavior.
+:::
+
 For most first-time users: choose a provider, accept the defaults unless you know why you're changing them. The full provider catalog with env vars and setup steps lives on the [Providers](../integrations/providers.md) page.
 
 :::caution Minimum context: 64K tokens

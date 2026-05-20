@@ -837,13 +837,20 @@ def _load_context_cache() -> Dict[str, int]:
         return {}
 
 
-def save_context_length(model: str, base_url: str, length: int) -> None:
+def _context_cache_key(model: str, base_url: str, provider: str | None = None) -> str:
+    key = f"{model}@{base_url}"
+    if provider:
+        return f"{provider}|{key}"
+    return key
+
+
+def save_context_length(model: str, base_url: str, length: int, *, provider: str | None = None) -> None:
     """Persist a discovered context length for a model+provider combo.
 
     Cache key is ``model@base_url`` so the same model name served from
     different providers can have different limits.
     """
-    key = f"{model}@{base_url}"
+    key = _context_cache_key(model, base_url, provider=provider)
     cache = _load_context_cache()
     if cache.get(key) == length:
         return  # already stored
@@ -858,16 +865,16 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
         logger.debug("Failed to save context length cache: %s", e)
 
 
-def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
+def get_cached_context_length(model: str, base_url: str, *, provider: str | None = None) -> Optional[int]:
     """Look up a previously discovered context length for model+provider."""
-    key = f"{model}@{base_url}"
+    key = _context_cache_key(model, base_url, provider=provider)
     cache = _load_context_cache()
     return cache.get(key)
 
 
-def _invalidate_cached_context_length(model: str, base_url: str) -> None:
+def _invalidate_cached_context_length(model: str, base_url: str, *, provider: str | None = None) -> None:
     """Drop a stale cache entry so it gets re-resolved on the next lookup."""
-    key = f"{model}@{base_url}"
+    key = _context_cache_key(model, base_url, provider=provider)
     cache = _load_context_cache()
     if key not in cache:
         return
@@ -1301,6 +1308,15 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5": 272_000,
 }
 
+_OPENAI_OAUTH_KNOWN_CONTEXT_LENGTHS: Dict[str, int] = {
+    "gpt-5.4": 1_050_000,
+    "gpt-5.5": 272_000,
+    "gpt-5.4-mini": 272_000,
+}
+
+_OPENAI_OAUTH_PROBE_HIGH_INPUT_TOKENS = 900_000
+_OPENAI_OAUTH_PROBE_LOW_INPUT_TOKENS = 300_000
+
 
 _codex_oauth_context_cache: Dict[str, int] = {}
 _codex_oauth_context_cache_time: float = 0.0
@@ -1389,6 +1405,111 @@ def _resolve_codex_oauth_context_length(
             return ctx
 
     return None
+
+
+def _openai_oauth_probe_headers(access_token: str, account_id: str | None = None) -> Dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "User-Agent": "HermesAgent/context-probe",
+        "originator": "hermes",
+    }
+    acct_id = account_id
+    if not acct_id:
+        claims = _decode_jwt_claims(access_token)
+        auth_claims = claims.get("https://api.openai.com/auth")
+        if isinstance(auth_claims, dict):
+            acct_id = str(auth_claims.get("chatgpt_account_id") or "").strip() or None
+    if acct_id:
+        headers["ChatGPT-Account-Id"] = acct_id
+    return headers
+
+
+def _openai_oauth_probe_accepts_input_tokens(
+    model: str,
+    access_token: str,
+    input_tokens_target: int,
+) -> bool:
+    if not access_token:
+        return False
+    word_count = max(1, input_tokens_target // 3)
+    prompt = " ".join(f"tok{i:06d}" for i in range(word_count))
+    payload = {
+        "model": _strip_provider_prefix(model).strip(),
+        "instructions": "Reply with exactly one word.",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompt}],
+        }],
+        "store": False,
+        "stream": True,
+    }
+    try:
+        resp = requests.post(
+            "https://chatgpt.com/backend-api/codex/responses",
+            headers=_openai_oauth_probe_headers(access_token),
+            json=payload,
+            stream=True,
+            timeout=(10, 120),
+            verify=_resolve_requests_verify(),
+        )
+    except Exception as exc:
+        logger.debug("OpenAI OAuth context probe failed: %s", exc)
+        return False
+
+    if resp.status_code != 200:
+        return False
+
+    try:
+        for raw in resp.iter_lines(decode_unicode=True):
+            if not raw or not raw.startswith("data: "):
+                continue
+            try:
+                obj = json.loads(raw[6:])
+            except Exception:
+                continue
+            event_type = obj.get("type")
+            if event_type == "response.completed":
+                return True
+            if event_type in {"error", "response.failed", "response.incomplete"}:
+                err = obj.get("error") or obj.get("response", {}).get("incomplete_details") or {}
+                if isinstance(err, dict):
+                    code = str(err.get("code") or err.get("reason") or "").strip().lower()
+                    message = str(err.get("message") or "").strip().lower()
+                    if code == "context_length_exceeded" or "context window" in message:
+                        return False
+                return False
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    return False
+
+
+def _resolve_openai_oauth_context_length(model: str, access_token: str = "") -> Optional[int]:
+    model_bare = _strip_provider_prefix(model).strip().lower()
+    if not model_bare:
+        return None
+
+    known = _OPENAI_OAUTH_KNOWN_CONTEXT_LENGTHS.get(model_bare)
+    if isinstance(known, int) and known > 0:
+        return known
+
+    from agent.models_dev import lookup_models_dev_context
+
+    metadata_ctx = lookup_models_dev_context("openai", model_bare)
+    if metadata_ctx:
+        high_target = min(_OPENAI_OAUTH_PROBE_HIGH_INPUT_TOKENS, max(_OPENAI_OAUTH_PROBE_LOW_INPUT_TOKENS, metadata_ctx - 150_000))
+        if _openai_oauth_probe_accepts_input_tokens(model_bare, access_token, high_target):
+            return metadata_ctx
+
+    if _openai_oauth_probe_accepts_input_tokens(model_bare, access_token, _OPENAI_OAUTH_PROBE_LOW_INPUT_TOKENS):
+        return metadata_ctx or _OPENAI_OAUTH_PROBE_LOW_INPUT_TOKENS
+
+    return _resolve_codex_oauth_context_length(model_bare, access_token=access_token)
 
 
 def _resolve_nous_context_length(
@@ -1528,7 +1649,8 @@ def get_model_context_length(
     # user can reload the model with a different context_length at any time
     # via /api/v1/models/load), so a stale cached value would mask reloads.
     if base_url and provider != "lmstudio":
-        cached = get_cached_context_length(model, base_url)
+        cached_provider = provider if provider == "openai-oauth" else None
+        cached = get_cached_context_length(model, base_url, provider=cached_provider)
         if cached is not None:
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
             # resolved gpt-5.x to the direct-API value (e.g. 1.05M) via
@@ -1543,6 +1665,12 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
+            elif provider == "openai-oauth" and cached <= 272_000 and _strip_provider_prefix(model).strip().lower() == "gpt-5.4":
+                logger.info(
+                    "Dropping stale OpenAI OAuth cache entry %s@%s -> %s; re-resolving effective route context",
+                    model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url, provider="openai-oauth")
             # Invalidate stale 32k cache entries for Kimi-family models.
             elif cached <= 32768 and _model_name_suggests_kimi(model):
                 logger.info(
@@ -1698,6 +1826,12 @@ def get_model_context_length(
             if base_url:
                 save_context_length(model, base_url, codex_ctx)
             return codex_ctx
+    if effective_provider == "openai-oauth":
+        oauth_ctx = _resolve_openai_oauth_context_length(model, access_token=api_key or "")
+        if oauth_ctx:
+            if base_url:
+                save_context_length(model, base_url, oauth_ctx, provider="openai-oauth")
+            return oauth_ctx
     if effective_provider == "gmi" and base_url:
         # GMI exposes authoritative context_length via /models, but it is not
         # in models.dev yet. Preserve that higher-fidelity endpoint lookup.

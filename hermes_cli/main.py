@@ -2659,6 +2659,8 @@ def select_provider_and_model(args=None):
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
+    elif selected_provider == "openai-oauth":
+        _model_flow_openai_oauth(config, current_model)
     elif selected_provider == "xai-oauth":
         _model_flow_xai_oauth(config, current_model, args=args)
     elif selected_provider == "qwen-oauth":
@@ -3546,6 +3548,95 @@ def _model_flow_openai_codex(config, current_model=""):
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         print(f"Default model set to: {selected} (via OpenAI Codex)")
+    else:
+        print("No change.")
+
+
+def _model_flow_openai_oauth(config, current_model=""):
+    """OpenAI OAuth provider: ensure logged in, then pick model."""
+    from hermes_cli.auth import (
+        get_openai_oauth_auth_status,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        resolve_openai_oauth_runtime_credentials,
+        _login_openai_oauth,
+        DEFAULT_OPENAI_OAUTH_BASE_URL,
+        PROVIDER_REGISTRY,
+    )
+    from hermes_cli.codex_models import get_codex_model_ids
+
+    status = get_openai_oauth_auth_status()
+    if status.get("logged_in"):
+        print("  OpenAI OAuth credentials: ✓")
+        print()
+        print("    1. Use existing credentials")
+        print("    2. Reauthenticate (new OAuth login)")
+        print("    3. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            choice = "1"
+
+        if choice == "2":
+            print("Starting a fresh OpenAI OAuth login...")
+            print()
+            try:
+                mock_args = argparse.Namespace()
+                _login_openai_oauth(
+                    mock_args,
+                    PROVIDER_REGISTRY["openai-oauth"],
+                    force_new_login=True,
+                )
+            except SystemExit:
+                print("Login cancelled or failed.")
+                return
+            except Exception as exc:
+                print(f"Login failed: {exc}")
+                return
+            status = get_openai_oauth_auth_status()
+            if not status.get("logged_in"):
+                print("Login failed.")
+                return
+        elif choice == "3":
+            return
+    else:
+        print("Not logged into OpenAI OAuth. Starting login...")
+        print()
+        try:
+            mock_args = argparse.Namespace()
+            _login_openai_oauth(mock_args, PROVIDER_REGISTRY["openai-oauth"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+
+    oauth_token = None
+    try:
+        oauth_status = get_openai_oauth_auth_status()
+        if oauth_status.get("logged_in"):
+            oauth_token = oauth_status.get("api_key")
+    except Exception:
+        pass
+    if not oauth_token:
+        try:
+            oauth_creds = resolve_openai_oauth_runtime_credentials()
+            oauth_token = oauth_creds.get("api_key")
+        except Exception:
+            pass
+
+    oauth_models = get_codex_model_ids(access_token=oauth_token)
+    if "gpt-5.4" in oauth_models:
+        oauth_models = ["gpt-5.4"] + [m for m in oauth_models if m != "gpt-5.4"]
+
+    selected = _prompt_model_selection(oauth_models, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("openai-oauth", DEFAULT_OPENAI_OAUTH_BASE_URL)
+        print(f"Default model set to: {selected} (via OpenAI OAuth)")
     else:
         print("No change.")
 
@@ -11856,6 +11947,23 @@ def cmd_logs(args):
         since=getattr(args, "since", None),
         component=getattr(args, "component", None),
     )
+
+
+
+def _build_provider_choices() -> list[str]:
+    """Build the --provider choices list from CANONICAL_PROVIDERS + 'auto'."""
+    try:
+        from hermes_cli.models import CANONICAL_PROVIDERS as _cp
+        return ["auto"] + [p.slug for p in _cp]
+    except Exception:
+        # Fallback: static list guarantees the CLI always works
+        return [
+            "auto", "openrouter", "nous", "openai-codex", "openai-oauth", "xai-oauth", "copilot-acp", "copilot",
+            "anthropic", "gemini", "google-gemini-cli", "xai", "bedrock", "azure-foundry",
+            "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
+            "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
+            "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",
+        ]
 # Top-level subcommands that argparse knows about WITHOUT running plugin
 # discovery.  Used to short-circuit eager plugin imports (which can take
 # 500ms+ pulling in google.cloud.pubsub_v1, aiohttp, grpc, etc.) when the

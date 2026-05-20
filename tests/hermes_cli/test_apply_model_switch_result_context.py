@@ -83,9 +83,12 @@ def test_picker_path_uses_provider_aware_context_on_codex(monkeypatch):
     assert "272,000" in ctx_line, (
         f"picker-path display must show Codex's 272K cap, got: {ctx_line!r}"
     )
+    assert "(detected)" in ctx_line
     assert "1,050,000" not in ctx_line, (
         f"picker-path display leaked models.dev's 1.05M for Codex: {ctx_line!r}"
     )
+    note_line = next((l for l in lines if "ChatGPT OAuth uses Codex backend limits" in l), "")
+    assert "direct OpenAI API can expose larger context windows" in note_line
 
 
 def test_picker_path_shows_vendor_value_when_no_provider_cap(monkeypatch):
@@ -118,6 +121,7 @@ def test_picker_path_shows_vendor_value_when_no_provider_cap(monkeypatch):
     assert "1,050,000" in ctx_line, (
         f"OpenRouter gpt-5.5 should show 1.05M context, got: {ctx_line!r}"
     )
+    assert "(detected)" in ctx_line
 
 
 def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
@@ -150,3 +154,26 @@ def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
     assert "1,050,000" in ctx_line, (
         f"resolver-empty path should fall back to ModelInfo, got: {ctx_line!r}"
     )
+    assert "(detected)" in ctx_line
+
+
+def test_picker_path_omits_codex_note_on_other_providers(monkeypatch):
+    result = ModelSwitchResult(
+        success=True,
+        new_model="openai/gpt-5.5",
+        target_provider="openrouter",
+        provider_changed=True,
+        api_key="",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="chat_completions",
+        warning_message="",
+        provider_label="OpenRouter",
+        resolved_via_alias=False,
+        capabilities=None,
+        model_info=_FakeModelInfo(),
+        is_global=False,
+    )
+    with patch("agent.model_metadata.get_model_context_length", return_value=1_050_000):
+        lines = _run_display(monkeypatch, result)
+
+    assert not any("ChatGPT OAuth uses Codex backend limits" in l for l in lines)

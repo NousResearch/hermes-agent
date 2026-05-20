@@ -195,6 +195,88 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesWifiAccessPointDetailAndAnalyzerSummaryRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        JSONObject()
+                            .put("title", "Wi-Fi AP Details")
+                            .put("body", "AP details.")
+                            .put("graph_type", "wifi_access_point_detail")
+                            .put(
+                                "rows",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("display_ssid", "HermesNet")
+                                        .put("bssid", "AC:BC:32:12:34:56")
+                                        .put("bssid_vendor", "Apple")
+                                        .put("rssi_dbm", -41)
+                                        .put("frequency_mhz", 5180)
+                                        .put("channel", 36)
+                                        .put("band", "5GHz")
+                                        .put("channel_width", "80MHz")
+                                        .put("wifi_standard", "802.11ac")
+                                        .put("security_mode", "WPA2")
+                                        .put("estimated_distance_m", 1.25),
+                                ),
+                            ),
+                    )
+                    .put(
+                        JSONObject()
+                            .put("title", "Wi-Fi Security")
+                            .put("body", "Security groups.")
+                            .put("graph_type", "wifi_security_summary")
+                            .put(
+                                "rows",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("security_mode", "WPA2")
+                                        .put("network_count", 2)
+                                        .put("strongest_rssi_dbm", -41)
+                                        .put("bands", JSONArray().put("5GHz"))
+                                        .put("channels", JSONArray().put("36"))
+                                        .put("recommendation", "WPA2 AP group."),
+                                ),
+                            ),
+                    )
+                    .put(
+                        JSONObject()
+                            .put("title", "Wi-Fi Widths")
+                            .put("body", "Width groups.")
+                            .put("graph_type", "wifi_channel_width_summary")
+                            .put(
+                                "rows",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("channel_width", "80MHz")
+                                        .put("channel_width_mhz", 80)
+                                        .put("network_count", 1)
+                                        .put("recommendation", "Wide channel group."),
+                                ),
+                            ),
+                    ),
+            )
+            .toString()
+
+        val cards = extractDiagnosticCards(content)
+        val apRow = cards[0].rows.single()
+        val securityRow = cards[1].rows.single()
+        val widthRow = cards[2].rows.single()
+
+        assertEquals("HermesNet", apRow.label)
+        assertEquals("-41 dBm", apRow.valueLabel)
+        assertTrue(apRow.detail.contains("802.11ac"))
+        assertTrue(apRow.detail.contains("AC:BC:32:12:34:56"))
+        assertEquals("WPA2", securityRow.label)
+        assertEquals("2 APs", securityRow.valueLabel)
+        assertTrue(securityRow.detail.contains("ch 36"))
+        assertEquals("80MHz", widthRow.label)
+        assertTrue(widthRow.detail.contains("80 MHz effective"))
+    }
+
+    @Test
     fun parsesWifiSignalHistoryRowsForExpandableSignalCards() {
         val content = JSONObject()
             .put(

@@ -104,12 +104,38 @@ class NativeToolCallingChatClientTest {
                     .put("recommendation", "Use if this is the highest-scored row."),
             )
         }
+        val accessPointDetails = JSONArray()
+        repeat(20) { index ->
+            accessPointDetails.put(
+                JSONObject()
+                    .put("rank", index + 1)
+                    .put("display_ssid", "Lab-$index")
+                    .put("bssid", "AC:BC:32:00:00:$index")
+                    .put("bssid_oui", "AC:BC:32")
+                    .put("bssid_vendor", "Apple")
+                    .put("rssi_dbm", -30 - index)
+                    .put("signal_quality", "excellent")
+                    .put("frequency_mhz", 5180)
+                    .put("channel", 36)
+                    .put("channel_width", "80MHz")
+                    .put("channel_width_mhz", 80)
+                    .put("wifi_standard", "802.11ac")
+                    .put("security_mode", "WPA2")
+                    .put("estimated_distance_m", 1.2),
+            )
+        }
         val result = JSONObject()
             .put("success", true)
             .put("action", "wifi_scan")
             .put("wifi_vendor_count", 1)
             .put("wifi_filter_count", 4)
+            .put("wifi_access_point_detail_count", 20)
+            .put("wifi_security_summary_count", 1)
+            .put("wifi_width_summary_count", 1)
+            .put("wifi_standard_summary_count", 1)
             .put("wifi_networks", networks)
+            .put("wifi_access_point_details", accessPointDetails)
+            .put("wifi_access_point_export", JSONObject().put("format", "json").put("row_count", 20).put("json_array_key", "wifi_access_point_details"))
             .put("wifi_channel_ratings", channelRatings)
             .put(
                 "wifi_vendor_summary",
@@ -132,6 +158,18 @@ class NativeToolCallingChatClientTest {
                 ),
             )
             .put(
+                "wifi_security_summary",
+                JSONArray().put(JSONObject().put("security_mode", "WPA2").put("network_count", 60).put("strongest_rssi_dbm", -30)),
+            )
+            .put(
+                "wifi_channel_width_summary",
+                JSONArray().put(JSONObject().put("channel_width", "80MHz").put("channel_width_mhz", 80).put("network_count", 60)),
+            )
+            .put(
+                "wifi_standard_summary",
+                JSONArray().put(JSONObject().put("wifi_standard", "802.11ac").put("network_count", 60)),
+            )
+            .put(
                 "recommended_wifi_channels",
                 JSONArray().put(JSONObject().put("band", "2.4GHz").put("channel", 11).put("score", 96)),
             )
@@ -141,24 +179,36 @@ class NativeToolCallingChatClientTest {
         val compacted = NativeToolContextCompressor.compactToolResult(result)
         val parsed = JSONObject(compacted)
         val wifiNetworks = parsed.getJSONObject("wifi_networks")
+        val wifiDetails = parsed.getJSONObject("wifi_access_point_details")
         val wifiRatings = parsed.getJSONObject("wifi_channel_ratings")
         val vendorSummary = parsed.getJSONArray("wifi_vendor_summary")
         val analyzerFilters = parsed.getJSONArray("wifi_analyzer_filters")
+        val securitySummary = parsed.getJSONArray("wifi_security_summary")
+        val widthSummary = parsed.getJSONArray("wifi_channel_width_summary")
+        val standardSummary = parsed.getJSONArray("wifi_standard_summary")
 
         assertTrue(parsed.getBoolean("_hermes_context_compressed"))
         assertEquals(1, parsed.getInt("wifi_vendor_count"))
         assertEquals(4, parsed.getInt("wifi_filter_count"))
+        assertEquals(20, parsed.getInt("wifi_access_point_detail_count"))
         assertEquals("array", wifiNetworks.getString("type"))
         assertEquals(60, wifiNetworks.getInt("original_count"))
         assertEquals(8, wifiNetworks.getJSONArray("items").length())
         assertEquals("Lab-0", wifiNetworks.getJSONArray("items").getJSONObject(0).getString("ssid"))
         assertEquals("Apple", wifiNetworks.getJSONArray("items").getJSONObject(0).getString("bssid_vendor"))
         assertEquals("WPA2", wifiNetworks.getJSONArray("items").getJSONObject(0).getString("security_mode"))
+        assertEquals("array", wifiDetails.getString("type"))
+        assertEquals(20, wifiDetails.getInt("original_count"))
+        assertEquals("802.11ac", wifiDetails.getJSONArray("items").getJSONObject(0).getString("wifi_standard"))
+        assertEquals(80, wifiDetails.getJSONArray("items").getJSONObject(0).getInt("channel_width_mhz"))
         assertEquals("array", wifiRatings.getString("type"))
         assertEquals(20, wifiRatings.getInt("original_count"))
         assertEquals(1, wifiRatings.getJSONArray("items").getJSONObject(0).getInt("channel"))
         assertEquals("Apple", vendorSummary.getJSONObject(0).getString("vendor"))
         assertEquals("security", analyzerFilters.getJSONObject(0).getString("key"))
+        assertEquals("WPA2", securitySummary.getJSONObject(0).getString("security_mode"))
+        assertEquals("80MHz", widthSummary.getJSONObject(0).getString("channel_width"))
+        assertEquals("802.11ac", standardSummary.getJSONObject(0).getString("wifi_standard"))
         assertEquals(11, parsed.getJSONArray("recommended_wifi_channels").getJSONObject(0).getInt("channel"))
         assertEquals("Wi-Fi Analyzer", parsed.getJSONArray("cards").getJSONObject(0).getString("title"))
     }

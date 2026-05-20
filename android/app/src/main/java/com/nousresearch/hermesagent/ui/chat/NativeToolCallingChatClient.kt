@@ -1237,11 +1237,13 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, channel ratings, signal history, vendor/OUI metadata and filter facets, nearby Bluetooth devices plus service/manufacturer/proximity metadata, camera capability, sensors with range/resolution/power/sampling-rate metadata, overlay status, SOC/GPU compatibility context, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, channel ratings, access-point detail/export rows, signal history, vendor/OUI metadata and filter facets, nearby Bluetooth devices plus service/manufacturer/proximity metadata, camera capability, sensors with range/resolution/power/sampling-rate metadata, overlay status, SOC/GPU compatibility context, tool catalog, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_channel_rating, bluetooth_scan, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
+                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_channel_rating, wifi_ap_details, wifi_export, bluetooth_scan, sensor_snapshot, camera_status, radio_signal_status, signal_capability_status, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
-                        .put("refresh", boolProp("For wifi_scan or bluetooth_scan, request Android to refresh scan results before reading available results."))
+                        .put("detail_limit", intProp("Maximum Wi-Fi access-point detail/export rows. Defaults to limit, or the Wi-Fi max for wifi_ap_details/wifi_export."))
+                        .put("export_format", stringProp("Wi-Fi export format for wifi_export: json, csv, or both."))
+                        .put("refresh", boolProp("For wifi_scan, wifi_export, wifi_ap_details, or bluetooth_scan, request Android to refresh scan results before reading available results."))
                         .put("sensor_types", stringProp("Comma-separated sensor types such as accelerometer, gyroscope, magnetic_field, light, proximity; returned rows include sensor range, resolution, power, FIFO, wake-up, and sampling-rate metadata when Android exposes it."))
                         .put("timeout_ms", intProp("Sensor or Bluetooth sampling timeout in milliseconds."))
                         .put("message", stringProp("Overlay message for show_active_overlay."))
@@ -3138,7 +3140,10 @@ internal object NativeToolContextCompressor {
             if (key.startsWith("_") || fallback.has(key)) continue
             when (val value = compacted.opt(key)) {
                 is String, is Number, is Boolean -> fallback.put(key, value)
-                is JSONArray -> if (key == "cards") fallback.put(key, value)
+                is JSONArray -> if (key == "cards" || key in PRESERVED_ARRAY_KEYS) fallback.put(key, value)
+                is JSONObject -> if (key in PRESERVED_ARRAY_KEYS || key == "wifi_scan_status" || key == "wifi_access_point_export") {
+                    fallback.put(key, value)
+                }
             }
         }
         return fallback.toString()
@@ -3245,9 +3250,14 @@ internal object NativeToolContextCompressor {
                 "cwd",
                 "result_count",
                 "total_scan_result_count",
+                "wifi_scan_age_ms",
                 "wifi_vendor_count",
                 "wifi_filter_count",
                 "wifi_history_network_count",
+                "wifi_access_point_detail_count",
+                "wifi_security_summary_count",
+                "wifi_width_summary_count",
+                "wifi_standard_summary_count",
                 "camera_count",
                 "sensor_count",
                 "sensor_capability_count",
@@ -3307,11 +3317,15 @@ internal object NativeToolContextCompressor {
         "top_memory_apps",
         "top_storage_apps",
         "wifi_networks",
+        "wifi_access_point_details",
         "wifi_channel_ratings",
         "recommended_wifi_channels",
         "wifi_band_summary",
         "wifi_vendor_summary",
         "wifi_analyzer_filters",
+        "wifi_security_summary",
+        "wifi_channel_width_summary",
+        "wifi_standard_summary",
         "wifi_signal_history",
         "bluetooth_devices",
         "bluetooth_metadata_summary",
@@ -3357,11 +3371,26 @@ internal object NativeToolContextCompressor {
         "memory_label",
         "storage_label",
         "ssid",
+        "display_ssid",
+        "hidden_ssid",
+        "bssid",
+        "bssid_oui",
         "bssid_vendor",
         "rssi_dbm",
+        "signal_quality",
         "frequency_mhz",
         "channel",
+        "channel_width",
+        "channel_width_mhz",
+        "wifi_standard",
         "security_mode",
+        "estimated_distance_m",
+        "estimated_distance_meters",
+        "center_freq0_mhz",
+        "center_freq1_mhz",
+        "passpoint_network",
+        "80211mc_responder",
+        "scan_age_ms",
         "frequency_hint_mhz",
         "sample_count",
         "current_rssi_dbm",
@@ -3386,6 +3415,15 @@ internal object NativeToolContextCompressor {
         "value",
         "count",
         "options",
+        "bands",
+        "channels",
+        "sample_widths",
+        "csv_key",
+        "json_array_key",
+        "included_fields",
+        "generated_at_ms",
+        "row_count",
+        "format",
         "device_name",
         "advertised_name",
         "address",

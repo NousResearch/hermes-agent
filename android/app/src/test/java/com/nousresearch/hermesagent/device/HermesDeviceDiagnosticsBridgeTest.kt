@@ -96,6 +96,65 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun buildsWifiAccessPointExportRowsAndAnalyzerSummaries() {
+        val networks = JSONArray()
+            .put(
+                JSONObject()
+                    .put("ssid", "HermesNet")
+                    .put("display_ssid", "HermesNet")
+                    .put("bssid", "AC:BC:32:12:34:56")
+                    .put("bssid_oui", "AC:BC:32")
+                    .put("bssid_vendor", "Apple")
+                    .put("rssi_dbm", -41)
+                    .put("frequency_mhz", 5180)
+                    .put("channel", 36)
+                    .put("band", "5GHz")
+                    .put("channel_width", "80MHz")
+                    .put("channel_width_mhz", 80)
+                    .put("wifi_standard", "802.11ac")
+                    .put("security_mode", "WPA2")
+                    .put("capabilities", "[WPA2-PSK-CCMP][ESS]")
+                    .put("estimated_distance_meters", 1.25),
+            )
+            .put(
+                JSONObject()
+                    .put("ssid", "Lab, Guest")
+                    .put("display_ssid", "Lab, Guest")
+                    .put("bssid", "DA:A1:19:65:43:21")
+                    .put("rssi_dbm", -72)
+                    .put("frequency_mhz", 2412)
+                    .put("channel", 1)
+                    .put("band", "2.4GHz")
+                    .put("channel_width", "20MHz")
+                    .put("wifi_standard", "802.11n")
+                    .put("security_mode", "Open")
+                    .put("capabilities", "[ESS]"),
+            )
+
+        val details = HermesDeviceDiagnosticsBridge.wifiAccessPointDetailRows(networks, limit = 10)
+        val export = HermesDeviceDiagnosticsBridge.wifiAccessPointExportJson(details, "both", generatedAtMs = 1234L)
+        val csv = HermesDeviceDiagnosticsBridge.wifiAccessPointCsv(details)
+        val security = HermesDeviceDiagnosticsBridge.wifiSecuritySummaryJson(networks)
+        val widths = HermesDeviceDiagnosticsBridge.wifiChannelWidthSummaryJson(networks)
+        val standards = HermesDeviceDiagnosticsBridge.wifiStandardSummaryJson(networks)
+
+        assertEquals(2, details.length())
+        assertEquals(1, details.getJSONObject(0).getInt("rank"))
+        assertEquals("HermesNet", details.getJSONObject(0).getString("display_ssid"))
+        assertEquals(80, details.getJSONObject(0).getInt("channel_width_mhz"))
+        assertEquals("802.11ac", details.getJSONObject(0).getString("wifi_standard"))
+        assertEquals("both", export.getString("format"))
+        assertEquals(2, export.getInt("row_count"))
+        assertEquals("wifi_access_point_export_csv", export.getString("csv_key"))
+        assertTrue(csv.startsWith("rank,display_ssid,hidden_ssid"))
+        assertTrue(csv.contains("\"Lab, Guest\""))
+        assertEquals("WPA2", security.getJSONObject(0).getString("security_mode"))
+        assertTrue(security.getJSONObject(1).getString("recommendation").contains("Open AP group"))
+        assertEquals("80MHz", widths.getJSONObject(0).getString("channel_width"))
+        assertEquals("802.11ac", standards.getJSONObject(0).getString("wifi_standard"))
+    }
+
+    @Test
     fun buildsWifiSignalHistoryRowsForTrendCards() {
         val firstScan = JSONArray().put(
             JSONObject()
@@ -324,6 +383,8 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(names.contains("hindsight_memory_tool"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("top_apps"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_channel_rating"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_ap_details"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_export"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_scan"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_status"))
         assertTrue(result.getJSONObject("hindsight_memory_translation").has("retain"))

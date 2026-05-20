@@ -60,8 +60,12 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
             val row = rows.optJSONObject(index) ?: continue
             val parsed = when (graphType) {
                 "wifi_channel_strength" -> wifiRow(row)
+                "wifi_access_point_detail" -> wifiAccessPointDetailRow(row)
                 "wifi_channel_rating" -> wifiChannelRatingRow(row)
                 "wifi_vendor_summary" -> wifiVendorSummaryRow(row)
+                "wifi_security_summary" -> wifiSecuritySummaryRow(row)
+                "wifi_channel_width_summary" -> wifiChannelWidthSummaryRow(row)
+                "wifi_standard_summary" -> wifiStandardSummaryRow(row)
                 "wifi_signal_history" -> wifiSignalHistoryRow(row)
                 "bluetooth_rssi" -> bluetoothRow(row)
                 "bluetooth_metadata_summary" -> bluetoothMetadataSummaryRow(row)
@@ -95,6 +99,33 @@ private fun wifiRow(row: JSONObject): DiagnosticGraphRow? {
         valueLabel = "$rssi dBm",
         detail = detail.ifBlank { "Wi-Fi signal" },
         fraction = dbmFraction(rssi),
+    )
+}
+
+private fun wifiAccessPointDetailRow(row: JSONObject): DiagnosticGraphRow? {
+    val rssi = row.optNumber("rssi_dbm")?.toInt()
+    val ssid = row.optString("display_ssid").takeIf { it.isNotBlank() }
+        ?: row.optString("ssid").takeIf { it.isNotBlank() }
+        ?: row.optString("bssid").ifBlank { "Wi-Fi AP" }
+    val distance = row.optNumber("estimated_distance_m")?.toDouble()
+        ?: row.optNumber("estimated_distance_meters")?.toDouble()
+    val channel = row.opt("channel").takeUnless { it == null || it == JSONObject.NULL }?.toString()
+    val detail = listOfNotNull(
+        channel?.let { "ch $it" },
+        row.optNumber("frequency_mhz")?.toInt()?.let { "$it MHz" },
+        row.optString("band").takeIf { it.isNotBlank() && it != "unknown" },
+        row.optString("channel_width").takeIf { it.isNotBlank() && it != "unknown" },
+        row.optString("wifi_standard").takeIf { it.isNotBlank() && it != "unknown" },
+        row.optString("security_mode").takeIf { it.isNotBlank() },
+        row.optString("bssid_vendor").takeIf { it.isNotBlank() && it != "Unknown vendor" },
+        row.optString("bssid").takeIf { it.isNotBlank() },
+        distance?.let { "~${formatDecimal(it, 1)} m" },
+    ).joinToString(" | ")
+    return DiagnosticGraphRow(
+        label = ssid,
+        valueLabel = rssi?.let { "$it dBm" } ?: row.optString("signal_quality").ifBlank { "AP" },
+        detail = detail.ifBlank { "Wi-Fi access point detail" },
+        fraction = rssi?.let(::dbmFraction) ?: 0.25f,
     )
 }
 
@@ -143,6 +174,61 @@ private fun wifiVendorSummaryRow(row: JSONObject): DiagnosticGraphRow? {
         label = vendor,
         valueLabel = "$count AP${if (count == 1) "" else "s"}",
         detail = detail.ifBlank { "Wi-Fi vendor/OUI group" },
+        fraction = strongestRssi?.let(::dbmFraction) ?: (count / 8f).coerceIn(0.1f, 1f),
+    )
+}
+
+private fun wifiSecuritySummaryRow(row: JSONObject): DiagnosticGraphRow? {
+    val security = row.optString("security_mode").takeIf { it.isNotBlank() } ?: return null
+    val count = row.optNumber("network_count")?.toInt() ?: return null
+    val strongestRssi = row.optNumber("strongest_rssi_dbm")?.toInt()
+    val detail = listOfNotNull(
+        joinJsonStrings(row.optJSONArray("bands"), 3).takeIf { it.isNotBlank() },
+        joinJsonStrings(row.optJSONArray("channels"), 4).takeIf { it.isNotBlank() }?.let { "ch $it" },
+        strongestRssi?.let { "strongest $it dBm" },
+        row.optString("recommendation").takeIf { it.isNotBlank() },
+    ).joinToString(" | ")
+    return DiagnosticGraphRow(
+        label = security,
+        valueLabel = "$count AP${if (count == 1) "" else "s"}",
+        detail = detail.ifBlank { "Wi-Fi security group" },
+        fraction = strongestRssi?.let(::dbmFraction) ?: (count / 8f).coerceIn(0.1f, 1f),
+    )
+}
+
+private fun wifiChannelWidthSummaryRow(row: JSONObject): DiagnosticGraphRow? {
+    val width = row.optString("channel_width").takeIf { it.isNotBlank() } ?: return null
+    val count = row.optNumber("network_count")?.toInt() ?: return null
+    val strongestRssi = row.optNumber("strongest_rssi_dbm")?.toInt()
+    val detail = listOfNotNull(
+        row.optNumber("channel_width_mhz")?.toInt()?.let { "$it MHz effective" },
+        joinJsonStrings(row.optJSONArray("bands"), 3).takeIf { it.isNotBlank() },
+        joinJsonStrings(row.optJSONArray("channels"), 4).takeIf { it.isNotBlank() }?.let { "ch $it" },
+        strongestRssi?.let { "strongest $it dBm" },
+        row.optString("recommendation").takeIf { it.isNotBlank() },
+    ).joinToString(" | ")
+    return DiagnosticGraphRow(
+        label = width,
+        valueLabel = "$count AP${if (count == 1) "" else "s"}",
+        detail = detail.ifBlank { "Wi-Fi channel width group" },
+        fraction = strongestRssi?.let(::dbmFraction) ?: (count / 8f).coerceIn(0.1f, 1f),
+    )
+}
+
+private fun wifiStandardSummaryRow(row: JSONObject): DiagnosticGraphRow? {
+    val standard = row.optString("wifi_standard").takeIf { it.isNotBlank() } ?: return null
+    val count = row.optNumber("network_count")?.toInt() ?: return null
+    val strongestRssi = row.optNumber("strongest_rssi_dbm")?.toInt()
+    val detail = listOfNotNull(
+        joinJsonStrings(row.optJSONArray("bands"), 3).takeIf { it.isNotBlank() },
+        joinJsonStrings(row.optJSONArray("sample_widths"), 3).takeIf { it.isNotBlank() },
+        strongestRssi?.let { "strongest $it dBm" },
+        row.optString("recommendation").takeIf { it.isNotBlank() },
+    ).joinToString(" | ")
+    return DiagnosticGraphRow(
+        label = standard,
+        valueLabel = "$count AP${if (count == 1) "" else "s"}",
+        detail = detail.ifBlank { "Wi-Fi standard group" },
         fraction = strongestRssi?.let(::dbmFraction) ?: (count / 8f).coerceIn(0.1f, 1f),
     )
 }
@@ -318,6 +404,15 @@ private fun genericRow(row: JSONObject, index: Int): DiagnosticGraphRow {
 }
 
 private fun dbmFraction(dbm: Int): Float = ((dbm + 100f) / 70f).coerceIn(0.05f, 1f)
+
+private fun joinJsonStrings(values: JSONArray?, limit: Int): String {
+    if (values == null) return ""
+    return buildList {
+        for (index in 0 until minOf(values.length(), limit)) {
+            values.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+        }
+    }.joinToString(", ")
+}
 
 private fun radioRangeLabel(row: JSONObject): String? {
     val minKhz = row.optNumber("frequency_min_khz")?.toInt()

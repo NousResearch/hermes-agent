@@ -46,6 +46,14 @@ USAGE
 
 die() { echo "error: $1" >&2; exit 1; }
 
+should_exclude_publish_path() {
+  local rel="$1"
+  [[ "$rel" == ".DS_Store" ]] && return 0
+  [[ "$(basename "$rel")" == ".DS_Store" ]] && return 0
+  [[ "$rel" == ".herenow" || "$rel" == .herenow/* ]] && return 0
+  return 1
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUNDLED_JQ="${SKILL_DIR}/bin/jq"
@@ -205,9 +213,12 @@ guess_content_type() {
 FILES_JSON="[]"
 
 if [[ -f "$TARGET" ]]; then
+  bn=$(basename "$TARGET")
+  if should_exclude_publish_path "$bn" || [[ "$TARGET" == .herenow/* || "$TARGET" == */.herenow/* ]]; then
+    die "refusing to publish internal here.now state file: $TARGET"
+  fi
   sz=$(wc -c < "$TARGET" | tr -d ' ')
   ct=$(guess_content_type "$TARGET")
-  bn=$(basename "$TARGET")
   h=$(compute_sha256 "$TARGET")
   FILES_JSON=$("$JQ_BIN" -n --arg p "$bn" --argjson s "$sz" --arg c "$ct" --arg h "$h" \
     '[{"path":$p,"size":$s,"contentType":$c,"hash":$h}]')
@@ -217,9 +228,7 @@ elif [[ -d "$TARGET" ]]; then
   FILE_MAP="{}"
   while IFS= read -r -d '' f; do
     rel="${f#$TARGET/}"
-    [[ "$rel" == ".DS_Store" ]] && continue
-    [[ "$(basename "$rel")" == ".DS_Store" ]] && continue
-    [[ "$rel" == ".herenow/fork-meta.json" ]] && continue
+    should_exclude_publish_path "$rel" && continue
     sz=$(wc -c < "$f" | tr -d ' ')
     ct=$(guess_content_type "$f")
     h=$(compute_sha256 "$f")
@@ -383,6 +392,7 @@ fi
 
 # Save state
 mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR" 2>/dev/null || true
 if [[ -f "$STATE_FILE" ]]; then
   STATE=$(cat "$STATE_FILE")
 else
@@ -400,7 +410,10 @@ RESPONSE_EXPIRES=$(echo "$RESPONSE" | "$JQ_BIN" -r '.expiresAt // empty')
 [[ -n "$RESPONSE_EXPIRES" ]] && entry=$(echo "$entry" | "$JQ_BIN" --arg v "$RESPONSE_EXPIRES" '.expiresAt = $v')
 
 STATE=$(echo "$STATE" | "$JQ_BIN" --arg slug "$OUT_SLUG" --argjson e "$entry" '.publishes[$slug] = $e')
-echo "$STATE" | "$JQ_BIN" '.' > "$STATE_FILE"
+STATE_TMP=$(mktemp "$STATE_DIR/state.json.XXXXXX")
+echo "$STATE" | "$JQ_BIN" '.' > "$STATE_TMP"
+chmod 600 "$STATE_TMP" 2>/dev/null || true
+mv "$STATE_TMP" "$STATE_FILE"
 
 # Output
 echo "$SITE_URL"

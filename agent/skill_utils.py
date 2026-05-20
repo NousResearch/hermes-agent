@@ -24,7 +24,7 @@ PLATFORM_MAP = {
     "windows": "win32",
 }
 
-EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
+EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".claude"))
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 

@@ -1831,9 +1831,10 @@ class TestPluginAPIAuth:
 
     @pytest.fixture(autouse=True)
     def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
-        """Create a TestClient without the session token header."""
+        """Create a TestClient with a guaranteed-mounted test plugin."""
         try:
             from starlette.testclient import TestClient
+            from fastapi import APIRouter
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
@@ -1842,6 +1843,28 @@ class TestPluginAPIAuth:
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+
+        # Create a minimal test plugin router
+        test_router = APIRouter()
+        
+        @test_router.get("/test")
+        async def test_route():
+            return {"ok": True}
+        
+        # Remove the SPA catch-all route (it's the last one added)
+        spa_route = None
+        if app.routes and hasattr(app.routes[-1], 'path'):
+            # The SPA catch-all is typically /{full_path:path} or similar
+            last_route = app.routes[-1]
+            if '{' in getattr(last_route, 'path', ''):
+                spa_route = app.routes.pop()
+        
+        # Mount the test router
+        app.include_router(test_router, prefix="/api/plugins/auth-test")
+        
+        # Re-add the SPA catch-all at the end
+        if spa_route:
+            app.routes.append(spa_route)
 
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
@@ -1856,20 +1879,16 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Use ``/api/plugins/hermes-achievements/scan-status`` — a stable,
-        side-effect-free GET that reads in-process scan state with no DB or
-        external dependencies. With a valid token the middleware should
-        allow the request through to routing/handler resolution (200 when
-        the plugin is enabled, 404 when it is not); without one the
-        middleware should 401 before route matching.
+        Use a test plugin route that is guaranteed to be mounted, so we can
+        assert 200 specifically rather than accepting 200 or 404.
         """
         # Without auth: middleware blocks before reaching the handler.
-        resp = self.client.get("/api/plugins/hermes-achievements/scan-status")
+        resp = self.client.get("/api/plugins/auth-test/test")
         assert resp.status_code == 401
 
-        # With auth: request reaches router/handler resolution (not blocked).
-        resp = self.auth_client.get("/api/plugins/hermes-achievements/scan-status")
-        assert resp.status_code in (200, 404)
+        # With auth: handler runs and returns 200.
+        resp = self.auth_client.get("/api/plugins/auth-test/test")
+        assert resp.status_code == 200
 
     def test_plugin_post_requires_auth(self):
         """Plugin POST routes should return 401 without a valid session token."""

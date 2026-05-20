@@ -719,7 +719,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
 
                 cleanup_all_environments()
             except Exception as e:
-                logger.error("Failed to clean up environments: %s", e)
+                logger.exception("Failed to clean up environments: %s", e)
             if hasattr(self, "_streaming_file") and not self._streaming_file.closed:
                 self._streaming_file.close()
             return
@@ -815,14 +815,14 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
 
             cleanup_all_environments()
         except Exception as e:
-            logger.error("Failed to clean up environments: %s", e)
+            logger.exception("Failed to clean up environments: %s", e)
 
         try:
             from environments.agent_loop import _tool_executor
 
             _tool_executor.shutdown(wait=False, cancel_futures=True)
         except Exception as e:
-            logger.error("Failed to shut down tool executor: %s", e)
+            logger.exception("Failed to shut down tool executor: %s", e)
 
     # =========================================================================
     # Wandb logging

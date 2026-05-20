@@ -441,6 +441,30 @@ class TestCleanup:
         assert (sync_root / "result.txt").read_bytes() == b"workspace-result"
 
 
+class TestUploadGuards:
+    def test_bulk_upload_refuses_files_above_sync_limit(
+        self, make_env, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setenv("TERMINAL_FILE_SYNC_MAX_MB", "1")
+        sb = _make_sandbox()
+        env = make_env(persistent=False, sandbox=sb)
+
+        small = tmp_path / "small.txt"
+        small.write_text("ok", encoding="utf-8")
+        large = tmp_path / "large.bin"
+        large.write_bytes(b"x" * (1024 * 1024 + 1))
+        exec_calls_before = sb.process.exec.call_count
+
+        with pytest.raises(RuntimeError, match="TERMINAL_FILE_SYNC_MAX_MB=1MB"):
+            env._blaxel_bulk_upload([
+                (str(small), "/root/small.txt"),
+                (str(large), "/root/large.bin"),
+            ])
+
+        assert sb.process.exec.call_count == exec_calls_before
+        sb.fs.write_binary.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Execute (short timeout — blocking path)
 # ---------------------------------------------------------------------------

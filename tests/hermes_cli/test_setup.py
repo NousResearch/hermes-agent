@@ -627,6 +627,61 @@ def test_blaxel_setup_prompts_only_effective_resource_knobs(tmp_path, monkeypatc
     assert os.environ["BL_WORKSPACE"] == "workspace"
 
 
+def test_blaxel_setup_installs_project_extra_when_sdk_missing(tmp_path, monkeypatch):
+    import builtins
+    import subprocess
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_blaxel_env(monkeypatch)
+    config = load_config()
+
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "blaxel":
+            raise ImportError("missing blaxel")
+        return original_import(name, *args, **kwargs)
+
+    ran = []
+
+    def fake_run(cmd, capture_output, text):
+        ran.append(cmd)
+        return types.SimpleNamespace(returncode=0, stderr="")
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            return 6
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    prompt_values = iter([
+        "blaxel-key",
+        "workspace",
+        "blaxel/base-image:latest",
+        "yes",
+        "",
+        "",
+    ])
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr("hermes_cli.setup.shutil.which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert ran == [[
+        "/usr/bin/uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "hermes-agent[blaxel]",
+    ]]
+
+
 def test_setup_slack_saves_home_channel(monkeypatch):
     """_setup_slack() saves SLACK_HOME_CHANNEL when the user provides one."""
     saved = {}

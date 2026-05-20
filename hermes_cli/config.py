@@ -354,7 +354,14 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import (  # noqa: F811,E402
+    BLAXEL_DEFAULT_IMAGE,
+    BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_DEFAULT_REGION,
+    BLAXEL_DEFAULT_TTL,
+    BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+    get_hermes_home,
+)
 from utils import atomic_replace
 
 def get_config_path() -> Path:
@@ -634,12 +641,12 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "blaxel_image": "blaxel/base-image:latest",
-        "blaxel_ttl": "24h",
+        "blaxel_image": BLAXEL_DEFAULT_IMAGE,
+        "blaxel_ttl": BLAXEL_DEFAULT_TTL,
         "vercel_runtime": "node24",
         # Shared container resource limits. Blaxel applies backend-specific
-        # defaults at setup/runtime when selected: 4096 MB memory and a
-        # 10240 MB persistent volume unless the user overrides these keys.
+        # defaults at setup/runtime when selected unless the user overrides
+        # these keys.
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -4262,12 +4269,12 @@ def _apply_backend_terminal_defaults(
             "container_memory" not in user_terminal
             and terminal.get("container_memory") == DEFAULT_CONFIG["terminal"]["container_memory"]
         ):
-            terminal["container_memory"] = 4096
+            terminal["container_memory"] = BLAXEL_DEFAULT_MEMORY_MB
         if (
             "container_disk" not in user_terminal
             and terminal.get("container_disk") == DEFAULT_CONFIG["terminal"]["container_disk"]
         ):
-            terminal["container_disk"] = 10240
+            terminal["container_disk"] = BLAXEL_DEFAULT_VOLUME_SIZE_MB
 
     config["terminal"] = terminal
     return config
@@ -5088,10 +5095,10 @@ def show_config():
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
     elif terminal.get('backend') == 'blaxel':
-        print(f"  Blaxel image: {terminal.get('blaxel_image', 'blaxel/base-image:latest')}")
+        print(f"  Blaxel image: {terminal.get('blaxel_image', BLAXEL_DEFAULT_IMAGE)}")
         bl_key = get_env_value('BL_API_KEY')
         bl_workspace = get_env_value('BL_WORKSPACE')
-        bl_region = get_env_value('BL_REGION') or 'us-pdx-1'
+        bl_region = get_env_value('BL_REGION') or BLAXEL_DEFAULT_REGION
         print(f"  API key:      {'configured' if bl_key else '(not set)'}")
         print(f"  Workspace:    {bl_workspace or '(not set)'}")
         print(f"  Region:       {bl_region}")

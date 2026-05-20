@@ -44,6 +44,8 @@ import threading
 import time
 import uuid
 
+from hermes_constants import BLAXEL_DEFAULT_TTL
+
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
@@ -621,7 +623,7 @@ def _get_or_create_env(task_id: str):
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
                 "vercel_runtime": config.get("vercel_runtime", ""),
-                "blaxel_ttl": config.get("blaxel_ttl", "24h"),
+                "blaxel_ttl": config.get("blaxel_ttl", BLAXEL_DEFAULT_TTL),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
             }

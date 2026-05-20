@@ -21,7 +21,15 @@ import time
 import uuid
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    BLAXEL_DEFAULT_CWD,
+    BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_DEFAULT_REGION,
+    BLAXEL_DEFAULT_TTL,
+    BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+    BLAXEL_WORKSPACE_SYNC_MAX_MB,
+    get_hermes_home,
+)
 from tools.environments.base import (
     BaseEnvironment,
     _ThreadedProcessHandle,
@@ -50,7 +58,7 @@ _BLAXEL_VOLUME_MOUNT_PATH = "/blaxel/persistent"
 _BLAXEL_RESOURCE_MAX_LENGTH = 40
 _BLAXEL_LABEL_MAX_LENGTH = 63
 _BLAXEL_HASH_LENGTH = 8
-_WORKSPACE_SYNC_MAX_MB = 100
+_WORKSPACE_SYNC_MAX_MB = BLAXEL_WORKSPACE_SYNC_MAX_MB
 _WORKSPACE_SYNC_EXCLUDES = (
     ".git",
     ".hermes",
@@ -94,6 +102,31 @@ def _workspace_sync_max_bytes() -> int:
     except ValueError:
         mb = _WORKSPACE_SYNC_MAX_MB
     return max(1, mb) * 1024 * 1024
+
+
+def _numeric_equal(value: object, expected: float) -> bool:
+    try:
+        return float(value) == expected
+    except (TypeError, ValueError):
+        return False
+
+
+def _guard_blaxel_upload_size(host_path: str, remote_path: str) -> None:
+    max_bytes = _workspace_sync_max_bytes()
+    try:
+        size = Path(host_path).stat().st_size
+    except OSError:
+        return
+    if size <= max_bytes:
+        return
+
+    max_mb = max_bytes // (1024 * 1024)
+    message = (
+        f"Blaxel upload refused for {remote_path}: {size} bytes exceeds "
+        f"TERMINAL_FILE_SYNC_MAX_MB={max_mb}MB"
+    )
+    logger.warning(message)
+    raise RuntimeError(message)
 
 
 def _path_is_relative_to(path: Path, parent: Path) -> bool:
@@ -159,14 +192,14 @@ class BlaxelEnvironment(BaseEnvironment):
     def __init__(
         self,
         image: str,
-        cwd: str = "/blaxel",
+        cwd: str = BLAXEL_DEFAULT_CWD,
         timeout: int = 60,
-        cpu: int = 1,
-        memory: int = 4096,
-        disk: int = 10240,
+        cpu: int | float = 1,
+        memory: int = BLAXEL_DEFAULT_MEMORY_MB,
+        disk: int = BLAXEL_DEFAULT_VOLUME_SIZE_MB,
         persistent_filesystem: bool = True,
         task_id: str = "default",
-        ttl: str = "24h",
+        ttl: str = BLAXEL_DEFAULT_TTL,
     ):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
@@ -200,7 +233,7 @@ class BlaxelEnvironment(BaseEnvironment):
         self._sandbox_name = sandbox_name
         task_label = _blaxel_label_value(task_id)
 
-        bl_region = os.getenv("BL_REGION", "").strip() or "us-pdx-1"
+        bl_region = os.getenv("BL_REGION", "").strip() or BLAXEL_DEFAULT_REGION
 
         # Blaxel sandbox config — see blaxel.core.SandboxCreateConfiguration.
         # Resources: memory in MB. CPU and sandbox disk are not first-class
@@ -218,9 +251,13 @@ class BlaxelEnvironment(BaseEnvironment):
             "labels": {"hermes_task_id": task_label},
         }
 
-        if cpu and int(cpu) != 1:
+        if cpu not in (None, "") and not _numeric_equal(cpu, 1.0):
             logger.info("Blaxel: ignoring cpu=%s (allocated by image profile)", cpu)
-        if disk and int(disk) != 10240 and not self._persistent:
+        if (
+            disk not in (None, "")
+            and int(disk) != BLAXEL_DEFAULT_VOLUME_SIZE_MB
+            and not self._persistent
+        ):
             logger.info("Blaxel: ignoring disk=%s (allocated by image profile)", disk)
 
         # When persistent, ensure a Blaxel volume exists and mount it.
@@ -417,7 +454,8 @@ class BlaxelEnvironment(BaseEnvironment):
         )
 
     def _blaxel_upload(self, host_path: str, remote_path: str) -> None:
-        """Upload a single file via Blaxel SDK (auto-chunks files >5MB)."""
+        """Upload one file after guarding the SDK's bytes-only write path."""
+        _guard_blaxel_upload_size(host_path, remote_path)
         parent = str(Path(remote_path).parent)
         self._sandbox.process.exec({
             "command": f"mkdir -p {shlex.quote(parent)}",
@@ -434,6 +472,8 @@ class BlaxelEnvironment(BaseEnvironment):
         """
         if not files:
             return
+        for host_path, remote_path in files:
+            _guard_blaxel_upload_size(host_path, remote_path)
 
         parents = unique_parent_dirs(files)
         if parents:

@@ -25,7 +25,13 @@ from typing import Optional, Dict, Any
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
-from hermes_constants import get_optional_skills_dir
+from hermes_constants import (
+    BLAXEL_DEFAULT_IMAGE,
+    BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+    BLAXEL_OPTIONAL_DEPENDENCY,
+    get_optional_skills_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -764,26 +770,35 @@ def _prompt_blaxel_sandbox_settings(config: dict):
         "  Persist filesystem on a Blaxel volume? (yes/no)", persist_label
     ).lower() in {"yes", "true", "y", "1"}
 
-    current_mem = terminal.get("container_memory", 4096)
+    current_mem = terminal.get("container_memory", BLAXEL_DEFAULT_MEMORY_MB)
     if current_mem == 5120:
-        current_mem = 4096
-    mem_str = prompt("  Sandbox memory in MB (4096 = 4GB)", str(current_mem))
+        current_mem = BLAXEL_DEFAULT_MEMORY_MB
+    mem_str = prompt(
+        f"  Sandbox memory in MB ({BLAXEL_DEFAULT_MEMORY_MB} = 4GB)",
+        str(current_mem),
+    )
     try:
         terminal["container_memory"] = int(mem_str)
     except ValueError:
         terminal["container_memory"] = current_mem
 
     if terminal["container_persistent"]:
-        current_disk = terminal.get("container_disk", 10240)
+        current_disk = terminal.get("container_disk", BLAXEL_DEFAULT_VOLUME_SIZE_MB)
         if current_disk == 51200:
-            current_disk = 10240
-        disk_str = prompt("  Persistent volume size in MB (10240 = 10GB)", str(current_disk))
+            current_disk = BLAXEL_DEFAULT_VOLUME_SIZE_MB
+        disk_str = prompt(
+            f"  Persistent volume size in MB ({BLAXEL_DEFAULT_VOLUME_SIZE_MB} = 10GB)",
+            str(current_disk),
+        )
         try:
             terminal["container_disk"] = int(disk_str)
         except ValueError:
             terminal["container_disk"] = current_disk
     else:
-        terminal["container_disk"] = terminal.get("container_disk", 10240)
+        terminal["container_disk"] = terminal.get(
+            "container_disk",
+            BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+        )
 
 
 def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
@@ -1735,7 +1750,7 @@ def setup_terminal_backend(config: dict):
         print_info("Workspace-scoped cloud sandboxes with standby/resume.")
         print_info("Sign up at: https://blaxel.ai")
 
-        blaxel_package = "blaxel==0.2.52"
+        blaxel_package = BLAXEL_OPTIONAL_DEPENDENCY
 
         # Check if blaxel SDK is installed
         try:
@@ -1758,7 +1773,7 @@ def setup_terminal_backend(config: dict):
                     text=True,
                 )
             if result.returncode == 0:
-                print_success("blaxel SDK installed")
+                print_success("Blaxel optional dependencies installed")
             else:
                 print_warning("Install failed — run manually: pip install 'hermes-agent[blaxel]'")
                 if result.stderr:
@@ -1787,7 +1802,12 @@ def setup_terminal_backend(config: dict):
             save_env_value("BL_WORKSPACE", workspace)
 
         # Blaxel image
-        current_image = cfg_get(config, "terminal", "blaxel_image", default="blaxel/base-image:latest")
+        current_image = cfg_get(
+            config,
+            "terminal",
+            "blaxel_image",
+            default=BLAXEL_DEFAULT_IMAGE,
+        )
         image = prompt("  Sandbox image", current_image)
         config["terminal"]["blaxel_image"] = image
         save_env_value("TERMINAL_BLAXEL_IMAGE", image)

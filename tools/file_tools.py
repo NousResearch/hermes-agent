@@ -17,6 +17,7 @@ from tools.file_operations import (
 )
 from tools import file_state
 from agent.redact import redact_sensitive_text
+from hermes_constants import BLAXEL_DEFAULT_TTL
 
 logger = logging.getLogger(__name__)
 
@@ -389,7 +390,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
                     "vercel_runtime": config.get("vercel_runtime", ""),
-                    "blaxel_ttl": config.get("blaxel_ttl", "24h"),
+                    "blaxel_ttl": config.get("blaxel_ttl", BLAXEL_DEFAULT_TTL),
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),

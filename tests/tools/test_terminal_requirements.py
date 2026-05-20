@@ -288,6 +288,31 @@ def test_blaxel_backend_accepts_auth_and_sdk(monkeypatch):
     assert terminal_tool_module.check_terminal_requirements() is True
 
 
+def test_blaxel_backend_invalidates_import_caches_after_lazy_install(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "blaxel")
+    monkeypatch.setenv("BL_API_KEY", "key")
+    monkeypatch.setenv("BL_WORKSPACE", "workspace")
+
+    find_results = iter([None, object()])
+
+    def fake_find_spec(name):
+        assert name == "blaxel"
+        return next(find_results)
+
+    invalidated = []
+    monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.setattr(
+        terminal_tool_module.importlib,
+        "invalidate_caches",
+        lambda: invalidated.append(True),
+    )
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
+    assert terminal_tool_module.check_terminal_requirements() is True
+    assert invalidated == [True]
+
+
 def test_blaxel_backend_defaults_to_4gb_memory(monkeypatch):
     _clear_terminal_env(monkeypatch)
     monkeypatch.setenv("TERMINAL_ENV", "blaxel")
@@ -308,6 +333,34 @@ def test_blaxel_backend_respects_memory_override(monkeypatch):
     monkeypatch.setenv("TERMINAL_CONTAINER_MEMORY", "2048")
 
     assert terminal_tool_module._get_env_config()["container_memory"] == 2048
+
+
+def test_blaxel_create_environment_preserves_fractional_cpu(monkeypatch):
+    captured = {}
+
+    class FakeBlaxelEnvironment:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import tools.environments.blaxel as blaxel_mod
+
+    monkeypatch.setattr(blaxel_mod, "BlaxelEnvironment", FakeBlaxelEnvironment)
+
+    terminal_tool_module._create_environment(
+        "blaxel",
+        "blaxel/base-image:latest",
+        "/blaxel",
+        60,
+        container_config={
+            "container_cpu": 0.5,
+            "container_memory": 4096,
+            "container_disk": 10240,
+            "container_persistent": True,
+        },
+        task_id="fractional-cpu",
+    )
+
+    assert captured["cpu"] == 0.5
 
 
 def test_blaxel_backend_without_sdk_reports_lazy_install_failure(

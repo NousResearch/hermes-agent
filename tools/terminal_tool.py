@@ -47,6 +47,13 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from hermes_constants import (
+    BLAXEL_DEFAULT_CWD,
+    BLAXEL_DEFAULT_IMAGE,
+    BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_DEFAULT_TTL,
+    BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+)
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
@@ -210,6 +217,7 @@ def _check_blaxel_requirements(config: dict[str, Any]) -> bool:
         logger.error("blaxel is required for the Blaxel terminal backend: %s", e)
         return False
 
+    importlib.invalidate_caches()
     if importlib.util.find_spec("blaxel") is None:
         logger.error(
             "blaxel is required for the Blaxel terminal backend: "
@@ -1060,11 +1068,15 @@ def _get_env_config() -> Dict[str, Any]:
     elif env_type == "vercel_sandbox":
         default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
     elif env_type == "blaxel":
-        default_cwd = "/blaxel"
+        default_cwd = BLAXEL_DEFAULT_CWD
     else:
         default_cwd = "/root"
-    default_container_memory = "4096" if env_type == "blaxel" else "5120"
-    default_container_disk = "10240" if env_type == "blaxel" else "51200"
+    default_container_memory = (
+        str(BLAXEL_DEFAULT_MEMORY_MB) if env_type == "blaxel" else "5120"
+    )
+    default_container_disk = (
+        str(BLAXEL_DEFAULT_VOLUME_SIZE_MB) if env_type == "blaxel" else "51200"
+    )
 
     # Read TERMINAL_CWD but sanity-check it for container backends.
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
@@ -1103,8 +1115,8 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
-        "blaxel_image": os.getenv("TERMINAL_BLAXEL_IMAGE", "blaxel/base-image:latest"),
-        "blaxel_ttl": os.getenv("TERMINAL_BLAXEL_TTL", "24h"),
+        "blaxel_image": os.getenv("TERMINAL_BLAXEL_IMAGE", BLAXEL_DEFAULT_IMAGE),
+        "blaxel_ttl": os.getenv("TERMINAL_BLAXEL_TTL", BLAXEL_DEFAULT_TTL),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1282,9 +1294,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         from tools.environments.blaxel import BlaxelEnvironment as _BlaxelEnvironment
         return _BlaxelEnvironment(
             image=image, cwd=cwd, timeout=timeout,
-            cpu=int(cpu), memory=memory, disk=disk,
+            cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
-            ttl=cc.get("blaxel_ttl") or "24h",
+            ttl=cc.get("blaxel_ttl") or BLAXEL_DEFAULT_TTL,
         )
 
     elif env_type == "ssh":
@@ -1872,7 +1884,7 @@ def terminal_tool(
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
                                 "vercel_runtime": config.get("vercel_runtime", ""),
-                                "blaxel_ttl": config.get("blaxel_ttl", "24h"),
+                                "blaxel_ttl": config.get("blaxel_ttl", BLAXEL_DEFAULT_TTL),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),

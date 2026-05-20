@@ -19,7 +19,11 @@ from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import (
+    BLAXEL_DEFAULT_IMAGE,
+    BLAXEL_DEFAULT_REGION,
+    OPENROUTER_MODELS_URL,
+)
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
@@ -381,10 +385,10 @@ def show_status(args):
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
     elif terminal_env == "blaxel":
-        blaxel_image = os.getenv("TERMINAL_BLAXEL_IMAGE") or terminal_cfg.get("blaxel_image") or "blaxel/base-image:latest"
+        blaxel_image = os.getenv("TERMINAL_BLAXEL_IMAGE") or terminal_cfg.get("blaxel_image") or BLAXEL_DEFAULT_IMAGE
         bl_key_set = bool(os.getenv("BL_API_KEY"))
         bl_workspace = os.getenv("BL_WORKSPACE", "")
-        bl_region = os.getenv("BL_REGION", "") or "us-pdx-1"
+        bl_region = os.getenv("BL_REGION", "") or BLAXEL_DEFAULT_REGION
         sdk_ok = importlib.util.find_spec("blaxel") is not None
         sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[blaxel]')"
         print(f"  Blaxel Image: {blaxel_image}")

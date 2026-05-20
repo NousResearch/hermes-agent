@@ -325,3 +325,118 @@ def test_cleanup_scope_is_the_profile_managed_set():
             f"{key} looks credential-shaped; startup scrub must not "
             "cover credentials — read-time secret scoping owns those"
         )
+
+
+# ---------------------------------------------------------------------------
+# config.yaml terminal.* re-apply after dotenv loads (#29186 / #67323)
+#
+# load_hermes_dotenv loads .env with override=True, so a stale
+# TERMINAL_ENV=docker in .env used to silently beat config.yaml's
+# terminal.backend on every reload (gateway per-turn reload, cron standalone
+# runs). The bridge re-applies config.yaml's EXPLICIT terminal keys last via
+# the shared hermes_cli.config.apply_terminal_config_to_env helper.
+# ---------------------------------------------------------------------------
+
+
+def _seed_terminal_home(tmp_path, monkeypatch, *, config_yaml=None, env_text=None):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    if config_yaml is not None:
+        (home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+    if env_text is not None:
+        (home / ".env").write_text(env_text, encoding="utf-8")
+    # The bridge is scoped to the process HERMES_HOME (a different profile's
+    # load must not bridge this process's config), so point the process at
+    # the seeded home like a real gateway/cron process would be.
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def test_config_yaml_terminal_backend_overrides_stale_env(tmp_path, monkeypatch):
+    """Regression for #29186: a leftover TERMINAL_ENV=docker in ~/.hermes/.env
+    must not silently override the user's choice in config.yaml. config.yaml
+    is the documented source of truth, so its value must win after load."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="terminal:\n  backend: local\n",
+        env_text="TERMINAL_ENV=docker\n",
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "local"
+
+
+def test_config_yaml_terminal_backend_overrides_stale_shell(tmp_path, monkeypatch):
+    """config.yaml must also beat a stale TERMINAL_ENV exported in the shell
+    (e.g. set in ~/.zshrc when the user was experimenting with docker)."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="terminal:\n  backend: local\n",
+    )
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "local"
+
+
+def test_no_terminal_section_leaves_env_value_alone(tmp_path, monkeypatch):
+    """When config.yaml has no terminal section, the .env value is still the
+    user's active setting — the bridge must NOT clobber it with merged
+    defaults."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="display:\n  streaming: true\n",
+        env_text="TERMINAL_ENV=docker\n",
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+def test_config_yaml_terminal_omitted_key_does_not_clear_env(tmp_path, monkeypatch):
+    """If config.yaml has a terminal block but no `backend`, the .env value
+    must survive (only explicit config keys override env)."""
+    home = _seed_terminal_home(
+        tmp_path, monkeypatch,
+        config_yaml="terminal:\n  timeout: 600\n",
+        env_text="TERMINAL_ENV=docker\n",
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "docker"
+    assert os.getenv("TERMINAL_TIMEOUT") == "600"
+
+
+def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch):
+    """Loading a DIFFERENT profile's .env must not re-bridge this process's
+    config.yaml — the shared bridge reads the process-global config, so
+    applying it for another home would stamp the wrong profile's terminal
+    settings into the env."""
+    process_home = tmp_path / "process-home"
+    process_home.mkdir()
+    (process_home / "config.yaml").write_text(
+        "terminal:\n  backend: local\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+    other_home = tmp_path / "other-profile"
+    other_home.mkdir()
+    (other_home / ".env").write_text("TERMINAL_ENV=docker\n", encoding="utf-8")
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=other_home)
+
+    # The other profile's .env value stands; the process config was not applied.
+    assert os.getenv("TERMINAL_ENV") == "docker"

@@ -553,7 +553,19 @@ class QQAdapter(BasePlatformAdapter):
                         RATE_LIMIT_DELAY,
                     )
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        self._mark_disconnected()
+                        # Mark retryable so the gateway watcher re-adds us
+                        # to its background reconnect queue (#29005) — a
+                        # bare _mark_disconnected() leaves the listener
+                        # task dead with nothing watching.
+                        self._set_fatal_error(
+                            "qq_reconnect_exhausted",
+                            (
+                                f"Rate-limited reconnect exhausted after "
+                                f"{MAX_RECONNECT_ATTEMPTS} attempts"
+                            ),
+                            retryable=True,
+                        )
+                        await self._notify_fatal_error()
                         return
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     if await self._reconnect(backoff_idx):
@@ -607,7 +619,17 @@ class QQAdapter(BasePlatformAdapter):
                     backoff_idx += 1
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                         logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                        self._mark_disconnected()
+                        # Surface as retryable-fatal so the gateway
+                        # reconnect watcher takes over (#29005).
+                        self._set_fatal_error(
+                            "qq_reconnect_exhausted",
+                            (
+                                f"WebSocket reconnect exhausted after "
+                                f"{MAX_RECONNECT_ATTEMPTS} attempts (last close code {code})"
+                            ),
+                            retryable=True,
+                        )
+                        await self._notify_fatal_error()
                         return
 
             except Exception as exc:
@@ -619,7 +641,18 @@ class QQAdapter(BasePlatformAdapter):
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
+                    # See sibling QQCloseError branch above — handing this
+                    # off to the gateway watcher is the only thing that
+                    # ever brings the adapter back (#29005).
+                    self._set_fatal_error(
+                        "qq_reconnect_exhausted",
+                        (
+                            f"WebSocket reconnect exhausted after "
+                            f"{MAX_RECONNECT_ATTEMPTS} attempts: {exc}"
+                        ),
+                        retryable=True,
+                    )
+                    await self._notify_fatal_error()
                     return
 
                 if await self._reconnect(backoff_idx):

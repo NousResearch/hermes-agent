@@ -319,12 +319,14 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print("[dim]No skills found in the Skills Hub.[/]\n")
         return
 
-    # Deduplicate by name, preferring higher trust
+    # Deduplicate by identifier, preferring higher trust.
+    # identifier is always unique per skill; name is not (browse-sh skills from different
+    # sites can share the same task name, e.g. "search-listings" on Airbnb and Booking.com).
     seen: dict = {}
     for r in all_results:
         rank = _TRUST_RANK.get(r.trust_level, 0)
-        if r.name not in seen or rank > _TRUST_RANK.get(seen[r.name].trust_level, 0):
-            seen[r.name] = r
+        if r.identifier not in seen or rank > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
+            seen[r.identifier] = r
     deduped = list(seen.values())
 
     # Sort: official first, then by trust level (desc), then alphabetically

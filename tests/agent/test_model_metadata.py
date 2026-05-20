@@ -161,7 +161,6 @@ class TestDefaultContextLengths:
         # Values sourced from models.dev (2026-04).
         expected = {
             "grok-4.20": 2000000,
-            "grok-4-1-fast": 2000000,
             "grok-4-fast": 2000000,
             "grok-4": 256000,
             "grok-build": 256000,
@@ -190,8 +189,6 @@ class TestDefaultContextLengths:
                 ("grok-4.20-0309-reasoning", 2000000),
                 ("grok-4.20-0309-non-reasoning", 2000000),
                 ("grok-4.20-multi-agent-0309", 2000000),
-                ("grok-4-1-fast-reasoning", 2000000),
-                ("grok-4-1-fast-non-reasoning", 2000000),
                 ("grok-4-fast-reasoning", 2000000),
                 ("grok-4-fast-non-reasoning", 2000000),
                 ("grok-4", 256000),

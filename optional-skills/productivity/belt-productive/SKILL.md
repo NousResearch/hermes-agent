@@ -19,9 +19,9 @@ required_environment_variables:
 
 # inference.sh — AI Workflows and Automation
 
-Run LLMs, search the web, post to Twitter/X, and chain AI tasks into automated workflows from the terminal. One API key for all providers.
+Run LLMs, search the web, post to Twitter/X, and chain AI tasks into automated workflows from the terminal using [inference.sh](https://inference.sh). One API key for all providers.
 
-All commands use the `terminal` tool to run `belt` commands.
+All commands use the `terminal` tool to run `belt` (the inference.sh CLI).
 
 ## When to Use
 
@@ -106,7 +106,7 @@ Connect your X account at https://inference.sh/settings/connections before using
 # Post a tweet
 belt app run twitter/post-tweet --input '{"text": "Hello from my AI agent!"}'
 
-# Post with AI-generated image (combine with inference-sh creative skill)
+# Post with AI-generated image (combine with belt-creative skill)
 belt app run twitter/post-create --input '{"text": "Generated this with AI", "media": "output.png"}'
 ```
 

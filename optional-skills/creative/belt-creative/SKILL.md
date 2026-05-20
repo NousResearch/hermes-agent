@@ -19,9 +19,9 @@ required_environment_variables:
 
 # inference.sh — AI Media Generation
 
-Generate images, videos, audio, talking-head avatars, and music from the terminal. One API key, 250+ models, pay-per-use. No GPU required.
+Generate images, videos, audio, talking-head avatars, and music from the terminal using [inference.sh](https://inference.sh). One API key, 250+ models, pay-per-use. No GPU required.
 
-All commands use the `terminal` tool to run `belt` commands.
+All commands use the `terminal` tool to run `belt` (the inference.sh CLI).
 
 ## When to Use
 

@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -474,6 +475,12 @@ class TestLaunchdServiceRecovery:
             gateway_cli._get_restart_drain_timeout()
             == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
         )
+
+    def test_launchd_plist_keeps_gateway_alive_after_clean_exit(self):
+        """launchd should respawn the daemon even after a clean SIGTERM/exit(0)."""
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+
+        assert plist["KeepAlive"] is True
 
     def test_launchd_install_repairs_outdated_plist_without_force(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"

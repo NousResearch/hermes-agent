@@ -142,7 +142,11 @@ class TestStdioPidTracking:
         mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
         mock_kill.assert_any_call(fake_pid, fake_sigkill)
         assert mock_kill.call_count == 2
-        mock_sleep.assert_called_once_with(2)
+        # In full xdist CI, process-wide background threads can also hit the
+        # patched sleep helper. The behavior under test is that orphan cleanup
+        # waits for the SIGTERM grace period before escalating, not that this
+        # global mock sees exactly one call across the whole worker process.
+        mock_sleep.assert_any_call(2)
 
         with _lock:
             assert fake_pid not in _orphan_stdio_pids

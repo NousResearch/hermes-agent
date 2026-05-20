@@ -76,6 +76,11 @@ def test_build_afk_followup_prompt_is_safety_scoped_and_not_silent():
     assert "destructive" in prompt
     assert "credential" in prompt
     assert "deployment" in prompt
+    assert "not treat a withheld deploy/restart as a success" in prompt
+    assert "Can we deploy, or do you have modifications?" in prompt
+    assert "self-congratulatory" in prompt
+    assert "Prefer read-only checks" not in prompt
+    assert "durable task-board updates" not in prompt
     assert "reply" in prompt.lower()
     assert "Stay silent" not in prompt
     assert "SILENT" not in prompt

@@ -17,7 +17,7 @@ The `x_search` tool lets the agent search X (Twitter) posts, profiles, and threa
 
 | Credential | Source | Setup |
 |------------|--------|-------|
-| **SuperGrok OAuth** (preferred) | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok Subscription)](../../guides/xai-grok-oauth.md) |
+| **SuperGrok / X Premium+ OAuth** (preferred) | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
 | **`XAI_API_KEY`** | Paid xAI API key | Set in `~/.hermes/.env` |
 
 Both hit the same endpoint with the same payload — the only difference is the bearer token. **When both are configured, SuperGrok OAuth wins** so x_search runs against your subscription quota instead of paid API spend.
@@ -26,7 +26,7 @@ The tool's `check_fn` runs the xAI credential resolver every time the model's to
 
 ## Enabling the tool
 
-Off by default. Enable in `hermes tools`:
+Auto-enables when xAI credentials (OAuth token or `XAI_API_KEY`) are present. Disable explicitly via `hermes tools` → Search → x_search if you don't want this.
 
 ```bash
 hermes tools

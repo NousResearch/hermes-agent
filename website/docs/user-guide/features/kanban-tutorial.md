@@ -236,10 +236,11 @@ A deploy task that can't spawn its worker because `AWS_ACCESS_KEY_ID` isn't set 
 
 ```bash
 hermes kanban create "Deploy to staging (missing creds)" \
-    --assignee deploy-bot --tenant ops
+    --assignee deploy-bot --tenant ops \
+    --max-retries 3
 ```
 
-The dispatcher tries to spawn the worker. Spawn fails (`RuntimeError: AWS_ACCESS_KEY_ID not set`). The dispatcher releases the claim, increments a failure counter, and tries again next tick. After three consecutive failures (the default `failure_limit`), the circuit trips: the task goes to `blocked` with outcome `gave_up`. No more retries until a human unblocks it.
+The dispatcher tries to spawn the worker. Spawn fails (`RuntimeError: AWS_ACCESS_KEY_ID not set`). The dispatcher releases the claim, increments a failure counter, and tries again next tick. Because this example sets `--max-retries 3`, the circuit trips after three consecutive failures: the task goes to `blocked` with outcome `gave_up`. If you omit the flag, Hermes uses `kanban.failure_limit` (default: 2). No more retries until a human unblocks it.
 
 Click the blocked task:
 

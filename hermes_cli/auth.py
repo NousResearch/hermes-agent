@@ -954,7 +954,10 @@ def _file_lock(
         finally:
             holder.depth = 0
             if fcntl:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
             elif msvcrt:
                 try:
                     lock_file.seek(0)
@@ -2891,8 +2894,107 @@ def login_spotify_command(args) -> None:
 # =============================================================================
 
 def _is_remote_session() -> bool:
-    """Detect if running in an SSH session where webbrowser.open() won't work."""
-    return bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
+    """Detect environments where loopback OAuth can't reach the local browser.
+
+    Historically only SSH was checked, but #26923 surfaced that
+    **browser-only remote consoles** (GCP Cloud Shell, GitHub
+    Codespaces, AWS EC2 Instance Connect, Gitpod, Replit, etc.) hit
+    the exact same problem — the user has a browser on their laptop
+    but the loopback listener is bound on the remote VM that the
+    laptop's browser can't reach.  These environments typically don't
+    set ``SSH_CLIENT`` / ``SSH_TTY``, so the SSH-only check left
+    them with no guidance and no fallback.
+    """
+    if os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"):
+        return True
+    # Browser-only remote IDEs / cloud shells.  Keep this list narrow
+    # (well-known, documented env vars set by the host platform) so
+    # we don't falsely trip on a developer's local shell.
+    for var in (
+        "CLOUD_SHELL",         # GCP Cloud Shell
+        "CODESPACES",          # GitHub Codespaces
+        "CODESPACE_NAME",      # GitHub Codespaces (alt)
+        "GITPOD_WORKSPACE_ID", # Gitpod
+        "REPL_ID",             # Replit
+        "STACKBLITZ",          # StackBlitz
+    ):
+        if os.getenv(var):
+            return True
+    return False
+
+
+def _parse_pasted_callback(raw: str) -> dict:
+    """Parse a pasted callback URL / query string into the loopback shape.
+
+    Accepts any of:
+
+    * full URL:  ``http://127.0.0.1:56121/callback?code=abc&state=xyz``
+    * bare query string:  ``?code=abc&state=xyz``  or  ``code=abc&state=xyz``
+    * bare code (no state, only used when the upstream omits state):
+      ``abc-the-code-value``
+
+    Returns ``{"code", "state", "error", "error_description"}`` with
+    missing keys set to ``None`` so the loopback callsites can keep
+    using the same validation path (state check, error check, etc.)
+    they already use for the HTTP server output.  Regression for
+    #26923 — formalises the curl-the-callback-URL workaround the
+    reporter used while waiting for upstream support.
+    """
+    stripped = raw.strip()
+    result: dict = {
+        "code": None,
+        "state": None,
+        "error": None,
+        "error_description": None,
+    }
+    if not stripped:
+        return result
+    query = ""
+    if stripped.startswith(("http://", "https://")):
+        try:
+            parsed = urlparse(stripped)
+        except Exception:
+            return result
+        query = parsed.query or ""
+    elif stripped.startswith("?"):
+        query = stripped[1:]
+    elif "=" in stripped:
+        # Looks like a bare query fragment (``code=...&state=...``).
+        query = stripped
+    else:
+        # Treat as a bare opaque code value with no state.
+        result["code"] = stripped
+        return result
+    params = parse_qs(query, keep_blank_values=False)
+    for key in ("code", "state", "error", "error_description"):
+        values = params.get(key)
+        if values:
+            result[key] = values[0]
+    return result
+
+
+def _prompt_manual_callback_paste(redirect_uri: str) -> dict:
+    """Read a callback URL from stdin as a fallback for browser-only remotes.
+
+    Used when ``--manual-paste`` is set or when the loopback listener
+    cannot bind.  Returns the parsed callback dict (same shape as the
+    HTTP handler output) so the existing state / error validation in
+    the caller works unchanged.  See #26923.
+    """
+    print()
+    print("─── Manual callback paste ─────────────────────────────────────")
+    print("After approving in your browser, your browser will try to load")
+    print(f"  {redirect_uri}")
+    print("which fails (the loopback listener is on this remote machine,")
+    print("not on your laptop) — that is expected.  Copy the FULL URL")
+    print("from your browser's address bar of that failed page and paste")
+    print("it below.  A bare '?code=...&state=...' fragment also works.")
+    print("───────────────────────────────────────────────────────────────")
+    try:
+        raw = input("Callback URL: ")
+    except (EOFError, KeyboardInterrupt):
+        raw = ""
+    return _parse_pasted_callback(raw)
 
 
 def _ssh_user_at_host() -> str:
@@ -2945,6 +3047,10 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
     print(f"  ssh -N -L {port}:127.0.0.1:{port} {_ssh_user_at_host()}")
     print()
     print("Then open the authorize URL above in your local browser.")
+    print()
+    print("No SSH client (Cloud Shell / Codespaces / web IDE)?  Re-run with")
+    print("`--manual-paste` to skip the loopback listener and paste the failed")
+    print("callback URL directly.")
     if docs_url:
         print(f"Provider docs:      {docs_url}")
     print(f"SSH/jump-box guide: {OAUTH_OVER_SSH_DOCS_URL}")
@@ -3359,6 +3465,62 @@ def _xai_validate_oauth_endpoint(url: str, *, field: str) -> str:
     return url
 
 
+def _xai_validate_inference_base_url(value: str, *, fallback: str) -> str:
+    """Refuse a non-xAI base_url for the OAuth-authenticated inference path.
+
+    The xAI Grok OAuth bearer is a high-value, long-lived credential tied to
+    the user's SuperGrok subscription. ``XAI_BASE_URL`` / ``HERMES_XAI_BASE_URL``
+    let users repoint the inference endpoint (handy for staging or a local
+    proxy), but the env override is also a credential-leak vector: a tampered
+    ``.env`` or hostile shell init that sets
+    ``XAI_BASE_URL=https://attacker.example/v1`` would ship the OAuth access
+    token to a third party on every request, silently.
+
+    Pin the inference origin to ``api.x.ai`` (or any ``*.x.ai`` subdomain xAI
+    may add). On rejection, fall back to the default and log a warning rather
+    than raise — a bad env var should not deadlock authentication, but it
+    should also never leak the bearer.
+
+    ``value`` is the already-stripped, trailing-slash-trimmed candidate from
+    env. Empty input returns ``fallback`` unchanged.
+    """
+    candidate = (value or "").strip().rstrip("/")
+    if not candidate:
+        return fallback
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        logger.warning(
+            "Ignoring malformed xAI base_url override %r; using %s instead.",
+            candidate, fallback,
+        )
+        return fallback
+    if parsed.scheme != "https":
+        logger.warning(
+            "Refusing non-HTTPS xAI base_url override %r (xai-oauth bearer would "
+            "be sent in cleartext); falling back to %s.",
+            candidate, fallback,
+        )
+        return fallback
+    host = (parsed.hostname or "").lower()
+    if not host:
+        logger.warning(
+            "Ignoring xAI base_url override %r with no hostname; using %s instead.",
+            candidate, fallback,
+        )
+        return fallback
+    if host != "x.ai" and not host.endswith(".x.ai"):
+        logger.warning(
+            "Refusing xAI base_url override %r — host %r is not on the xAI origin "
+            "(expected x.ai or a *.x.ai subdomain). The xai-oauth bearer is only "
+            "valid against xAI's inference API; sending it elsewhere would leak "
+            "the credential. Falling back to %s.",
+            candidate, host, fallback,
+        )
+        return fallback
+    return candidate
+
+
 def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
     try:
         response = httpx.get(
@@ -3443,12 +3605,34 @@ def refresh_xai_oauth_pure(
         )
     if response.status_code != 200:
         detail = response.text.strip()
+        # ``403`` from xAI's token endpoint is almost always a tier /
+        # entitlement gate (the OAuth grant exists but the account isn't
+        # on the allowlist for API access).  Re-running ``hermes model``
+        # won't fix that — surface a separate error code so
+        # ``format_auth_error`` doesn't append a misleading
+        # re-authenticate hint, and point users at the ``XAI_API_KEY``
+        # fallback.  See #26847.
+        if response.status_code == 403:
+            raise AuthError(
+                "xAI token refresh failed with HTTP 403."
+                + (f" Response: {detail}" if detail else "")
+                + " This OAuth account is not authorized for xAI API"
+                  " access — xAI may be restricting API/OAuth use to"
+                  " specific SuperGrok tiers despite the in-app"
+                  " subscription being active. Re-logging in won't"
+                  " change that; set ``XAI_API_KEY`` and switch to"
+                  " ``provider: xai`` (API-key path) if available, or"
+                  " upgrade your subscription at https://x.ai/grok.",
+                provider="xai-oauth",
+                code="xai_oauth_tier_denied",
+                relogin_required=False,
+            )
         raise AuthError(
             "xAI token refresh failed."
             + (f" Response: {detail}" if detail else ""),
             provider="xai-oauth",
             code="xai_refresh_failed",
-            relogin_required=(response.status_code in {400, 401, 403}),
+            relogin_required=(response.status_code in {400, 401}),
         )
     try:
         payload = response.json()
@@ -3546,18 +3730,46 @@ def resolve_xai_oauth_runtime_credentials(
             if should_refresh:
                 if not token_endpoint:
                     token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)["token_endpoint"]
-                tokens = _refresh_xai_oauth_tokens(
-                    tokens,
-                    token_endpoint=token_endpoint,
-                    redirect_uri=redirect_uri,
-                    timeout_seconds=refresh_timeout_seconds,
-                )
-                access_token = str(tokens.get("access_token", "") or "").strip()
+                try:
+                    tokens = _refresh_xai_oauth_tokens(
+                        tokens,
+                        token_endpoint=token_endpoint,
+                        redirect_uri=redirect_uri,
+                        timeout_seconds=refresh_timeout_seconds,
+                    )
+                    access_token = str(tokens.get("access_token", "") or "").strip()
+                except AuthError as exc:
+                    if _is_terminal_xai_oauth_refresh_error(exc):
+                        # Terminal failure (HTTP 400/401/403 — invalid_grant, token revoked).
+                        # Clear dead tokens from auth.json so subsequent sessions fail fast
+                        # without a network retry. Mirrors credential_pool.py quarantine.
+                        try:
+                            _q_store = _load_auth_store()
+                            _q_state = _load_provider_state(_q_store, "xai-oauth") or {}
+                            _q_tokens = dict(_q_state.get("tokens") or {})
+                            _q_tokens.pop("access_token", None)
+                            _q_tokens.pop("refresh_token", None)
+                            _q_state["tokens"] = _q_tokens
+                            _q_state["last_auth_error"] = {
+                                "provider": "xai-oauth",
+                                "code": exc.code or "xai_refresh_failed",
+                                "message": str(exc),
+                                "reason": "runtime_refresh_failure",
+                                "relogin_required": True,
+                                "at": datetime.now(timezone.utc).isoformat(),
+                            }
+                            _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
+                            _save_auth_store(_q_store)
+                        except Exception as _save_exc:
+                            logger.debug(
+                                "xAI OAuth: failed to persist quarantined state: %s", _save_exc,
+                            )
+                    raise
 
-    base_url = (
+    base_url = _xai_validate_inference_base_url(
         os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
-        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
-        or DEFAULT_XAI_OAUTH_BASE_URL
+        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/"),
+        fallback=DEFAULT_XAI_OAUTH_BASE_URL,
     )
     return {
         "provider": "xai-oauth",
@@ -6075,8 +6287,13 @@ def _login_xai_oauth(
     open_browser = not getattr(args, "no_browser", False)
     if _is_remote_session():
         open_browser = False
+    manual_paste = bool(getattr(args, "manual_paste", False))
 
-    creds = _xai_oauth_loopback_login(timeout_seconds=timeout_seconds, open_browser=open_browser)
+    creds = _xai_oauth_loopback_login(
+        timeout_seconds=timeout_seconds,
+        open_browser=open_browser,
+        manual_paste=manual_paste,
+    )
     _save_xai_oauth_tokens(
         creds["tokens"],
         discovery=creds.get("discovery"),
@@ -6197,6 +6414,25 @@ def _xai_oauth_exchange_code_for_tokens(
 
     if response.status_code != 200:
         body = response.text.strip()
+        # See ``refresh_xai_oauth_pure`` — token-exchange 403 also
+        # surfaces tier/entitlement gating from xAI's backend.  Avoid
+        # the misleading "re-authenticate" hint and point at the API
+        # key fallback.  See #26847.
+        if response.status_code == 403:
+            raise AuthError(
+                f"xAI token exchange failed (HTTP 403)."
+                + (f" Response: {body}" if body else "")
+                + " This OAuth account is not authorized for xAI API"
+                  " access — xAI may be restricting API/OAuth use to"
+                  " specific SuperGrok tiers despite the in-app"
+                  " subscription being active. Set ``XAI_API_KEY``"
+                  " and switch to ``provider: xai`` (API-key path) if"
+                  " available, or upgrade your subscription at"
+                  " https://x.ai/grok.",
+                provider="xai-oauth",
+                code="xai_oauth_tier_denied",
+                relogin_required=False,
+            )
         raise AuthError(
             f"xAI token exchange failed (HTTP {response.status_code})."
             + (f" Response: {body}" if body else ""),
@@ -6225,13 +6461,32 @@ def _xai_oauth_loopback_login(
     *,
     timeout_seconds: float = 20.0,
     open_browser: bool = True,
+    manual_paste: bool = False,
 ) -> Dict[str, Any]:
+    """Run the xAI OAuth PKCE flow.
+
+    When ``manual_paste=True`` the loopback HTTP listener is skipped
+    entirely and the user is prompted to paste the failed callback
+    URL into stdin (regression fix for #26923 — browser-only remote
+    consoles like GCP Cloud Shell / GitHub Codespaces / EC2 Instance
+    Connect, where the laptop's browser can't reach 127.0.0.1 on the
+    remote VM).  The same PKCE verifier, ``state``, and ``nonce`` are
+    used for both paths so the upstream-side OAuth flow is identical.
+    """
     discovery = _xai_oauth_discovery(timeout_seconds)
     authorization_endpoint = discovery["authorization_endpoint"]
     token_endpoint = discovery["token_endpoint"]
 
-    server, thread, callback_result, redirect_uri = _xai_start_callback_server()
-    try:
+    if manual_paste:
+        # No HTTP listener — synthesize a redirect_uri matching what
+        # the server would have bound to so the authorize URL the user
+        # opens (and the redirect_uri sent in the token exchange) stay
+        # byte-identical to the loopback path.  xAI's token endpoint
+        # cross-checks redirect_uri against the authorize request.
+        redirect_uri = (
+            f"http://{XAI_OAUTH_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}"
+            f"{XAI_OAUTH_REDIRECT_PATH}"
+        )
         _xai_validate_loopback_redirect_uri(redirect_uri)
         code_verifier = _oauth_pkce_code_verifier()
         code_challenge = _oauth_pkce_code_challenge(code_verifier)
@@ -6247,38 +6502,57 @@ def _xai_oauth_loopback_login(
 
         print("Open this URL to authorize Hermes with xAI:")
         print(authorize_url)
-        print()
-        print(f"Waiting for callback on {redirect_uri}")
+        callback = _prompt_manual_callback_paste(redirect_uri)
+    else:
+        server, thread, callback_result, redirect_uri = _xai_start_callback_server()
+        try:
+            _xai_validate_loopback_redirect_uri(redirect_uri)
+            code_verifier = _oauth_pkce_code_verifier()
+            code_challenge = _oauth_pkce_code_challenge(code_verifier)
+            state = uuid.uuid4().hex
+            nonce = uuid.uuid4().hex
+            authorize_url = _xai_oauth_build_authorize_url(
+                authorization_endpoint=authorization_endpoint,
+                redirect_uri=redirect_uri,
+                code_challenge=code_challenge,
+                state=state,
+                nonce=nonce,
+            )
 
-        _print_loopback_ssh_hint(redirect_uri, docs_url=XAI_OAUTH_DOCS_URL)
+            print("Open this URL to authorize Hermes with xAI:")
+            print(authorize_url)
+            print()
+            print(f"Waiting for callback on {redirect_uri}")
 
-        if open_browser and not _is_remote_session():
+            _print_loopback_ssh_hint(redirect_uri, docs_url=XAI_OAUTH_DOCS_URL)
+
+            if open_browser and not _is_remote_session():
+                try:
+                    opened = webbrowser.open(authorize_url)
+                except Exception:
+                    opened = False
+                if opened:
+                    print("Browser opened for xAI authorization.")
+                else:
+                    print("Could not open the browser automatically; use the URL above.")
+
+            callback = _xai_wait_for_callback(
+                server,
+                thread,
+                callback_result,
+                timeout_seconds=max(30.0, timeout_seconds * 9),
+            )
+        except Exception:
             try:
-                opened = webbrowser.open(authorize_url)
+                server.shutdown()
+                server.server_close()
             except Exception:
-                opened = False
-            if opened:
-                print("Browser opened for xAI authorization.")
-            else:
-                print("Could not open the browser automatically; use the URL above.")
-
-        callback = _xai_wait_for_callback(
-            server,
-            thread,
-            callback_result,
-            timeout_seconds=max(30.0, timeout_seconds * 9),
-        )
-    except Exception:
-        try:
-            server.shutdown()
-            server.server_close()
-        except Exception:
-            pass
-        try:
-            thread.join(timeout=1.0)
-        except Exception:
-            pass
-        raise
+                pass
+            try:
+                thread.join(timeout=1.0)
+            except Exception:
+                pass
+            raise
 
     if callback.get("error"):
         detail = callback.get("error_description") or callback["error"]
@@ -6324,10 +6598,10 @@ def _xai_oauth_loopback_login(
             code="xai_token_exchange_invalid",
         )
 
-    base_url = (
+    base_url = _xai_validate_inference_base_url(
         os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
-        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
-        or DEFAULT_XAI_OAUTH_BASE_URL
+        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/"),
+        fallback=DEFAULT_XAI_OAUTH_BASE_URL,
     )
     return {
         "tokens": {

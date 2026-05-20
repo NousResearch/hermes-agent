@@ -512,6 +512,56 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
     assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on entitlement 403"
 
 
+def test_recover_with_credential_pool_skips_refresh_on_bare_403_for_xai_oauth():
+    """A bare HTTP 403 from ``xai-oauth`` (no keyword match) must NOT loop refresh.
+
+    Regression for #26847 — xAI's backend has been seen to 403 standard
+    SuperGrok subscribers with a terser body that doesn't contain any of
+    the existing entitlement keywords ("do not have an active Grok
+    subscription", etc.). Before the defense-in-depth guard, the recovery
+    path would happily mint a fresh token, get a fresh 403, and spin.
+    """
+    from run_agent import AIAgent
+    from agent.error_classifier import FailoverReason
+
+    agent = _make_codex_agent()
+    assert agent.provider == "xai-oauth"
+
+    refresh_calls = {"n": 0}
+
+    class _FakePool:
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            return MagicMock(id="should_not_be_called")
+
+        def mark_exhausted_and_rotate(self, **_kwargs):
+            return None
+
+        def has_available(self):
+            return False
+
+    agent._credential_pool = _FakePool()
+
+    error_context = {
+        "reason": "forbidden",
+        "message": "Forbidden",
+    }
+    assert not AIAgent._is_entitlement_failure(error_context, 403), (
+        "Pre-condition: bare 'Forbidden' body must NOT match the keyword "
+        "heuristic — otherwise this test isn't covering the defense-in-depth path."
+    )
+
+    recovered, _retried_429 = agent._recover_with_credential_pool(
+        status_code=403,
+        has_retried_429=False,
+        classified_reason=FailoverReason.auth,
+        error_context=error_context,
+    )
+
+    assert recovered is False, "Bare 403 on xai-oauth must surface, not refresh-loop"
+    assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on xai-oauth 403"
+
+
 def test_recover_with_credential_pool_still_refreshes_genuine_auth_failure():
     """Regression guard: legitimate auth errors must still trigger refresh."""
     from run_agent import AIAgent

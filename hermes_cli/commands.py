@@ -165,6 +165,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
                subcommands=("search", "browse", "inspect", "install")),
+    CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
+               "Tools & Skills"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
@@ -173,16 +175,19 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
     CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
                "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("list", "ls", "show", "create", "assign", "link", "unlink",
-                            "claim", "comment", "complete", "block", "unblock", "archive",
-                            "tail", "dispatch", "context", "init", "gc")),
+               subcommands=("init", "boards", "create", "list", "ls", "show", "assign",
+                            "reclaim", "reassign", "diagnostics", "diag", "link", "unlink",
+                            "claim", "comment", "complete", "edit", "block", "unblock",
+                            "archive", "tail", "dispatch", "stats", "notify-subscribe",
+                            "notify-list", "notify-unsubscribe", "log", "runs",
+                            "heartbeat", "assignees", "context", "specify", "gc")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
                "Tools & Skills", aliases=("reload_skills",)),
-    CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
+    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
@@ -207,8 +212,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
                cli_only=True, args_hint="<path>"),
-    CommandDef("update", "Update Hermes Agent to the latest version", "Info",
-               gateway_only=True),
+    CommandDef("update", "Update Hermes Agent to the latest version", "Info"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit
@@ -1120,9 +1124,11 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
+        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
+        self._skill_bundles_provider = skill_bundles_provider
         # Cached project file list for fuzzy @ completions
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
@@ -1141,6 +1147,14 @@ class SlashCommandCompleter(Completer):
             return {}
         try:
             return self._skill_commands_provider() or {}
+        except Exception:
+            return {}
+
+    def _iter_skill_bundles(self) -> Mapping[str, dict[str, Any]]:
+        if self._skill_bundles_provider is None:
+            return {}
+        try:
+            return self._skill_bundles_provider() or {}
         except Exception:
             return {}
 
@@ -1621,6 +1635,19 @@ class SlashCommandCompleter(Completer):
                     start_position=-len(word),
                     display=cmd,
                     display_meta=desc,
+                )
+
+        for cmd, info in self._iter_skill_bundles().items():
+            cmd_name = cmd[1:]
+            if cmd_name.startswith(word):
+                description = str(info.get("description", "Skill bundle"))
+                short_desc = description[:50] + ("..." if len(description) > 50 else "")
+                skill_count = len(info.get("skills", []))
+                yield Completion(
+                    self._completion_text(cmd_name, word),
+                    start_position=-len(word),
+                    display=cmd,
+                    display_meta=f"▣ {short_desc} ({skill_count} skills)",
                 )
 
         for cmd, info in self._iter_skill_commands().items():

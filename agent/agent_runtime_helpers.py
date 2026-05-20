@@ -39,7 +39,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _sanitize_surrogates,
 )
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg
+from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.error_classifier import classify_api_error, FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
@@ -317,12 +317,11 @@ def sanitize_tool_call_arguments(
                 if existing_tool_msg is None:
                     messages.insert(
                         insert_at,
-                        {
-                            "role": "tool",
-                            "name": function_name if function_name != "?" else "",
-                            "tool_call_id": tool_call_id,
-                            "content": marker,
-                        },
+                        make_tool_result_message(
+                            function_name if function_name != "?" else "",
+                            marker,
+                            tool_call_id,
+                        ),
                     )
                     insert_at += 1
                 else:
@@ -606,7 +605,22 @@ def recover_with_credential_pool(
         return False, True
 
     if effective_reason == FailoverReason.auth:
-        if agent._is_entitlement_failure(error_context, status_code):
+        # Subscription/entitlement 403s look like auth failures on the wire
+        # but refresh cannot fix them — the OAuth token is already valid,
+        # the account simply lacks the entitlement.  Without this guard,
+        # ``try_refresh_current()`` keeps minting fresh tokens against the
+        # same unsubscribed account and the main agent loop spins re-issuing
+        # the same 403 until the user Ctrl+C's.
+        #
+        # Defense-in-depth for #26847: xAI's backend has been seen to 403
+        # standard SuperGrok subscribers with bodies that don't match the
+        # existing entitlement keyword set in ``_is_entitlement_failure``.
+        # Any 403 against ``xai-oauth`` is treated as entitlement here so
+        # the refresh loop can't spin in those cases either.
+        is_entitlement = agent._is_entitlement_failure(error_context, status_code)
+        if not is_entitlement and status_code == 403 and (agent.provider or "") == "xai-oauth":
+            is_entitlement = True
+        if is_entitlement:
             _ra().logger.info(
                 "Credential %s — entitlement-shaped 403 from %s; "
                 "skipping pool refresh (account lacks subscription, "

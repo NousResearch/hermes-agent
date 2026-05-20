@@ -707,8 +707,158 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
 
 # =============================================================================
+# Scope promotion (Plan 003-B)
+# =============================================================================
+
+def _promote_skill(name: str, target_scope: str = "team") -> Dict[str, Any]:
+    """Copy a skill to a higher-priority registry, optionally via Git PR.
+
+    Promotion is the collaboration primitive: a personal skill can be promoted
+    to team scope so all team members benefit from proven approaches.
+
+    Failure modes (all return success=False, never raise):
+      - target_scope == "global" -> always an error (use team first)
+      - No target registry in config -> error
+      - Target registry writable: false -> error
+      - Source skill not found -> error
+      - Git operations fail -> warning logged; local copy still succeeds
+    """
+    import subprocess as _subprocess
+    import shutil as _shutil
+    from agent.skill_utils import get_skill_registries, get_skill_scope_for_path, SCOPE_ORDER
+
+    if target_scope == "global":
+        return {
+            "success": False,
+            "error": (
+                "Promoting directly to 'global' scope is not allowed from the agent. "
+                "Promote to 'team' first, then a maintainer can merge to global via PR."
+            ),
+        }
+    if target_scope not in SCOPE_ORDER:
+        return {"success": False, "error": f"Unknown target_scope '{target_scope}'. Use 'team'."}
+
+    existing = _find_skill(name)
+    if not existing:
+        return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
+    source_dir = existing["path"]
+    source_scope = get_skill_scope_for_path(source_dir)
+
+    target_registries = [r for r in get_skill_registries() if r.scope == target_scope]
+    if not target_registries:
+        return {
+            "success": False,
+            "error": (
+                f"No '{target_scope}' registry in skills.registries config. "
+                f"Add a scope: {target_scope} entry to ~/.hermes/config.yaml."
+            ),
+        }
+    target_reg = target_registries[0]
+
+    if not target_reg.writable:
+        return {
+            "success": False,
+            "error": (
+                f"Registry '{target_reg.name}' (scope: {target_scope}) is "
+                f"writable: false. Update skills.registries config to allow promotion."
+            ),
+        }
+
+    # Build destination path, preserving category structure from personal registry.
+    try:
+        from hermes_constants import get_skills_dir
+        try:
+            rel = source_dir.resolve().relative_to(get_skills_dir().resolve())
+        except ValueError:
+            rel = Path(name)
+    except Exception:
+        rel = Path(name)
+
+    dest_dir = target_reg.path / rel
+    if dest_dir.exists():
+        return {
+            "success": False,
+            "error": f"Skill already exists at {dest_dir}. Delete it first if you want to replace it.",
+        }
+
+    try:
+        target_reg.path.mkdir(parents=True, exist_ok=True)
+        _shutil.copytree(str(source_dir), str(dest_dir))
+    except Exception as exc:
+        return {"success": False, "error": f"Failed to copy skill to target registry: {exc}"}
+
+    logger.info("Promoted skill '%s' from %s to %s at %s", name, source_scope, target_scope, dest_dir)
+
+    result: Dict[str, Any] = {
+        "success": True,
+        "message": f"Skill '{name}' promoted from {source_scope} to {target_scope} scope.",
+        "source": str(source_dir),
+        "destination": str(dest_dir),
+    }
+
+    if not target_reg.remote:
+        result["git_note"] = "No remote configured — local copy only."
+        return result
+
+    git_base = ["-C", str(target_reg.path)]
+    rel_dest = str(dest_dir.relative_to(target_reg.path))
+
+    if target_reg.promote_requires_pr:
+        branch_name = f"promote/{name}"
+        for cmd, label in [
+            (["git"] + git_base + ["checkout", "-b", branch_name], "checkout"),
+            (["git"] + git_base + ["add", rel_dest], "add"),
+            (["git"] + git_base + ["commit", "-m", f"skill(promote): {name} personal to {target_scope}"], "commit"),
+            (["git"] + git_base + ["push", "--set-upstream", "origin", branch_name], "push"),
+        ]:
+            try:
+                _subprocess.run(cmd, timeout=30, capture_output=True, check=True)
+            except Exception as exc:
+                logger.warning("Git %s failed during promotion of '%s': %s", label, name, exc)
+                result["git_warning"] = f"Git {label} failed: {exc}. Local copy succeeded."
+                return result
+        try:
+            pr = _subprocess.run(
+                ["gh", "pr", "create",
+                 "--title", f"skill(promote): {name} ({source_scope} to {target_scope})",
+                 "--body", f"Promote skill '{name}' from {source_scope} to {target_scope} via skill_manage.",
+                 "--head", branch_name],
+                cwd=str(target_reg.path), timeout=30, capture_output=True, text=True,
+            )
+            if pr.stdout.strip():
+                result["pr_url"] = pr.stdout.strip()
+                result["message"] += f" PR: {pr.stdout.strip()}"
+        except Exception as exc:
+            result["git_warning"] = f"PR creation failed: {exc}. Branch pushed; open PR manually."
+    else:
+        for cmd, label in [
+            (["git"] + git_base + ["add", rel_dest], "add"),
+            (["git"] + git_base + ["commit", "-m", f"skill({target_scope}): promote {name} from {source_scope}"], "commit"),
+            (["git"] + git_base + ["push", "origin", "HEAD"], "push"),
+        ]:
+            try:
+                _subprocess.run(cmd, timeout=30, capture_output=True, check=True)
+            except Exception as exc:
+                logger.warning("Git %s failed during promotion of '%s': %s", label, name, exc)
+                result["git_warning"] = f"Git {label} failed: {exc}. Local copy succeeded."
+                return result
+        result["message"] += " Committed and pushed."
+
+    return result
+
+
+# =============================================================================
 # Main entry point
 # =============================================================================
+
+def _is_saas_mode() -> bool:
+    """Return True when HERMES_MODE=saas is set in the environment.
+
+    All cloud-routing branches are gated on this flag so local dev is never
+    affected by S3 availability or missing boto3.
+    """
+    return os.environ.get("HERMES_MODE", "").lower() == "saas"
+
 
 def skill_manage(
     action: str,
@@ -721,12 +871,92 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    target_scope: str = None,
+    # Optional: HermesIdentity passed through from agent context in SaaS mode.
+    # Must be keyword-only to avoid breaking existing callers (Phase 0 contract).
+    identity=None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
 
+    In SaaS mode (HERMES_MODE=saas) write operations route through S3 via
+    tools.skills_scoped.  Read operations remain filesystem-based for now
+    (Phase D adds full cloud storage).  Local mode behaviour is completely
+    unchanged — no S3 calls are made.
+
     Returns JSON string with results.
     """
+    # ------------------------------------------------------------------
+    # SaaS mode: route create / edit to scoped S3 storage.
+    # Other actions (patch, write_file, remove_file) still operate on the
+    # local filesystem — S3-only paths land in Phase D.
+    # ------------------------------------------------------------------
+    if _is_saas_mode() and identity is not None:
+        from tools.skills_scoped import write_skill, resolve_skill
+
+        if action == "create":
+            if not content:
+                return tool_error(
+                    "content is required for 'create'. Provide the full SKILL.md text.",
+                    success=False,
+                )
+            err = _validate_name(name)
+            if err:
+                return tool_error(err, success=False)
+            err = _validate_frontmatter(content)
+            if err:
+                return tool_error(err, success=False)
+            err = _validate_content_size(content)
+            if err:
+                return tool_error(err, success=False)
+            try:
+                write_skill(name, content, scope="personal", identity=identity)
+            except Exception as exc:
+                return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "success": True,
+                    "message": f"Skill '{name}' created in personal S3 scope.",
+                    "scope": "personal",
+                    "s3_prefix": identity.personal_scope,
+                },
+                ensure_ascii=False,
+            )
+
+        if action == "edit":
+            if not content:
+                return tool_error(
+                    "content is required for 'edit'. Provide the full updated SKILL.md text.",
+                    success=False,
+                )
+            err = _validate_frontmatter(content)
+            if err:
+                return tool_error(err, success=False)
+            err = _validate_content_size(content)
+            if err:
+                return tool_error(err, success=False)
+            existing = resolve_skill(name, identity)
+            if existing is None:
+                return json.dumps(
+                    {"success": False, "error": f"Skill '{name}' not found in any scope."},
+                    ensure_ascii=False,
+                )
+            try:
+                write_skill(name, content, scope="personal", identity=identity)
+            except Exception as exc:
+                return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "success": True,
+                    "message": f"Skill '{name}' updated in personal S3 scope.",
+                    "scope": "personal",
+                },
+                ensure_ascii=False,
+            )
+
+    # ------------------------------------------------------------------
+    # Local mode (or saas mode without identity): original filesystem path.
+    # ------------------------------------------------------------------
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
@@ -759,8 +989,11 @@ def skill_manage(
             return tool_error("file_path is required for 'remove_file'.", success=False)
         result = _remove_file(name, file_path)
 
+    elif action == "promote":
+        result = _promote_skill(name, target_scope or "team")
+
     else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file, promote"}
 
     if result.get("success"):
         try:
@@ -803,7 +1036,7 @@ SKILL_MANAGE_SCHEMA = {
         "Actions: create (full SKILL.md + optional category), "
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "
-        "delete, write_file, remove_file.\n\n"
+        "delete, write_file, remove_file, promote (copy personal skill to team registry).\n\n"
         "On delete, pass `absorbed_into=<umbrella>` when you're merging this "
         "skill's content into another one, or `absorbed_into=\"\"` when you're "
         "pruning it with no forwarding target. This lets the curator tell "
@@ -831,7 +1064,7 @@ SKILL_MANAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
+                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file", "promote"],
                 "description": "The action to perform."
             },
             "name": {
@@ -926,6 +1159,8 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        # Pass HermesIdentity from agent context kwargs if available (SaaS mode).
+        identity=kw.get("identity")),
     emoji="📝",
 )

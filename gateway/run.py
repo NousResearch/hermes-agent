@@ -11476,6 +11476,7 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    identity=getattr(source, "hermes_identity", None),
                 )
                 try:
                     return agent.run_conversation(

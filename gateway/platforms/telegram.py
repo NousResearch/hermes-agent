@@ -4840,7 +4840,13 @@ class TelegramAdapter(BasePlatformAdapter):
         if obj is None or cls._is_unset_mock(obj):
             return False
         value = getattr(obj, attr, None)
-        return value is not None and not cls._is_unset_mock(value)
+        if value is None or cls._is_unset_mock(value):
+            return False
+        if isinstance(value, str):
+            return bool(value)
+        if isinstance(value, (list, tuple, set, dict)):
+            return bool(value)
+        return True
 
     @classmethod
     def _text_present(cls, obj: Any, attr: str) -> bool:
@@ -4939,7 +4945,9 @@ class TelegramAdapter(BasePlatformAdapter):
             value = getattr(message, field, None)
             if value is None or cls._is_unset_mock(value):
                 continue
-            summary[field] = {"present": True, "count": len(value) if isinstance(value, (list, tuple)) else 1}
+            if isinstance(value, (list, tuple, set, dict)) and not value:
+                continue
+            summary[field] = {"present": True, "count": len(value) if isinstance(value, (list, tuple, set, dict)) else 1}
         return summary
 
     @classmethod

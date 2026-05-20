@@ -625,6 +625,38 @@ def test_payload_shape_only_sanitizes_ptb_to_dict_values():
     assert "PrivateName" not in json.dumps(shape)
 
 
+def test_business_payload_field_availability_treats_empty_ptb_collections_as_absent():
+    message = SimpleNamespace(
+        chat=SimpleNamespace(type="private", username=None, title=None, full_name="Name"),
+        from_user=SimpleNamespace(id=1, username=None, is_bot=False),
+        text="probe",
+        caption=None,
+        business_connection_id="conn-1",
+        entities=(),
+        caption_entities=(),
+        photo=(),
+        document=None,
+        reply_to_message=None,
+    )
+    update = SimpleNamespace(
+        business_message=message,
+        edited_business_message=None,
+        deleted_business_messages=None,
+        message=None,
+        effective_message=message,
+        business_connection=None,
+    )
+
+    fields = TelegramAdapter._business_payload_field_availability(update, message)
+    media = TelegramAdapter._business_payload_media_summary(message)
+
+    assert fields["message"]["has_text"] is True
+    assert fields["message"]["has_entities"] is False
+    assert fields["message"]["has_caption_entities"] is False
+    assert fields["message"]["has_photo"] is False
+    assert media == {}
+
+
 def test_should_process_message_ignores_messages_from_own_bot():
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
     adapter._bot = SimpleNamespace(id=796330107, username="alenrbot")

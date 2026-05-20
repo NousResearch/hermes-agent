@@ -30,6 +30,7 @@ import json
 import logging
 import mimetypes
 import os
+import stat
 import tempfile
 import threading
 import uuid
@@ -511,6 +512,13 @@ def _env_writes_from_connection_values(values: dict) -> dict:
     return writes
 
 
+def _restrict_secret_file_permissions(path: Path) -> None:
+    try:
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     remove_set = set(remove_keys) - set(env_writes)
@@ -530,6 +538,7 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
         if key not in updated_keys:
             new_lines.append(f"{key}={val}")
     env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+    _restrict_secret_file_permissions(env_path)
 
 
 def _remember_ovcli_path(provider_config: dict, ovcli_path: Path) -> None:
@@ -560,6 +569,7 @@ def _ovcli_data_from_connection_values(values: dict) -> dict:
 def _write_ovcli_config(path: Path, values: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_ovcli_data_from_connection_values(values), indent=2) + "\n", encoding="utf-8")
+    _restrict_secret_file_permissions(path)
 
 
 # ---------------------------------------------------------------------------

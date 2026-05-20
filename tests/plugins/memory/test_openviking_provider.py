@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import zipfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -18,6 +20,27 @@ def _clear_openviking_env(monkeypatch):
         "OPENVIKING_CLI_CONFIG_FILE",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_openviking_env_writer_restricts_file_permissions(tmp_path):
+    env_path = tmp_path / ".env"
+
+    openviking_module._write_env_vars(env_path, {"OPENVIKING_API_KEY": "secret"})
+
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_ovcli_config_writer_restricts_file_permissions(tmp_path):
+    config_path = tmp_path / "ovcli.conf"
+
+    openviking_module._write_ovcli_config(
+        config_path,
+        {"endpoint": "http://remote.example", "api_key": "secret"},
+    )
+
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
 
 
 def test_linked_ovcli_config_is_read_at_runtime(tmp_path, monkeypatch):

@@ -400,12 +400,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
             normalized = normalized.replace(":", "@", 1)
         return normalized
 
+    @staticmethod
+    def _without_whatsapp_device_suffix(value: str) -> str:
+        """Return a WhatsApp JID without Baileys' optional device suffix."""
+        parts = value.split("@")
+        if len(parts) >= 3 and parts[1].isdigit():
+            return "@".join([parts[0], *parts[2:]])
+        return value
+
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
         bot_ids = set()
         for candidate in data.get("botIds") or []:
             normalized = self._normalize_whatsapp_id(candidate)
             if normalized:
                 bot_ids.add(normalized)
+                bot_ids.add(self._without_whatsapp_device_suffix(normalized))
         return bot_ids
 
     def _message_is_reply_to_bot(self, data: Dict[str, Any]) -> bool:

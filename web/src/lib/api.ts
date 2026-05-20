@@ -197,13 +197,18 @@ export const api = {
     ),
 
   // Skills & Toolsets
-  getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
-  toggleSkill: (name: string, enabled: boolean) =>
-    fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
+  getSkills: (profile = "all") =>
+    fetchJSON<SkillInfo[]>(`/api/skills?profile=${encodeURIComponent(profile)}`),
+  toggleSkill: (name: string, enabled: boolean, profile?: string) => {
+    const url = profile
+      ? `/api/skills/toggle?profile=${encodeURIComponent(profile)}`
+      : "/api/skills/toggle";
+    return fetchJSON<{ ok: boolean }>(url, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, enabled }),
-    }),
+    });
+  },
   getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
 
   // Session search (FTS5)
@@ -576,6 +581,10 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
+  /** The profile this skill row belongs to. Present when `/api/skills` is
+   *  called with `?profile=` (including the default `?profile=all`). Optional
+   *  for backwards compatibility with older gateways that don't emit it. */
+  profile?: string;
 }
 
 export interface ToolsetInfo {

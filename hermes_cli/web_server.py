@@ -3000,29 +3000,235 @@ class SkillToggle(BaseModel):
     enabled: bool
 
 
-@app.get("/api/skills")
-async def get_skills():
-    from tools.skills_tool import _find_all_skills
-    from hermes_cli.skills_config import get_disabled_skills
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    skills = _find_all_skills(skip_disabled=True)
+# --- Per-profile skill helpers (mirror the cron-page ?profile= convention) ---
+
+
+def _skill_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
+    """Resolve a ?profile= query value to (canonical_name, HERMES_HOME path).
+
+    Mirrors ``_cron_profile_home`` so the skills endpoints validate and
+    canonicalize profile names exactly like the cron endpoints do.
+    """
+    from hermes_cli import profiles as profiles_mod
+
+    raw = (profile or "default").strip() or "default"
+    try:
+        canon = profiles_mod.normalize_profile_name(raw)
+        profiles_mod.validate_profile_name(canon)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not profiles_mod.profile_exists(canon):
+        raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
+    return canon, profiles_mod.get_profile_dir(canon)
+
+
+def _load_profile_disabled_skills(profile_dir: Path) -> set:
+    """Return the set of disabled skill names from a profile's config.yaml."""
+    config_path = profile_dir / "config.yaml"
+    if not config_path.exists():
+        return set()
+    try:
+        import yaml as _yaml
+        with open(config_path, encoding="utf-8") as f:
+            data = _yaml.safe_load(f)
+    except (OSError, Exception):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    skills_cfg = data.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return set()
+    disabled = skills_cfg.get("disabled", [])
+    if not isinstance(disabled, list):
+        return set()
+    return {str(x) for x in disabled}
+
+
+def _save_profile_disabled_skills(profile_dir: Path, disabled: set) -> None:
+    """Write the disabled skill list back to a profile's config.yaml.skills.disabled."""
+    from utils import atomic_yaml_write
+
+    config_path = profile_dir / "config.yaml"
+    try:
+        import yaml as _yaml
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
+        else:
+            data = {}
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not read config.yaml: {e}")
+
+    if not isinstance(data, dict):
+        data = {}
+    skills_cfg = data.setdefault("skills", {})
+    if not isinstance(skills_cfg, dict):
+        data["skills"] = skills_cfg = {}
+    skills_cfg["disabled"] = sorted(disabled)
+    try:
+        atomic_yaml_write(config_path, data)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not write config.yaml: {e}")
+
+
+def _find_skills_in_profile_dir(profile_dir: Path) -> List[Dict[str, Any]]:
+    """Scan ``profile_dir/skills/`` for SKILL.md files and return the same shape
+    as ``tools.skills_tool._find_all_skills`` (minus ``external_dirs`` scanning).
+
+    External-dir scanning is intentionally omitted — the dashboard's per-profile
+    filter targets profile-installed skills. Skills loaded via
+    ``skills.external_dirs`` are still honored by the gateway at runtime.
+    """
+    from tools.skills_tool import (
+        MAX_DESCRIPTION_LENGTH,
+        MAX_NAME_LENGTH,
+        _EXCLUDED_SKILL_DIRS,
+        _parse_frontmatter,
+        skill_matches_platform,
+    )
+    from agent.skill_utils import iter_skill_index_files
+
+    skills_dir = profile_dir / "skills"
+    if not skills_dir.is_dir():
+        return []
+
+    def _category(skill_md_path: Path) -> Optional[str]:
+        try:
+            rel = skill_md_path.relative_to(skills_dir)
+        except ValueError:
+            return None
+        return rel.parts[0] if len(rel.parts) >= 3 else None
+
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for skill_md in iter_skill_index_files(skills_dir, "SKILL.md"):
+        if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+            continue
+        try:
+            content = skill_md.read_text(encoding="utf-8")[:4000]
+            frontmatter, body = _parse_frontmatter(content)
+            if not skill_matches_platform(frontmatter):
+                continue
+            name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
+            if name in seen:
+                continue
+            description = frontmatter.get("description", "")
+            if not description:
+                for line in body.strip().split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        description = line
+                        break
+            if len(description) > MAX_DESCRIPTION_LENGTH:
+                description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
+            seen.add(name)
+            out.append({
+                "name": name,
+                "description": description,
+                "category": _category(skill_md),
+            })
+        except (OSError, UnicodeDecodeError):
+            continue
+    return out
+
+
+def _list_skills_for_profile(name: str, profile_dir: Path) -> List[Dict[str, Any]]:
+    """Return ``profile_dir``'s skills tagged with ``profile=name`` and ``enabled``."""
+    disabled = _load_profile_disabled_skills(profile_dir)
+    skills = _find_skills_in_profile_dir(profile_dir)
     for s in skills:
         s["enabled"] = s["name"] not in disabled
+        s["profile"] = name
+    return skills
+
+
+def _skills_profile_dicts() -> List[Dict[str, Any]]:
+    """Return dashboard profile records, falling back to a directory scan.
+
+    Mirror of ``_cron_profile_dicts``. Inlined rather than shared because the
+    cron helper is named after its caller; refactoring is out of scope.
+    """
+    from hermes_cli import profiles as profiles_mod
+    try:
+        return [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+    except Exception:
+        _log.exception("Failed to list profiles for skills dashboard; falling back to directory scan")
+        return _fallback_profile_dicts(profiles_mod)
+
+
+@app.get("/api/skills")
+async def get_skills(profile: Optional[str] = None):
+    """List installed skills, optionally filtered by profile.
+
+    Mirrors ``GET /api/cron/jobs?profile=`` semantics:
+
+    - ``profile`` omitted entirely → active-profile skills (legacy path),
+      preserved for backwards compatibility with callers that haven't been
+      updated to send the query param.
+    - ``profile=all`` → union across all installed profiles, each row
+      tagged ``profile=<name>``.
+    - ``profile=<name>`` → just that profile's skills, tagged with that name.
+    """
+    if profile is None:
+        from tools.skills_tool import _find_all_skills
+        from hermes_cli.skills_config import get_disabled_skills
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        skills = _find_all_skills(skip_disabled=True)
+        for s in skills:
+            s["enabled"] = s["name"] not in disabled
+        return skills
+
+    requested = profile.strip() or "all"
+    if requested.lower() != "all":
+        canon, profile_dir = _skill_profile_home(requested)
+        return _list_skills_for_profile(canon, profile_dir)
+
+    skills: List[Dict[str, Any]] = []
+    from hermes_cli import profiles as profiles_mod
+    for item in _skills_profile_dicts():
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        try:
+            profile_dir = profiles_mod.get_profile_dir(name)
+        except Exception:
+            _log.exception("Failed to resolve profile dir for %s", name)
+            continue
+        try:
+            skills.extend(_list_skills_for_profile(name, profile_dir))
+        except Exception:
+            _log.exception("Failed to list skills for profile %s", name)
     return skills
 
 
 @app.put("/api/skills/toggle")
-async def toggle_skill(body: SkillToggle):
-    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
-    config = load_config()
-    disabled = get_disabled_skills(config)
+async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
+    """Toggle a skill's enabled state in a specific profile's config.yaml.
+
+    Mirrors the cron-page convention: pass ``?profile=<name>`` to target a
+    specific profile. When omitted, defaults to the dashboard's active
+    profile (preserves the legacy behavior).
+    """
+    if profile is None:
+        from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        if body.enabled:
+            disabled.discard(body.name)
+        else:
+            disabled.add(body.name)
+        save_disabled_skills(config, disabled)
+        return {"ok": True, "name": body.name, "enabled": body.enabled}
+
+    canon, profile_dir = _skill_profile_home(profile)
+    disabled = _load_profile_disabled_skills(profile_dir)
     if body.enabled:
         disabled.discard(body.name)
     else:
         disabled.add(body.name)
-    save_disabled_skills(config, disabled)
-    return {"ok": True, "name": body.name, "enabled": body.enabled}
+    _save_profile_disabled_skills(profile_dir, disabled)
+    return {"ok": True, "name": body.name, "enabled": body.enabled, "profile": canon}
 
 
 @app.get("/api/tools/toolsets")

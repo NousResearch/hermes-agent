@@ -16,13 +16,15 @@ import {
   Filter,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { SkillInfo, ToolsetInfo } from "@/lib/api";
+import type { ProfileInfo, SkillInfo, ToolsetInfo } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Label } from "@/components/ui/label";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { cn } from "@/lib/utils";
@@ -96,6 +98,8 @@ function toolsetIcon(
 export default function SkillsPage() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [selectedProfile, setSelectedProfile] = useState("all");
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"skills" | "toolsets">("skills");
@@ -105,24 +109,43 @@ export default function SkillsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
+  // Toolsets and the profile list load once on mount.
   useEffect(() => {
-    Promise.all([api.getSkills(), api.getToolsets()])
-      .then(([s, tsets]) => {
-        setSkills(s);
-        setToolsets(tsets);
-      })
+    api
+      .getToolsets()
+      .then(setToolsets)
+      .catch(() => showToast(t.common.loading, "error"));
+    api
+      .getProfiles()
+      .then((r) => setProfiles(r.profiles))
+      .catch(() => setProfiles([]));
+  }, []);
+
+  // Skills refetch whenever the profile filter changes.
+  useEffect(() => {
+    setLoading(true);
+    api
+      .getSkills(selectedProfile)
+      .then(setSkills)
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [selectedProfile]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
     setTogglingSkills((prev) => new Set(prev).add(skill.name));
+    // Prefer the row's own profile (set by the server in all/per-profile modes).
+    // Falls back to the selected filter, then to omitted (active profile) for
+    // backwards compatibility with older gateways that don't emit profile.
+    const targetProfile =
+      skill.profile ?? (selectedProfile !== "all" ? selectedProfile : undefined);
     try {
-      await api.toggleSkill(skill.name, !skill.enabled);
+      await api.toggleSkill(skill.name, !skill.enabled, targetProfile);
       setSkills((prev) =>
         prev.map((s) =>
-          s.name === skill.name ? { ...s, enabled: !s.enabled } : s,
+          s.name === skill.name && s.profile === skill.profile
+            ? { ...s, enabled: !s.enabled }
+            : s,
         ),
       );
       showToast(
@@ -327,6 +350,23 @@ export default function SkillsPage() {
         </aside>
 
         <div className="flex-1 min-w-0">
+          {view === "skills" && profiles.length > 1 && (
+            <div className="mb-3 grid gap-1 sm:max-w-xs">
+              <Label htmlFor="skills-profile-filter">Profile</Label>
+              <Select
+                id="skills-profile-filter"
+                value={selectedProfile}
+                onValueChange={(v) => setSelectedProfile(v)}
+              >
+                <SelectOption value="all">All profiles</SelectOption>
+                {profiles.map((profile) => (
+                  <SelectOption key={profile.name} value={profile.name}>
+                    {profile.name}
+                  </SelectOption>
+                ))}
+              </Select>
+            </div>
+          )}
           {isSearching ? (
             <Card className="rounded-none">
               <CardHeader className="py-3 px-4">
@@ -354,11 +394,12 @@ export default function SkillsPage() {
                   <div className="grid gap-1">
                     {searchMatchedSkills.map((skill) => (
                       <SkillRow
-                        key={skill.name}
+                        key={`${skill.profile ?? "_"}:${skill.name}`}
                         skill={skill}
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         noDescriptionLabel={t.skills.noDescription}
+                        showProfile={selectedProfile === "all"}
                       />
                     ))}
                   </div>
@@ -397,11 +438,12 @@ export default function SkillsPage() {
                   <div className="grid gap-1">
                     {activeSkills.map((skill) => (
                       <SkillRow
-                        key={skill.name}
+                        key={`${skill.profile ?? "_"}:${skill.name}`}
                         skill={skill}
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         noDescriptionLabel={t.skills.noDescription}
+                        showProfile={selectedProfile === "all"}
                       />
                     ))}
                   </div>
@@ -497,6 +539,7 @@ function SkillRow({
   toggling,
   onToggle,
   noDescriptionLabel,
+  showProfile,
 }: SkillRowProps) {
   return (
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
@@ -516,6 +559,11 @@ function SkillRow({
           >
             {skill.name}
           </span>
+          {showProfile && skill.profile && (
+            <Badge tone="secondary" className="text-[10px]">
+              {skill.profile}
+            </Badge>
+          )}
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
           {skill.description || noDescriptionLabel}
@@ -552,6 +600,7 @@ interface PanelItemProps {
 interface SkillRowProps {
   noDescriptionLabel: string;
   onToggle: () => void;
+  showProfile: boolean;
   skill: SkillInfo;
   toggling: boolean;
 }

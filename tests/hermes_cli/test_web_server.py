@@ -853,6 +853,119 @@ class TestNewEndpoints:
             },
         ]
 
+    # --- Per-profile skills (cron-style ?profile= convention) ---
+
+    def test_skills_list_for_named_profile(self, monkeypatch):
+        """GET /api/skills?profile=<name> should scan the profile's own
+        skills/ directory and tag each row with the profile name."""
+        from pathlib import Path
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "skills-scope-prof"})
+        try:
+            profile_dir = Path(profiles_mod.get_profile_dir("skills-scope-prof"))
+            skill_dir = profile_dir / "skills" / "productivity" / "scoped-skill"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: scoped-skill\ndescription: Scoped to one profile.\n---\n# Body\n",
+                encoding="utf-8",
+            )
+
+            resp = self.client.get("/api/skills?profile=skills-scope-prof")
+            assert resp.status_code == 200
+            skills = resp.json()
+            scoped = [s for s in skills if s["name"] == "scoped-skill"]
+            assert len(scoped) == 1
+            assert scoped[0]["profile"] == "skills-scope-prof"
+            assert scoped[0]["enabled"] is True
+            assert scoped[0]["category"] == "productivity"
+        finally:
+            self.client.delete("/api/profiles/skills-scope-prof")
+
+    def test_skills_list_all_unions_across_profiles(self, monkeypatch):
+        """GET /api/skills?profile=all should return rows from every profile
+        with skills/, each tagged with its source profile."""
+        from pathlib import Path
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "union-prof-a"})
+        self.client.post("/api/profiles", json={"name": "union-prof-b"})
+        try:
+            for prof_name, skill_name in (
+                ("union-prof-a", "a-only-skill"),
+                ("union-prof-b", "b-only-skill"),
+            ):
+                profile_dir = Path(profiles_mod.get_profile_dir(prof_name))
+                skill_dir = profile_dir / "skills" / skill_name
+                skill_dir.mkdir(parents=True, exist_ok=True)
+                (skill_dir / "SKILL.md").write_text(
+                    f"---\nname: {skill_name}\ndescription: For {prof_name}.\n---\n# Body\n",
+                    encoding="utf-8",
+                )
+
+            resp = self.client.get("/api/skills?profile=all")
+            assert resp.status_code == 200
+            rows = resp.json()
+
+            attribution = {
+                (r["name"], r["profile"]) for r in rows if "profile" in r
+            }
+            assert ("a-only-skill", "union-prof-a") in attribution
+            assert ("b-only-skill", "union-prof-b") in attribution
+        finally:
+            self.client.delete("/api/profiles/union-prof-a")
+            self.client.delete("/api/profiles/union-prof-b")
+
+    def test_skill_toggle_with_profile_writes_to_profile_config(self, monkeypatch):
+        """PUT /api/skills/toggle?profile=<name> should write to the profile's
+        own config.yaml, leaving the dashboard's active profile untouched."""
+        from pathlib import Path
+        import yaml
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "toggle-scoped-prof"})
+        try:
+            put = self.client.put(
+                "/api/skills/toggle?profile=toggle-scoped-prof",
+                json={"name": "fake-skill", "enabled": False},
+            )
+            assert put.status_code == 200
+            assert put.json()["profile"] == "toggle-scoped-prof"
+            assert put.json()["enabled"] is False
+
+            profile_cfg = Path(profiles_mod.get_profile_dir("toggle-scoped-prof")) / "config.yaml"
+            assert profile_cfg.exists()
+            parsed = yaml.safe_load(profile_cfg.read_text(encoding="utf-8")) or {}
+            assert parsed.get("skills", {}).get("disabled") == ["fake-skill"]
+
+            # Re-enable should clear the entry.
+            put2 = self.client.put(
+                "/api/skills/toggle?profile=toggle-scoped-prof",
+                json={"name": "fake-skill", "enabled": True},
+            )
+            assert put2.status_code == 200
+            parsed2 = yaml.safe_load(profile_cfg.read_text(encoding="utf-8")) or {}
+            assert parsed2.get("skills", {}).get("disabled") == []
+        finally:
+            self.client.delete("/api/profiles/toggle-scoped-prof")
+
+    def test_skills_unknown_profile_404(self):
+        resp = self.client.get("/api/skills?profile=nonexistent")
+        assert resp.status_code == 404
+        resp2 = self.client.put(
+            "/api/skills/toggle?profile=nonexistent",
+            json={"name": "x", "enabled": False},
+        )
+        assert resp2.status_code == 404
+
+    def test_skills_invalid_profile_name_400(self):
+        resp = self.client.get("/api/skills?profile=Bad@Name")
+        assert resp.status_code == 400
+        assert "Invalid profile name" in resp.json()["detail"]
+
     def test_toolsets_list(self):
         resp = self.client.get("/api/tools/toolsets")
         assert resp.status_code == 200

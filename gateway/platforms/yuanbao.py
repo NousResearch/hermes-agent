@@ -1410,41 +1410,43 @@ class RecallGuardMiddleware(InboundMiddleware):
             logger.warning("[%s] Recall: failed to resolve session: %s", adapter.name, exc)
             return
 
-        # Read JSONL directly — SQLite doesn't preserve message_id field.
-        transcript: list = []
+        # Load transcript from canonical store (state.db).  Since PR #29278
+        # added a ``platform_message_id`` column to the messages table and
+        # ``append_to_transcript`` wires the incoming dict's ``message_id``
+        # into it, ``load_transcript`` returns rows with ``message_id`` set
+        # for any message that was observed with one — Branch A1 (exact id
+        # match) is the canonical path again.
         try:
-            path = store.get_transcript_path(sid)
-            if path.exists():
-                with open(path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            try:
-                                transcript.append(json.loads(line))
-                            except json.JSONDecodeError:
-                                pass
+            transcript = store.load_transcript(sid)
         except Exception as exc:
             logger.warning("[%s] Recall: failed to load transcript: %s", adapter.name, exc)
             return
 
-        # Branch A: redact — try message_id first, then content fallback.
-        # Observed messages have message_id; agent-processed @bot messages
-        # only have content (run.py doesn't write message_id to transcript).
+        # Branch A1: exact platform message_id match. Authoritative when the
+        # row was persisted with a platform_message_id (observed group
+        # messages and any inbound message whose adapter carried a msg_id).
         target = None
+        branch_label = ""
         for entry in transcript:
             if entry.get("message_id") == recalled_id:
                 target = entry
+                branch_label = "branch A1: id match"
                 break
+        # Branch A2: content-match fallback for messages that lack an exact
+        # platform id on the row — e.g. agent-processed @bot messages
+        # (run.py doesn't carry msg_id through) or older rows persisted
+        # before the platform_message_id column existed.
         if target is None and recalled_content:
             for entry in transcript:
                 if entry.get("role") == "user" and entry.get("content") == recalled_content:
                     target = entry
+                    branch_label = "branch A2: content match"
                     break
         if target is not None:
             target["content"] = cls._REDACTED
             try:
                 store.rewrite_transcript(sid, transcript)
-                logger.info("[%s] Recall: redacted msg_id=%s (branch A)", adapter.name, recalled_id)
+                logger.info("[%s] Recall: redacted msg_id=%s (%s)", adapter.name, recalled_id, branch_label)
             except Exception as exc:
                 logger.warning("[%s] Recall: rewrite_transcript failed: %s", adapter.name, exc)
             return

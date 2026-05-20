@@ -901,7 +901,19 @@ def init_agent(
     hermes_home = get_hermes_home()
     agent.logs_dir = hermes_home / "sessions"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
-    agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
+    # Per-session JSON snapshot writer (~/.hermes/sessions/session_{sid}.json)
+    # is opt-in via sessions.write_json_snapshots (default False).  state.db
+    # is canonical — the snapshot is only useful for external tooling that
+    # reads the JSON files directly.  See run_agent._save_session_log.
+    agent._session_json_enabled = False
+    try:
+        from hermes_cli.config import load_config as _load_sess_cfg
+        _sess_cfg = (_load_sess_cfg().get("sessions") or {})
+        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
+    except Exception:
+        pass
+    # logs_dir is retained unconditionally for request_dump_*.json (debug
+    # breadcrumb path written by agent_runtime_helpers.dump_api_request_debug).
     
     # Track conversation messages for session logging
     agent._session_messages: List[Dict[str, Any]] = []
@@ -1466,7 +1478,13 @@ def init_agent(
     # Gateway status_callback is not yet wired, so any warning is stored
     # in _compression_warning and replayed in the first run_conversation().
     agent._compression_warning = None
-    agent._check_compression_model_feasibility()
+    # Lazy feasibility check: deferred to the first turn that approaches the
+    # compression threshold. Running it eagerly here costs ~400ms cold (network
+    # probe of the auxiliary provider chain + /models lookup) on every agent
+    # init, including short ``chat -q`` runs that never reach the threshold.
+    # ``ensure_compression_feasibility_checked`` (called from
+    # ``run_conversation``'s preflight) runs it at most once per agent.
+    agent._compression_feasibility_checked = False
 
     # Snapshot primary runtime for per-turn restoration.  When fallback
     # activates during a turn, the next turn restores these values so the

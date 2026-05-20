@@ -39,7 +39,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _sanitize_surrogates,
 )
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg
+from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.error_classifier import classify_api_error, FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
@@ -317,12 +317,11 @@ def sanitize_tool_call_arguments(
                 if existing_tool_msg is None:
                     messages.insert(
                         insert_at,
-                        {
-                            "role": "tool",
-                            "name": function_name if function_name != "?" else "",
-                            "tool_call_id": tool_call_id,
-                            "content": marker,
-                        },
+                        make_tool_result_message(
+                            function_name if function_name != "?" else "",
+                            marker,
+                            tool_call_id,
+                        ),
                     )
                     insert_at += 1
                 else:
@@ -1870,6 +1869,77 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
 
 
 
+def _iter_pool_sockets(client: Any):
+    """Yield raw sockets reachable from an OpenAI/httpx client pool.
+
+    httpcore 1.x stores the concrete HTTP11/HTTP2 connection under
+    ``conn._connection``; older versions exposed stream attributes directly
+    on the pool entry. Keep the traversal defensive because these are private
+    transport internals and vary across httpx/httpcore releases.
+    """
+    try:
+        http_client = getattr(client, "_client", None)
+        if http_client is None:
+            return
+        transport = getattr(http_client, "_transport", None)
+        if transport is None:
+            return
+        pool = getattr(transport, "_pool", None)
+        if pool is None:
+            return
+        connections = (
+            getattr(pool, "_connections", None)
+            or getattr(pool, "_pool", None)
+            or []
+        )
+    except Exception:
+        return
+
+    seen: set[int] = set()
+    for conn in list(connections):
+        candidates = [conn]
+        inner = getattr(conn, "_connection", None)
+        if inner is not None:
+            candidates.append(inner)
+        for candidate in candidates:
+            stream = (
+                getattr(candidate, "_network_stream", None)
+                or getattr(candidate, "_stream", None)
+            )
+            if stream is None:
+                continue
+            sock = getattr(stream, "_sock", None)
+            if sock is None:
+                get_extra_info = getattr(stream, "get_extra_info", None)
+                if callable(get_extra_info):
+                    try:
+                        sock = get_extra_info("socket")
+                    except Exception:
+                        sock = None
+            if sock is None:
+                wrapped = getattr(stream, "stream", None)
+                if wrapped is not None:
+                    sock = getattr(wrapped, "_sock", None)
+            if sock is None:
+                # anyio-backed streams expose the raw socket through
+                # SocketAttribute.raw_socket when available.
+                wrapped = getattr(stream, "_stream", None)
+                extra = getattr(wrapped, "extra", None)
+                if callable(extra):
+                    try:
+                        from anyio.abc import SocketAttribute
+                        sock = extra(SocketAttribute.raw_socket)
+                    except Exception:
+                        sock = None
+            if sock is None:
+                continue
+            marker = id(sock)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            yield sock
+
+
 def cleanup_dead_connections(agent) -> bool:
     """Detect and clean up dead TCP connections on the primary client.
 
@@ -1883,36 +1953,8 @@ def cleanup_dead_connections(agent) -> bool:
     if client is None:
         return False
     try:
-        http_client = getattr(client, "_client", None)
-        if http_client is None:
-            return False
-        transport = getattr(http_client, "_transport", None)
-        if transport is None:
-            return False
-        pool = getattr(transport, "_pool", None)
-        if pool is None:
-            return False
-        connections = (
-            getattr(pool, "_connections", None)
-            or getattr(pool, "_pool", None)
-            or []
-        )
         dead_count = 0
-        for conn in list(connections):
-            # Check for connections that are idle but have closed sockets
-            stream = (
-                getattr(conn, "_network_stream", None)
-                or getattr(conn, "_stream", None)
-            )
-            if stream is None:
-                continue
-            sock = getattr(stream, "_sock", None)
-            if sock is None:
-                sock = getattr(stream, "stream", None)
-                if sock is not None:
-                    sock = getattr(sock, "_sock", None)
-            if sock is None:
-                continue
+        for sock in _iter_pool_sockets(client):
             # Probe socket health with a non-blocking recv peek
             import socket as _socket
             try:
@@ -2088,36 +2130,7 @@ def force_close_tcp_sockets(client: Any) -> int:
 
     closed = 0
     try:
-        http_client = getattr(client, "_client", None)
-        if http_client is None:
-            return 0
-        transport = getattr(http_client, "_transport", None)
-        if transport is None:
-            return 0
-        pool = getattr(transport, "_pool", None)
-        if pool is None:
-            return 0
-        # httpx uses httpcore connection pools; connections live in
-        # _connections (list) or _pool (list) depending on version.
-        connections = (
-            getattr(pool, "_connections", None)
-            or getattr(pool, "_pool", None)
-            or []
-        )
-        for conn in list(connections):
-            stream = (
-                getattr(conn, "_network_stream", None)
-                or getattr(conn, "_stream", None)
-            )
-            if stream is None:
-                continue
-            sock = getattr(stream, "_sock", None)
-            if sock is None:
-                sock = getattr(stream, "stream", None)
-                if sock is not None:
-                    sock = getattr(sock, "_sock", None)
-            if sock is None:
-                continue
+        for sock in _iter_pool_sockets(client):
             try:
                 sock.shutdown(_socket.SHUT_RDWR)
             except OSError:
@@ -2155,5 +2168,6 @@ __all__ = [
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",
+    "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]

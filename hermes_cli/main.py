@@ -261,9 +261,18 @@ import time as _time
 from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
-from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
-
 logger = logging.getLogger(__name__)
+
+
+def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
+    """Import-safe Termux check for cold-start-sensitive CLI paths."""
+    check = env or os.environ
+    prefix = str(check.get("PREFIX", ""))
+    return bool(
+        check.get("TERMUX_VERSION")
+        or "com.termux/files/usr" in prefix
+        or prefix.startswith("/data/data/com.termux/")
+    )
 
 
 def _relative_time(ts) -> str:
@@ -967,6 +976,72 @@ def _tui_need_npm_install(root: Path) -> bool:
     return False
 
 
+_TUI_BUILD_INPUT_DIRS = (
+    "src",
+    "packages/hermes-ink/src",
+)
+
+_TUI_BUILD_INPUT_FILES = (
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+    "tsconfig.build.json",
+    "babel.compiler.config.cjs",
+    "scripts/build.mjs",
+    "packages/hermes-ink/package.json",
+    "packages/hermes-ink/package-lock.json",
+    "packages/hermes-ink/index.js",
+    "packages/hermes-ink/text-input.js",
+)
+
+_TUI_BUILD_INPUT_SUFFIXES = frozenset(
+    {".cjs", ".js", ".jsx", ".json", ".mjs", ".ts", ".tsx"}
+)
+
+
+def _iter_tui_build_inputs(root: Path):
+    """Yield source/config files that affect ``ui-tui/dist/entry.js``."""
+    for rel in _TUI_BUILD_INPUT_FILES:
+        path = root / rel
+        if path.is_file():
+            yield path
+
+    for rel in _TUI_BUILD_INPUT_DIRS:
+        base = root / rel
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if path.is_file() and path.suffix in _TUI_BUILD_INPUT_SUFFIXES:
+                yield path
+
+
+def _tui_need_rebuild(root: Path) -> bool:
+    """True when ``dist/entry.js`` is missing or older than TUI inputs.
+
+    The TUI bundle is self-contained. Rebuilding it on every launch adds a
+    visible cold-start tax on slow Termux CPUs, while a simple mtime freshness
+    check still rebuilds immediately after source updates, dependency updates,
+    or local edits. Set ``HERMES_TUI_FORCE_BUILD=1`` to force the old behaviour.
+    """
+    force = (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower()
+    if force in {"1", "true", "yes", "on"}:
+        return True
+
+    entry = root / "dist" / "entry.js"
+    try:
+        output_mtime = entry.stat().st_mtime
+    except OSError:
+        return True
+
+    for path in _iter_tui_build_inputs(root):
+        try:
+            if path.stat().st_mtime > output_mtime:
+                return True
+        except OSError:
+            return True
+    return False
+
+
 def _ensure_tui_node() -> None:
     """Make sure `node` + `npm` are on PATH for the TUI.
 
@@ -1081,6 +1156,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
+    did_install = False
     if _tui_need_npm_install(tui_dir):
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
@@ -1100,6 +1176,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             if preview:
                 print(preview)
             sys.exit(1)
+        did_install = True
 
     if tui_dev:
         # Keep the local @hermes/ink package exports in sync with source.
@@ -1128,21 +1205,28 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir
 
-    # Always rebuild — esbuild is fast and this avoids staleness-edge-case bugs.
-    npm = _node_bin("npm")
-    result = subprocess.run(
-        [npm, "run", "build"],
-        cwd=str(tui_dir),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
-        preview = "\n".join(combined.splitlines()[-30:])
-        print("TUI build failed.")
-        if preview:
-            print(preview)
-        sys.exit(1)
+    # Desktop/dev launches retain the historical "always rebuild" behaviour.
+    # Termux cold starts use the freshness check because esbuild startup is
+    # expensive on old mobile CPUs.
+    should_build = True
+    if _is_termux_startup_environment():
+        should_build = did_install or _tui_need_rebuild(tui_dir)
+
+    if should_build:
+        npm = _node_bin("npm")
+        result = subprocess.run(
+            [npm, "run", "build"],
+            cwd=str(tui_dir),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+            preview = "\n".join(combined.splitlines()[-30:])
+            print("TUI build failed.")
+            if preview:
+                print(preview)
+            sys.exit(1)
 
     node = _node_bin("node")
     return [node, str(tui_dir / "dist" / "entry.js")], tui_dir
@@ -1383,6 +1467,29 @@ def cmd_chat(args):
             args.resume = resolved
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
+
+    # xAI retirement warning — one-shot, non-blocking, never fails startup
+    try:
+        from hermes_cli.xai_retirement import (
+            MIGRATION_GUIDE_URL,
+            RETIREMENT_DATE,
+            find_retired_xai_refs,
+            format_issue,
+        )
+        from hermes_cli.config import load_config as _load_config_for_xai_check
+
+        _retired_xai_refs = find_retired_xai_refs(_load_config_for_xai_check())
+        if _retired_xai_refs:
+            sys.stderr.write(
+                f"\033[33m⚠ xAI retires {len(_retired_xai_refs)} model(s) "
+                f"in your config on {RETIREMENT_DATE}:\033[0m\n"
+            )
+            for _ref in _retired_xai_refs:
+                sys.stderr.write(f"  \033[33m⚠\033[0m {format_issue(_ref)}\n")
+            sys.stderr.write(f"  \033[2mMigration guide: {MIGRATION_GUIDE_URL}\033[0m\n")
+            sys.stderr.write("  \033[2mRun 'hermes doctor' for details.\033[0m\n\n")
+    except Exception:
+        pass
 
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
@@ -1832,52 +1939,10 @@ def select_provider_and_model(args=None):
         config_provider or os.getenv("HERMES_INFERENCE_PROVIDER") or "auto"
     )
     compatible_custom_providers = get_compatible_custom_providers(config)
-    active = None
-    if effective_provider != "auto":
-        active_def = resolve_provider_full(
-            effective_provider,
-            config.get("providers"),
-            compatible_custom_providers,
-        )
-        if active_def is not None:
-            active = active_def.id
-        else:
-            warning = (
-                f"Unknown provider '{effective_provider}'. Check 'hermes model' for "
-                "available providers, or run 'hermes doctor' to diagnose config "
-                "issues."
-            )
-            print(f"Warning: {warning} Falling back to auto provider detection.")
-    if active is None:
-        try:
-            active = resolve_provider("auto")
-        except AuthError as exc:
-            if effective_provider == "auto":
-                warning = format_auth_error(exc)
-                print(f"Warning: {warning} Falling back to auto provider detection.")
-            active = None  # no provider yet; default to first in list
-
-    # Detect custom endpoint
-    if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
-        active = "custom"
-
-    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
-
-    provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
-    active_label = provider_labels.get(active, active) if active else "none"
-
-    print()
-    print(f"  Current model:    {current_model}")
-    print(f"  Active provider:  {active_label}")
-    print()
-
-    # Step 1: Provider selection — flat list from CANONICAL_PROVIDERS
-    all_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS]
-
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
         from hermes_cli.config import read_raw_config
 
-        # Build a lookup of raw (un-expanded) api_key templates keyed by a
+        # Build lookups of raw (un-expanded) templates keyed by a
         # stable identity. We intentionally bypass
         # ``get_compatible_custom_providers(read_raw_config())`` here because
         # its ``_normalize_custom_provider_entry`` step calls ``urlparse()``
@@ -1886,6 +1951,7 @@ def select_provider_and_model(args=None):
         # entries is exactly how env-ref preservation fails for the user
         # config that motivated this fix.
         raw_api_key_refs: dict[tuple, str] = {}
+        raw_base_url_refs: dict[tuple, str] = {}
         raw_cfg = read_raw_config()
 
         def _record_raw(
@@ -1893,10 +1959,10 @@ def select_provider_and_model(args=None):
             provider_key: str,
             model: str,
             api_key: str,
+            base_url: str,
         ) -> None:
             template = str(api_key or "").strip()
-            if "${" not in template:
-                return
+            base_template = str(base_url or "").strip()
             name = str(name or "").strip()
             provider_key = str(provider_key or "").strip()
             model = str(model or "").strip()
@@ -1904,12 +1970,19 @@ def select_provider_and_model(args=None):
             # might present: (name), (name, model), (provider_key), and
             # (provider_key, model). Case-insensitive on name/provider_key so
             # the loaded entry matches regardless of display casing.
+            identities = []
             if name:
-                raw_api_key_refs.setdefault((name.lower(),), template)
-                raw_api_key_refs.setdefault((name.lower(), model), template)
+                identities.extend(((name.lower(),), (name.lower(), model)))
             if provider_key:
-                raw_api_key_refs.setdefault((provider_key.lower(),), template)
-                raw_api_key_refs.setdefault((provider_key.lower(), model), template)
+                identities.extend(
+                    ((provider_key.lower(),), (provider_key.lower(), model))
+                )
+            if "${" in template:
+                for identity in identities:
+                    raw_api_key_refs.setdefault(identity, template)
+            if "${" in base_template:
+                for identity in identities:
+                    raw_base_url_refs.setdefault(identity, base_template)
 
         raw_list = raw_cfg.get("custom_providers")
         if isinstance(raw_list, list):
@@ -1921,6 +1994,9 @@ def select_provider_and_model(args=None):
                     "",
                     raw_entry.get("model", "") or raw_entry.get("default_model", ""),
                     raw_entry.get("api_key", ""),
+                    raw_entry.get("base_url", "")
+                    or raw_entry.get("url", "")
+                    or raw_entry.get("api", ""),
                 )
         raw_providers = raw_cfg.get("providers")
         if isinstance(raw_providers, dict):
@@ -1932,9 +2008,17 @@ def select_provider_and_model(args=None):
                     raw_key,
                     raw_entry.get("model", "") or raw_entry.get("default_model", ""),
                     raw_entry.get("api_key", ""),
+                    raw_entry.get("base_url", "")
+                    or raw_entry.get("url", "")
+                    or raw_entry.get("api", ""),
                 )
 
-        def _lookup_ref(name: str, provider_key: str, model: str) -> str:
+        def _lookup_ref(
+            refs: dict[tuple, str],
+            name: str,
+            provider_key: str,
+            model: str,
+        ) -> str:
             name_lc = str(name or "").strip().lower()
             pkey_lc = str(provider_key or "").strip().lower()
             model = str(model or "").strip()
@@ -1944,8 +2028,8 @@ def select_provider_and_model(args=None):
                 (name_lc, model),
                 (name_lc,),
             ):
-                if identity[0] and identity in raw_api_key_refs:
-                    return raw_api_key_refs[identity]
+                if identity[0] and identity in refs:
+                    return refs[identity]
             return ""
 
         custom_provider_map = {}
@@ -1971,14 +2055,81 @@ def select_provider_and_model(args=None):
                 "model": entry.get("model", ""),
                 "api_mode": entry.get("api_mode", ""),
                 "provider_key": provider_key,
-                "api_key_ref": _lookup_ref(name, provider_key, entry.get("model", "")),
+                "api_key_ref": _lookup_ref(
+                    raw_api_key_refs, name, provider_key, entry.get("model", "")
+                ),
+                "base_url_ref": _lookup_ref(
+                    raw_base_url_refs, name, provider_key, entry.get("model", "")
+                ),
             }
         return custom_provider_map
+
+    def _norm_base_url(url: str) -> str:
+        return str(url or "").strip().rstrip("/").lower()
 
     # Add user-defined custom providers from config.yaml
     _custom_provider_map = _named_custom_provider_map(
         config
     )  # key → {name, base_url, api_key}
+
+    def _active_custom_key_from_base_url() -> str:
+        if effective_provider != "custom" or not isinstance(model_cfg, dict):
+            return ""
+        current_base = _norm_base_url(model_cfg.get("base_url", ""))
+        if not current_base:
+            return ""
+        for key, provider_info in _custom_provider_map.items():
+            if _norm_base_url(provider_info.get("base_url", "")) == current_base:
+                return key
+        return ""
+
+    active = _active_custom_key_from_base_url()
+    if active is None:
+        active = ""
+    if not active and effective_provider != "auto":
+        active_def = resolve_provider_full(
+            effective_provider,
+            config.get("providers"),
+            compatible_custom_providers,
+        )
+        if active_def is not None:
+            active = active_def.id
+        else:
+            warning = (
+                f"Unknown provider '{effective_provider}'. Check 'hermes model' for "
+                "available providers, or run 'hermes doctor' to diagnose config "
+                "issues."
+            )
+            print(f"Warning: {warning} Falling back to auto provider detection.")
+    if not active:
+        try:
+            active = resolve_provider("auto")
+        except AuthError as exc:
+            if effective_provider == "auto":
+                warning = format_auth_error(exc)
+                print(f"Warning: {warning} Falling back to auto provider detection.")
+            active = None  # no provider yet; default to first in list
+
+    # Detect custom endpoint
+    if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
+        active = "custom"
+
+    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+
+    provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
+    if active and active in _custom_provider_map:
+        active_label = _custom_provider_map[active]["name"]
+    else:
+        active_label = provider_labels.get(active, active) if active else "none"
+
+    print()
+    print(f"  Current model:    {current_model}")
+    print(f"  Active provider:  {active_label}")
+    print()
+
+    # Step 1: Provider selection — flat list from CANONICAL_PROVIDERS
+    all_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS]
+
     for key, provider_info in _custom_provider_map.items():
         name = provider_info["name"]
         base_url = provider_info["base_url"]
@@ -2522,6 +2673,7 @@ def _prompt_provider_choice(choices, *, default=0):
 
 def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
+    from hermes_constants import OPENROUTER_BASE_URL
     from hermes_cli.auth import (
         ProviderConfig,
         _prompt_model_selection,
@@ -2582,6 +2734,7 @@ def _model_flow_openrouter(config, current_model=""):
 
 def _model_flow_ai_gateway(config, current_model=""):
     """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
+    from hermes_constants import AI_GATEWAY_BASE_URL
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
@@ -3501,6 +3654,14 @@ def _custom_provider_api_key_config_value(provider_info, resolved_api_key=""):
     return str(resolved_api_key or "").strip()
 
 
+def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
+    """Return the value that should be persisted for a custom provider URL."""
+    base_url_ref = str(provider_info.get("base_url_ref", "") or "").strip()
+    if base_url_ref:
+        return base_url_ref
+    return str(resolved_base_url or "").strip()
+
+
 def _save_custom_provider(
     base_url, api_key="", model="", context_length=None, name=None, api_mode=None
 ):
@@ -4114,7 +4275,9 @@ def _model_flow_named_custom(config, provider_info):
         model.pop("api_key", None)
     else:
         model["provider"] = "custom"
-        model["base_url"] = base_url
+        model["base_url"] = _custom_provider_base_url_config_value(
+            provider_info, base_url
+        )
         if config_api_key:
             model["api_key"] = config_api_key
     # Apply api_mode from custom_providers entry, or clear stale value
@@ -4165,8 +4328,11 @@ def _model_flow_named_custom(config, provider_info):
     print(f"   Provider: {name} ({base_url})")
 
 
-# Curated model lists for direct API-key providers — single source in models.py
-from hermes_cli.models import _PROVIDER_MODELS
+# Keep the historical eager model catalog import on desktop/CI. Termux defers
+# it to the model-selection handlers so plain `hermes --tui` does not pay for
+# requests/models.dev catalog imports before the Node TUI starts.
+if not _is_termux_startup_environment():
+    from hermes_cli.models import _PROVIDER_MODELS
 
 
 def _current_reasoning_effort(config) -> str:
@@ -4283,6 +4449,7 @@ def _model_flow_copilot(config, current_model=""):
     )
     from hermes_cli.config import save_env_value, load_config, save_config
     from hermes_cli.models import (
+        _PROVIDER_MODELS,
         fetch_api_models,
         fetch_github_model_catalog,
         github_model_reasoning_efforts,
@@ -4475,6 +4642,7 @@ def _model_flow_copilot_acp(config, current_model=""):
         resolve_external_process_provider_credentials,
     )
     from hermes_cli.models import (
+        _PROVIDER_MODELS,
         fetch_github_model_catalog,
         normalize_copilot_model_id,
     )
@@ -4678,6 +4846,7 @@ def _model_flow_kimi(config, current_model=""):
         load_config,
         save_config,
     )
+    from hermes_cli.models import _PROVIDER_MODELS
 
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -4788,7 +4957,7 @@ def _model_flow_stepfun(config, current_model=""):
         load_config,
         save_config,
     )
-    from hermes_cli.models import fetch_api_models
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
 
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -5168,6 +5337,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_config,
     )
     from hermes_cli.models import (
+        _PROVIDER_MODELS,
         fetch_api_models,
         opencode_model_api_mode,
         normalize_opencode_model_id,
@@ -7199,7 +7369,95 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     ]
 
 
-def _quarantine_running_hermes_exe(scripts_dir: Path) -> list[tuple[Path, Path]]:
+def _detect_concurrent_hermes_instances(
+    scripts_dir: Path, *, exclude_pid: int | None = None
+) -> list[tuple[int, str]]:
+    """Find other live processes whose .exe is one of our entry-point shims.
+
+    Windows blocks DELETE/REPLACE on a running .exe — and even RENAME on the
+    same .exe when another process opened it without ``FILE_SHARE_DELETE``.
+    The Hermes Desktop Electron app spawns ``hermes.EXE`` as a backend child,
+    so during ``hermes update`` the user-invoked process and the desktop's
+    child both hold the same file. The quarantine rename then fails with
+    ``[WinError 32]`` and uv inherits the lock.
+
+    This helper enumerates processes whose ``exe`` matches one of the venv's
+    shims (``hermes.exe`` / ``hermes-gateway.exe``) and returns ``(pid,
+    process_name)`` pairs. The caller's own PID is excluded so the running
+    ``hermes update`` invocation never reports itself.
+
+    Returns an empty list off-Windows, on missing psutil, or when no other
+    instances exist. Never raises — process enumeration is best-effort.
+    """
+    if not _is_windows():
+        return []
+
+    try:
+        import psutil
+    except Exception:
+        return []
+
+    if exclude_pid is None:
+        exclude_pid = os.getpid()
+
+    # Resolve every shim path to its canonical form once for cheap comparison.
+    shim_paths: set[str] = set()
+    for shim in _hermes_exe_shims(scripts_dir):
+        try:
+            shim_paths.add(str(shim.resolve()).lower())
+        except OSError:
+            shim_paths.add(str(shim).lower())
+    if not shim_paths:
+        return []
+
+    matches: list[tuple[int, str]] = []
+    try:
+        proc_iter = psutil.process_iter(["pid", "exe", "name"])
+    except Exception:
+        return []
+
+    for proc in proc_iter:
+        try:
+            info = proc.info
+        except Exception:
+            continue
+        pid = info.get("pid")
+        exe = info.get("exe")
+        if not exe or pid is None or pid == exclude_pid:
+            continue
+        try:
+            exe_norm = str(Path(exe).resolve()).lower()
+        except (OSError, ValueError):
+            exe_norm = str(exe).lower()
+        if exe_norm in shim_paths:
+            name = info.get("name") or Path(exe).name
+            matches.append((int(pid), str(name)))
+
+    return matches
+
+
+def _format_concurrent_instances_message(
+    matches: list[tuple[int, str]], scripts_dir: Path
+) -> str:
+    """Build a human-readable explanation + remediation hint for the user."""
+    shim = scripts_dir / "hermes.exe"
+    lines = ["✗ Another hermes.exe is running:"]
+    for pid, name in matches:
+        lines.append(f"    PID {pid}  {name}")
+    lines.append("")
+    lines.append(f"  Updating now would fail to overwrite {shim} because")
+    lines.append("  Windows blocks REPLACE on a running executable.")
+    lines.append("")
+    lines.append("  Close Hermes Desktop, exit any open `hermes` REPLs, and")
+    lines.append("  stop the gateway (`hermes gateway stop`) before retrying.")
+    lines.append("  Override with `hermes update --force` if you've already")
+    lines.append("  confirmed those processes will not write to the venv.")
+    return "\n".join(lines)
+
+
+def _quarantine_running_hermes_exe(
+    scripts_dir: Path, *, max_attempts: int = 4
+) -> list[tuple[Path, Path]]:
     """Pre-empt Windows file lock on the running ``hermes.exe``.
 
     Windows allows RENAMING a mapped/running executable (the kernel tracks the
@@ -7212,27 +7470,127 @@ def _quarantine_running_hermes_exe(scripts_dir: Path) -> list[tuple[Path, Path]]
     fresh shims at the original paths. The ``.old`` files are cleaned up on
     the next hermes invocation by ``_cleanup_quarantined_exes``.
 
+    Rename can still fail when *another* process has opened the .exe without
+    ``FILE_SHARE_DELETE`` — typically AV real-time scanners with transient
+    handles (recovers in <1s), or the Hermes Desktop backend child process
+    (won't recover until the user closes it). We mitigate:
+
+    1. Retry up to ``max_attempts`` times with exponential backoff
+       (100/250/500/1000 ms). Handles the AV-scanner case.
+    2. If all retries fail, schedule the .exe for replacement on next
+       reboot via ``MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)``. This still
+       lets uv create a fresh shim at the original path (Windows will keep
+       the old file's content under a new name until the reboot), so the
+       update can complete; the user just needs to reboot to fully unload
+       the stale image.
+    3. Print a clear warning naming the most likely culprit (running
+       Hermes Desktop / gateway / REPL) and pointing to ``--force``.
+
     Returns the list of (original, quarantined) pairs so the caller can roll
-    back if the install itself fails before uv writes a replacement.
+    back if the install itself fails before uv writes a replacement. Pairs
+    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned — they
+    are already deferred and roll-back is meaningless.
     """
     moved: list[tuple[Path, Path]] = []
     if not _is_windows():
         return moved
 
     import time
+
     stamp = int(time.time() * 1000)
+    # Backoff schedule: first attempt is immediate, subsequent ones sleep.
+    # 100ms / 250ms / 500ms covers the typical AV scanner re-scan window.
+    backoff_ms = [0, 100, 250, 500, 1000]
+    attempts = max(1, min(max_attempts, len(backoff_ms)))
+
     for shim in _hermes_exe_shims(scripts_dir):
         if not shim.exists():
             continue
         target = shim.with_suffix(shim.suffix + f".old.{stamp}")
-        try:
-            shim.rename(target)
-            moved.append((shim, target))
-        except OSError as e:
-            # Best-effort: keep going. uv's failure later will surface the
-            # real error; this is a heuristic, not a hard guarantee.
-            print(f"  ⚠ Could not quarantine {shim.name}: {e}")
+
+        last_exc: OSError | None = None
+        for attempt in range(attempts):
+            delay = backoff_ms[attempt] / 1000.0
+            if delay:
+                time.sleep(delay)
+            try:
+                shim.rename(target)
+                moved.append((shim, target))
+                last_exc = None
+                break
+            except OSError as e:
+                last_exc = e
+                continue
+
+        if last_exc is None:
+            continue
+
+        # All in-process renames failed. Try MoveFileEx with
+        # MOVEFILE_DELAY_UNTIL_REBOOT as a last resort. This succeeds in the
+        # exact case where the inline rename failed (another process holds
+        # the handle without share-delete), at the cost of requiring a
+        # reboot to fully reclaim the old .exe.
+        scheduled = _schedule_replace_on_reboot(shim, target)
+        if scheduled:
+            print(
+                f"  ⚠ {shim.name} is locked by another process; scheduled "
+                f"replacement on next reboot."
+            )
+            print(
+                "    The new shim was written at the same path, but a "
+                "reboot is needed to fully unload the old one."
+            )
+            # Do NOT append to ``moved``: we don't want roll-back to undo a
+            # reboot-deferred operation.
+            continue
+
+        # Truly couldn't budge the .exe. Print an actionable warning and let
+        # uv try its luck — sometimes uv's own retry handling pulls through.
+        print(
+            f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
+            f"another process is holding it open)."
+        )
+        print(
+            "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
+            "gateway, or pause AV scanning, then re-run `hermes update`."
+        )
+
     return moved
+
+
+def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
+    """Schedule ``shim`` -> ``quarantine_target`` via PendingFileRenameOperations.
+
+    Uses Win32 ``MoveFileExW`` with ``MOVEFILE_REPLACE_EXISTING |
+    MOVEFILE_DELAY_UNTIL_REBOOT``. The OS persists the rename in
+    ``HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\
+    PendingFileRenameOperations`` and applies it before any user-mode code
+    runs on next boot — at which point no process can hold the .exe.
+
+    Returns ``True`` if the schedule call succeeded, ``False`` otherwise
+    (non-Windows, ctypes failure, lack of privilege, etc.). Never raises.
+    """
+    if not _is_windows():
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        MOVEFILE_REPLACE_EXISTING = 0x1
+        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+
+        MoveFileExW = ctypes.windll.kernel32.MoveFileExW
+        MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        MoveFileExW.restype = wintypes.BOOL
+
+        ok = MoveFileExW(
+            str(shim),
+            str(quarantine_target),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT,
+        )
+        return bool(ok)
+    except Exception:
+        return False
 
 
 def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
@@ -7397,9 +7755,7 @@ def _install_python_dependencies_with_optional_fallback(
 
 
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:
-    check = env or os.environ
-    prefix = str(check.get("PREFIX", ""))
-    return "com.termux" in prefix or prefix.startswith("/data/data/com.termux/")
+    return _is_termux_startup_environment(env)
 
 
 def _is_android_python() -> bool:
@@ -8019,6 +8375,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     print("⚕ Updating Hermes Agent...")
     print()
+
+    # On Windows, abort early if another hermes.exe is holding the venv shim
+    # open. Continuing would result in a string of WinError 32 warnings and
+    # then either a deferred-rename leftover or a failed git-pull fast path
+    # that silently falls back to the slower ZIP route. See issue #26670.
+    if _is_windows() and not getattr(args, "force", False):
+        scripts_dir = _venv_scripts_dir()
+        if scripts_dir is not None:
+            concurrent = _detect_concurrent_hermes_instances(scripts_dir)
+            if concurrent:
+                print(_format_concurrent_instances_message(concurrent, scripts_dir))
+                sys.exit(2)
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
@@ -10041,7 +10409,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
+        "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -10135,6 +10503,47 @@ def _plugin_cli_discovery_needed() -> bool:
     return True
 
 
+def _try_termux_fast_tui_launch() -> bool:
+    """Launch obvious Termux TUI invocations before building every subparser.
+
+    `hermes --tui` is the hot path on phones. The full parser setup imports
+    command modules for model, fallback, migrate, kanban, bundles, plugins,
+    etc. even though the TUI immediately execs Node. On Termux only, parse the
+    lightweight top-level/chat parser and hand off to ``cmd_chat`` when the
+    invocation is unambiguously the built-in TUI/chat path.
+    """
+    if not _is_termux_startup_environment():
+        return False
+
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        return False
+
+    wants_tui = os.environ.get("HERMES_TUI") == "1" or "--tui" in sys.argv[1:]
+    if not wants_tui:
+        return False
+
+    first = _first_positional_argv()
+    if first not in {None, "chat"}:
+        return False
+
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=cmd_chat)
+    args = parser.parse_args(_coalesce_session_name_args(sys.argv[1:]))
+
+    # Preserve top-level behaviours whose semantics are not "launch chat/TUI".
+    if getattr(args, "version", False) or getattr(args, "oneshot", None):
+        return False
+    if getattr(args, "command", None) not in {None, "chat"}:
+        return False
+    if not (getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"):
+        return False
+
+    cmd_chat(args)
+    return True
+
+
 def main():
     """Main entry point for hermes CLI."""
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
@@ -10151,6 +10560,9 @@ def main():
         _cleanup_quarantined_exes()
     except Exception:
         pass
+
+    if _try_termux_fast_tui_launch():
+        return
 
     from hermes_cli._parser import build_top_level_parser
 
@@ -10247,6 +10659,44 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # migrate command
+    # =========================================================================
+    from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
+
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Migrate configuration for retired models or deprecated settings",
+        description=(
+            "Diagnose and (optionally) rewrite the active config.yaml to "
+            "replace references to retired models or deprecated settings."
+        ),
+    )
+    migrate_subparsers = migrate_parser.add_subparsers(dest="migrate_type")
+
+    migrate_xai = migrate_subparsers.add_parser(
+        "xai",
+        help="Migrate xAI models scheduled for retirement on May 15, 2026",
+        description=(
+            "Scan config.yaml for references to xAI models retiring on "
+            "May 15, 2026 and, with --apply, rewrite them in-place to the "
+            "official replacements per the xAI migration guide. The original "
+            "config.yaml is backed up before any rewrite."
+        ),
+    )
+    migrate_xai.add_argument(
+        "--apply",
+        action="store_true",
+        help="Rewrite config.yaml in-place (default: dry-run, no writes)",
+    )
+    migrate_xai.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip the timestamped backup of config.yaml when applying",
+    )
+    migrate_xai.set_defaults(func=cmd_migrate_xai)
+    migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
     # gateway command
@@ -10352,6 +10802,38 @@ def main():
         "--run-as-user",
         dest="run_as_user",
         help="User account the Linux system service should run as",
+    )
+    gateway_install.add_argument(
+        "--start-now",
+        dest="start_now",
+        action="store_true",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--no-start-now",
+        dest="start_now",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--start-on-login",
+        dest="start_on_login",
+        action="store_true",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--no-start-on-login",
+        dest="start_on_login",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--elevated-handoff",
+        dest="elevated_handoff",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
 
     # gateway uninstall
@@ -11302,6 +11784,7 @@ Examples:
             "github",
             "clawhub",
             "lobehub",
+            "browse-sh",
         ],
         help="Filter by source (default: all)",
     )
@@ -11321,6 +11804,7 @@ Examples:
             "github",
             "clawhub",
             "lobehub",
+            "browse-sh",
         ],
     )
     skills_search.add_argument("--limit", type=int, default=10, help="Max results")
@@ -12350,6 +12834,12 @@ Examples:
         action="store_true",
         default=False,
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
+    )
+    update_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement.",
     )
     update_parser.set_defaults(func=cmd_update)
 

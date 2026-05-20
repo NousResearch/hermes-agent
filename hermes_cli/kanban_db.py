@@ -951,6 +951,58 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 
 _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
+_SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
+    """Return True for a TLS record header at ``data[offset:]``."""
+    if len(data) < offset + 5:
+        return False
+    content_type = data[offset]
+    major = data[offset + 1]
+    minor = data[offset + 2]
+    length = int.from_bytes(data[offset + 3:offset + 5], "big")
+    return (
+        content_type in {0x14, 0x15, 0x16, 0x17}
+        and major == 0x03
+        and minor in {0x00, 0x01, 0x02, 0x03, 0x04}
+        and 0 < length <= 18432
+    )
+
+
+def _validate_sqlite_header(path: Path) -> None:
+    """Fail early with an actionable error for non-SQLite Kanban DB files.
+
+    ``sqlite3.connect()`` creates missing and zero-byte files, so those are
+    allowed. Existing non-empty files must have the SQLite header before we
+    hand them to SQLite/WAL setup. This keeps corrupted page-0 failures from
+    being collapsed into a generic PRAGMA error and lets the gateway's corrupt
+    board handling identify the board by fingerprint.
+    """
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if stat.st_size == 0:
+        return
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(64)
+    except OSError:
+        return
+    if head.startswith(_SQLITE_HEADER):
+        return
+    signature = ""
+    if head.startswith(b"SQLit") and _looks_like_tls_record_at(head, 5):
+        signature = " (TLS record header detected at byte offset 5)"
+    elif _looks_like_tls_record_at(head, 0):
+        signature = " (TLS record header detected at byte offset 0)"
+    raise sqlite3.DatabaseError(
+        "file is not a database: invalid SQLite header for "
+        f"{path}{signature}; first_32={head[:32].hex(' ')}"
+    )
 
 
 def connect(
@@ -981,6 +1033,7 @@ def connect(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _validate_sqlite_header(path)
     resolved = str(path.resolve())
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
     try:
@@ -2002,11 +2055,58 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
+def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True when ``task_id`` is sticky-blocked by an explicit
+    worker/operator ``kanban_block`` call (#28712).
+
+    A ``blocked`` status can come from two very different sources:
+
+    * **Worker- or operator-initiated** — a worker called
+      ``kanban_block(reason="review-required: ...")`` (or somebody ran
+      ``hermes kanban block <id>``).  This is a deliberate handoff that
+      should stay blocked until an operator unblocks it.  The block tool
+      emits a ``"blocked"`` event row in ``task_events``.
+
+    * **Circuit-breaker** — ``_record_task_failure`` tripped after
+      repeated crashes / spawn failures / timeouts.  This emits
+      ``"gave_up"``, *not* ``"blocked"``, and is meant to recover
+      automatically once the underlying conditions change (e.g. parents
+      finish, transient infra error clears).
+
+    The cheapest signal that distinguishes the two is the most recent
+    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
+    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
+    no ``"unblocked"`` event has fired since), the task is sticky and
+    ``recompute_ready`` must *not* auto-promote it.
+
+    Returns ``False`` when there is no such event at all (e.g. the task
+    was set to ``status='blocked'`` by the circuit breaker or by direct
+    DB manipulation) — preserves the pre-#28712 auto-recover semantics
+    for that path.
+    """
+    row = conn.execute(
+        "SELECT kind FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return bool(row) and row["kind"] == "blocked"
+
+
 def recompute_ready(conn: sqlite3.Connection) -> int:
     """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
+
+    ``blocked`` tasks are also considered for promotion (so a task
+    blocked purely by a parent dependency unblocks itself when the
+    parent completes), *except* when the most recent block event was a
+    worker-initiated ``kanban_block`` — those stay blocked until an
+    explicit ``kanban_unblock`` (#28712).  Without that guard, a
+    ``review-required`` handoff would auto-respawn, the fresh worker
+    would find nothing to do, exit cleanly, get recorded as a protocol
+    violation, and the cycle would repeat indefinitely.
     """
     promoted = 0
     with write_txn(conn):
@@ -2016,6 +2116,12 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if cur_status == "blocked" and _has_sticky_block(conn, task_id):
+                # Worker / operator asked for human review — do not
+                # silently auto-recover.  ``unblock_task`` is the only
+                # legitimate exit (it emits ``"unblocked"`` which flips
+                # this predicate back).
+                continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
@@ -2024,7 +2130,8 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
                 # Blocked tasks also get their failure counters reset —
-                # this is effectively an auto-unblock.
+                # this is effectively an auto-unblock (circuit-breaker
+                # recovery; worker-initiated blocks are skipped above).
                 if cur_status == "blocked":
                     conn.execute(
                         "UPDATE tasks SET status = 'ready', "

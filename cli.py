@@ -105,6 +105,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 from hermes_constants import get_hermes_home, display_hermes_home
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
+    is_browser_debug_ready,
     manual_chrome_debug_command,
     try_launch_chrome_debug,
 )
@@ -655,9 +656,58 @@ except Exception:
 # which, during CLI idle time, finds prompt_toolkit's event loop and tries to
 # close TCP transports bound to dead worker loops — producing
 # "Event loop is closed" / "Press ENTER to continue..." errors.
+#
+# We install a sys.meta_path finder that defers the actual import + patch
+# until ``openai._base_client`` is first loaded by the rest of the codebase.
+# Eagerly importing it here (the old approach) cost ~166ms / ~30MB on every
+# cold CLI start because openai's type tree (responses/*, graders/*) is huge.
+# The finder approach pays nothing until the SDK is genuinely needed and
+# still guarantees the patch is applied before any AsyncOpenAI instance can
+# be constructed (the import-then-instantiate ordering is enforced by
+# Python's import system).
 try:
-    from agent.auxiliary_client import neuter_async_httpx_del
-    neuter_async_httpx_del()
+    import sys as _httpx_neuter_sys
+    import importlib.util as _httpx_neuter_imp_util
+
+    class _AsyncHttpxDelNeuter:
+        """Defer ``AsyncHttpxClientWrapper.__del__`` neutering until import.
+
+        Saves ~166ms on cold CLI start where openai is never used (e.g.
+        ``hermes --help`` paths inside the chat command flow).  See
+        ``agent.auxiliary_client.neuter_async_httpx_del`` for full rationale
+        on why ``__del__`` must be a no-op.
+        """
+
+        _armed = True
+
+        def find_spec(self, fullname, path=None, target=None):
+            if not self._armed or fullname != "openai._base_client":
+                return None
+            # Disarm before delegating so the recursive find_spec call
+            # below doesn't loop through us.
+            self._armed = False
+            try:
+                _httpx_neuter_sys.meta_path.remove(self)
+            except ValueError:
+                pass
+            spec = _httpx_neuter_imp_util.find_spec(fullname)
+            if spec is None or spec.loader is None:
+                return None
+            _orig_exec = spec.loader.exec_module
+
+            def _patched_exec(module):
+                _orig_exec(module)
+                try:
+                    cls = getattr(module, "AsyncHttpxClientWrapper", None)
+                    if cls is not None:
+                        cls.__del__ = lambda self: None  # type: ignore[assignment]
+                except Exception:
+                    pass
+
+            spec.loader.exec_module = _patched_exec  # type: ignore[method-assign]
+            return spec
+
+    _httpx_neuter_sys.meta_path.insert(0, _AsyncHttpxDelNeuter())
 except Exception:
     pass
 
@@ -940,6 +990,37 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     return info
 
 
+def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> bool:
+    """Return whether a worktree has commits not reachable from any remote branch.
+
+    ``git log HEAD --not --remotes`` compares against remote-tracking refs under
+    ``refs/remotes/*``. If a repo has no remote-tracking refs yet, there is no
+    usable remote baseline to compare against, so treat it as having no
+    "unpushed" commits.
+    """
+    import subprocess
+
+    try:
+        remote_refs = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname)", "refs/remotes"],
+            capture_output=True, text=True, timeout=timeout, cwd=worktree_path,
+        )
+        if remote_refs.returncode != 0:
+            return True
+        if not remote_refs.stdout.strip():
+            return False
+
+        result = subprocess.run(
+            ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
+            capture_output=True, text=True, timeout=timeout, cwd=worktree_path,
+        )
+        if result.returncode != 0:
+            return True
+        return bool(result.stdout.strip())
+    except Exception:
+        return True
+
+
 def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     """Remove a worktree and its branch on exit.
 
@@ -962,18 +1043,7 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     if not Path(wt_path).exists():
         return
 
-    # Check for unpushed commits — commits reachable from HEAD but not
-    # from any remote branch.  These represent real work the agent did
-    # but didn't push.
-    has_unpushed = False
-    try:
-        result = subprocess.run(
-            ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
-            capture_output=True, text=True, timeout=10, cwd=wt_path,
-        )
-        has_unpushed = bool(result.stdout.strip())
-    except Exception:
-        has_unpushed = True  # Assume unpushed on error — don't delete
+    has_unpushed = _worktree_has_unpushed_commits(wt_path, timeout=10)
 
     if has_unpushed:
         print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
@@ -1121,15 +1191,8 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 
         if not force:
             # 24h–72h tier: only remove if no unpushed commits
-            try:
-                result = subprocess.run(
-                    ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
-                    capture_output=True, text=True, timeout=5, cwd=str(entry),
-                )
-                if result.stdout.strip():
-                    continue  # Has unpushed commits — skip
-            except Exception:
-                continue  # Can't check — skip
+            if _worktree_has_unpushed_commits(str(entry), timeout=5):
+                continue  # Has unpushed commits or can't check — skip
 
         # Safe to remove
         try:
@@ -6438,12 +6501,6 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = new_session_id
             self.agent.session_start = now
-            # Redirect the JSON session log to the new branch session file so
-            # messages written after branching land in the correct file.
-            if hasattr(self.agent, "session_log_file") and hasattr(self.agent, "logs_dir"):
-                self.agent.session_log_file = (
-                    self.agent.logs_dir / f"session_{new_session_id}.json"
-                )
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
@@ -8392,10 +8449,10 @@ class HermesCLI:
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
-        """Try to launch Chrome/Chromium with remote debugging enabled.
+        """Try to launch a Chromium-family browser with remote debugging enabled.
 
         Uses a dedicated user-data-dir so the debug instance doesn't conflict
-        with an already-running Chrome using the default profile.
+        with an already-running browser using the default profile.
 
         Returns True if a launch command was executed (doesn't guarantee success).
         """
@@ -8440,7 +8497,7 @@ class HermesCLI:
         )
 
     def _handle_browser_command(self, cmd: str):
-        """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
+        """Handle /browser connect|disconnect|status — manage live Chromium-family CDP connection."""
         import platform as _plat
 
         parts = cmd.strip().split(None, 1)
@@ -8494,56 +8551,42 @@ class HermesCLI:
 
             print()
 
-            # Check if Chrome is already listening on the debug port
-            import socket
-            _already_open = False
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(1)
-                s.connect((_host, _port))
-                s.close()
-                _already_open = True
-            except (OSError, socket.timeout):
-                pass
+            # Check if a Chromium-family browser is already serving CDP on the debug port
+            _already_open = is_browser_debug_ready(cdp_url, timeout=1.0)
 
             if _already_open:
-                print(f"   ✓ Chrome is already listening on port {_port}")
+                print(f"   ✓ Chromium-family browser is already listening on port {_port}")
             elif cdp_url == _DEFAULT_CDP:
-                # Try to auto-launch Chrome with remote debugging
-                print("   Chrome isn't running with remote debugging — attempting to launch...")
+                # Try to auto-launch a Chromium-family browser with remote debugging
+                print("   Chromium-family browser isn't running with remote debugging — attempting to launch...")
                 _launched = self._try_launch_chrome_debug(_port, _plat.system())
                 if _launched:
-                    # Wait for the port to come up
+                    # Wait for the DevTools discovery endpoint to come up
                     for _wait in range(10):
-                        try:
-                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            s.settimeout(1)
-                            s.connect((_host, _port))
-                            s.close()
+                        if is_browser_debug_ready(cdp_url, timeout=1.0):
                             _already_open = True
                             break
-                        except (OSError, socket.timeout):
-                            time.sleep(0.5)
+                        time.sleep(0.5)
                     if _already_open:
-                        print(f"   ✓ Chrome launched and listening on port {_port}")
+                        print(f"   ✓ Chromium-family browser launched and listening on port {_port}")
                     else:
-                        print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
+                        print(f"   ⚠ Browser launched but port {_port} isn't responding yet")
                         print("     Try again in a few seconds — the debug instance may still be starting")
                 else:
-                    print("   ⚠ Could not auto-launch Chrome")
+                    print("   ⚠ Could not auto-launch a Chromium-family browser")
                     sys_name = _plat.system()
                     chrome_cmd = manual_chrome_debug_command(_port, sys_name)
                     if chrome_cmd:
-                        print(f"     Launch Chrome manually:")
+                        print(f"     Launch a Chromium-family browser manually:")
                         print(f"     {chrome_cmd}")
                     else:
-                        print("     No Chrome/Chromium executable found in this environment")
+                        print("     No supported Chromium-family browser executable found in this environment")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 
             if not _already_open:
                 print()
-                print("Browser not connected — start Chrome with remote debugging and retry /browser connect")
+                print("Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect")
                 print()
                 return
 
@@ -8556,20 +8599,23 @@ class HermesCLI:
             except Exception:
                 pass
             print()
-            print("🌐 Browser connected to live Chrome via CDP")
+            print("🌐 Browser connected to live Chromium-family browser via CDP")
             print(f"   Endpoint: {cdp_url}")
             print()
 
-            # Inject context message so the model knows
+            # Inject context message so the model knows this slash command
+            # intentionally makes the dev/debug CDP browser available for use.
             if hasattr(self, '_pending_input'):
                 self._pending_input.put(
-                    "[System note: The user has connected your browser tools to their live Chrome browser "
-                    "via Chrome DevTools Protocol. Your browser_navigate, browser_snapshot, browser_click, "
-                    "and other browser tools now control their real browser — including any pages they have "
-                    "open, logged-in sessions, and cookies. They likely opened specific sites or logged into "
-                    "services before connecting. Please await their instruction before attempting to operate "
-                    "the browser. When you do act, be mindful that your actions affect their real browser — "
-                    "don't close tabs or navigate away from pages without asking.]"
+                    "[System note: The user invoked /browser connect and connected your browser tools to "
+                    "a Chromium-family dev/debug browser via Chrome DevTools Protocol. "
+                    "Your browser_navigate, browser_snapshot, browser_click, and other browser tools now "
+                    "control that CDP browser. The command itself is a signal that using browser tools for "
+                    "their current browser-related request is expected; do not wait for separate permission "
+                    "just because CDP is connected. This is typically a Hermes-managed isolated debug "
+                    "profile, not the user's main everyday browser. It is still user-visible and may contain "
+                    "pages, logged-in sessions, or cookies in that debug profile, so avoid destructive actions, "
+                    "closing tabs, or navigating away unless the user's task calls for it.]"
                 )
 
         elif sub == "disconnect":
@@ -8582,24 +8628,24 @@ class HermesCLI:
                 except Exception:
                     pass
                 print()
-                print("🌐 Browser disconnected from live Chrome")
+                print("🌐 Browser disconnected from live Chromium-family browser")
                 print("   Browser tools reverted to default mode (local headless or cloud provider)")
                 print()
 
                 if hasattr(self, '_pending_input'):
                     self._pending_input.put(
-                        "[System note: The user has disconnected the browser tools from their live Chrome. "
+                        "[System note: The user has disconnected the browser tools from their live Chromium-family browser. "
                         "Browser tools are back to default mode (headless local browser or cloud provider).]"
                     )
             else:
                 print()
-                print("Browser is not connected to live Chrome (already using default mode)")
+                print("Browser is not connected to a live Chromium-family browser (already using default mode)")
                 print()
 
         elif sub == "status":
             print()
             if current:
-                print("🌐 Browser: connected to live Chrome via CDP")
+                print("🌐 Browser: connected to live Chromium-family browser via CDP")
                 print(f"   Endpoint: {current}")
 
                 _port = 9222
@@ -8615,7 +8661,7 @@ class HermesCLI:
                     s.close()
                     print("   Status: ✓ reachable")
                 except (OSError, Exception):
-                    print("   Status: ⚠ not reachable (Chrome may not be running)")
+                    print("   Status: ⚠ not reachable (browser may not be running)")
             else:
                 try:
                     from tools.browser_tool import _get_cloud_provider
@@ -8635,13 +8681,13 @@ class HermesCLI:
                     if engine == "lightpanda":
                         print("🌐 Browser: local Lightpanda (agent-browser --engine lightpanda)")
                         print("   ⚡ Lightpanda: faster navigation, no screenshot support")
-                        print("   Automatic Chrome fallback for screenshots and failed commands")
+                        print("   Automatic Chromium fallback for screenshots and failed commands")
                     elif engine == "chrome":
-                        print("🌐 Browser: local headless Chrome (agent-browser --engine chrome)")
+                        print("🌐 Browser: local headless Chromium (agent-browser --engine chrome)")
                     else:
                         print("🌐 Browser: local headless Chromium (agent-browser)")
             print()
-            print("   /browser connect      — connect to your live Chrome")
+            print("   /browser connect      — connect to your live Chromium-family browser")
             print("   /browser disconnect   — revert to default")
             print()
 
@@ -8649,7 +8695,7 @@ class HermesCLI:
             print()
             print("Usage: /browser connect|disconnect|status")
             print()
-            print("   connect      Connect browser tools to your live Chrome session")
+            print("   connect      Connect browser tools to your live Chromium-family browser session")
             print("   disconnect   Revert to default browser backend")
             print("   status       Show current browser mode")
             print()

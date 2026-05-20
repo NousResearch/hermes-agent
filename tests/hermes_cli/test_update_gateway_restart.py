@@ -1150,6 +1150,8 @@ class TestFindGatewayPidsExclude:
 
 
 # ---------------------------------------------------------------------------
+
+
 class TestDetachedProfileGatewayRestartEnv:
     def test_default_profile_run_args_are_explicit(self, monkeypatch):
         """Default restarts must not depend on inherited profile state."""

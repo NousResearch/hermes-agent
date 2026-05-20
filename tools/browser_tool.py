@@ -2171,13 +2171,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         })
 
     # SSRF protection — block private/internal addresses before navigating.
-    # Skipped for local backends (Camofox, headless Chromium without a cloud
-    # provider) because the agent already has full local network access via
-    # the terminal tool.  Also skipped when hybrid routing will auto-spawn a
-    # local Chromium sidecar for this URL (cloud provider configured +
-    # private URL + ``browser.auto_local_for_private_urls`` enabled) — the
-    # cloud provider never sees the URL in that case.  Can also be opted
-    # out globally via ``browser.allow_private_urls`` in config.
+    # Local browser backends still enforce this guard by default because
+    # browser_snapshot can return local files and internal service responses
+    # in browser-only or reduced-tool configurations.  Hybrid routing may
+    # still auto-spawn a local Chromium sidecar for ordinary private URLs
+    # (cloud provider configured + private URL + ``browser.auto_local_for_private_urls``
+    # enabled) so the cloud provider
+    # never sees the URL.  Users can opt out globally via
+    # ``browser.allow_private_urls`` in config.
     effective_task_id = task_id or "default"
     nav_session_key = _navigation_session_key(effective_task_id, url)
     auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
@@ -2193,6 +2194,18 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "success": False,
             "error": "Blocked: URL targets a cloud metadata endpoint",
         })
+
+    if _is_camofox_mode():
+        if _is_always_blocked_url(url):
+            return json.dumps({
+                "success": False,
+                "error": "Blocked: URL targets a cloud metadata endpoint",
+            })
+        if not _is_safe_url(url):
+            return json.dumps({
+                "success": False,
+                "error": "Blocked: URL targets a private or internal address",
+            })
 
     if (
         not _is_local_backend()

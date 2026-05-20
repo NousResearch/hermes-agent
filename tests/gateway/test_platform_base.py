@@ -329,6 +329,31 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_duplicate_media_tags_are_deduplicated(self):
+        content = "MEDIA:/tmp/test.png\nMEDIA:/tmp/test.png\nMEDIA:/tmp/other.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/tmp/test.png", False),
+            ("/tmp/other.png", False),
+        ]
+        assert cleaned == ""
+
+    def test_duplicate_media_tags_dedup_preserves_first_occurrence_order(self):
+        content = "MEDIA:/tmp/a.png\nMEDIA:/tmp/b.png\nMEDIA:/tmp/a.png\nMEDIA:/tmp/c.png"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/tmp/a.png", False),
+            ("/tmp/b.png", False),
+            ("/tmp/c.png", False),
+        ]
+
+    def test_dedup_uses_expanded_path_so_tilde_and_absolute_collapse(self):
+        import os
+        home = os.path.expanduser("~")
+        content = f"MEDIA:~/foo.png\nMEDIA:{home}/foo.png"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [(f"{home}/foo.png", False)]
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the

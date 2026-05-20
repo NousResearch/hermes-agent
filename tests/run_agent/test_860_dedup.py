@@ -110,8 +110,6 @@ class TestFlushDeduplication:
             db = SessionDB(db_path=db_path)
 
             agent = self._make_agent(db)
-            # Stub out _save_session_log to avoid file I/O
-            agent._save_session_log = MagicMock()
 
             conversation_history = [{"role": "user", "content": "old"}]
             messages = list(conversation_history) + [

@@ -1454,7 +1454,6 @@ def run_conversation(
                                 }
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
-                                agent._save_session_log(messages)
                                 restart_with_length_continuation = True
                                 break
 
@@ -3086,7 +3085,6 @@ def run_conversation(
                     if not agent.quiet_mode:
                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
                     agent._session_messages = messages
-                    agent._save_session_log(messages)
                     continue
 
                 agent._codex_incomplete_retries = 0
@@ -3411,7 +3409,6 @@ def run_conversation(
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
-                agent._save_session_log(messages)
                 
                 # Continue loop for next response
                 continue
@@ -3578,7 +3575,6 @@ def run_conversation(
                         interim_msg["_thinking_prefill"] = True
                         messages.append(interim_msg)
                         agent._session_messages = messages
-                        agent._save_session_log(messages)
                         continue
 
                     # ── Empty response retry ──────────────────────
@@ -3712,7 +3708,6 @@ def run_conversation(
                     }
                     messages.append(continue_msg)
                     agent._session_messages = messages
-                    agent._save_session_log(messages)
                     continue
 
                 codex_ack_continuations = 0

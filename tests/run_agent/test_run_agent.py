@@ -1901,7 +1901,6 @@ class TestExecuteToolCalls:
         agent._interruptible_api_call = _fake_api_call
         agent._persist_session = lambda *args, **kwargs: None
         agent._save_trajectory = lambda *args, **kwargs: None
-        agent._save_session_log = lambda *args, **kwargs: None
 
         captured = io.StringIO()
         agent._print_fn = lambda *args, **kw: print(*args, file=captured, **kw)
@@ -4300,22 +4299,6 @@ class TestSafeWriter:
         assert inner.getvalue() == "test"
 
 
-class TestSaveSessionLogAtomicWrite:
-    def test_uses_shared_atomic_json_helper(self, agent, tmp_path):
-        agent.session_log_file = tmp_path / "session.json"
-        messages = [{"role": "user", "content": "hello"}]
-
-        with patch("run_agent.atomic_json_write", create=True) as mock_atomic_write:
-            agent._save_session_log(messages)
-
-        mock_atomic_write.assert_called_once()
-        call_args = mock_atomic_write.call_args
-        assert call_args.args[0] == agent.session_log_file
-        payload = call_args.args[1]
-        assert payload["session_id"] == agent.session_id
-        assert payload["messages"] == messages
-        assert call_args.kwargs["indent"] == 2
-        assert call_args.kwargs["default"] is str
 
 
 # ===================================================================
@@ -5103,12 +5086,9 @@ class TestPersistUserMessageOverride:
             {"role": "assistant", "content": "Hi!"},
         ]
 
-        with patch.object(agent, "_save_session_log") as mock_save:
-            agent._persist_session(messages, [])
+        agent._persist_session(messages, [])
 
         assert messages[0]["content"] == "Hello there"
-        saved_messages = mock_save.call_args.args[0]
-        assert saved_messages[0]["content"] == "Hello there"
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
 

@@ -583,6 +583,27 @@ def test_launch_tui_sets_resume_env_from_resume_arg(monkeypatch, main_mod):
     assert captured["env"]["HERMES_TUI_RESUME"] == "20260518_000000_goodid"
 
 
+def test_launch_tui_passes_repaired_path_to_node_subprocess(monkeypatch, main_mod):
+    captured = {}
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    def fake_make_tui_argv(_tui_dir, _tui_dev):
+        monkeypatch.setenv("PATH", "/usr/bin:/opt/homebrew/bin")
+        return ["node", "dist/entry.js"], Path(".")
+
+    monkeypatch.setattr(main_mod, "_make_tui_argv", fake_make_tui_argv)
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["PATH"] == "/usr/bin:/opt/homebrew/bin"
+
+
 def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path):
     tui_dir = tmp_path / "ui-tui"
     tsx = tui_dir / "node_modules" / ".bin" / "tsx"

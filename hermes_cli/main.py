@@ -980,6 +980,25 @@ def _ensure_tui_node() -> None:
     Idempotent no-op when node+npm are already discoverable. Set
     ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
     """
+    # GUI-launched/login-shell-mismatched terminals on macOS can start Python
+    # with a PATH that misses Homebrew even though the user's interactive zsh
+    # can run `npm` just fine. Seed the usual locations before declaring Node
+    # missing; this also handles split installs such as node from a version
+    # manager and npm from Homebrew.
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    for extra in (
+        Path.home() / ".local" / "bin",
+        Path.home() / ".pocket-server" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/opt/homebrew/sbin"),
+        Path("/usr/local/bin"),
+        Path("/usr/local/sbin"),
+    ):
+        s = str(extra)
+        if extra.is_dir() and s not in parts:
+            parts.append(s)
+    os.environ["PATH"] = os.pathsep.join(parts)
+
     if shutil.which("node") and shutil.which("npm"):
         return
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
@@ -1041,6 +1060,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             env_node = os.environ.get("HERMES_NODE")
             if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
                 return env_node
+        if bin == "npm":
+            env_npm = os.environ.get("HERMES_NPM")
+            if env_npm and os.path.isfile(env_npm) and os.access(env_npm, os.X_OK):
+                return env_npm
         path = shutil.which(bin)
         if not path and bin == "node":
             try:
@@ -1290,6 +1313,10 @@ def _launch_tui(
         env["HERMES_TUI_RESUME"] = resume_session_id
 
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    # _make_tui_argv() may repair os.environ["PATH"] while finding node/npm.
+    # Keep the actual TUI subprocess on that repaired PATH instead of the stale
+    # copy taken at function entry.
+    env["PATH"] = os.environ.get("PATH", env.get("PATH", ""))
     code: Optional[int] = None
     try:
         try:

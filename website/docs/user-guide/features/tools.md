@@ -59,6 +59,7 @@ The terminal tool can execute commands in different environments:
 
 | Backend | Description | Use Case |
 |---------|-------------|----------|
+| `blaxel` | Blaxel cloud sandbox | Workspace-scoped sandboxes with volume persistence |
 | `local` | Run on your machine (default) | Development, trusted tasks |
 | `docker` | Isolated containers | Security, reproducibility |
 | `ssh` | Remote server | Sandboxing, keep agent away from its own code |
@@ -72,7 +73,7 @@ The terminal tool can execute commands in different environments:
 ```yaml
 # In ~/.hermes/config.yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox
+  backend: local    # or: blaxel, docker, ssh, singularity, modal, daytona, vercel_sandbox
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
 ```
@@ -157,7 +158,7 @@ Configure CPU, memory, disk, and persistence for all container backends:
 
 ```yaml
 terminal:
-  backend: docker  # or singularity, modal, daytona, vercel_sandbox
+  backend: docker  # or blaxel, singularity, modal, daytona, vercel_sandbox
   container_cpu: 1              # CPU cores (default: 1)
   container_memory: 5120        # Memory in MB (default: 5GB)
   container_disk: 51200         # Disk in MB (default: 50GB)

@@ -2,7 +2,7 @@
 """
 Terminal Tool Module
 
-A terminal tool that executes commands in local, Docker, Modal, SSH,
+A terminal tool that executes commands in Blaxel, local, Docker, Modal, SSH,
 Singularity, Daytona, and Vercel Sandbox environments. Supports local
 execution, containerized backends, and cloud sandboxes, including managed
 Modal mode.
@@ -10,11 +10,12 @@ Modal mode.
 Environment Selection (via TERMINAL_ENV environment variable):
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
+- "blaxel": Execute in Blaxel cloud sandboxes
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 - "vercel_sandbox": Execute in Vercel Sandbox cloud sandboxes
 
 Features:
-- Multiple execution backends (local, docker, modal, vercel_sandbox)
+- Multiple execution backends (blaxel, local, docker, modal, vercel_sandbox)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -51,6 +52,7 @@ from hermes_constants import (
     BLAXEL_DEFAULT_CWD,
     BLAXEL_DEFAULT_IMAGE,
     BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_SDK_INSTALL_COMMAND,
     BLAXEL_DEFAULT_TTL,
     BLAXEL_DEFAULT_VOLUME_SIZE_MB,
 )
@@ -221,7 +223,8 @@ def _check_blaxel_requirements(config: dict[str, Any]) -> bool:
     if importlib.util.find_spec("blaxel") is None:
         logger.error(
             "blaxel is required for the Blaxel terminal backend: "
-            "pip install 'hermes-agent[blaxel]'"
+            "%s",
+            BLAXEL_SDK_INSTALL_COMMAND,
         )
         return False
     return True
@@ -1166,9 +1169,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     Create an execution environment for sandboxed command execution.
     
     Args:
-        env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
-        image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
+        env_type: One of "blaxel", "local", "docker", "singularity",
+            "modal", "daytona", "vercel_sandbox", "ssh"
+        image: Blaxel/Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
         cwd: Working directory
         timeout: Default command timeout
         ssh_config: SSH connection config (for env_type="ssh")

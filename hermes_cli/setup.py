@@ -29,7 +29,8 @@ from hermes_constants import (
     BLAXEL_DEFAULT_IMAGE,
     BLAXEL_DEFAULT_MEMORY_MB,
     BLAXEL_DEFAULT_VOLUME_SIZE_MB,
-    BLAXEL_OPTIONAL_DEPENDENCY,
+    BLAXEL_SDK_DEPENDENCY,
+    BLAXEL_SDK_INSTALL_COMMAND,
     get_optional_skills_dir,
 )
 
@@ -645,7 +646,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
 
 def _prompt_container_resources(config: dict):
-    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona, Blaxel)."""
+    """Prompt for container resource settings shared by Docker, Singularity, Modal, and Daytona."""
     terminal = config.setdefault("terminal", {})
 
     print()
@@ -1750,7 +1751,7 @@ def setup_terminal_backend(config: dict):
         print_info("Workspace-scoped cloud sandboxes with standby/resume.")
         print_info("Sign up at: https://blaxel.ai")
 
-        blaxel_package = BLAXEL_OPTIONAL_DEPENDENCY
+        blaxel_package = BLAXEL_SDK_DEPENDENCY
 
         # Check if blaxel SDK is installed
         try:
@@ -1773,9 +1774,9 @@ def setup_terminal_backend(config: dict):
                     text=True,
                 )
             if result.returncode == 0:
-                print_success("Blaxel optional dependencies installed")
+                print_success("Blaxel SDK installed")
             else:
-                print_warning("Install failed — run manually: pip install 'hermes-agent[blaxel]'")
+                print_warning(f"Install failed — run manually: {BLAXEL_SDK_INSTALL_COMMAND}")
                 if result.stderr:
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 

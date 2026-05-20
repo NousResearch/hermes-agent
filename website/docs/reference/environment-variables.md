@@ -225,7 +225,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_SSH_KEY` | Path to private key |
 | `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
-## Container Resources (Docker, Singularity, Modal, Daytona)
+## Container Resources (Blaxel, Docker, Singularity, Modal, Daytona)
 
 | Variable | Description |
 |----------|-------------|

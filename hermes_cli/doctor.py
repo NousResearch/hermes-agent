@@ -13,7 +13,7 @@ from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_constants import display_hermes_home
+from hermes_constants import BLAXEL_SDK_INSTALL_COMMAND, display_hermes_home
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -1178,8 +1178,8 @@ def run_doctor(args):
             from blaxel.core import SyncSandboxInstance  # noqa: F401
             check_ok("blaxel SDK", "(installed)")
         except ImportError:
-            check_fail("blaxel SDK not installed", "(pip install 'hermes-agent[blaxel]')")
-            issues.append("Install the Blaxel optional dependency: pip install 'hermes-agent[blaxel]' or blaxel==0.2.52")
+            check_fail("blaxel SDK not installed", f"({BLAXEL_SDK_INSTALL_COMMAND})")
+            issues.append(f"Install the Blaxel SDK: {BLAXEL_SDK_INSTALL_COMMAND}")
 
     # Vercel Sandbox (if using vercel_sandbox backend)
     if terminal_env == "vercel_sandbox":

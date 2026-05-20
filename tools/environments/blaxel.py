@@ -168,6 +168,11 @@ def _extract_data_tar(tar: tarfile.TarFile, dest: Path) -> None:
         os.chmod(target, member.mode & 0o777)
 
 
+def _write_empty_tar(path: Path) -> None:
+    with tarfile.open(path, "w"):
+        pass
+
+
 def _ensure_blaxel_sdk() -> None:
     """Lazy-install blaxel SDK on demand. Idempotent once installed."""
     try:
@@ -491,25 +496,56 @@ class BlaxelEnvironment(BaseEnvironment):
         """Download remote .hermes/ as a tar archive."""
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
         remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"
-        self._sandbox.process.exec({
-            "command": (
-                f"tar cf {shlex.quote(remote_tar)} -C / "
-                f"{shlex.quote(rel_base)}"
-            ),
-            "wait_for_completion": True,
-            "timeout": 60_000,
-        })
-        data = self._sandbox.fs.read_binary(remote_tar)
-        with open(dest, "wb") as f:
-            f.write(data)
         try:
-            self._sandbox.process.exec({
-                "command": f"rm -f {shlex.quote(remote_tar)}",
-                "wait_for_completion": True,
-                "timeout": 10_000,
-            })
-        except Exception:
-            pass
+            command = (
+                f"rm -f {shlex.quote(remote_tar)} && "
+                f"if [ -d {shlex.quote('/' + rel_base)} ]; then "
+                f"tar cf {shlex.quote(remote_tar)} -C / {shlex.quote(rel_base)}; "
+                f"else dd if=/dev/zero of={shlex.quote(remote_tar)} "
+                f"bs=10240 count=1 >/dev/null 2>&1; fi"
+            )
+            try:
+                response = self._sandbox.process.exec({
+                    "command": command,
+                    "wait_for_completion": True,
+                    "timeout": 60_000,
+                })
+            except Exception as e:
+                logger.warning("Blaxel: remote .hermes archive command failed: %s", e)
+                _write_empty_tar(dest)
+                return
+            exit_code = getattr(response, "exit_code", None) or 0
+            if exit_code:
+                output = (
+                    getattr(response, "stdout", None)
+                    or getattr(response, "stderr", None)
+                    or getattr(response, "logs", None)
+                    or ""
+                )
+                logger.warning(
+                    "Blaxel: remote .hermes archive command failed (%s): %s",
+                    exit_code,
+                    output,
+                )
+                _write_empty_tar(dest)
+                return
+            try:
+                data = self._sandbox.fs.read_binary(remote_tar)
+            except Exception as e:
+                logger.warning("Blaxel: remote .hermes archive unavailable: %s", e)
+                _write_empty_tar(dest)
+                return
+            with open(dest, "wb") as f:
+                f.write(data)
+        finally:
+            try:
+                self._sandbox.process.exec({
+                    "command": f"rm -f {shlex.quote(remote_tar)}",
+                    "wait_for_completion": True,
+                    "timeout": 10_000,
+                })
+            except Exception:
+                pass
 
     def _blaxel_workspace_bulk_download(self, dest: Path) -> None:
         """Download the remote working tree as a tar archive.
@@ -737,8 +773,8 @@ class BlaxelEnvironment(BaseEnvironment):
                     logger.warning("Blaxel: sync_back failed: %s", e)
 
             try:
+                self._sandbox.delete()
                 if self._persistent:
-                    self._sandbox.delete()
                     logger.info(
                         "Blaxel: deleted sandbox %s%s",
                         self._sandbox_name,
@@ -747,7 +783,6 @@ class BlaxelEnvironment(BaseEnvironment):
                         " (no persistent volume mounted)",
                     )
                 else:
-                    self._sandbox.delete()
                     logger.info("Blaxel: deleted sandbox %s", self._sandbox_name)
             except self._SandboxAPIError as e:
                 if getattr(e, "status_code", None) == 404:

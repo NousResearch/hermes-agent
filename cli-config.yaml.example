@@ -262,7 +262,7 @@ terminal:
 # Commands run in Blaxel cloud sandboxes (workspace-scoped, with volume-backed
 # persistence — files in /blaxel/persistent survive sandbox deletion).
 # Great for: Durable workspaces tied to a Blaxel workspace.
-# Requires: pip install 'hermes-agent[blaxel]', BL_API_KEY + BL_WORKSPACE env vars.
+# Requires: pip install blaxel==0.2.52, BL_API_KEY + BL_WORKSPACE env vars.
 # Optional: BL_REGION (default us-pdx-1).
 # Persistent mode also requires Blaxel volume quota; set container_persistent
 # false for ephemeral sandboxes when volume quota is unavailable.

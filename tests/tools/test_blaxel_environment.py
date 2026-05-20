@@ -442,6 +442,41 @@ class TestCleanup:
 
 
 class TestUploadGuards:
+    def test_bulk_download_uses_empty_remote_archive_for_missing_hermes(
+        self, make_env, tmp_path,
+    ):
+        sb = _make_sandbox()
+        env = make_env(persistent=False, sandbox=sb)
+        sb.process.exec.reset_mock()
+        sb.fs.read_binary.return_value = _make_tar_bytes({})
+        dest = tmp_path / "sync.tar"
+
+        env._blaxel_bulk_download(dest)
+
+        archive_command = sb.process.exec.call_args_list[0][0][0]["command"]
+        assert "[ -d /root/.hermes ]" in archive_command
+        assert "dd if=/dev/zero" in archive_command
+        with tarfile.open(dest) as tar:
+            assert tar.getmembers() == []
+
+    def test_bulk_download_tar_failure_writes_empty_archive(
+        self, make_env, tmp_path,
+    ):
+        sb = _make_sandbox()
+        env = make_env(persistent=False, sandbox=sb)
+        sb.process.exec.reset_mock()
+        sb.process.exec.side_effect = [
+            _make_exec_response(stderr="tar failed", exit_code=2),
+            _make_exec_response(),
+        ]
+        dest = tmp_path / "sync.tar"
+
+        env._blaxel_bulk_download(dest)
+
+        sb.fs.read_binary.assert_not_called()
+        with tarfile.open(dest) as tar:
+            assert tar.getmembers() == []
+
     def test_bulk_upload_refuses_files_above_sync_limit(
         self, make_env, monkeypatch, tmp_path,
     ):
@@ -632,8 +667,10 @@ class TestResourceHandling:
         assert config["ttl"] == "1h"
 
     def test_lazy_dep_registration(self):
+        from hermes_constants import BLAXEL_SDK_DEPENDENCY
         from tools.lazy_deps import LAZY_DEPS
-        assert LAZY_DEPS["terminal.blaxel"] == ("blaxel==0.2.52",)
+
+        assert LAZY_DEPS["terminal.blaxel"] == (BLAXEL_SDK_DEPENDENCY,)
 
     def test_wait_for_sandbox_ready_raises_on_timeout(
         self, blaxel_sdk, monkeypatch,

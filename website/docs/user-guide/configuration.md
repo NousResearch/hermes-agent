@@ -83,7 +83,7 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, a Blaxel sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — a Blaxel sandbox, your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
@@ -97,7 +97,7 @@ terminal:
   blaxel_image: "blaxel/base-image:latest"                                   # Container image for Blaxel backend
 ```
 
-For cloud sandboxes such as Modal, Daytona, Vercel Sandbox, and Blaxel, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For cloud sandboxes such as Blaxel, Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
 ### Backend Overview
 
@@ -291,10 +291,10 @@ terminal:
   container_persistent: true                # Preserve files on a Blaxel volume
 ```
 
-**Required install:** Install the optional SDK extra:
+**Required install:** Install the Blaxel SDK:
 
 ```bash
-pip install 'hermes-agent[blaxel]'
+pip install blaxel==0.2.52
 ```
 
 **Required authentication:** Set both `BL_API_KEY` and `BL_WORKSPACE` (Blaxel is workspace-scoped). Get keys at [app.blaxel.ai/profile/security](https://app.blaxel.ai/profile/security).
@@ -345,14 +345,14 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
-- **Blaxel** — Needs both `BL_API_KEY` and `BL_WORKSPACE`. Run `pip install 'hermes-agent[blaxel]'` if the SDK is missing.
+- **Blaxel** — Needs both `BL_API_KEY` and `BL_WORKSPACE`. Run `pip install blaxel==0.2.52` if the SDK is missing.
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 
 ### Remote-to-Host File Sync on Teardown
 
-For the **SSH**, **Modal**, **Daytona**, and **Blaxel** backends (anywhere the agent's working tree lives on a different machine than the host running Hermes), Hermes tracks files the agent touched inside the remote sandbox and, on session teardown / sandbox cleanup, **syncs the modified files back to the host** under `~/.hermes/cache/remote-syncs/<session-id>/`.
+For the **Blaxel**, **SSH**, **Modal**, and **Daytona** backends (anywhere the agent's working tree lives on a different machine than the host running Hermes), Hermes tracks files the agent touched inside the remote sandbox and, on session teardown / sandbox cleanup, **syncs the modified files back to the host** under `~/.hermes/cache/remote-syncs/<session-id>/`.
 
 - Triggers on: session close, `/new`, `/reset`, gateway message timeout, `delegate_task` subagent completion when the child used a remote backend.
 - Covers the whole tree the agent modified, not just files it explicitly opened. Additions, edits, and deletions are all captured.

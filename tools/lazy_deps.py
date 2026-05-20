@@ -61,6 +61,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from hermes_constants import BLAXEL_SDK_DEPENDENCY
+
 logger = logging.getLogger(__name__)
 
 
@@ -153,7 +155,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "terminal.modal": ("modal==1.3.4",),
     "terminal.daytona": ("daytona==0.155.0",),
     "terminal.vercel": ("vercel==0.5.7",),
-    "terminal.blaxel": ("blaxel==0.2.52",),
+    "terminal.blaxel": (BLAXEL_SDK_DEPENDENCY,),
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (

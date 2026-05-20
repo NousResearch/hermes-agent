@@ -627,7 +627,7 @@ def test_blaxel_setup_prompts_only_effective_resource_knobs(tmp_path, monkeypatc
     assert os.environ["BL_WORKSPACE"] == "workspace"
 
 
-def test_blaxel_setup_installs_project_extra_when_sdk_missing(tmp_path, monkeypatch):
+def test_blaxel_setup_installs_sdk_when_missing(tmp_path, monkeypatch):
     import builtins
     import subprocess
 
@@ -678,7 +678,7 @@ def test_blaxel_setup_installs_project_extra_when_sdk_missing(tmp_path, monkeypa
         "install",
         "--python",
         sys.executable,
-        "hermes-agent[blaxel]",
+        "blaxel==0.2.52",
     ]]
 
 

@@ -22,6 +22,7 @@ from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import (
     BLAXEL_DEFAULT_IMAGE,
     BLAXEL_DEFAULT_REGION,
+    BLAXEL_SDK_INSTALL_COMMAND,
     OPENROUTER_MODELS_URL,
 )
 from tools.tool_backend_helpers import managed_nous_tools_enabled
@@ -390,7 +391,7 @@ def show_status(args):
         bl_workspace = os.getenv("BL_WORKSPACE", "")
         bl_region = os.getenv("BL_REGION", "") or BLAXEL_DEFAULT_REGION
         sdk_ok = importlib.util.find_spec("blaxel") is not None
-        sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[blaxel]')"
+        sdk_label = "installed" if sdk_ok else f"missing (install: {BLAXEL_SDK_INSTALL_COMMAND})"
         print(f"  Blaxel Image: {blaxel_image}")
         print(f"  Workspace:    {bl_workspace or '(not set)'}")
         print(f"  Region:       {bl_region}")

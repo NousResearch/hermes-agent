@@ -16,7 +16,7 @@ Architecture (two transports):
   **Remote backends (file-based RPC):**
   1. Parent generates `hermes_tools.py` with file-based RPC stubs
   2. Parent ships both files to the remote environment
-  3. Script runs inside the terminal backend (Docker/SSH/Modal/Daytona/etc.)
+  3. Script runs inside the terminal backend (Blaxel/Docker/SSH/Modal/Daytona/etc.)
   4. Tool calls are written as request files; a polling thread on the parent
      reads them via env.execute(), dispatches, and writes response files
   5. The script polls for response files and continues

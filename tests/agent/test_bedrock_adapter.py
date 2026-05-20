@@ -1712,3 +1712,62 @@ class TestRequireBoto3VersionCheck:
         with patch.dict("sys.modules", {"boto3": fake_boto3}):
             result = _require_boto3()
             assert result is fake_boto3
+# ---------------------------------------------------------------------------
+# Bearer token promotion
+# ---------------------------------------------------------------------------
+
+class TestBearerTokenPromotion:
+    """Verify _get_bedrock_runtime_client promotes AWS_BEARER_TOKEN_BEDROCK
+    to the standard AWS_BEARER_TOKEN env var for boto3's credential chain."""
+
+    def test_promotes_bearer_token_to_standard_env_var(self, monkeypatch):
+        """When AWS_BEARER_TOKEN_BEDROCK is set and AWS_BEARER_TOKEN is not,
+        the client factory must promote it so boto3 can resolve credentials."""
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            reset_client_cache,
+        )
+
+        reset_client_cache()
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "ABSKTestToken123")
+        monkeypatch.delenv("AWS_BEARER_TOKEN", raising=False)
+
+        with patch("boto3.client") as mock_client:
+            mock_client.return_value = MagicMock()
+            _get_bedrock_runtime_client("us-east-1")
+
+        assert os.environ.get("AWS_BEARER_TOKEN") == "ABSKTestToken123"
+
+    def test_does_not_overwrite_existing_bearer_token(self, monkeypatch):
+        """If AWS_BEARER_TOKEN is already set, don't clobber it."""
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            reset_client_cache,
+        )
+
+        reset_client_cache()
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "ABSKHermesToken")
+        monkeypatch.setenv("AWS_BEARER_TOKEN", "ExistingToken")
+
+        with patch("boto3.client") as mock_client:
+            mock_client.return_value = MagicMock()
+            _get_bedrock_runtime_client("us-west-2")
+
+        assert os.environ.get("AWS_BEARER_TOKEN") == "ExistingToken"
+
+    def test_no_promotion_when_bearer_token_bedrock_absent(self, monkeypatch):
+        """Without AWS_BEARER_TOKEN_BEDROCK, don't touch AWS_BEARER_TOKEN."""
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            reset_client_cache,
+        )
+
+        reset_client_cache()
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        monkeypatch.delenv("AWS_BEARER_TOKEN", raising=False)
+
+        with patch("boto3.client") as mock_client:
+            mock_client.return_value = MagicMock()
+            _get_bedrock_runtime_client("eu-west-1")
+
+        assert os.environ.get("AWS_BEARER_TOKEN") is None

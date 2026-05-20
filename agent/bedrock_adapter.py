@@ -92,9 +92,23 @@ def _get_bedrock_runtime_client(region: str):
     """Get or create a cached ``bedrock-runtime`` client for the given region.
 
     Uses the default AWS credential chain (env vars → profile → instance role).
+    When ``AWS_BEARER_TOKEN_BEDROCK`` is set (Bedrock API Key auth), it is
+    promoted to the standard ``AWS_BEARER_TOKEN`` env var so boto3's credential
+    chain picks it up via httpBearerAuth (requires boto3 >=1.35).
+
+    Without this promotion, boto3's default chain cannot resolve credentials
+    and raises "could not resolve credentials from session" — even though
+    runtime_provider.py correctly routed the call to bedrock_converse mode.
     """
     if region not in _bedrock_runtime_client_cache:
         boto3 = _require_boto3()
+
+        # Promote Hermes-specific bearer token to the standard boto3 env var
+        # so the default credential chain can resolve it automatically.
+        _bearer = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip()
+        if _bearer and not os.environ.get("AWS_BEARER_TOKEN", "").strip():
+            os.environ["AWS_BEARER_TOKEN"] = _bearer
+
         _bedrock_runtime_client_cache[region] = boto3.client(
             "bedrock-runtime", region_name=region,
         )

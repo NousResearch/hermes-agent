@@ -5025,16 +5025,42 @@ class TelegramAdapter(BasePlatformAdapter):
         return bool(msg and not self._is_unset_mock(msg) and self._business_connection_id_from_message(msg))
 
     def _iter_business_message_payloads(self, update: Any):
-        seen: set[int] = set()
+        seen_object_ids: set[int] = set()
+        seen_message_keys: set[tuple[str, str | None, str | None, str | None]] = set()
+
+        def should_yield(update_type: str, message: Any) -> bool:
+            if message is None or self._is_unset_mock(message):
+                return False
+            object_id = id(message)
+            if object_id in seen_object_ids:
+                return False
+
+            connection_id = self._business_connection_id_from_message(message)
+            chat = getattr(message, "chat", None)
+            chat_id = None if chat is None or self._is_unset_mock(chat) else getattr(chat, "id", None)
+            message_id = getattr(message, "message_id", None)
+            message_key = (
+                update_type,
+                str(connection_id) if connection_id is not None else None,
+                str(chat_id) if chat_id is not None else None,
+                str(message_id) if message_id is not None else None,
+            )
+            has_semantic_key = any(part is not None for part in message_key[1:])
+            if has_semantic_key and message_key in seen_message_keys:
+                return False
+
+            seen_object_ids.add(object_id)
+            if has_semantic_key:
+                seen_message_keys.add(message_key)
+            return True
+
         for attr, update_type in (
             ("business_message", "business_message"),
             ("edited_business_message", "edited_business_message"),
         ):
             message = getattr(update, attr, None)
-            if message is None:
-                continue
-            seen.add(id(message))
-            yield update_type, message
+            if should_yield(update_type, message):
+                yield update_type, message
 
         # Some Bot API/PTB paths expose Business/Profile Automation messages as
         # the ordinary update.message/effective_message while preserving
@@ -5042,12 +5068,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # otherwise owner-sent replies look like authorized prompts and launch
         # the LLM, while counterpart messages are rejected as unauthorized.
         for message in (getattr(update, "message", None), self._effective_update_message(update)):
-            if message is None or id(message) in seen:
+            if message is None or self._is_unset_mock(message):
                 continue
             if not self._business_connection_id_from_message(message):
                 continue
-            seen.add(id(message))
-            yield "business_message", message
+            if should_yield("business_message", message):
+                yield "business_message", message
 
     def _record_business_connection_update(self, update: Any, business_connection: Any) -> None:
         connection_id = getattr(business_connection, "id", None)

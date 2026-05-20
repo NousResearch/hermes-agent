@@ -445,6 +445,83 @@ async def test_business_update_handler_records_payload_probe_shape_without_raw_t
 
 
 @pytest.mark.asyncio
+async def test_business_update_deduplicates_business_message_and_effective_message_probe_events(tmp_path, monkeypatch):
+    life_home = tmp_path / ".hermes-life"
+    _write_accounts_registry(life_home)
+    monkeypatch.setenv("HERMES_LIFE_HOME", str(life_home))
+
+    from gateway.life_inbox_store import LifeInboxStore
+
+    store = LifeInboxStore(life_home / "accounts/telegram-602562/life_inbox.sqlite")
+    probe_text = "TBP-20260520-S1-dedupe"
+    store.prepare_business_payload_probe_scenarios(
+        [
+            {
+                "scenario_id": "S1_contact_inbound",
+                "alias": "CONTACT_1",
+                "expected_direction": "incoming_to_owner",
+                "probe_text": probe_text,
+            }
+        ]
+    )
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    await adapter._handle_business_update(
+        SimpleNamespace(
+            update_id=901,
+            business_connection=SimpleNamespace(
+                id="conn-1",
+                is_enabled=True,
+                user_chat_id=602562,
+                user=SimpleNamespace(id=602562, username="oldman", full_name="Alen"),
+                rights=SimpleNamespace(to_dict=lambda: {"can_read_messages": True}),
+            ),
+            business_message=None,
+            edited_business_message=None,
+            deleted_business_messages=None,
+        ),
+        None,
+    )
+
+    chat = SimpleNamespace(id=1566649385, type="private", title=None, full_name="BaliRadar")
+    sender = SimpleNamespace(id=1566649385, full_name="BaliRadar", is_bot=False)
+
+    def make_message():
+        return SimpleNamespace(
+            business_connection_id="conn-1",
+            chat=chat,
+            from_user=sender,
+            text=probe_text,
+            caption=None,
+            message_id=1409099,
+            date=datetime(2026, 5, 20, 8, 55, 0, tzinfo=timezone.utc),
+        )
+
+    await adapter._handle_business_update(
+        SimpleNamespace(
+            update_id=902,
+            business_connection=None,
+            business_message=make_message(),
+            # PTB can expose the same Business message through effective_message
+            # as a distinct Python object. It must still be handled once.
+            effective_message=make_message(),
+            message=None,
+            edited_business_message=None,
+            deleted_business_messages=None,
+        ),
+        None,
+    )
+
+    db_path = life_home / "accounts/telegram-602562/life_inbox.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        probe_count = conn.execute("SELECT COUNT(*) FROM business_payload_probe_events").fetchone()[0]
+        message_count = conn.execute("SELECT COUNT(*) FROM business_messages").fetchone()[0]
+
+    assert probe_count == 1
+    assert message_count == 1
+
+
+@pytest.mark.asyncio
 async def test_business_deleted_update_records_probe_event_for_prior_scenario(tmp_path, monkeypatch):
     life_home = tmp_path / ".hermes-life"
     _write_accounts_registry(life_home)

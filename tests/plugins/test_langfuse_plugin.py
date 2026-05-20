@@ -704,3 +704,85 @@ class TestToolObservationKeying:
         assert ended["output"] == {"status": "done"}
         assert not state.tools
 
+
+class TestSerializeAssistantMessageReasoning:
+    """`_serialize_assistant_message` must surface reasoning for both the
+    top-level `reasoning` convention (Anthropic, Codex) and the
+    `reasoning_content` convention (LM Studio / Moonshot / Qwen3 thinking /
+    DeepSeek), which NormalizedResponse exposes via a property reading from
+    `provider_data["reasoning_content"]`.  Regression coverage for #29482."""
+
+    def _mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_top_level_reasoning_takes_precedence(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = "top-level thinking"
+            reasoning_content = "should be ignored"
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "top-level thinking"
+        assert out["content"] == "answer"
+
+    def test_falls_back_to_reasoning_content_when_reasoning_missing(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = "deepseek-style chain of thought"
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "deepseek-style chain of thought"
+
+    def test_falls_back_to_reasoning_content_when_reasoning_empty_string(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = ""
+            reasoning_content = "qwen3 thinking"
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "qwen3 thinking"
+
+    def test_reads_reasoning_content_from_normalized_response_provider_data(self):
+        """Use the real NormalizedResponse — the production code path that
+        the issue reporter hits (transport stores reasoning_content on
+        provider_data, the property surfaces it)."""
+        mod = self._mod()
+        from agent.transports.types import NormalizedResponse
+
+        resp = NormalizedResponse(
+            content="final answer",
+            tool_calls=None,
+            finish_reason="stop",
+            provider_data={"reasoning_content": "lm-studio chain of thought"},
+        )
+
+        # Sanity check: top-level `reasoning` is None, the property surfaces
+        # the provider_data field as documented in transports/types.py:115.
+        assert resp.reasoning is None
+        assert resp.reasoning_content == "lm-studio chain of thought"
+
+        out = mod._serialize_assistant_message(resp)
+        assert out["reasoning"] == "lm-studio chain of thought"
+        assert out["content"] == "final answer"
+
+    def test_returns_none_when_both_missing(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            tool_calls = None
+            # No reasoning, no reasoning_content.
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] is None

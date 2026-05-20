@@ -506,6 +506,19 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "routing": {
+        "burn_router": {
+            # Optional local Burn/Rust pre-router for toolset prediction.
+            # Disabled by default; observe mode is safe to enable because it
+            # records category/confidence without narrowing the live tool surface.
+            "enabled": False,
+            "mode": "observe",  # observe | hint | narrow
+            "binary": "",
+            "model": "",
+            "confidence_threshold": 0.72,
+            "timeout_seconds": 0.25,
+        },
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

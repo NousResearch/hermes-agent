@@ -28,6 +28,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.anthropic_adapter import _is_oauth_token
+from agent.burn_router import observe_burn_router_turn
 from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
@@ -326,6 +327,15 @@ def run_conversation(
         agent.platform or "unknown", len(conversation_history or []),
         _msg_preview,
     )
+
+    # Optional observe-only local Burn/Rust tool-router probe. Disabled by
+    # default and non-blocking/fail-closed by design: it logs what the router
+    # would choose without changing the model request or tool surface.
+    try:
+        from hermes_cli.config import load_config as _load_config
+        observe_burn_router_turn(user_message, _load_config() or {})
+    except Exception as exc:
+        logger.debug("burn_router observe hook failed: %s", exc)
 
     # Initialize conversation (copy to avoid mutating the caller's list)
     messages = list(conversation_history) if conversation_history else []

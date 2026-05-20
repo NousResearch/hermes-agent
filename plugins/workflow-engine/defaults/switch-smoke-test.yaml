@@ -1,0 +1,27 @@
+name: switch-smoke-test
+description: |
+  Minimal end-to-end smoke test for the workflow plugin.
+  Runs a bash node, then another bash node with output, then finishes.
+  Used to verify the plugin pipeline works from definition → run → completion.
+  NOT for production use.
+tags:
+  - test
+  - smoke
+nodes:
+  - id: step-1-hello
+    phase: Discover
+    bash: |
+      echo '{"greeting": "Hello from workflow engine", "step": 1, "status": "ok"}'
+
+  - id: step-2-echo
+    phase: Execute
+    bash: |
+      echo "Step 2: bash node executed successfully"
+      echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "hostname=$(hostname)"
+
+  - id: step-3-verify
+    phase: Report
+    bash: |
+      echo '{"step": 3, "status": "COMPLETE", "message": "Smoke test passed — all 3 nodes executed"}'
+      exit 0

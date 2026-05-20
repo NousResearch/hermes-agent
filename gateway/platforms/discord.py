@@ -3602,6 +3602,24 @@ class DiscordAdapter(BasePlatformAdapter):
             return 32 * 1024 * 1024
         return max(0, value)
 
+    @staticmethod
+    def _is_discord_voice_message_attachment(att: Any) -> bool:
+        """Return True when a Discord audio attachment is a native voice note."""
+        marker = getattr(att, "is_voice_message", None)
+        if marker is not None:
+            if callable(marker):
+                try:
+                    return bool(marker())
+                except Exception as exc:
+                    logger.debug("[Discord] is_voice_message() failed for attachment: %s", exc)
+                    return False
+            return bool(marker)
+
+        return (
+            getattr(att, "duration", None) is not None
+            and getattr(att, "waveform", None) is not None
+        )
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
 
@@ -4542,7 +4560,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif att.content_type.startswith("video/"):
                         msg_type = MessageType.VIDEO
                     elif att.content_type.startswith("audio/"):
-                        msg_type = MessageType.AUDIO
+                        if self._is_discord_voice_message_attachment(att):
+                            msg_type = MessageType.VOICE
+                        else:
+                            msg_type = MessageType.AUDIO
                     else:
                         doc_ext = ""
                         if att.filename:

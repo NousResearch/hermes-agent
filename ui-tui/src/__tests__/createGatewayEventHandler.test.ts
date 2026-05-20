@@ -379,11 +379,11 @@ describe('createGatewayEventHandler', () => {
     const handler = createGatewayEventHandler(ctx)
 
     handler({
-      payload: { message: 'Chrome launched and listening on port 9222' },
+      payload: { message: 'Chromium-family browser launched and listening on port 9222' },
       type: 'browser.progress'
     } as any)
 
-    expect(ctx.system.sys).toHaveBeenCalledWith('Chrome launched and listening on port 9222')
+    expect(ctx.system.sys).toHaveBeenCalledWith('Chromium-family browser launched and listening on port 9222')
   })
 
   it('annotates gateway.start_timeout with stderr tail lines so users can diagnose without /logs', () => {

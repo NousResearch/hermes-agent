@@ -1384,6 +1384,29 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
+    # xAI retirement warning — one-shot, non-blocking, never fails startup
+    try:
+        from hermes_cli.xai_retirement import (
+            MIGRATION_GUIDE_URL,
+            RETIREMENT_DATE,
+            find_retired_xai_refs,
+            format_issue,
+        )
+        from hermes_cli.config import load_config as _load_config_for_xai_check
+
+        _retired_xai_refs = find_retired_xai_refs(_load_config_for_xai_check())
+        if _retired_xai_refs:
+            sys.stderr.write(
+                f"\033[33m⚠ xAI retires {len(_retired_xai_refs)} model(s) "
+                f"in your config on {RETIREMENT_DATE}:\033[0m\n"
+            )
+            for _ref in _retired_xai_refs:
+                sys.stderr.write(f"  \033[33m⚠\033[0m {format_issue(_ref)}\n")
+            sys.stderr.write(f"  \033[2mMigration guide: {MIGRATION_GUIDE_URL}\033[0m\n")
+            sys.stderr.write("  \033[2mRun 'hermes doctor' for details.\033[0m\n\n")
+    except Exception:
+        pass
+
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()
@@ -10501,6 +10524,44 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # migrate command
+    # =========================================================================
+    from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
+
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Migrate configuration for retired models or deprecated settings",
+        description=(
+            "Diagnose and (optionally) rewrite the active config.yaml to "
+            "replace references to retired models or deprecated settings."
+        ),
+    )
+    migrate_subparsers = migrate_parser.add_subparsers(dest="migrate_type")
+
+    migrate_xai = migrate_subparsers.add_parser(
+        "xai",
+        help="Migrate xAI models scheduled for retirement on May 15, 2026",
+        description=(
+            "Scan config.yaml for references to xAI models retiring on "
+            "May 15, 2026 and, with --apply, rewrite them in-place to the "
+            "official replacements per the xAI migration guide. The original "
+            "config.yaml is backed up before any rewrite."
+        ),
+    )
+    migrate_xai.add_argument(
+        "--apply",
+        action="store_true",
+        help="Rewrite config.yaml in-place (default: dry-run, no writes)",
+    )
+    migrate_xai.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip the timestamped backup of config.yaml when applying",
+    )
+    migrate_xai.set_defaults(func=cmd_migrate_xai)
+    migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
     # gateway command

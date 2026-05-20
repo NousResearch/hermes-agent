@@ -87,6 +87,7 @@ DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest"
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+DEFAULT_LOCAL_STT_COMMAND_TIMEOUT_SECONDS = 300
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -195,6 +196,26 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
 
 def _normalize_local_command_model(model_name: Optional[str]) -> str:
     return _normalize_local_model(model_name)
+
+
+def _get_local_command_timeout(local_config: Optional[dict] = None) -> float:
+    """Return the timeout for local STT subprocess calls."""
+    if local_config is None:
+        local_config = _load_stt_config().get("local", {})
+    raw = local_config.get(
+        "command_timeout",
+        local_config.get(
+            "timeout_seconds",
+            local_config.get("timeout", DEFAULT_LOCAL_STT_COMMAND_TIMEOUT_SECONDS),
+        ),
+    )
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_LOCAL_STT_COMMAND_TIMEOUT_SECONDS)
+    if timeout <= 0:
+        return float(DEFAULT_LOCAL_STT_COMMAND_TIMEOUT_SECONDS)
+    return timeout
 
 
 def _get_provider(stt_config: dict) -> str:
@@ -458,7 +479,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
 
 
-def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
+def _prepare_local_audio(file_path: str, work_dir: str, timeout: float) -> tuple[Optional[str], Optional[str]]:
     """Normalize audio for local CLI STT when needed."""
     audio_path = Path(file_path)
     if audio_path.suffix.lower() in LOCAL_NATIVE_AUDIO_FORMATS:
@@ -472,8 +493,11 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
     command = [ffmpeg, "-y", "-i", file_path, converted_path]
 
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout)
         return converted_path, None
+    except subprocess.TimeoutExpired:
+        logger.error("ffmpeg conversion timed out for %s after %.1fs", file_path, timeout)
+        return None, f"Timed out converting audio for local STT after {timeout:g}s"
     except subprocess.CalledProcessError as e:
         details = e.stderr.strip() or e.stdout.strip() or str(e)
         logger.error("ffmpeg conversion failed for %s: %s", file_path, details)
@@ -493,16 +517,18 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
         }
 
     # Language: config.yaml (stt.local.language) > env var > "en" default.
+    local_config = _load_stt_config().get("local", {})
     language = (
-        _load_stt_config().get("local", {}).get("language")
+        local_config.get("language")
         or os.getenv(LOCAL_STT_LANGUAGE_ENV)
         or DEFAULT_LOCAL_STT_LANGUAGE
     )
+    timeout = _get_local_command_timeout(local_config)
     normalized_model = _normalize_local_command_model(model_name)
 
     try:
         with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
-            prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
+            prepared_input, prep_error = _prepare_local_audio(file_path, output_dir, timeout)
             if prep_error:
                 return {"success": False, "transcript": "", "error": prep_error}
 
@@ -515,9 +541,9 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
             if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+                subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=timeout)
             else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
+                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=timeout)
             
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
@@ -547,6 +573,10 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
         details = e.stderr.strip() or e.stdout.strip() or str(e)
         logger.error("Local STT command failed for %s: %s", file_path, details)
         return {"success": False, "transcript": "", "error": f"Local STT failed: {details}"}
+    except subprocess.TimeoutExpired as e:
+        elapsed = e.timeout if e.timeout is not None else timeout
+        logger.error("Local STT command timed out for %s after %.1fs", file_path, elapsed)
+        return {"success": False, "transcript": "", "error": f"Local STT timed out after {elapsed:g}s"}
     except Exception as e:
         logger.error("Unexpected error during local command transcription: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}

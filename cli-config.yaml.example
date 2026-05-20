@@ -824,6 +824,7 @@ stt:
   # provider: "local"          # auto-detected if omitted
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
+    command_timeout: 300       # Max seconds for local whisper CLI / ffmpeg fallback commands
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe

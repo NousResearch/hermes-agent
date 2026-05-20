@@ -354,6 +354,19 @@ class TestTranscribeOpenAIExtended:
 
 
 class TestTranscribeLocalCommand:
+    def _patch_tempdir(self, monkeypatch, out_dir):
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return False
+
+            return _TempDir()
+
+        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
+
     def test_auto_detects_local_whisper_binary(self, monkeypatch):
         monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
         monkeypatch.setattr("tools.transcription_tools._find_whisper_binary", lambda: "/opt/homebrew/bin/whisper")
@@ -377,16 +390,6 @@ class TestTranscribeLocalCommand:
         )
         monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "en")
 
-        def fake_tempdir(prefix=None):
-            class _TempDir:
-                def __enter__(self_inner):
-                    return str(out_dir)
-
-                def __exit__(self_inner, exc_type, exc, tb):
-                    return False
-
-            return _TempDir()
-
         def fake_run(cmd, *args, **kwargs):
             if isinstance(cmd, list):
                 output_path = cmd[-1]
@@ -397,7 +400,7 @@ class TestTranscribeLocalCommand:
             (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
+        self._patch_tempdir(monkeypatch, out_dir)
         monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg")
         monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
 
@@ -408,6 +411,110 @@ class TestTranscribeLocalCommand:
         assert result["success"] is True
         assert result["transcript"] == "hello from local command"
         assert result["provider"] == "local_command"
+
+    def test_command_fallback_passes_configured_timeout(self, monkeypatch, sample_ogg, tmp_path):
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+        timeouts = []
+
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --model {model} --output_dir {output_dir} --language {language}",
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"local": {"language": "en", "command_timeout": 42}},
+        )
+
+        def fake_run(cmd, *args, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            if isinstance(cmd, list):
+                output_path = cmd[-1]
+                with open(output_path, "wb") as handle:
+                    handle.write(b"RIFF....WAVEfmt ")
+            else:
+                (out_dir / "test.txt").write_text("hello\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        self._patch_tempdir(monkeypatch, out_dir)
+        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(sample_ogg, "base")
+
+        assert result["success"] is True
+        assert timeouts == [42.0, 42.0]
+
+    def test_command_timeout_invalid_config_falls_back(self):
+        from tools.transcription_tools import (
+            DEFAULT_LOCAL_STT_COMMAND_TIMEOUT_SECONDS,
+            _get_local_command_timeout,
+        )
+
+        assert _get_local_command_timeout({"command_timeout": "slow"}) == float(
+            DEFAULT_LOCAL_STT_COMMAND_TIMEOUT_SECONDS
+        )
+        assert _get_local_command_timeout({"command_timeout": 0}) == float(
+            DEFAULT_LOCAL_STT_COMMAND_TIMEOUT_SECONDS
+        )
+
+    def test_ffmpeg_timeout_returns_readable_error(self, monkeypatch, sample_ogg, tmp_path):
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --model {model} --output_dir {output_dir} --language {language}",
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"local": {"command_timeout": 7}},
+        )
+
+        def fake_run(cmd, *args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
+
+        self._patch_tempdir(monkeypatch, out_dir)
+        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(sample_ogg, "base")
+
+        assert result["success"] is False
+        assert result["error"] == "Timed out converting audio for local STT after 7s"
+
+    def test_local_command_timeout_returns_readable_error(self, monkeypatch, sample_wav, tmp_path):
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+        calls = []
+
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --model {model} --output_dir {output_dir} --language {language}",
+        )
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"local": {"command_timeout": 9}},
+        )
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append((cmd, kwargs))
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
+
+        self._patch_tempdir(monkeypatch, out_dir)
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(sample_wav, "base")
+
+        assert result["success"] is False
+        assert result["error"] == "Local STT timed out after 9s"
+        assert calls[0][1]["timeout"] == 9.0
 
 
 # ============================================================================

@@ -1153,6 +1153,7 @@ DEFAULT_CONFIG = {
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            "command_timeout": 300,  # Max seconds for local whisper CLI / ffmpeg fallback commands
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe

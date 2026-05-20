@@ -1,0 +1,154 @@
+# Dockerfile.saas — Phase E: Stateless SaaS deployment image for Hermes gateway.
+#
+# Design principles:
+#   - Python 3.12-slim base: smaller attack surface than full Debian, avoids
+#     heavy build tools from the community Dockerfile (Playwright, npm TUI).
+#   - Multi-stage build: deps cached in a separate layer from source; source-only
+#     changes do not re-run pip install.
+#   - Non-root user (uid 10001): matches ECS Fargate task execution expectations.
+#   - HERMES_HOME=/tmp/hermes-runtime: ephemeral scratch only — no EFS/volume mount.
+#   - All persistent state flows through external backends:
+#       Conversations → Neon (asyncpg, HERMES_MODE=saas)
+#       Skills        → S3   (boto3, S3_SKILLS_BUCKET)
+#       Locks         → DynamoDB (boto3, HERMES_SKILL_LOCKS_TABLE)
+#   - Healthcheck calls /health which Phase E implements in gateway/health.py.
+#   - Slack socket mode: no inbound port binding required for the Slack adapter.
+#     Port 8080 is still exposed for ALB health checks and the api_server platform.
+#
+# Build:
+#   docker build -f Dockerfile.saas -t hermes-saas .
+#
+# Run locally (with secrets passed as env vars for dev):
+#   docker run --rm \
+#     -e HERMES_MODE=saas \
+#     -e NEON_DATABASE_URL=postgresql://... \
+#     -e S3_SKILLS_BUCKET=hermes-saas-skills \
+#     -e SLACK_BOT_TOKEN=xoxb-... \
+#     -e SLACK_APP_TOKEN=xapp-... \
+#     -e OPENAI_API_KEY=... \
+#     -p 8080:8080 \
+#     hermes-saas
+
+# ---------------------------------------------------------------------------
+# Stage 1: dependency resolver
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS deps
+
+WORKDIR /build
+
+# System deps needed to compile some Python extensions (asyncpg, cryptography).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for reproducible, fast dependency resolution.
+# Note: the official astral-sh/uv image places the binary at /uv (root), not /usr/local/bin/uv.
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /usr/local/bin/uv
+
+# Copy only the dependency manifests first so the layer is cache-stable
+# unless the lockfile itself changes.
+COPY pyproject.toml uv.lock ./
+# pyproject.toml references README.md for its `readme` field; touch a placeholder
+# so uv can parse the manifest without the full README.
+RUN touch ./README.md
+
+# Install runtime extras needed for SaaS mode:
+#   messaging   — slack-bolt + slack-sdk + aiohttp (Slack socket mode)
+#   bedrock     — boto3 (S3, DynamoDB, Secrets Manager, Bedrock)
+#   anthropic   — Anthropic SDK (native provider, if not via Portkey)
+# --no-install-project defers the editable project link to Stage 2 after source copy.
+RUN uv sync --frozen --no-install-project \
+    --extra messaging \
+    --extra bedrock \
+    --extra anthropic \
+    --extra mcp \
+    --no-dev
+
+# ---------------------------------------------------------------------------
+# Stage 2: runtime image
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+# Non-interactive apt
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System runtime deps only — no build tools in the final image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user for the Fargate task.
+# UID 10001 avoids conflict with common system UIDs and matches ECS task
+# securityContext expectations (non-zero runAsUser).
+RUN useradd -u 10001 -m -s /bin/bash hermes
+
+WORKDIR /app
+
+# Copy the resolved venv from the deps stage.
+COPY --from=deps /build/.venv /app/.venv
+
+# Copy application source.
+# .dockerignore excludes: node_modules, .git, __pycache__, *.pyc, web/,
+# ui-tui/, tests/, docs/, website/, *.md (bulk), docker-compose*.yml
+COPY --chown=hermes:hermes . .
+
+# Install the project itself in editable mode using the pre-built venv.
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /usr/local/bin/uv
+RUN uv pip install --no-cache-dir --no-deps -e "." --python /app/.venv/bin/python
+
+# ---------------------------------------------------------------------------
+# SaaS mode environment
+# ---------------------------------------------------------------------------
+
+# HERMES_MODE=saas activates NeonBackend + S3SkillSource in hermes_storage.
+ENV HERMES_MODE=saas
+
+# Ephemeral scratch directory — no EFS, no volume mount.
+# Hermes runtime config/sessions/skills are external (Neon + S3).
+ENV HERMES_HOME=/tmp/hermes-runtime
+
+# Ensure the venv Python is used by default.
+ENV PATH="/app/.venv/bin:${PATH}"
+ENV VIRTUAL_ENV=/app/.venv
+
+# Gateway platform: Slack socket mode (no public URL / ALB required for beta).
+# Override with HERMES_GATEWAY_PLATFORM=api_server for health probe HTTP server.
+ENV HERMES_GATEWAY_PLATFORM=slack
+
+# Port 8080: used by the health probe HTTP server (gateway/health_server.py).
+# The Slack socket-mode adapter makes no inbound connections — port 8080 is
+# only the health check listener.
+EXPOSE 8080
+
+# ---------------------------------------------------------------------------
+# Healthcheck
+# ---------------------------------------------------------------------------
+# ALB target group health check path and ECS container health check both use
+# the HTTP health endpoint started by the saas entrypoint (gateway/health_server.py).
+HEALTHCHECK \
+    --interval=30s \
+    --timeout=10s \
+    --start-period=60s \
+    --retries=3 \
+    CMD curl -sf http://localhost:8080/health || exit 1
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+# Create the ephemeral scratch directory before dropping privileges.
+RUN mkdir -p /tmp/hermes-runtime && chown hermes:hermes /tmp/hermes-runtime
+
+USER hermes
+
+# Entrypoint: starts the health HTTP server then runs the Slack gateway.
+# docker/entrypoint.saas.sh handles HERMES_HOME bootstrap (no EFS write paths).
+COPY --chown=hermes:hermes docker/entrypoint.saas.sh /app/docker/entrypoint.saas.sh
+RUN chmod +x /app/docker/entrypoint.saas.sh
+
+ENTRYPOINT ["/app/docker/entrypoint.saas.sh"]
+CMD ["gateway", "--platform", "slack"]

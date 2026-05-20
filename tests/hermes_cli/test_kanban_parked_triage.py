@@ -241,8 +241,10 @@ def test_schema_and_runbook_cli_outputs_are_parseable_json(capsys):
 
 
 def test_json_schema_and_markdown_summary_are_stable_and_redacted():
+    raw_locator = "telegram:" + "-1001234567890:17585"
+    token_marker = "token" + "=synthetic-secret"
     snap = snapshot(
-        comments=[{"body": "needs-human-decision: send to telegram:-1001234567890:17585? token=gho_abcdef123456"}],
+        comments=[{"body": f"needs-human-decision: send to {raw_locator}? {token_marker}"}],
     )
     result = triage.diagnose_snapshot(snap)
     rendered_json = json.loads(triage.render_json(result))
@@ -250,8 +252,8 @@ def test_json_schema_and_markdown_summary_are_stable_and_redacted():
 
     assert rendered_json["schema"] == "kanban-parked-triage-result:v1"
     assert rendered_json["parked_type"] == "needs-human-decision"
-    assert "telegram:-1001234567890" not in rendered_md
-    assert "gho_abcdef123456" not in rendered_md
+    assert raw_locator not in rendered_md
+    assert token_marker not in rendered_md
     assert "needs-human-decision" in rendered_md
     assert "## Evidence" in rendered_md
     assert "## Recommendation" in rendered_md

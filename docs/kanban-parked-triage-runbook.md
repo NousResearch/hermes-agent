@@ -53,7 +53,8 @@ The helper has no side effects. It does not modify GitHub, Kanban, Telegram, lab
 }
 ```
 
-Public output redacts obvious credentials and raw Telegram numeric locators such as `telegram:-100...`.
+Public output redacts obvious credentials and raw Telegram numeric locators such as
+`telegram:<numeric-chat-id>[:thread-id]`.
 
 ## Classification runbook
 

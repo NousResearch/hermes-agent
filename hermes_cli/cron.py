@@ -58,13 +58,17 @@ def cron_list(show_all: bool = False):
     for job in jobs:
         job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
-        schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
+        _sched = job.get("schedule", {})
+        schedule = job.get("schedule_display") or (
+            _sched if isinstance(_sched, str) else
+            _sched.get("display", _sched.get("expr", _sched.get("value", "?")))
+        )
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
         next_run = job.get("next_run_at", "?")
 
-        repeat_info = job.get("repeat", {})
-        repeat_times = repeat_info.get("times")
-        repeat_completed = repeat_info.get("completed", 0)
+        repeat_info = job.get("repeat") or {}
+        repeat_times = repeat_info.get("times") if isinstance(repeat_info, dict) else None
+        repeat_completed = repeat_info.get("completed", 0) if isinstance(repeat_info, dict) else 0
         repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
 
         deliver = job.get("deliver", ["local"])

@@ -111,3 +111,67 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+
+class TestCronListMCPCompatibility:
+    """Regression tests for issue #28662: cron list crash on MCP-created jobs."""
+
+    def test_list_handles_string_schedule(self, monkeypatch, capsys):
+        # MCP cronjob tool stores schedule as a plain string.
+        jobs = [{
+            "id": "abc123",
+            "name": "mcp-string-schedule",
+            "schedule": "0 7 * * 1",
+            "repeat": {"completed": 0, "times": None},
+            "enabled": True,
+        }]
+        monkeypatch.setattr("cron.jobs.list_jobs", lambda include_disabled=False: jobs)
+        from hermes_cli.cron import cron_list
+        cron_list()
+        out = capsys.readouterr().out
+        assert "mcp-string-schedule" in out
+        assert "0 7 * * 1" in out
+
+    def test_list_handles_none_repeat(self, monkeypatch, capsys):
+        # MCP cronjob tool may store repeat as bare None.
+        jobs = [{
+            "id": "abc124",
+            "name": "mcp-none-repeat",
+            "schedule": "0 8 * * *",
+            "repeat": None,
+            "enabled": True,
+        }]
+        monkeypatch.setattr("cron.jobs.list_jobs", lambda include_disabled=False: jobs)
+        from hermes_cli.cron import cron_list
+        cron_list()
+        out = capsys.readouterr().out
+        assert "mcp-none-repeat" in out
+        assert "∞" in out
+
+    def test_list_dict_schedule_prefers_display(self, monkeypatch, capsys):
+        jobs = [{
+            "id": "abc125",
+            "name": "cli-wizard-job",
+            "schedule": {"display": "every hour", "expr": "0 * * * *"},
+            "repeat": {"completed": 2, "times": 10},
+            "enabled": True,
+        }]
+        monkeypatch.setattr("cron.jobs.list_jobs", lambda include_disabled=False: jobs)
+        from hermes_cli.cron import cron_list
+        cron_list()
+        out = capsys.readouterr().out
+        assert "every hour" in out
+        assert "2/10" in out
+
+    def test_list_does_not_crash_on_mixed_jobs(self, monkeypatch, capsys):
+        # Regression: prior code crashed mid-loop, hiding later jobs.
+        jobs = [
+            {"id": "j1", "name": "first", "schedule": "* * * * *", "repeat": None, "enabled": True},
+            {"id": "j2", "name": "second", "schedule": {"display": "ok"}, "repeat": {"times": None}, "enabled": True},
+        ]
+        monkeypatch.setattr("cron.jobs.list_jobs", lambda include_disabled=False: jobs)
+        from hermes_cli.cron import cron_list
+        cron_list()
+        out = capsys.readouterr().out
+        assert "first" in out
+        assert "second" in out

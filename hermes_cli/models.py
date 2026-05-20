@@ -2105,6 +2105,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_anthropic_models()
         if live:
             return live
+    if normalized == "google-gemini-cli":
+        live = _fetch_google_gemini_cli_models(force_refresh=force_refresh)
+        if live:
+            return live
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
@@ -2412,6 +2416,45 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
             _save_provider_models_cache(cache)
     except Exception:
         pass
+
+
+def _fetch_google_gemini_cli_models(*, force_refresh: bool = False) -> list[str]:
+    """Return account-visible Gemini CLI model ids from Code Assist quota buckets."""
+    try:
+        from agent.google_code_assist import resolve_project_context, retrieve_user_quota
+        from hermes_cli.auth import resolve_gemini_oauth_runtime_credentials
+
+        creds = resolve_gemini_oauth_runtime_credentials(force_refresh=force_refresh)
+        access_token = str(creds.get("api_key") or "").strip()
+        if not access_token:
+            return []
+        project_id = str(creds.get("project_id") or "").strip()
+        user_agent_model = "gemini-2.5-flash"
+        ctx = resolve_project_context(
+            access_token,
+            configured_project_id=project_id,
+            user_agent_model=user_agent_model,
+        )
+        buckets = retrieve_user_quota(
+            access_token,
+            project_id=ctx.project_id,
+            user_agent_model=user_agent_model,
+        )
+    except Exception:
+        return []
+
+    models: list[str] = []
+    seen: set[str] = set()
+    for bucket in buckets:
+        model_id = str(getattr(bucket, "model_id", "") or "").strip()
+        if not model_id:
+            continue
+        key = model_id.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        models.append(model_id)
+    return models
 
 
 def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:

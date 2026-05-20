@@ -3837,7 +3837,6 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
         _save_model_choice,
         _update_config_for_provider,
     )
-    from hermes_cli.models import _PROVIDER_MODELS
 
     print()
     print("⚠  Google considers using the Gemini CLI OAuth client with third-party")
@@ -3879,7 +3878,9 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
         print(f"Failed to resolve Gemini credentials: {exc}")
         return
 
-    models = list(_PROVIDER_MODELS.get("google-gemini-cli") or [])
+    from hermes_cli.models import provider_model_ids
+
+    models = provider_model_ids("google-gemini-cli")
     default = current_model or (models[0] if models else "gemini-3-flash-preview")
     selected = _prompt_model_selection(models, current_model=default)
     if selected:

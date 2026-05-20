@@ -1,8 +1,10 @@
 """Tests for provider-aware `/model` validation in hermes_cli.models."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
+    _PROVIDER_MODELS,
     azure_foundry_model_api_mode,
     copilot_model_api_mode,
     fetch_github_model_catalog,
@@ -214,6 +216,47 @@ class TestProviderModelIds:
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
+
+    def test_google_gemini_cli_prefers_quota_models(self):
+        buckets = [
+            SimpleNamespace(model_id="gemini-2.5-pro"),
+            SimpleNamespace(model_id="gemini-2.5-flash"),
+            SimpleNamespace(model_id="gemini-2.5-pro"),
+            SimpleNamespace(model_id=""),
+        ]
+        with patch(
+            "hermes_cli.auth.resolve_gemini_oauth_runtime_credentials",
+            return_value={"api_key": "at", "project_id": "proj-123"},
+        ) as resolve_creds, patch(
+            "agent.google_code_assist.resolve_project_context",
+            return_value=SimpleNamespace(project_id="proj-123"),
+        ) as resolve_context, patch(
+            "agent.google_code_assist.retrieve_user_quota",
+            return_value=buckets,
+        ) as retrieve_quota:
+            ids = provider_model_ids("google-gemini-cli", force_refresh=True)
+
+        assert ids == ["gemini-2.5-pro", "gemini-2.5-flash"]
+        resolve_creds.assert_called_once_with(force_refresh=True)
+        resolve_context.assert_called_once_with(
+            "at",
+            configured_project_id="proj-123",
+            user_agent_model="gemini-2.5-flash",
+        )
+        retrieve_quota.assert_called_once_with(
+            "at",
+            project_id="proj-123",
+            user_agent_model="gemini-2.5-flash",
+        )
+
+    def test_google_gemini_cli_falls_back_to_static_when_quota_unavailable(self):
+        with patch(
+            "hermes_cli.auth.resolve_gemini_oauth_runtime_credentials",
+            side_effect=Exception("not logged in"),
+        ):
+            ids = provider_model_ids("google-gemini-cli")
+
+        assert ids == list(_PROVIDER_MODELS["google-gemini-cli"])
 
 
 # -- fetch_api_models --------------------------------------------------------

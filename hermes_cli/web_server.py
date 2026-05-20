@@ -4085,14 +4085,6 @@ def _merged_plugins_hub() -> Dict[str, Any]:
         dm = dash_by_name.get(name)
         has_dash_manifest = dm is not None or (dir_path / "dashboard" / "manifest.json").exists()
 
-        # If the plugin's manifest declares tab.hidden=true, suppress all
-        # dashboard UI affordances (OPEN button, sidebar toggle) on the
-        # agent-plugin row.  The API still mounts via _mount_plugin_api_routes
-        # which uses dash_by_name directly, so /api/plugins/<name>/* still works.
-        if isinstance(dm, dict) and dm.get("tab", {}).get("hidden"):
-            has_dash_manifest = False
-            dm = None
-
         under_user_tree = False
         try:
             dir_path.resolve().relative_to(plugins_root_resolved)

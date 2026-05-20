@@ -111,6 +111,31 @@ class TestRunJobScript:
         assert success is True
         assert output == "relative works"
 
+    def test_script_entry_with_arguments_passes_argv(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "argv_echo.py"
+        script.write_text(textwrap.dedent("""\
+            import json
+            import sys
+
+            print(json.dumps(sys.argv[1:]))
+        """))
+
+        success, output = _run_job_script("argv_echo.py alpha 'two words' --flag=value")
+        assert success is True
+        assert json.loads(output) == ["alpha", "two words", "--flag=value"]
+
+    def test_script_path_with_spaces_still_works_without_quoting(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "space name.py"
+        script.write_text("print('space path works')")
+
+        success, output = _run_job_script("space name.py")
+        assert success is True
+        assert output == "space path works"
+
     def test_script_not_found(self, cron_env):
         from cron.scheduler import _run_job_script
 

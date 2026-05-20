@@ -14,6 +14,7 @@ import contextvars
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -798,6 +799,47 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _split_script_entry(script_entry: str) -> tuple[str, list[str]]:
+    """Split a cron script entry into the script path and argv.
+
+    The stored ``script`` job field is a single string for backwards
+    compatibility.  Treat it like a shell-style command line only for parsing
+    quotes/whitespace, then execute via ``subprocess.run([...])`` so no shell is
+    involved.
+    """
+    try:
+        parts = shlex.split(script_entry)
+    except ValueError as exc:
+        raise ValueError(f"Invalid script entry {script_entry!r}: {exc}") from exc
+    if not parts:
+        raise ValueError("Script entry is empty")
+    return parts[0], parts[1:]
+
+
+def _resolve_script_path(
+    script_file: str,
+    scripts_dir: Path,
+    scripts_dir_resolved: Path,
+) -> tuple[Path | None, str | None]:
+    """Resolve one script path token and enforce scripts-dir containment."""
+    raw = Path(script_file).expanduser()
+    if raw.is_absolute():
+        path = raw.resolve()
+    else:
+        path = (scripts_dir / raw).resolve()
+
+    # Guard against path traversal, absolute path injection, and symlink
+    # escape — scripts MUST reside within HERMES_HOME/scripts/.
+    try:
+        path.relative_to(scripts_dir_resolved)
+    except ValueError:
+        return None, (
+            f"Blocked: script path resolves outside the scripts directory "
+            f"({scripts_dir_resolved}): {script_file!r}"
+        )
+    return path, None
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -817,9 +859,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     (the `memory-watchdog.sh` pattern) without wrapping them in Python.
 
     Args:
-        script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+        script_path: Script entry.  Relative paths are resolved against
+            HERMES_HOME/scripts/.  Absolute and ~-prefixed paths are also
+            validated to ensure they stay within the scripts dir.  Additional
+            shell-style tokens are passed as script argv.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -829,21 +872,34 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
-    raw = Path(script_path).expanduser()
-    if raw.is_absolute():
-        path = raw.resolve()
-    else:
-        path = (scripts_dir / raw).resolve()
+    script_entry = str(script_path).strip()
+    if not script_entry:
+        return False, "Script entry is empty"
 
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
-        return False, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
+    # Preserve legacy path-only entries with unquoted whitespace: if the whole
+    # configured string resolves to an existing script, treat it as the path.
+    path, path_error = _resolve_script_path(
+        script_entry,
+        scripts_dir,
+        scripts_dir_resolved,
+    )
+    if path is not None and path.exists():
+        script_file = script_entry
+        script_args: list[str] = []
+    else:
+        try:
+            script_file, script_args = _split_script_entry(script_entry)
+        except ValueError as exc:
+            return False, str(exc)
+
+        path, path_error = _resolve_script_path(
+            script_file,
+            scripts_dir,
+            scripts_dir_resolved,
         )
+        if path_error:
+            return False, path_error
+        assert path is not None
 
     if not path.exists():
         return False, f"Script not found: {path}"
@@ -872,9 +928,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        argv = [_bash, str(path), *script_args]
     else:
-        argv = [sys.executable, str(path)]
+        argv = [sys.executable, str(path), *script_args]
 
     run_env = os.environ.copy()
     run_env["HERMES_HOME"] = str(_get_hermes_home())

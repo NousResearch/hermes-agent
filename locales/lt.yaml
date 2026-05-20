@@ -1,0 +1,355 @@
+# Hermes static-message catalog -- Lithuanian (Lietuvių)
+#
+# See en.yaml for scope rationale.  Keys are dotted paths; nesting is for
+# readability only.  Values may contain {placeholder} tokens for str.format
+# substitution.  This catalog must stay in sync with en.yaml — every key
+# present in en.yaml must exist here with identical {placeholder} tokens.
+
+approval:
+  dangerous_header: "⚠️  PAVOJINGA KOMANDA: {description}"
+  choose_long:     "      [o] vieną kartą  |  [s] sesijai  |  [a] visada  |  [d] atmesti"
+  choose_short:    "      [o] vieną kartą  |  [s] sesijai  |  [d] atmesti"
+  prompt_long:     "      Pasirinkimas [o/s/a/D]: "
+  prompt_short:    "      Pasirinkimas [o/s/D]: "
+  timeout:         "      ⏱ Baigėsi laikas — komanda atmetama"
+  allowed_once:    "      ✓ Leista vieną kartą"
+  allowed_session: "      ✓ Leista šiai sesijai"
+  allowed_always:  "      ✓ Pridėta į nuolatinį leidžiamų sąrašą"
+  denied:          "      ✗ Atmesta"
+  cancelled:       "      ✗ Atšaukta"
+  blocklist_message: "Ši komanda yra besąlygiškai blokuojamų sąraše ir negali būti patvirtinta."
+
+gateway:
+  approval_expired: "⚠️ Patvirtinimas nebegalioja (agentas nebelaukia). Paprašykite agento bandyti dar kartą."
+  draining:         "⏳ Užbaigiami {count} aktyvūs agentai prieš paleidžiant iš naujo..."
+  goal_cleared:     "✓ Tikslas išvalytas."
+  no_active_goal:   "Nėra aktyvaus tikslo."
+  config_read_failed: "⚠️ Nepavyko perskaityti config.yaml: {error}"
+  config_save_failed: "⚠️ Nepavyko išsaugoti konfigūracijos: {error}"
+
+  model:
+    error_prefix:           "Klaida: {error}"
+    switched:               "Modelis pakeistas į `{model}`"
+    provider_label:         "Teikėjas: {provider}"
+    context_label:          "Kontekstas: {tokens} žetonai"
+    max_output_label:       "Maks. išvestis: {tokens} žetonai"
+    cost_label:             "Kaina: {cost}"
+    capabilities_label:     "Funkcijos: {capabilities}"
+    prompt_caching_enabled: "Užklausų talpykla: įjungta"
+    warning_prefix:         "Įspėjimas: {warning}"
+    saved_global:           "Išsaugota config.yaml rinkmenoje (`--global`)"
+    session_only_hint:      "_(tik šiai sesijai — pridėkite `--global`, kad išsaugotumėte)_"
+    current_label:          "Dabartinis: `{model}` per {provider}"
+    current_tag:            " (dabartinis)"
+    more_models_suffix:     " (+{count} daugiau)"
+    usage_switch_model:     "`/model <pavadinimas>` — pakeisti modelį"
+    usage_switch_provider:  "`/model <pavadinimas> --provider <sutrumpinimas>` — pakeisti teikėją"
+    usage_persist:          "`/model <pavadinimas> --global` — išsaugoti visam laikui"
+
+  agents:
+    header:                "🤖 **Aktyvūs agentai ir užduotys**"
+    active_agents:         "**Aktyvūs agentai:** {count}"
+    this_chat:             " · šis pokalbis"
+    more:                  "... ir dar {count}"
+    running_processes:     "**Vykdomi foniniai procesai:** {count}"
+    async_jobs:            "**Siųstuvo asinchroninės užduotys:** {count}"
+    none:                  "Nėra aktyvių agentų ar vykdomų užduočių."
+    state_starting:        "paleidžiamas"
+    state_running:         "vykdomas"
+
+  approve:
+    no_pending:            "Nėra laukiančios patvirtinti komandos."
+    once_singular:         "✅ Komanda patvirtinta. Agentas tęsia darbą..."
+    once_plural:           "✅ Komandos patvirtintos ({count} komandos). Agentas tęsia darbą..."
+    session_singular:      "✅ Komanda patvirtinta (šablonas patvirtintas šiai sesijai). Agentas tęsia darbą..."
+    session_plural:        "✅ Komandos patvirtintos (šablonas patvirtintas šiai sesijai) ({count} komandos). Agentas tęsia darbą..."
+    always_singular:       "✅ Komanda patvirtinta (šablonas patvirtintas visam laikui). Agentas tęsia darbą..."
+    always_plural:         "✅ Komandos patvirtintos (šablonas patvirtintas visam laikui) ({count} komandos). Agentas tęsia darbą..."
+
+  background:
+    usage:                 "Naudojimas: /background <užklausa>\nPavyzdys: /background Apibendrink šios dienos populiariausias HN naujienas\n\nVykdo užklausą atskiroje sesijoje. Gali toliau kalbėtis — rezultatas pasirodys, kai bus baigtas."
+    started:               "🔄 Foninis darbas pradėtas: „{preview}“\nUžduoties ID: {task_id}\nGali toliau kalbėtis — rezultatai pasirodys, kai bus baigti."
+
+  branch:
+    db_unavailable:        "Sesijų duomenų bazė nepasiekiama."
+    no_conversation:       "Nėra pokalbio atšakojimui — pirmiausia parašykite žinutę."
+    create_failed:         "Nepavyko sukurti atšakos: {error}"
+    switch_failed:         "Atšaka sukurta, bet nepavyko į ją persijungti."
+    branched_one:          "⑂ Atšakota į **{title}** ({count} žinutė nukopijuota)\nOriginalas: `{parent}`\nAtšaka: `{new}`\nNaudokite `/resume`, kad grįžtumėte prie originalo."
+    branched_many:         "⑂ Atšakota į **{title}** ({count} žinutės nukopijuotos)\nOriginalas: `{parent}`\nAtšaka: `{new}`\nNaudokite `/resume`, kad grįžtumėte prie originalo."
+
+  commands:
+    usage:                 "Naudojimas: `/commands [puslapis]`"
+    skill_header:          "⚡ **Įgūdžių komandos**:"
+    default_desc:          "Įgūdžio komanda"
+    none:                  "Komandų nėra."
+    header:                "📚 **Komandos** (iš viso {total}, puslapis {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← atgal"
+    nav_next:              "pirmyn → `/commands {page}`"
+    out_of_range:          "_(Prašytas puslapis {requested} yra už ribų, rodomas puslapis {page}.)_"
+
+  compress:
+    not_enough:            "Nepakanka pokalbio suspaudimui (reikia bent 4 žinučių)."
+    no_provider:           "Nėra sukonfigūruoto teikėjo — suspaudimas negalimas."
+    nothing_to_do:         "Kol kas nėra ką suspausti (visas tekstas vis dar yra apsaugotas kontekstas)."
+    focus_line:            "Fokusas: „{topic}“"
+    summary_failed:        "⚠️ Santraukos generavimas nepavyko ({error}). {count} istorinės žinutės buvo pašalintos ir pakeistos žymekliu; ankstesnis kontekstas nebeatkuriamas. Patikrinkite savo auxiliary.compression modelio konfigūraciją."
+    aborted:               "⚠️ Suspaudimas nutrauktas ({error}). Žinutės nebuvo pašalintos — pokalbis nepakitęs. Paleiskite /compress, kad bandytumėte dar kartą, /reset naujai sesijai arba patikrinkite auxiliary.compression modelio konfigūraciją."
+    aux_failed:            "ℹ️ Sukonfigūruotas suspaudimo modelis `{model}` nepavyko ({error}). Atkurta naudojant pagrindinį modelį — kontekstas nepakitęs — bet galbūt verta patikrinti `auxiliary.compression.model` config.yaml rinkmenoje."
+    failed:                "Suspaudimas nepavyko: {error}"
+
+  debug:
+    upload_failed:         "✗ Nepavyko įkelti derinimo ataskaitos: {error}"
+    header:                "**Derinimo ataskaita įkelta:**"
+    auto_delete:           "⏱ Įrašai bus automatiškai ištrinti po 6 valandų."
+    full_logs_hint:        "Norėdami įkelti pilnus žurnalus, naudokite `hermes debug share` iš CLI."
+    share_hint:            "Pasidalinkite šiomis nuorodomis su Hermes komanda pagalbos."
+
+  deny:
+    stale:                 "❌ Komanda atmesta (patvirtinimas buvo pasenęs)."
+    no_pending:            "Nėra laukiančios komandos atmetimui."
+    denied_singular:       "❌ Komanda atmesta."
+    denied_plural:         "❌ Komandos atmestos ({count} komandos)."
+
+  fast:
+    not_supported:         "⚡ /fast galima tik OpenAI modeliams, palaikantiems Priority Processing."
+    status:                "⚡ Priority Processing\n\nDabartinis režimas: `{mode}`\n\n_Naudojimas:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ Nežinomas argumentas: `{arg}`\n\n**Galimi variantai:** normal, fast, status"
+    saved:                 "⚡ ✓ Priority Processing: **{label}** (išsaugota konfigūracijoje)\n_(įsigalios nuo kito pranešimo)_"
+    session_only:          "⚡ ✓ Priority Processing: **{label}** (tik šiai sesijai)"
+    label_fast:            "GREITAS"
+    label_normal:          "NORMALUS"
+    status_fast:           "greitas"
+    status_normal:         "normalus"
+
+  footer:
+    status:                "📎 Vykdymo poraštė: **{state}**\nLaukai: `{fields}`\nPlatforma: `{platform}`"
+    usage:                 "Naudojimas: `/footer [on|off|status]`"
+    saved:                 "📎 Vykdymo poraštė: **{state}**{example}\n_(išsaugota globaliai — įsigalios nuo kito pranešimo)_"
+    example_line:          "\nPavyzdys: `{preview}`"
+    state_on:              "ĮJUNGTA"
+    state_off:             "IŠJUNGTA"
+
+  goal:
+    unavailable:           "Tikslai negalimi šioje sesijoje."
+    no_goal_set:           "Tikslas nenustatytas."
+    paused:                "⏸ Tikslas pristabdytas: {goal}"
+    no_resume:             "Nėra tikslo pratęsimui."
+    resumed:               "▶ Tikslas pratęstas: {goal}\nRašykite bet kurią žinutę, kad tęstumėte, arba palaukite — atliksiu kitą žingsnį kito ciklo metu."
+    invalid:               "Neteisingas tikslas: {error}"
+    set:                   "⊙ Tikslas nustatytas ({budget} ciklų biudžetas): {goal}\nDirbsiu, kol tikslas bus pasiektas, jūs jį pristabdysite/išvalysite arba biudžetas išseks.\nValdikliai: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Hermes Komandos**\n"
+    skill_header:          "\n⚡ **Įgūdžių komandos** ({count} aktyvios):"
+    more_use_commands:     "\n... ir dar {count}. Naudokite `/commands` pilnam puslapiuotam sąrašui."
+
+  insights:
+    invalid_days:          "Neteisinga --days reikšmė: {value}"
+    error:                 "Klaida generuojant įžvalgas: {error}"
+
+  kanban:
+    error_prefix:          "⚠ kanban klaida: {error}"
+    subscribed_suffix:     "(prenumeruota — gausite pranešimą, kai {task_id} bus baigta arba užblokuota)"
+    truncated_suffix:      "… (sutrumpinta; naudokite `hermes kanban …` terminale visai išvesčiai)"
+    no_output:             "(nėra išvesties)"
+
+  personality:
+    none_configured:       "Nėra sukonfigūruotų asmenybių `{path}/config.yaml`"
+    header:                "🎭 **Galimos asmenybės**\n"
+    none_option:           "• `none` — (be asmenybės perdangos)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nNaudojimas: `/personality <pavadinimas>`"
+    save_failed:           "⚠️ Nepavyko išsaugoti asmenybės pakeitimo: {error}"
+    cleared:               "🎭 Asmenybė išvalyta — naudojamas bazinis agento elgesys.\n_(įsigalios nuo kito pranešimo)_"
+    set_to:                "🎭 Asmenybė nustatyta į **{name}**\n_(įsigalios nuo kito pranešimo)_"
+    unknown:               "Nežinoma asmenybė: `{name}`\n\nGalimos: {available}"
+
+  profile:
+    header:                "👤 **Profilis:** `{profile}`"
+    home:                  "📂 **Namai:** `{home}`"
+
+  reasoning:
+    level_default:             "vidutinis (numatytasis)"
+    level_disabled:            "nėra (išjungta)"
+    scope_session:             "sesijos pakeitimas"
+    scope_global:              "globali konfigūracija"
+    status:                    "🧠 **Samprotavimo nustatymai**\n\n**Pastangos:** `{level}`\n**Aprėptis:** {scope}\n**Rodymas:** {display}\n\n_Naudojimas:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    display_on:                "įjungta ✓"
+    display_off:               "išjungta"
+    display_set_on:            "🧠 ✓ Samprotavimo rodymas: **ĮJUNGTAS**\nModelio mąstymas bus rodomas prieš kiekvieną atsakymą platformoje **{platform}**."
+    display_set_off:           "🧠 ✓ Samprotavimo rodymas: **IŠJUNGTAS** platformai **{platform}**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` nepalaikoma. Naudokite `/reasoning <lygis> --global`, kad pakeistumėte globalų numatytąjį nustatymą."
+    reset_done:                "🧠 ✓ Sesijos samprotavimo perrašymas pašalintas; grįžtama prie globalios konfigūracijos."
+    unknown_arg:               "⚠️ Nežinomas argumentas: `{arg}`\n\n**Galimi lygiai:** none, minimal, low, medium, high, xhigh\n**Rodymas:** show, hide\n**Išsaugojimas:** pridėkite `--global`, kad išsaugotumėte ne tik šiai sesijai"
+    set_global:                "🧠 ✓ Samprotavimo pastangos nustatytos į `{effort}` (išsaugota konfigūracijoje)\n_(įsigalios nuo kito pranešimo)_"
+    set_global_save_failed:    "🧠 ✓ Samprotavimo pastangos nustatytos į `{effort}` (tik sesijai — nepavyko išsaugoti konfigūracijos)\n_(įsigalios nuo kito pranešimo)_"
+    set_session:               "🧠 ✓ Samprotavimo pastangos nustatytos į `{effort}` (tik sesijai — pridėkite `--global`, kad išsaugotumėte)\n_(įsigalios nuo kito pranešimo)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp atšauktas. MCP įrankiai nepakito."
+    always_followup:       "ℹ️ Ateityje `/reload-mcp` iškvietimai bus vykdomi be patvirtinimo. Iš naujo įjunkite per `approvals.mcp_reload_confirm: true` config.yaml."
+    confirm_prompt:        "⚠️ **Patvirtinti /reload-mcp**\n\nMCP serverių perkrovimas atkuria įrankių rinkinį šiai sesijai ir **anuliuoja teikėjo užklausų talpyklą** — kitas pranešimas iš naujo siųs visus įvesties žetonus. Ilgo konteksto ar aukšto samprotavimo modeliuose tai gali brangiai kainuoti.\n\nPasirinkite:\n• **Patvirtinti vieną kartą** — perkrauti dabar\n• **Visada patvirtinti** — perkrauti dabar ir visam laikui nutildyti šį raginimą\n• **Atšaukti** — palikti MCP įrankius nepakitusius\n\n_Alternatyva tekstu: atsakykite `/approve`, `/always` arba `/cancel`._"
+    header:                "🔄 **MCP serveriai perkrauti**\n"
+    reconnected:           "♻️ Iš naujo prijungta: {names}"
+    added:                 "➕ Pridėta: {names}"
+    removed:               "➖ Pašalinta: {names}"
+    none_connected:        "Nėra prijungtų MCP serverių."
+    tools_available:       "\n🔧 {tools} įrankis(-iai) iš {servers} serverio(-ių)"
+    failed:                "❌ MCP perkrovimas nepavyko: {error}"
+
+  reload_skills:
+    header:                "🔄 **Įgūdžiai perkrauti**\n"
+    no_new:                "Naujų įgūdžių neaptikta."
+    total:                 "\n📚 {count} įgūdis(-iai) pasiekiami"
+    added_header:          "➕ **Pridėti įgūdžiai:**"
+    removed_header:        "➖ **Pašalinti įgūdžiai:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Įgūdžių perkrovimas nepavyko: {error}"
+
+  reset:
+    header_default:        "✨ Sesija atstatyta! Pradedama iš naujo."
+    header_new:            "✨ Nauja sesija pradėta!"
+    header_titled:         "✨ Nauja sesija pradėta: {title}"
+    title_rejected:        "\n⚠️ Pavadinimas atmestas: {error}"
+    title_error_untitled:  "\n⚠️ {error} — sesija pradėta be pavadinimo."
+    title_empty_untitled:  "\n⚠️ Pavadinimas tuščias po valymo — sesija pradėta be pavadinimo."
+    tip:                   "\n✦ Patarimas: {tip}"
+
+  restart:
+    in_progress:           "⏳ Siųstuvo perkrovimas jau vyksta..."
+    restarting:            "♻ Perkraunamas siųstuvas. Jei per 60 sekundžių negausite pranešimo, perkraukite iš konsolės su `hermes gateway restart`."
+
+  resume:
+    db_unavailable:        "Sesijų duomenų bazė nepasiekiama."
+    no_named_sessions:     "Pavadintų sesijų nerasta.\nNaudokite `/title Mano Sesija`, kad pavadintumėte dabartinę sesiją, tada `/resume Mano Sesija`, kad vėliau prie jos grįžtumėte."
+    list_header:           "📋 **Pavadintos sesijos**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nNaudojimas: `/resume <sesijos pavadinimas>`"
+    list_failed:           "Nepavyko parodyti sesijų sąrašo: {error}"
+    not_found:             "Nerasta sesija, atitinkanti '**{name}**'.\nNaudokite `/resume` be argumentų, kad pamatytumėte galimas sesijas."
+    already_on:            "📌 Jau esate sesijoje **{name}**."
+    switch_failed:         "Nepavyko persijungti į sesiją."
+    resumed_one:           "↻ Atkurta sesija **{title}** ({count} žinutė). Pokalbis atkurtas."
+    resumed_many:          "↻ Atkurta sesija **{title}** ({count} žinutės). Pokalbis atkurtas."
+    resumed_no_count:      "↻ Atkurta sesija **{title}**. Pokalbis atkurtas."
+
+  retry:
+    no_previous:           "Nėra ankstesnės žinutės pakartojimui."
+
+  rollback:
+    not_enabled:           "Kontroliniai taškai neįjungti.\nĮjunkite config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "Nerasta kontrolinių taškų, skirtų {cwd}"
+    invalid_number:        "Neteisingas kontrolinio taško numeris. Naudokite 1-{max}."
+    restored:              "✅ Atkurta į kontrolinį tašką {hash}: {reason}\nAutomatiškai išsaugota momentinė kopija prieš atkūrimą."
+    restore_failed:        "❌ {error}"
+
+  set_home:
+    save_failed:           "Nepavyko išsaugoti namų kanalo: {error}"
+    success:               "✅ Namų kanalas nustatytas į **{name}** (ID: {chat_id}).\nCron užduotys ir tarpplatforminiai pranešimai bus pristatomi čia."
+
+  status:
+    header:                "📊 **Hermes siųstuvo būsena**"
+    session_id:            "**Sesijos ID:** `{session_id}`"
+    title:                 "**Pavadinimas:** {title}"
+    created:               "**Sukurta:** {timestamp}"
+    last_activity:         "**Paskutinis aktyvumas:** {timestamp}"
+    tokens:                "**Žetonai:** {tokens}"
+    agent_running:         "**Agentas veikia:** {state}"
+    state_yes:             "Taip ⚡"
+    state_no:              "Ne"
+    queued:                "**Laukiami tęsiniai:** {count}"
+    platforms:             "**Prijungtos platformos:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Sustabdyta. Agentas dar nebuvo pradėjęs — galite tęsti šią sesiją."
+    stopped:               "⚡ Sustabdyta. Galite tęsti šią sesiją."
+    no_active:             "Nėra aktyvios sustabdyti užduoties."
+
+  title:
+    db_unavailable:        "Sesijų duomenų bazė nepasiekiama."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ Pavadinimas tuščias po valymo. Naudokite spausdinamus simbolius."
+    set_to:                "✏️ Sesijos pavadinimas nustatytas: **{title}**"
+    not_found:             "Sesija nerasta duomenų bazėje."
+    current_with_title:    "📌 Sesija: `{session_id}`\nPavadinimas: **{title}**"
+    current_no_title:      "📌 Sesija: `{session_id}`\nPavadinimas nenustatytas. Naudojimas: `/title Mano Sesijos Pavadinimas`"
+
+  topic:
+    not_telegram_dm:         "/topic komanda galima tik privačiuose Telegram pokalbiuose."
+    no_session_db:           "Sesijų duomenų bazė nepasiekiama."
+    unauthorized:            "Jūs neturite teisės naudoti /topic šiame bote."
+    restore_needs_topic:     "Norėdami atkurti sesiją, pirmiausia sukurkite arba atidarykite Telegram temą, tada siųskite /topic <session-id> toje temoje. Norėdami sukurti naują temą, atidarykite All Messages ir siųskite bet kurią žinutę."
+    topics_disabled:         "Telegram temos dar neįjungtos šiam botui.\n\nKaip įjungti:\n1. Atidarykite @BotFather.\n2. Pasirinkite savo botą.\n3. Atidarykite Bot Settings → Threads Settings.\n4. Įjunkite Threaded Mode ir įsitikinkite, kad vartotojams leidžiama kurti naujas temas.\n\nTada vėl siųskite /topic."
+    topics_user_disallowed:  "Telegram temos įjungtos, bet vartotojams neleidžiama kurti temų.\n\nAtidarykite @BotFather → pasirinkite savo botą → Bot Settings → Threads Settings, tada išjunkite 'Disallow users to create new threads'.\n\nTada vėl siųskite /topic."
+    enable_failed:           "Nepavyko įjungti Telegram temų režimo: {error}"
+    bound_status:            "Ši tema susieta su:\nSesija: {label}\nID: {session_id}\n\nNaudokite /new, kad pakeistumėte šią temą nauja sesija.\nLygiagrečiam darbui atidarykite All Messages ir siųskite žinutę ten, kad sukurtumėte kitą temą."
+    thread_ready:            "Telegram kelių sesijų temos įjungtos.\n\nŠi tema bus naudojama kaip nepriklausoma Hermes sesija. Naudokite /new, kad pakeistumėte dabartinę šios temos sesiją. Lygiagrečiam darbui atidarykite All Messages ir siųskite žinutę ten, kad sukurtumėte kitą temą."
+    untitled_session:        "Sesija be pavadinimo"
+
+  undo:
+    nothing:               "Nėra ko atšaukti."
+    removed:               "↩️ Atšaukta {count} žinutė(-s).\nPašalinta: „{preview}“"
+
+  update:
+    platform_not_messaging:  "✗ /update galima tik pranešimų platformose. Paleiskite `hermes update` iš terminalo."
+    not_git_repo:            "✗ Ne git repozitorija — atnaujinti negalima."
+    hermes_cmd_not_found:    "✗ Nepavyko rasti `hermes` komandos. Hermes veikia, bet atnaujinimo komanda nerado vykdomojo failo PATH arba per dabartinį Python interpretatorių. Pabandykite paleisti `hermes update` rankiniu būdu terminale."
+    start_failed:            "✗ Nepavyko pradėti atnaujinimo: {error}"
+    starting:                "⚕ Pradedamas Hermes atnaujinimas... Tiesiogiai rodysiu eigą čia."
+
+  usage:
+    rate_limits:              "⏱️ **Greičio ribos:** {state}"
+    header_session:           "📊 **Sesijos žetonų naudojimas**"
+    label_model:              "Modelis: `{model}`"
+    label_input_tokens:       "Įvesties žetonai: {count}"
+    label_cache_read:         "Talpyklos skaitymo žetonai: {count}"
+    label_cache_write:        "Talpyklos rašymo žetonai: {count}"
+    label_output_tokens:      "Išvesties žetonai: {count}"
+    label_total:              "Iš viso: {count}"
+    label_api_calls:          "API iškvietimai: {count}"
+    label_cost:               "Kaina: {prefix}${amount}"
+    label_cost_included:      "Kaina: įskaičiuota"
+    label_context:            "Kontekstas: {used} / {total} ({pct}%)"
+    label_compressions:       "Suspaudimai: {count}"
+    header_session_info:      "📊 **Sesijos informacija**"
+    label_messages:           "Žinutės: {count}"
+    label_estimated_context:  "Numatomas kontekstas: ~{count} žetonai"
+    detailed_after_first:     "_(Detalus naudojimas pasiekiamas po pirmo agento atsakymo)_"
+    no_data:                  "Nėra naudojimo duomenų šiai sesijai."
+
+  verbose:
+    not_enabled:           "`/verbose` komanda neįjungta pranešimų platformoms.\n\nĮjunkite config.yaml:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Įrankių progresas: **OFF** — įrankių veikla nerodoma."
+    mode_new:              "⚙️ Įrankių progresas: **NEW** — rodoma, kai įrankis keičiasi (peržiūros ilgis: `display.tool_preview_length`, numatyta 40)."
+    mode_all:              "⚙️ Įrankių progresas: **ALL** — rodomas kiekvienas įrankio iškvietimas (peržiūros ilgis: `display.tool_preview_length`, numatyta 40)."
+    mode_verbose:          "⚙️ Įrankių progresas: **VERBOSE** — kiekvienas įrankio iškvietimas su pilnais argumentais."
+    saved_suffix:          "_(išsaugota **{platform}** — įsigalios nuo kito pranešimo)_"
+    save_failed:           "_(nepavyko išsaugoti konfigūracijoje: {error})_"
+
+  voice:
+    enabled_voice_only:    "Balso režimas įjungtas.\nAtsakysiu balsu, kai siųsite balso žinutes.\nNaudokite /voice tts, kad gautumėte balso atsakymus į visas žinutes."
+    disabled_text:         "Balso režimas išjungtas. Tik tekstiniai atsakymai."
+    tts_enabled:           "Automatinis TTS įjungtas.\nVisi atsakymai turės balso žinutę."
+    status_mode:           "Balso režimas: {label}"
+    status_channel:        "Balso kanalas: #{channel}"
+    status_participants:   "Dalyviai: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (kalba)"
+    enabled_short:         "Balso režimas įjungtas."
+    disabled_short:        "Balso režimas išjungtas."
+    label_off:             "Išjungta (tik tekstas)"
+    label_voice_only:      "Įjungta (balso atsakymas į balso žinutes)"
+    label_all:             "TTS (balso atsakymas į visas žinutes)"
+
+  yolo:
+    disabled:                   "⚠️ YOLO režimas **IŠJUNGTAS** šiai sesijai — pavojingoms komandoms reikės patvirtinimo."
+    enabled:                    "⚡ YOLO režimas **ĮJUNGTAS** šiai sesijai — visos komandos tvirtinamos automatiškai. Naudokite atsargiai."
+
+  shared:
+    session_db_unavailable:      "Sesijų duomenų bazė nepasiekiama."
+    session_db_unavailable_prefix: "Sesijų duomenų bazė nepasiekiama"
+    session_not_found:           "Sesija nerasta duomenų bazėje."
+    warn_passthrough:            "⚠️ {error}"

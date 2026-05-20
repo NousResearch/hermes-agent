@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -249,6 +250,16 @@ class TestBoardCRUD:
         assert Path(res["new_path"]).exists()
         assert "toremove" not in [b["slug"] for b in kb.list_boards()]
 
+    def test_remove_archive_visible_with_include_archived(self, fresh_home):
+        kb.create_board("toremove")
+        kb.remove_board("toremove")
+
+        boards = kb.list_boards(include_archived=True)
+        archived = next(b for b in boards if b["slug"] == "toremove")
+
+        assert archived["archived"] is True
+        assert archived["db_path"].endswith("kanban.db")
+
     def test_remove_hard_delete(self, fresh_home):
         kb.create_board("nuke")
         d = kb.board_dir("nuke")
@@ -256,6 +267,13 @@ class TestBoardCRUD:
         res = kb.remove_board("nuke", archive=False)
         assert res["action"] == "deleted"
         assert not d.exists()
+
+    def test_connect_context_manager_closes_handle(self, fresh_home):
+        with kb.connect(board="default") as conn:
+            conn.execute("SELECT 1").fetchone()
+
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
 
     def test_remove_default_forbidden(self, fresh_home):
         with pytest.raises(ValueError, match="default"):

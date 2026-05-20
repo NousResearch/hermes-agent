@@ -393,16 +393,13 @@ def _default_board_display_name(slug: str) -> str:
     return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part) or slug
 
 
-def read_board_metadata(board: Optional[str] = None) -> dict:
-    """Return ``board.json`` contents (or synthesized defaults).
+_ARCHIVED_BOARD_DIR_RE = re.compile(
+    r"^(?P<slug>[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)-\d+(?:-\d+)?$"
+)
 
-    Never raises — a missing / malformed ``board.json`` falls back to a
-    synthesised entry so the dashboard always has something to render.
-    Includes the canonical ``slug`` and ``db_path`` so the caller
-    doesn't need to reconstruct them.
-    """
-    slug = _normalize_board_slug(board) or DEFAULT_BOARD
-    meta: dict[str, Any] = {
+
+def _board_metadata_defaults(slug: str) -> dict[str, Any]:
+    return {
         "slug": slug,
         "name": _default_board_display_name(slug),
         "description": "",
@@ -412,6 +409,41 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "created_at": None,
         "archived": False,
     }
+
+
+def _read_board_metadata_from_dir(
+    dir_path: Path,
+    slug: str,
+    *,
+    archived: bool = False,
+) -> dict[str, Any]:
+    """Read board metadata from an explicit directory path."""
+    meta = _board_metadata_defaults(slug)
+    try:
+        p = dir_path / "board.json"
+        if p.exists():
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                raw["slug"] = slug
+                meta.update(raw)
+    except (OSError, json.JSONDecodeError):
+        pass
+    if archived:
+        meta["archived"] = True
+    meta["db_path"] = str(dir_path / "kanban.db")
+    return meta
+
+
+def read_board_metadata(board: Optional[str] = None) -> dict:
+    """Return ``board.json`` contents (or synthesized defaults).
+
+    Never raises — a missing / malformed ``board.json`` falls back to a
+    synthesised entry so the dashboard always has something to render.
+    Includes the canonical ``slug`` and ``db_path`` so the caller
+    doesn't need to reconstruct them.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    meta: dict[str, Any] = _board_metadata_defaults(slug)
     try:
         p = board_metadata_path(slug)
         if p.exists():
@@ -502,13 +534,15 @@ def create_board(
     return meta
 
 
-def list_boards(*, include_archived: bool = True) -> list[dict]:
+def list_boards(*, include_archived: bool = False) -> list[dict]:
     """Enumerate all boards that exist on disk.
 
     Always includes ``default`` (even when the ``boards/default/``
     metadata dir doesn't exist, because its DB is at the legacy path).
     Other boards are discovered by scanning ``boards/`` for subdirectories
-    that either contain a ``kanban.db`` or a ``board.json``.
+    that either contain a ``kanban.db`` or a ``board.json``. When
+    ``include_archived=True``, archived snapshots under
+    ``boards/_archived/`` are also surfaced.
 
     Returns a list of metadata dicts, sorted with ``default`` first and
     the rest alphabetically.
@@ -543,6 +577,39 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
                 continue
             entries.append(meta)
             seen.add(normed)
+    if include_archived:
+        archive_root = root / "_archived"
+        if archive_root.is_dir():
+            for child in sorted(
+                archive_root.iterdir(),
+                key=lambda p: p.name.lower(),
+                reverse=True,
+            ):
+                if not child.is_dir():
+                    continue
+                has_db = (child / "kanban.db").exists()
+                has_meta = (child / "board.json").exists()
+                if not (has_db or has_meta):
+                    continue
+                slug: Optional[str] = None
+                if has_meta:
+                    try:
+                        raw = json.loads((child / "board.json").read_text(encoding="utf-8"))
+                        if isinstance(raw, dict):
+                            slug = _normalize_board_slug(raw.get("slug"))
+                    except (OSError, json.JSONDecodeError, ValueError):
+                        slug = None
+                if not slug:
+                    match = _ARCHIVED_BOARD_DIR_RE.match(child.name)
+                    if not match:
+                        continue
+                    slug = match.group("slug")
+                if not slug or slug in seen:
+                    continue
+                entries.append(
+                    _read_board_metadata_from_dir(child, slug, archived=True)
+                )
+                seen.add(slug)
     return entries
 
 
@@ -953,6 +1020,23 @@ _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
 
 
+class _KanbanConnection(sqlite3.Connection):
+    """SQLite connection whose context manager also closes the handle.
+
+    The stdlib sqlite3 connection commits/rolls back on ``with`` exit but
+    leaves the file descriptor open. That is usually invisible on POSIX, but
+    Windows refuses to rename/delete the underlying DB path while a handle is
+    still live. Many Hermes call sites use ``with connect(...) as conn:``
+    expecting full cleanup, so make that expectation true here.
+    """
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -982,7 +1066,12 @@ def connect(
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    conn = sqlite3.connect(
+        str(path),
+        isolation_level=None,
+        timeout=30,
+        factory=_KanbanConnection,
+    )
     try:
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:

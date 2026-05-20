@@ -1289,6 +1289,24 @@ class TestGitDestructiveOps:
         assert dangerous is True
         assert "delete" in desc.lower() or "rm" in desc.lower()
 
+    def test_force_with_lease_safe_override_does_not_mask_later_plain_force_push(self):
+        cmd = "git push --force-with-lease origin feature/sprig && git push --force origin main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force" in desc.lower()
+
+    def test_force_with_lease_to_refs_tags_slash_ref_still_detected(self):
+        cmd = "git push --force-with-lease origin HEAD:refs/tags/release/v1"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force" in desc.lower()
+
+    def test_force_with_lease_to_refs_notes_slash_ref_still_detected(self):
+        cmd = "git push --force-with-lease origin HEAD:refs/notes/team/foo"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force" in desc.lower()
+
     def test_git_branch_lowercase_d_also_flagged(self):
         """git branch -d triggers approval too — IGNORECASE is global.
 

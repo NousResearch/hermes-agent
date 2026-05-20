@@ -500,8 +500,8 @@ DANGEROUS_PATTERNS = [
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
     (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'\bgit\s+push\b[^;&|\n]*--force\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b[^;&|\n]*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # Script execution after chmod +x — catches the two-step pattern where
@@ -724,13 +724,15 @@ def _is_allowed_force_with_lease_branch_push(command_from_match: str) -> bool:
         git push --force-with-lease <remote> <branch>
         git push --force-with-lease <remote> HEAD:<branch>
 
-    ...as long as the explicit destination branch contains a ``/`` separator.
+    ...as long as the explicit destination is a branch update whose branch
+    name contains a ``/`` separator.
 
     This intentionally stays narrow:
     - no plain ``--force`` / ``-f``
     - no implicit destination branch
     - no extra positional refspecs
     - no additional options beyond ``--force-with-lease``
+    - no non-branch namespaces like ``refs/tags/`` or ``refs/notes/``
     """
     match = _ALLOWED_FORCE_WITH_LEASE_RE.match(command_from_match)
     if not match:
@@ -738,8 +740,13 @@ def _is_allowed_force_with_lease_branch_push(command_from_match: str) -> bool:
 
     _remote, target_ref = match.groups()
     normalized_target_ref = target_ref
-    if normalized_target_ref.lower().startswith("refs/heads/"):
+    lower_target_ref = normalized_target_ref.lower()
+    if lower_target_ref.startswith("refs/heads/"):
         normalized_target_ref = normalized_target_ref[len("refs/heads/"):]
+        lower_target_ref = normalized_target_ref.lower()
+    elif lower_target_ref.startswith("refs/"):
+        return False
+
     return "/" in normalized_target_ref and not normalized_target_ref.endswith("/")
 
 

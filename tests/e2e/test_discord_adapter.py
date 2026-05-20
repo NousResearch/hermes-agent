@@ -21,6 +21,19 @@ from tests.e2e.conftest import (
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _discord_adapter_env(monkeypatch):
+    # Keep these e2e tests hermetic when run on a machine that has live
+    # Discord gateway env vars (for example Ryan's VPS service env).
+    for name in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 async def dispatch(adapter, msg):
     await adapter._handle_message(msg)
     await asyncio.sleep(E2E_MESSAGE_SETTLE_DELAY)

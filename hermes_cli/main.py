@@ -5368,6 +5368,23 @@ def cmd_webhook(args):
     webhook_command(args)
 
 
+def cmd_github_issue_listener(args):
+    """Assignment-driven GitHub issue listener."""
+    from hermes_cli.github_issue_listener import main as github_issue_listener_main
+
+    listener_args = [getattr(args, "github_issue_listener_command", "poll") or "poll"]
+    for name in (
+        "owner", "repo", "assignee", "human_assignee", "state_db",
+        "hermes_bin", "stale_after_seconds",
+    ):
+        value = getattr(args, name, None)
+        if value is not None:
+            listener_args.extend([f"--{name.replace('_', '-')}", str(value)])
+    if getattr(args, "dry_run", False):
+        listener_args.append("--dry-run")
+    return github_issue_listener_main(listener_args)
+
+
 def cmd_slack(args):
     """Slack integration helpers.
 
@@ -9422,7 +9439,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "fallback", "gateway", "github-issue-listener", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
         "model", "pairing", "plugins", "profile", "proxy", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -10299,6 +10316,27 @@ def main():
     )
 
     webhook_parser.set_defaults(func=cmd_webhook)
+
+    # =========================================================================
+    # github-issue-listener command — assignment-driven GitHub issue sessions
+    # =========================================================================
+    gil_parser = subparsers.add_parser(
+        "github-issue-listener",
+        help="Poll GitHub issues assigned to Hermes and run issue-bound sessions",
+        description="Assignment-driven GitHub issue listener for Hermes session lanes",
+    )
+    gil_subparsers = gil_parser.add_subparsers(dest="github_issue_listener_command")
+    gil_poll = gil_subparsers.add_parser("poll", help="Run one polling pass")
+    gil_poll.add_argument("--owner", default="ryanleeai")
+    gil_poll.add_argument("--repo", default="tasks")
+    gil_poll.add_argument("--assignee", default="wingboot")
+    gil_poll.add_argument("--human-assignee", default="seungjaeryanlee")
+    gil_poll.add_argument("--state-db", default=None)
+    gil_poll.add_argument("--hermes-bin", default="hermes")
+    gil_poll.add_argument("--stale-after-seconds", type=int, default=None)
+    gil_poll.add_argument("--dry-run", action="store_true")
+    gil_parser.set_defaults(func=cmd_github_issue_listener)
+    gil_poll.set_defaults(func=cmd_github_issue_listener)
 
     # =========================================================================
     # kanban command — multi-profile collaboration board

@@ -390,8 +390,8 @@ async def test_gateway_handler_routes_raw_args_to_controller(monkeypatch):
 
     calls = []
 
-    def fake_handle(raw_args, *, actor=None, origin=None):
-        calls.append((raw_args, actor, origin))
+    def fake_handle(raw_args, *, actor=None, origin=None, question_generator=None):
+        calls.append((raw_args, actor, origin, question_generator))
         return SimpleNamespace(message="handled by ouro controller")
 
     monkeypatch.setattr(ouro_intake, "handle_ouro_intake_command", fake_handle)
@@ -405,7 +405,7 @@ async def test_gateway_handler_routes_raw_args_to_controller(monkeypatch):
     result = await runner._handle_ouro_intake_command(event)
 
     assert result == "handled by ouro controller"
-    assert calls == [("goal:test project:bo", "tester", {"platform": "", "chat_id": "c1", "thread_id": "", "user_id": "u1", "user_name": "tester", "chat_type": ""})]
+    assert calls == [("goal:test project:bo", "tester", {"platform": "", "chat_id": "c1", "thread_id": "", "user_id": "u1", "user_name": "tester", "chat_type": ""}, runner._generate_ouro_intake_question_sync)]
 
 
 def test_cli_handler_routes_raw_args_to_controller(monkeypatch):
@@ -904,3 +904,63 @@ def test_bo062_question_contract_command_renders_provider_bridge_packet_without_
     session = sessions[started.session_id]
     assert session["upstream_question_provider_call"] is False
     assert session["last_question"]["source"] == "hermes_gateway_fallback"
+
+
+def test_bo062_runtime_question_generator_automatically_replaces_fallback_on_start(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    calls = []
+
+    def fake_runtime_generator(contract, *, session, values, review):
+        calls.append((contract, session, values, review))
+        assert contract["source"] == "vendored_q00_ouroboros_interview_prompt_contract"
+        assert contract["requires_provider_question"] is True
+        return "Which upstream-style boundary should this Seed settle before Kanban admission?"
+
+    started = handle_ouro_intake_command(
+        'goal:"Improve existing gateway intake" project:bo tenant:kanban context:"Hermes gateway existing runtime"',
+        actor="tester",
+        question_generator=fake_runtime_generator,
+    )
+
+    assert "질문: Which upstream-style boundary should this Seed settle before Kanban admission?" in started.message
+    assert len(calls) == 1
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    session = sessions[started.session_id]
+    question = session["last_question"]
+    assert question["source"] == "hermes_runtime_from_upstream_question_contract"
+    assert question["fallback_text"]
+    assert session["upstream_question_provider_call"] is True
+    assert session["upstream_question_adapter"] == "hermes_runtime_question_generator"
+
+
+def test_bo062_runtime_question_generator_drives_plain_reply_next_question(hermes_home):
+    from gateway.ouro_intake import handle_ouro_intake_command
+
+    generated = iter([
+        "Which upstream-style scope axis should this resolve first?",
+        "Where should the A+B v1 stop before worker dispatch?",
+    ])
+
+    def fake_runtime_generator(contract, *, session, values, review):
+        assert "system_prompt" in contract
+        return next(generated)
+
+    started = handle_ouro_intake_command("오토파일럿 만들고싶어", actor="tester", question_generator=fake_runtime_generator)
+    refined = handle_ouro_intake_command(
+        f'answer session:{started.session_id} answer:"A와 B에 가까워"',
+        actor="tester",
+        question_generator=fake_runtime_generator,
+    )
+    assert refined.action == "refine_pending"
+    updated = handle_ouro_intake_command(
+        f"answer session:{started.session_id} answer:승인",
+        actor="tester",
+        question_generator=fake_runtime_generator,
+    )
+
+    assert "다음 질문: Where should the A+B v1 stop before worker dispatch?" in updated.message
+    sessions = json.loads((hermes_home / "ouro_intake_sessions.json").read_text())
+    question = sessions[started.session_id]["last_question"]
+    assert question["source"] == "hermes_runtime_from_upstream_question_contract"
+    assert question["fallback_text"]

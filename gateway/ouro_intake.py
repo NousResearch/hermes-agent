@@ -16,7 +16,7 @@ import re
 import shlex
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from hermes_constants import get_hermes_home
 from hermes_cli import kanban_db as kb
@@ -110,6 +110,8 @@ _AUTOPILOT_AXIS_LABELS = {
     "other": "E) other",
 }
 
+
+QuestionGenerator = Callable[..., str | None]
 
 @dataclass(frozen=True)
 class OuroIntakeResult:
@@ -490,7 +492,13 @@ def _hermes_gateway_seed_closer_fallback(values: dict[str, Any], review: dict[st
     }
 
 
-def handle_ouro_intake_plain_reply(text: str, *, origin: dict[str, Any] | None = None, actor: str | None = None) -> OuroIntakeResult | None:
+def handle_ouro_intake_plain_reply(
+    text: str,
+    *,
+    origin: dict[str, Any] | None = None,
+    actor: str | None = None,
+    question_generator: QuestionGenerator | None = None,
+) -> OuroIntakeResult | None:
     """Route a normal same-thread/user message into an active intake interview.
 
     Returns None when no active bound /ouro-intake session exists, allowing the
@@ -507,7 +515,11 @@ def handle_ouro_intake_plain_reply(text: str, *, origin: dict[str, Any] | None =
     if _is_escape_reply(answer):
         return _cancel_interview(actor=actor, origin=origin)
     session_id, _session = active
-    return _answer_interview(f"session:{session_id} answer:{shlex.quote(answer)}", actor=actor)
+    return _answer_interview(
+        f"session:{session_id} answer:{shlex.quote(answer)}",
+        actor=actor,
+        question_generator=question_generator,
+    )
 
 
 def _score_dimension(*, clarity: float, weight: float, name: str, reason: str) -> dict[str, Any]:
@@ -764,6 +776,76 @@ def _hermes_generated_question_text(values: dict[str, Any]) -> str | None:
             return first_line[:500]
     return None
 
+
+
+def _runtime_generated_question_text(
+    question_generator: QuestionGenerator | None,
+    contract: dict[str, Any],
+    *,
+    session: dict[str, Any],
+    values: dict[str, Any],
+    review: dict[str, Any],
+) -> str | None:
+    """Call an injected Hermes/runtime question generator and sanitize output."""
+
+    if question_generator is None:
+        return None
+    try:
+        generated = question_generator(contract, session=session, values=values, review=review)
+    except Exception as exc:
+        session["upstream_question_generation_error"] = f"{type(exc).__name__}: {exc}"
+        return None
+    if not isinstance(generated, str) or not generated.strip():
+        return None
+    text = generated.strip()
+    if text.startswith("generated-question:"):
+        text = text.split(":", 1)[1].strip()
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if first_line.startswith("```"):
+        return None
+    return first_line[:500] or None
+
+
+def _runtime_generated_question(fallback: dict[str, Any], generated: str) -> dict[str, Any]:
+    return {
+        **fallback,
+        "id": f"runtime_generated_{fallback.get('id') or 'question'}",
+        "text": generated,
+        "source": "hermes_runtime_from_upstream_question_contract",
+        "fallback_text": fallback.get("text"),
+    }
+
+
+def _apply_runtime_question_generation(
+    session: dict[str, Any],
+    question: dict[str, Any],
+    values: dict[str, Any],
+    review: dict[str, Any],
+    question_generator: QuestionGenerator | None,
+) -> dict[str, Any]:
+    """Replace a fallback/explicit question with a runtime-generated upstream-contract question."""
+
+    contract = session.get("upstream_question_contract") if isinstance(session.get("upstream_question_contract"), dict) else {}
+    generated = _runtime_generated_question_text(
+        question_generator,
+        contract,
+        session=session,
+        values=values,
+        review=review,
+    )
+    if not generated:
+        return question
+    session["upstream_question_provider_call"] = True
+    session["upstream_question_adapter"] = "hermes_runtime_question_generator"
+    question = _runtime_generated_question(question, generated)
+    state = session.get("upstream_interview_state")
+    if isinstance(state, dict) and isinstance(state.get("rounds"), list) and state["rounds"]:
+        latest = state["rounds"][-1]
+        if isinstance(latest, dict):
+            latest["question"] = generated
+            session["upstream_interview_state"] = state
+            session["upstream_question_contract"] = _vendored_ouroboros_question_contract(state, values, review)
+    return question
 
 def _question_for_turn(values: dict[str, Any], review: dict[str, Any], *, previous_track: str | None = None) -> dict[str, Any]:
     """Select the visible question, preferring an approved Hermes generation bridge."""
@@ -1089,7 +1171,7 @@ def _readback(conn: Any, task_id: str) -> dict[str, Any]:
     }
 
 
-def _start_interview(raw_args: str, *, actor: str | None, origin: dict[str, Any] | None = None) -> OuroIntakeResult:
+def _start_interview(raw_args: str, *, actor: str | None, origin: dict[str, Any] | None = None, question_generator: QuestionGenerator | None = None) -> OuroIntakeResult:
     values = _parse_args(raw_args)
     if not str(values.get("goal") or "").strip():
         return OuroIntakeResult(
@@ -1116,7 +1198,7 @@ def _start_interview(raw_args: str, *, actor: str | None, origin: dict[str, Any]
         question if status == "interviewing" else {"text": _restate_goal(values)},
     )
     upstream_question_contract = _vendored_ouroboros_question_contract(upstream_interview_state, values, review)
-    sessions[session_id] = {
+    session = {
         "session_id": session_id,
         "created_at": int(time.time()),
         "updated_at": int(time.time()),
@@ -1146,6 +1228,14 @@ def _start_interview(raw_args: str, *, actor: str | None, origin: dict[str, Any]
             "expires_at": int(time.time()) + ACTIVE_SESSION_TTL_SECONDS,
         } if _origin_key(origin) else None,
     }
+    if status == "interviewing":
+        question = _apply_runtime_question_generation(session, question, values, review, question_generator)
+        session["last_question"] = question
+        session["track"] = question["track"]
+        if question.get("source") == "hermes_runtime_from_upstream_question_contract":
+            session["upstream_interview_state"] = _vendored_ouroboros_start_state(session_id, values, question)
+            session["upstream_question_contract"] = _vendored_ouroboros_question_contract(session["upstream_interview_state"], values, review)
+    sessions[session_id] = session
     _save_sessions(sessions)
     if status == "restate_pending":
         message = _format_restate(session_id, values, review)
@@ -1195,7 +1285,7 @@ def _merge_answer(values: dict[str, Any], parsed: dict[str, Any], free_answer: s
     return merged
 
 
-def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
+def _answer_interview(raw_args: str, *, actor: str | None, question_generator: QuestionGenerator | None = None) -> OuroIntakeResult:
     parsed = _parse_args(raw_args)
     session_id = str(parsed.get("session_id") or "").strip()
     if not session_id:
@@ -1257,6 +1347,9 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
                     ambiguity_breakdown=review,
                 )
                 _refresh_upstream_question_contract(session, values, review)
+                question = _apply_runtime_question_generation(session, question, values, review, question_generator)
+                session["track"] = question["track"]
+                session["last_question"] = question
                 message = _format_next_question(session_id, review, question)
             sessions[session_id] = session
             _save_sessions(sessions)
@@ -1368,6 +1461,9 @@ def _answer_interview(raw_args: str, *, actor: str | None) -> OuroIntakeResult:
             ambiguity_breakdown=review,
         )
         _refresh_upstream_question_contract(session, values, review)
+        question = _apply_runtime_question_generation(session, question, values, review, question_generator)
+        session["track"] = question["track"]
+        session["last_question"] = question
         message = _format_next_question(session_id, review, question)
     sessions[session_id] = session
     _save_sessions(sessions)
@@ -1505,7 +1601,13 @@ def _admit_seed(raw_args: str) -> OuroIntakeResult:
     )
 
 
-def handle_ouro_intake_command(raw_args: str = "", *, actor: str | None = None, origin: dict[str, Any] | None = None) -> OuroIntakeResult:
+def handle_ouro_intake_command(
+    raw_args: str = "",
+    *,
+    actor: str | None = None,
+    origin: dict[str, Any] | None = None,
+    question_generator: QuestionGenerator | None = None,
+) -> OuroIntakeResult:
     """Run explicit Ouroboros-style intake without granting execution authority."""
 
     raw_args = (raw_args or "").strip()
@@ -1521,7 +1623,7 @@ def handle_ouro_intake_command(raw_args: str = "", *, actor: str | None = None, 
     rest = raw_args[len(raw_args.split(maxsplit=1)[0]) :].strip() if subcommand in {"start", "answer", "continue", "question", "question-contract", "seed", "show", "admit", "cancel", "stop", "exit", "quit"} else raw_args
 
     if subcommand in {"answer", "continue"}:
-        return _answer_interview(rest, actor=actor)
+        return _answer_interview(rest, actor=actor, question_generator=question_generator)
     if subcommand in {"question", "question-contract"}:
         return _render_question_contract(rest)
     if subcommand in {"seed", "show"}:
@@ -1531,5 +1633,5 @@ def handle_ouro_intake_command(raw_args: str = "", *, actor: str | None = None, 
     if subcommand == "admit":
         return _admit_seed(rest)
     if subcommand == "start":
-        return _start_interview(rest, actor=actor, origin=origin)
-    return _start_interview(raw_args, actor=actor, origin=origin)
+        return _start_interview(rest, actor=actor, origin=origin, question_generator=question_generator)
+    return _start_interview(raw_args, actor=actor, origin=origin, question_generator=question_generator)

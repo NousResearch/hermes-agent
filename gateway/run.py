@@ -8810,8 +8810,54 @@ class GatewayRunner:
             event.text or "",
             origin=origin_from_source(source),
             actor=actor,
+            question_generator=self._generate_ouro_intake_question_sync,
         )
         return result.message if result is not None else None
+
+    def _generate_ouro_intake_question_sync(self, contract: dict, *, session: dict, values: dict, review: dict) -> str | None:
+        """Generate one /ouro-intake question from the vendored upstream prompt contract.
+
+        Narrow runtime bridge: one model turn, no tools, no repo/Kanban mutation
+        authority, one-line Socratic-question response.  Any failure falls back
+        to the deterministic question already selected by gateway.ouro_intake.
+        """
+        try:
+            from run_agent import AIAgent
+
+            prompt = str((contract or {}).get("system_prompt") or "").strip()
+            if not prompt:
+                return None
+            agent_kwargs = _resolve_runtime_agent_kwargs()
+            model = _resolve_gateway_model(_load_gateway_config())
+            agent = AIAgent(
+                **agent_kwargs,
+                model=model,
+                max_iterations=1,
+                enabled_toolsets=[],
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                max_tokens=160,
+                ephemeral_system_prompt=(
+                    "You generate exactly one Socratic interview question from an "
+                    "Ouroboros InterviewEngine prompt contract. Do not use tools. "
+                    "Do not explain. Return only: generated-question:<one question>"
+                ),
+                log_prefix="ouro-intake-question",
+            )
+            result = agent.run_conversation(
+                "Use the upstream question contract below. Return exactly one line in this format: "
+                "generated-question:<one Socratic question>\n\n"
+                + prompt,
+                conversation_history=[],
+            )
+            text = str((result or {}).get("final_response") or "").strip()
+            if text.startswith("generated-question:"):
+                text = text.split(":", 1)[1].strip()
+            return next((line.strip() for line in text.splitlines() if line.strip()), None)
+        except Exception as exc:
+            logger.warning("/ouro-intake runtime question generation failed: %s", exc)
+            return None
 
     async def _handle_ouro_intake_command(self, event: MessageEvent) -> str:
         """Handle /ouro-intake through the admission-only Kanban controller."""
@@ -8833,6 +8879,7 @@ class GatewayRunner:
             event.get_command_args(),
             actor=actor,
             origin=origin_from_source(source),
+            question_generator=self._generate_ouro_intake_question_sync,
         )
         return result.message
 

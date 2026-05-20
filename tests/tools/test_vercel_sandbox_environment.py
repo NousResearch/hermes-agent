@@ -16,6 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
 
 class _FakeRunResult:
     def __init__(self, output: str | bytes = "", exit_code: int = 0):
@@ -508,55 +510,67 @@ class TestSnapshotPersistence:
     ):
         hermes_home = tmp_path / ".hermes"
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        vercel_module._store_snapshot("task-123", "snap_saved")
-        restored = _FakeSandbox(cwd="/restored")
-        vercel_sdk.create_side_effects.append(restored)
+        token = set_hermes_home_override(hermes_home)
+        try:
+            vercel_module._store_snapshot("task-123", "snap_saved")
+            restored = _FakeSandbox(cwd="/restored")
+            vercel_sdk.create_side_effects.append(restored)
 
-        env = make_env()
+            env = make_env()
 
-        assert env.cwd == "/restored"
-        assert vercel_sdk.create_kwargs[0]["source"] == {
-            "type": "snapshot",
-            "snapshot_id": "snap_saved",
-        }
-        assert vercel_module._load_snapshots() == {"task-123": "snap_saved"}
+            assert env.cwd == "/restored"
+            assert vercel_sdk.create_kwargs[0]["source"] == {
+                "type": "snapshot",
+                "snapshot_id": "snap_saved",
+            }
+            assert vercel_module._load_snapshots() == {"task-123": "snap_saved"}
+        finally:
+            reset_hermes_home_override(token)
 
     def test_restore_failure_prunes_snapshot_and_falls_back_to_fresh_sandbox(
         self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
     ):
         hermes_home = tmp_path / ".hermes"
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        vercel_module._store_snapshot("task-123", "snap_stale")
-        fresh = _FakeSandbox(cwd="/fresh")
-        vercel_sdk.create_side_effects.extend(
-            [RuntimeError("snapshot missing"), fresh]
-        )
+        token = set_hermes_home_override(hermes_home)
+        try:
+            vercel_module._store_snapshot("task-123", "snap_stale")
+            fresh = _FakeSandbox(cwd="/fresh")
+            vercel_sdk.create_side_effects.extend(
+                [RuntimeError("snapshot missing"), fresh]
+            )
 
-        env = make_env()
+            env = make_env()
 
-        assert env.cwd == "/fresh"
-        assert vercel_sdk.create_kwargs[0]["source"] == {
-            "type": "snapshot",
-            "snapshot_id": "snap_stale",
-        }
-        assert "source" not in vercel_sdk.create_kwargs[1]
-        assert vercel_module._load_snapshots() == {}
+            assert env.cwd == "/fresh"
+            assert vercel_sdk.create_kwargs[0]["source"] == {
+                "type": "snapshot",
+                "snapshot_id": "snap_stale",
+            }
+            assert "source" not in vercel_sdk.create_kwargs[1]
+            assert vercel_module._load_snapshots() == {}
+        finally:
+            reset_hermes_home_override(token)
 
     def test_cleanup_stops_when_snapshot_fails_without_storing_metadata(
         self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path
     ):
         hermes_home = tmp_path / ".hermes"
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        env = make_env()
-        sandbox = vercel_sdk.current
-        sandbox.snapshot_side_effects.append(RuntimeError("snapshot failed"))
+        token = set_hermes_home_override(hermes_home)
+        try:
+            env = make_env()
+            sandbox = vercel_sdk.current
+            sandbox.snapshot_side_effects.append(RuntimeError("snapshot failed"))
 
-        env.cleanup()
+            env.cleanup()
 
-        assert len(sandbox.snapshot_calls) == 1
-        assert len(sandbox.stop_calls) == 1
-        assert sandbox.closed == 1
-        assert vercel_module._load_snapshots() == {}
+            assert len(sandbox.snapshot_calls) == 1
+            assert len(sandbox.stop_calls) == 1
+            assert sandbox.closed == 1
+            assert vercel_module._load_snapshots() == {}
+        finally:
+            reset_hermes_home_override(token)
 
     def test_non_persistent_cleanup_stops_without_snapshot(
         self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path

@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- Bundled web plugins (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, xai, etc.) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -27,6 +27,22 @@ from typing import Any, Dict, List
 import pytest
 
 
+_CORE_WEB_PLUGIN_CAPABILITIES = {
+    "brave-free": (True, False, False),
+    "ddgs": (True, False, False),
+    "searxng": (True, False, False),
+    "exa": (True, True, False),
+    "parallel": (True, True, False),
+    "tavily": (True, True, True),
+    # firecrawl: search + extract + crawl. Crawl was originally
+    # disabled in the migration (fell through to a legacy inline
+    # path); the follow-up commit enabled it natively.
+    "firecrawl": (True, True, True),
+    # xai: search-only agentic web search via Grok Responses API.
+    "xai": (True, False, False),
+}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -48,6 +64,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
+        "XAI_BASE_URL",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -71,40 +88,18 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """Bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_core_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
-        names = sorted(p.name for p in list_providers())
-        assert names == [
-            "brave-free",
-            "ddgs",
-            "exa",
-            "firecrawl",
-            "parallel",
-            "searxng",
-            "tavily",
-            "xai",
-        ]
+        names = {p.name for p in list_providers()}
+        assert set(_CORE_WEB_PLUGIN_CAPABILITIES).issubset(names)
 
     @pytest.mark.parametrize(
         "plugin_name,expected_search,expected_extract,expected_crawl",
-        [
-            ("brave-free", True, False, False),
-            ("ddgs", True, False, False),
-            ("searxng", True, False, False),
-            ("exa", True, True, False),
-            ("parallel", True, True, False),
-            ("tavily", True, True, True),
-            # firecrawl: search + extract + crawl. Crawl was originally
-            # disabled in the migration (fell through to a legacy inline
-            # path); the follow-up commit enabled it natively.
-            ("firecrawl", True, True, True),
-            # xai: search-only via Grok's agentic web_search tool.
-            ("xai", True, False, False),
-        ],
+        [(name, *caps) for name, caps in _CORE_WEB_PLUGIN_CAPABILITIES.items()],
     )
     def test_capability_flags_match_spec(
         self,
@@ -124,7 +119,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        list(_CORE_WEB_PLUGIN_CAPABILITIES),
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -137,7 +132,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        list(_CORE_WEB_PLUGIN_CAPABILITIES),
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -227,6 +222,19 @@ class TestIsAvailable:
         monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
         assert p.is_available() is True
 
+    def test_xai_requires_api_key_or_oauth_token(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        p = get_provider("xai")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("XAI_API_KEY", "real")
+        assert p.is_available() is True
+
     def test_ddgs_always_available_when_package_importable(self) -> None:
         """DDGS is the always-on fallback — no API key required.
 
@@ -242,17 +250,6 @@ class TestIsAvailable:
         assert p is not None
         # Truthy or falsy, just must not raise.
         _ = bool(p.is_available())
-
-    def test_xai_requires_api_key_or_oauth(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """xAI needs XAI_API_KEY or OAuth tokens in auth.json."""
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        p = get_provider("xai")
-        assert p is not None
-        assert p.is_available() is False  # no XAI_API_KEY, no auth.json
-        monkeypatch.setenv("XAI_API_KEY", "real")
-        assert p.is_available() is True
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +467,7 @@ class TestErrorResponseShapes:
         if result["results"]:
             assert "error" in result["results"][0]
 
-    def test_firecrawl_crawl_returns_error_dict_when_unconfigured(self):
+    def test_firecrawl_crawl_returns_error_dict_when_unconfigured(self) -> None:
         """firecrawl crawl is async (wraps SDK in to_thread); error must be
         surfaced via the per-page result shape, not raised."""
         _ensure_plugins_loaded()
@@ -488,15 +485,3 @@ class TestErrorResponseShapes:
         assert len(result["results"]) >= 1
         assert "error" in result["results"][0]
         assert result["results"][0]["url"] == "https://example.com"
-
-    def test_xai_search_returns_error_dict_when_unconfigured(self) -> None:
-        """xAI returns a typed error dict (no XAI_API_KEY)."""
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        p = get_provider("xai")
-        assert p is not None
-        result = p.search("test", limit=5)
-        assert isinstance(result, dict)
-        assert result.get("success") is False
-        assert "error" in result

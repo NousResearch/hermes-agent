@@ -34,6 +34,21 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('handles /update locally and exits with code 42 via dieWithCode', () => {
+    vi.useFakeTimers()
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/update')).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('exiting TUI to run update...')
+
+    // Advance past the 100ms setTimeout
+    vi.advanceTimersByTime(150)
+    expect(ctx.session.dieWithCode).toHaveBeenCalledWith(42)
+
+    vi.useRealTimers()
+  })
+
   it('routes /status to live session.status instead of slash worker', async () => {
     patchUiState({ sid: 'sid-abc' })
     const rpc = vi.fn(() => Promise.resolve({ output: 'Hermes TUI Status' }))
@@ -372,8 +387,8 @@ describe('createSlashHandler', () => {
       Promise.resolve({
         connected: false,
         messages: [
-          "Chrome isn't running with remote debugging — attempting to launch...",
-          'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+          "Chromium-family browser isn't running with remote debugging — attempting to launch...",
+          'Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect'
         ],
         url: 'http://127.0.0.1:9222'
       })
@@ -382,14 +397,14 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     expect(createSlashHandler(ctx)('/browser connect')).toBe(true)
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chrome remote debugging at http://127.0.0.1:9222...')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chromium-family browser remote debugging at http://127.0.0.1:9222...')
 
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        "Chrome isn't running with remote debugging — attempting to launch..."
+        "Chromium-family browser isn't running with remote debugging — attempting to launch..."
       )
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+        'Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect'
       )
       expect(ctx.transcript.sys).not.toHaveBeenCalledWith('browser connect failed')
     })
@@ -730,6 +745,7 @@ const buildComposer = () => ({
 const buildGateway = () => ({
   gw: {
     getLogTail: vi.fn(() => ''),
+    kill: vi.fn(),
     request: vi.fn(() => Promise.resolve({}))
   },
   rpc: vi.fn(() => Promise.resolve({}))
@@ -746,6 +762,7 @@ const buildLocal = () => ({
 const buildSession = () => ({
   closeSession: vi.fn(() => Promise.resolve(null)),
   die: vi.fn(),
+  dieWithCode: vi.fn(),
   guardBusySessionSwitch: vi.fn(() => false),
   newSession: vi.fn(),
   resetVisibleHistory: vi.fn(),

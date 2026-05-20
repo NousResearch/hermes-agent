@@ -151,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     diag["source"] = res.get("source")
     diag["prompt_id"] = args.prompt_id
     emit_json(diag)
-    return 0 if diag.get("status_str") not in ("error",) else 1
+    return 0 if diag.get("status_str") not in {"error",} else 1
 
 
 if __name__ == "__main__":

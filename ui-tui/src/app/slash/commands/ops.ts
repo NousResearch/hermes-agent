@@ -157,6 +157,7 @@ export const opsCommands: SlashCommand[] = [
 
       if (url) {
         ctx.transcript.sys(translate(ctx.ui.locale,'sys.browserChecking', { url }))
+
       }
 
       ctx.gateway
@@ -185,6 +186,7 @@ export const opsCommands: SlashCommand[] = [
               ctx.transcript.sys(translate(ctx.ui.locale,'sys.browserConnected'))
               ctx.transcript.sys(translate(ctx.ui.locale,'sys.browserEndpoint', { url: r.url || '(url unavailable)' }))
               ctx.transcript.sys(translate(ctx.ui.locale,'sys.browserNextCall'))
+
             }
           })
         )

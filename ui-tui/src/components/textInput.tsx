@@ -272,15 +272,33 @@ export function canFastBackspaceShape(current: string, cursor: number, columns?:
   }
 
   // If we know the wrap width, reject at the soft-wrap boundary: the
-  // caret's visual column is 0, so "\b \b" can't represent the physical
-  // move back to the previous visual line.
-  if (columns !== undefined && cursorLayout(current, cursor, columns).column === 0) {
-    return false
+  // caret's physical column would be at (or past) the terminal's right
+  // edge, so the terminal has already auto-wrapped to the next row.
+  // "\b \b" can't represent the physical move back across that wrap.
+  //
+  // We check `column === 0` for the "wrap-ansi broke onto a new line"
+  // case AND `column >= columns` for the "exact-fill, terminal auto-wraps"
+  // case. Both manifest as the same physical state (cursor parked at
+  // col 0 of the next row) but cursorLayout reports them differently
+  // because it now mirrors wrap-ansi's break points exactly (see the
+  // cursor-drift-multiline fix in lib/inputMetrics.ts).
+  if (columns !== undefined) {
+    const layout = cursorLayout(current, cursor, columns)
+
+    if (layout.column === 0 || layout.column >= columns) {
+      return false
+    }
   }
 
   const removed = current.slice(prevPos(current, cursor), cursor)
 
   return ASCII_PRINTABLE_RE.test(removed)
+}
+
+export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): boolean {
+  // Terminal.app still shows paint/cursor artifacts under the fast-echo
+  // bypass path. Fall back to the normal Ink render path there.
+  return (env.TERM_PROGRAM ?? '').trim() !== 'Apple_Terminal'
 }
 
 function renderWithCursor(value: string, cursor: number) {
@@ -559,7 +577,7 @@ export function TextInput({
     }, 16)
   }
 
-  const canFastEchoBase = () => focus && termFocus && !selected && !mask && !!stdout?.isTTY
+  const canFastEchoBase = () => supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !!stdout?.isTTY
 
   const canFastAppend = (current: string, cursor: number, text: string) =>
     canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)

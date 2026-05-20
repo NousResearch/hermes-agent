@@ -81,7 +81,11 @@ def get_valid_token() -> str:
         print("ERROR: No Google token found. Run setup.py --auth-url first.", file=sys.stderr)
         sys.exit(1)
 
-    token_data = json.loads(token_path.read_text())
+    try:
+        token_data = json.loads(token_path.read_text())
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Corrupted token file: {e}", file=sys.stderr)
+        sys.exit(1)
 
     expiry = token_data.get("expiry", "")
     if expiry:

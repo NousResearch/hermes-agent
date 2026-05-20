@@ -1466,7 +1466,13 @@ def init_agent(
     # Gateway status_callback is not yet wired, so any warning is stored
     # in _compression_warning and replayed in the first run_conversation().
     agent._compression_warning = None
-    agent._check_compression_model_feasibility()
+    # Lazy feasibility check: deferred to the first turn that approaches the
+    # compression threshold. Running it eagerly here costs ~400ms cold (network
+    # probe of the auxiliary provider chain + /models lookup) on every agent
+    # init, including short ``chat -q`` runs that never reach the threshold.
+    # ``ensure_compression_feasibility_checked`` (called from
+    # ``run_conversation``'s preflight) runs it at most once per agent.
+    agent._compression_feasibility_checked = False
 
     # Snapshot primary runtime for per-turn restoration.  When fallback
     # activates during a turn, the next turn restores these values so the

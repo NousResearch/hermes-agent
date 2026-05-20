@@ -39,7 +39,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _sanitize_surrogates,
 )
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg
+from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.error_classifier import classify_api_error, FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
@@ -317,12 +317,11 @@ def sanitize_tool_call_arguments(
                 if existing_tool_msg is None:
                     messages.insert(
                         insert_at,
-                        {
-                            "role": "tool",
-                            "name": function_name if function_name != "?" else "",
-                            "tool_call_id": tool_call_id,
-                            "content": marker,
-                        },
+                        make_tool_result_message(
+                            function_name if function_name != "?" else "",
+                            marker,
+                            tool_call_id,
+                        ),
                     )
                     insert_at += 1
                 else:

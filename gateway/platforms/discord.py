@@ -111,6 +111,7 @@ def check_discord_requirements() -> bool:
     Intents = _Intents
     commands = _commands
     DISCORD_AVAILABLE = True
+    _define_discord_view_classes()
     return True
 
 
@@ -3601,6 +3602,24 @@ class DiscordAdapter(BasePlatformAdapter):
             return 32 * 1024 * 1024
         return max(0, value)
 
+    @staticmethod
+    def _is_discord_voice_message_attachment(att: Any) -> bool:
+        """Return True when a Discord audio attachment is a native voice note."""
+        marker = getattr(att, "is_voice_message", None)
+        if marker is not None:
+            if callable(marker):
+                try:
+                    return bool(marker())
+                except Exception as exc:
+                    logger.debug("[Discord] is_voice_message() failed for attachment: %s", exc)
+                    return False
+            return bool(marker)
+
+        return (
+            getattr(att, "duration", None) is not None
+            and getattr(att, "waveform", None) is not None
+        )
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
 
@@ -4541,7 +4560,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif att.content_type.startswith("video/"):
                         msg_type = MessageType.VIDEO
                     elif att.content_type.startswith("audio/"):
-                        msg_type = MessageType.AUDIO
+                        if self._is_discord_voice_message_attachment(att):
+                            msg_type = MessageType.VOICE
+                        else:
+                            msg_type = MessageType.AUDIO
                     else:
                         doc_ext = ""
                         if att.filename:
@@ -4949,7 +4971,17 @@ def _component_check_auth(
     return False
 
 
-if DISCORD_AVAILABLE:
+def _define_discord_view_classes() -> None:
+    """Register Discord UI view classes as module globals.
+
+    Called at module load (when discord.py is pre-installed) and also from
+    check_discord_requirements() after a lazy install, so view classes are
+    always defined whenever DISCORD_AVAILABLE is True.  Without this,
+    ExecApprovalView and siblings are only defined at import time; a later
+    lazy install sets DISCORD_AVAILABLE=True but leaves the classes
+    undefined, causing NameError on the first button interaction.
+    """
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -5649,3 +5681,7 @@ if DISCORD_AVAILABLE:
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+
+
+if DISCORD_AVAILABLE:
+    _define_discord_view_classes()

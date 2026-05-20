@@ -47,7 +47,8 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     """Decide whether ``model.base_url`` may back bare ``custom`` runtime resolution.
 
     GitHub #14676: the model picker can select Custom while ``model.provider`` still reflects a
-    previous provider. Reject non-loopback URLs unless the YAML provider is already ``custom``,
+    previous provider. Reject non-loopback URLs unless the YAML provider is already ``custom``
+    (or one of the local-server aliases that resolve to ``custom`` — ollama, vllm, llamacpp, …),
     so a stale OpenRouter/Z.ai base_url cannot hijack local ``custom`` sessions.
     """
     cfg_provider_norm = (cfg_provider or "").strip().lower()
@@ -56,6 +57,17 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
         return False
     if cfg_provider_norm == "custom":
         return True
+    # GitHub #27132: provider aliases that resolve to "custom" at runtime
+    # (ollama, vllm, llamacpp, …) should be trusted the same way "custom"
+    # is, otherwise a legit LAN/WireGuard ollama endpoint silently falls
+    # through to OpenRouter.
+    try:
+        from hermes_cli.auth import resolve_provider as _resolve_provider
+
+        if _resolve_provider(cfg_provider_norm) == "custom":
+            return True
+    except Exception:
+        pass
     if base_url_host_matches(bu, "openrouter.ai"):
         return False
     return _loopback_hostname(base_url_hostname(bu))
@@ -547,7 +559,20 @@ def _resolve_named_custom_runtime(
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated
     # from a `model_aliases:` direct-alias resolution) — build a runtime
     # directly so the alias's base_url actually takes effect.
+    #
+    # GitHub #27132: provider aliases that resolve to "custom" at runtime
+    # (ollama, vllm, llamacpp, …) are treated identically here, so a YAML
+    # `provider: ollama` with a LAN/WireGuard `base_url` doesn't silently
+    # fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
+    if requested_norm and requested_norm != "custom":
+        try:
+            from hermes_cli.auth import resolve_provider as _resolve_provider
+
+            if _resolve_provider(requested_norm) == "custom":
+                requested_norm = "custom"
+        except Exception:
+            pass
     if requested_norm == "custom" and explicit_base_url:
         base_url = explicit_base_url.strip().rstrip("/")
         # Check credential pool first — mirrors the named-custom-provider path
@@ -638,6 +663,19 @@ def _resolve_openrouter_runtime(
             break
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
+    # GitHub #27132: provider aliases that resolve to "custom" (ollama,
+    # vllm, llamacpp, …) follow the same base_url trust + routing rules
+    # as a bare `provider: custom`. Normalising here keeps every check
+    # below — `requested_norm == "custom"`, the trust check, the pool
+    # gate up the stack — alias-aware without duplicating the alias map.
+    if requested_norm and requested_norm != "custom":
+        try:
+            from hermes_cli.auth import resolve_provider as _resolve_provider
+
+            if _resolve_provider(requested_norm) == "custom":
+                requested_norm = "custom"
+        except Exception:
+            pass
 
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
     env_custom_base_url = os.getenv("CUSTOM_BASE_URL", "").strip()

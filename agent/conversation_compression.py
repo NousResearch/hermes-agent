@@ -387,8 +387,6 @@ def compress_context(
                 _SESSION_ID.set(agent.session_id)
             except Exception:
                 pass
-            # Update session_log_file to point to the new session's JSON file
-            agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
             agent._session_db_created = False
             agent._session_db.create_session(
                 session_id=agent.session_id,

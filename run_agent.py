@@ -1479,6 +1479,12 @@ class AIAgent:
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
             for msg in messages[flush_from:]:
+                # Skip ephemeral error tool messages (#27033) — these exist
+                # only for the current turn's LLM to handle and must not
+                # be persisted, or they'll trigger HTTP 400 on every replay.
+                if msg.get("_is_error"):
+                    logger.debug("Skipping ephemeral error tool message: %s", msg.get("tool_name", msg.get("name", "?")))
+                    continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 # Persist multimodal tool results as their text summary only —

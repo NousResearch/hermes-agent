@@ -53,6 +53,7 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from agent.tool_dispatch_helpers import is_tool_error_message
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -604,6 +605,11 @@ def _build_gateway_agent_history(
         is_tool_message = role == "tool"
 
         if has_tool_calls or has_tool_call_id or is_tool_message:
+            # Skip ephemeral error tool messages (#27033).  New sessions
+            # tag these with _is_error; old sessions need content-based
+            # detection for backwards compatibility.
+            if is_tool_message and is_tool_error_message(msg):
+                continue
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
             agent_history.append(clean_msg)
         elif content:

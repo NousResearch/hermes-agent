@@ -343,6 +343,42 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     }
 
 
+def is_tool_error_message(msg: Dict[str, Any]) -> bool:
+    """Detect tool error messages that should not be persisted or replayed.
+
+    Two detection methods:
+    1. Explicit ``_is_error`` flag (set by tool_executor.py at source)
+    2. Content-based fallback for pre-#27033 sessions where error tool
+       messages were persisted verbatim.
+
+    Used by CLI resume paths and gateway replay to strip stale error
+    tool messages that would otherwise trigger HTTP 400 on every turn.
+
+    .. warning::
+
+        ``_TOOL_ERROR_CONTENT_PREFIXES`` must stay in sync with the error
+        format strings in ``tool_executor.py``.  If those f-strings change,
+        update the prefixes here and in
+        ``tests/run_agent/test_27033_tool_error_ephemeral.py::test_error_format_prefixes_match_tool_executor``.
+    """
+    if msg.get("_is_error"):
+        return True
+    content = msg.get("content")
+    if not isinstance(content, str):
+        return False
+    return any(content.startswith(p) for p in _TOOL_ERROR_CONTENT_PREFIXES)
+
+
+# Coupled to error format strings in tool_executor.py (see
+# is_tool_error_message docstring).  If you change these, update the
+# integration test that verifies the prefixes match actual error output.
+_TOOL_ERROR_CONTENT_PREFIXES = (
+    "Error executing tool ",      # f"Error executing tool '{name}': ..."
+    "[Tool execution cancelled",  # f"[Tool execution cancelled — {name} was skipped ...]"
+    "[Tool execution skipped",    # f"[Tool execution skipped — {name} was not started ...]"
+)
+
+
 # Tools whose results carry attacker-controllable content.  Wrapping their
 # string output in ``<untrusted_tool_result>`` delimiters tells the model the
 # payload is data, not instructions — the architectural piece of the

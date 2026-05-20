@@ -1281,7 +1281,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         for msg in messages:
             api_msg = msg.copy()
             agent._copy_reasoning_content_for_api(msg, api_msg)
-            for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
+            for internal_field in ("reasoning", "finish_reason", "_thinking_prefill", "_is_error"):
                 api_msg.pop(internal_field, None)
             # Strict OpenAI-compatible gateways (Fireworks-backed OpenCode Go,
             # Mistral, Moonshot/Kimi) reject any message key outside the Chat

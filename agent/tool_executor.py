@@ -120,11 +120,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         for tc in tool_calls:
-            messages.append(make_tool_result_message(
+            msg = make_tool_result_message(
                 tc.function.name,
                 f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
                 tc.id,
-            ))
+            )
+            msg["_is_error"] = True
+            messages.append(msg)
         return
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
@@ -429,6 +431,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             else:
                 function_result = f"Error executing tool '{name}': thread did not return a result"
             tool_duration = 0.0
+            is_error = True
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked = r
 
@@ -517,7 +520,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
-        messages.append(make_tool_result_message(name, _tool_content, tc.id))
+        msg = make_tool_result_message(name, _tool_content, tc.id)
+        if is_error:
+            msg["_is_error"] = True
+        messages.append(msg)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
@@ -556,6 +562,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     "name": skipped_name,
                     "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                     "tool_call_id": skipped_tc.id,
+                    "_is_error": True,
                 }
                 messages.append(skip_msg)
             break
@@ -964,7 +971,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
-        messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
+        msg = make_tool_result_message(function_name, _tool_content, tool_call.id)
+        if _is_error_result:
+            msg["_is_error"] = True
+        messages.append(msg)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the
@@ -986,11 +996,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
             for skipped_tc in assistant_message.tool_calls[i:]:
                 skipped_name = skipped_tc.function.name
-                messages.append(make_tool_result_message(
+                skip_msg = make_tool_result_message(
                     skipped_name,
                     f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
                     skipped_tc.id,
-                ))
+                )
+                skip_msg["_is_error"] = True
+                messages.append(skip_msg)
             break
 
         if agent.tool_delay > 0 and i < len(assistant_message.tool_calls):

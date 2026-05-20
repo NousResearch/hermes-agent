@@ -1848,7 +1848,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
-        "fallback_model": getattr(agent, "_fallback_model", None),
+        "fallback_model": getattr(agent, "_fallback_chain", None)
+        or getattr(agent, "_fallback_model", None),
     }
 
 
@@ -1903,6 +1904,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         requested=requested_provider,
         target_model=model or None,
     )
+    fallback_model = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -1926,6 +1928,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        fallback_model=fallback_model,
         **_agent_cbs(sid),
     )
 

@@ -140,6 +140,10 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     This produces mangled values — e.g. a bot token duplicated 8×
     (see #8908).
 
+    Also strips embedded null bytes which crash ``os.environ[k] = v``
+    with ``ValueError: embedded null byte`` — typically introduced by
+    copy-pasting API keys from terminals or rich-text editors.
+
     We delegate to ``hermes_cli.config._sanitize_env_lines`` which
     already knows all valid Hermes env-var names and can split
     concatenated lines correctly.
@@ -155,7 +159,11 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     try:
         with open(path, **read_kw) as f:
             original = f.readlines()
-        sanitized = _sanitize_env_lines(original)
+        # Strip null bytes before _sanitize_env_lines so they never
+        # reach python-dotenv (which passes them to os.environ and
+        # crashes with ValueError).
+        stripped = [line.replace("\x00", "") for line in original]
+        sanitized = _sanitize_env_lines(stripped)
         if sanitized != original:
             import tempfile
             fd, tmp = tempfile.mkstemp(

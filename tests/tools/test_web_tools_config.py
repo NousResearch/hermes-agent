@@ -641,6 +641,20 @@ class TestCheckWebApiKey:
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
 
+    def test_xai_key_only(self):
+        with patch.dict(os.environ, {"XAI_API_KEY": "sk-xai-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_configured_xai_backend_requires_xai_credentials(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "xai"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "xai"}):
+            with patch.dict(os.environ, {"XAI_API_KEY": "sk-xai-test"}):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
+
 
 def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env

@@ -799,9 +799,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
-        # now live as plugins; the dispatcher is just a registry lookup +
+        # Dispatch through the web search registry. Bundled providers
+        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl, xai,
+        # …) register at import time; the dispatcher is a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
         from agent.web_search_registry import (
             get_active_search_provider,
@@ -810,10 +810,17 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
+        if provider is not None and provider.supports_search():
+            try:
+                provider_available = bool(provider.is_available())
+            except Exception:
+                provider_available = False
+        else:
+            provider_available = False
+        if provider is None or not provider.supports_search() or not provider_available:
+            # Fall back when the name from config/auto-detect does not map to
+            # a usable search provider (typo, missing plugin, capability mismatch,
+            # or no credentials — e.g. default "firecrawl" with only xAI OAuth).
             provider = get_active_search_provider()
 
         if provider is None:
@@ -1363,16 +1370,26 @@ async def web_crawl_tool(
         return tool_error(error_msg)
 
 
+# Backends ``check_web_api_key()`` and ``hermes tools`` gating understand.
+_WEB_AVAILABILITY_BACKENDS = (
+    "exa",
+    "parallel",
+    "firecrawl",
+    "tavily",
+    "searxng",
+    "brave-free",
+    "ddgs",
+    "xai",
+)
+
+
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    if configured in _WEB_AVAILABILITY_BACKENDS:
         return _is_backend_available(configured)
-    return any(
-        _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
-    )
+    return any(_is_backend_available(backend) for backend in _WEB_AVAILABILITY_BACKENDS)
 
 
 def check_auxiliary_model() -> bool:

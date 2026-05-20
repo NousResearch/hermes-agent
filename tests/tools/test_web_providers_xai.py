@@ -694,6 +694,13 @@ class TestXAIBackendWiring:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "xai"})
         assert web_tools._get_backend() == "xai"
 
+    def test_check_web_api_key_true_when_xai_configured(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "xai"})
+        monkeypatch.setenv("XAI_API_KEY", "sk-xai-test")
+        assert web_tools.check_web_api_key() is True
+
     def test_xai_not_in_legacy_backend_candidate_chain(self, monkeypatch):
         """The hardcoded ``backend_candidates`` tuple in ``_get_backend()``
         does not include xAI — by design, since the no-config legacy
@@ -719,6 +726,37 @@ class TestXAIBackendWiring:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         assert web_tools._get_backend() != "xai"
+
+    def test_web_search_falls_back_when_named_backend_unavailable(self, monkeypatch):
+        """``_get_search_backend()`` can return ``firecrawl`` by default while
+        only xAI credentials exist; dispatch must not call the unavailable
+        provider's ``search()`` when registry resolution can pick xAI."""
+        from tools import web_tools
+
+        unavailable = MagicMock()
+        unavailable.supports_search.return_value = True
+        unavailable.is_available.return_value = False
+        unavailable.name = "firecrawl"
+
+        active = MagicMock()
+        active.supports_search.return_value = True
+        active.is_available.return_value = True
+        active.name = "xai"
+        active.search.return_value = {"success": True, "data": {"web": []}}
+
+        monkeypatch.setattr(web_tools, "_get_search_backend", lambda: "firecrawl")
+        with patch(
+            "agent.web_search_registry.get_provider",
+            return_value=unavailable,
+        ), patch(
+            "agent.web_search_registry.get_active_search_provider",
+            return_value=active,
+        ):
+            result = json.loads(web_tools.web_search_tool("test query", limit=3))
+
+        assert result["success"] is True
+        unavailable.search.assert_not_called()
+        active.search.assert_called_once_with("test query", 3)
 
 
 # ---------------------------------------------------------------------------

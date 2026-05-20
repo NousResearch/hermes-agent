@@ -104,15 +104,27 @@ async def test_business_update_handler_persists_metadata_without_auto_reply(tmp_
             """
         ).fetchone()
 
+        text_row = conn.execute(
+            """
+            SELECT text
+            FROM business_message_text
+            JOIN business_messages ON business_messages.id = business_message_text.business_message_id
+            WHERE business_messages.chat_id = '1566649385'
+            """
+        ).fetchone()
+        user_row = conn.execute(
+            "SELECT user_id, full_name FROM business_users WHERE user_id = '1566649385'"
+        ).fetchone()
+
     assert connection_row == ("conn-1", "602562", "oldman")
     assert message_row[0] == "1566649385"
     assert message_row[1] == "1408996"
     assert message_row[2] == len("завтра в 15 созвон")
     assert message_row[3] is None
-    assert message_row[4] == 0
+    assert message_row[4] == 1
     assert set(json.loads(message_row[5])) >= {"meeting", "time_reference"}
-
-    assert "созвон" not in db_path.read_bytes().decode("utf-8", errors="ignore")
+    assert text_row == ("завтра в 15 созвон",)
+    assert user_row == ("1566649385", "BaliRadar")
 
     warning_text = "\n".join(record.getMessage() for record in caplog.records)
     assert "chat_id=1566649385" not in warning_text

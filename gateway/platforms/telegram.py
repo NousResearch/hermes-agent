@@ -5156,9 +5156,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id=chat_id,
                 chat_type=str(getattr(chat, "type", "")) or None,
                 chat_name=self._chat_display_name(chat),
+                chat_username=getattr(chat, "username", None),
                 message_id=getattr(message, "message_id", None),
                 sender_id=sender_id,
                 sender_name=self._user_display_name(sender),
+                sender_username=getattr(sender, "username", None),
+                sender_is_bot=getattr(sender, "is_bot", None),
+                sender_language_code=getattr(sender, "language_code", None),
                 text=text,
                 message_date=getattr(message, "date", None),
             )

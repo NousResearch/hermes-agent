@@ -1,8 +1,9 @@
 """Account-scoped life inbox storage for gateway message ingestion.
 
-The store is intentionally conservative: Telegram Business/Profile Automation
-messages are indexed as metadata plus hashes by default. Raw private chat text is
-not persisted unless a future, explicit per-chat policy enables it.
+Telegram Business/Profile Automation messages are stored in the owner's
+account-scoped SQLite DB. Raw private chat text is kept out of gateway logs and
+probe tables, but the main Business inbox archive stores plaintext messages so
+the passive analyzer can summarize and retrieve them later.
 """
 
 from __future__ import annotations
@@ -17,8 +18,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 PLATFORM_TELEGRAM_BUSINESS = "telegram_business"
-DEFAULT_CHAT_RULE_MODE = "metadata_only"
-SCHEMA_VERSION = 2
+DEFAULT_CHAT_RULE_MODE = "full_rag_selected"
+SCHEMA_VERSION = 3
 BUSINESS_PAYLOAD_PROBE_LANE = "business_bot_probe"
 BUSINESS_PAYLOAD_PROBE_SCENARIOS: tuple[dict[str, str], ...] = (
     {
@@ -333,10 +334,46 @@ class LifeInboxStore:
                     UNIQUE(connection_id, chat_id, message_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS business_message_text (
+                    business_message_id INTEGER PRIMARY KEY,
+                    text TEXT NOT NULL,
+                    text_sha256 TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(business_message_id) REFERENCES business_messages(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS business_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    platform TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    username TEXT,
+                    full_name TEXT,
+                    is_bot INTEGER,
+                    language_code TEXT,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    UNIQUE(platform, user_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_participants (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    platform TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    UNIQUE(platform, chat_id, user_id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_business_messages_chat_date
                     ON business_messages(chat_id, message_date);
                 CREATE INDEX IF NOT EXISTS idx_business_messages_updated
                     ON business_messages(updated_at);
+                CREATE INDEX IF NOT EXISTS idx_business_users_username
+                    ON business_users(platform, username);
+                CREATE INDEX IF NOT EXISTS idx_chat_participants_user
+                    ON chat_participants(platform, user_id);
 
                 CREATE TABLE IF NOT EXISTS business_payload_probe_scenarios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -451,6 +488,65 @@ class LifeInboxStore:
             VALUES (?, ?, ?, 'normal', ?, ?)
             """,
             (platform, chat_id, DEFAULT_CHAT_RULE_MODE, now, now),
+        )
+
+    def _upsert_business_user(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: str | None,
+        username: str | None,
+        full_name: str | None,
+        is_bot: bool | None,
+        language_code: str | None,
+        now: str,
+    ) -> None:
+        if not user_id:
+            return
+        conn.execute(
+            """
+            INSERT INTO business_users(
+                platform, user_id, username, full_name, is_bot, language_code,
+                first_seen_at, last_seen_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(platform, user_id) DO UPDATE SET
+                username = COALESCE(excluded.username, business_users.username),
+                full_name = COALESCE(excluded.full_name, business_users.full_name),
+                is_bot = COALESCE(excluded.is_bot, business_users.is_bot),
+                language_code = COALESCE(excluded.language_code, business_users.language_code),
+                last_seen_at = excluded.last_seen_at
+            """,
+            (
+                PLATFORM_TELEGRAM_BUSINESS,
+                user_id,
+                username,
+                full_name,
+                None if is_bot is None else int(bool(is_bot)),
+                language_code,
+                now,
+                now,
+            ),
+        )
+
+    def _ensure_chat_participant(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        chat_id: str,
+        user_id: str | None,
+        now: str,
+    ) -> None:
+        if not user_id:
+            return
+        conn.execute(
+            """
+            INSERT INTO chat_participants(platform, chat_id, user_id, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(platform, chat_id, user_id) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at
+            """,
+            (PLATFORM_TELEGRAM_BUSINESS, chat_id, user_id, now, now),
         )
 
     def prepare_business_payload_probe_scenarios(
@@ -727,9 +823,13 @@ class LifeInboxStore:
         chat_id: str | int | None,
         chat_type: str | None,
         chat_name: str | None,
+        chat_username: str | None = None,
         message_id: str | int | None,
         sender_id: str | int | None,
         sender_name: str | None,
+        sender_username: str | None = None,
+        sender_is_bot: bool | None = None,
+        sender_language_code: str | None = None,
         text: str | None,
         message_date: Any,
     ) -> int:
@@ -737,6 +837,10 @@ class LifeInboxStore:
         connection_key = _coerce_text(connection_id)
         chat_id_text = _coerce_text(chat_id)
         message_id_text = _coerce_text(message_id)
+        sender_id_text = _coerce_text(sender_id)
+        chat_username_text = _coerce_text(chat_username)
+        sender_username_text = _coerce_text(sender_username)
+        sender_language_code_text = _coerce_text(sender_language_code)
         if not connection_key:
             raise ValueError("connection_id is required for Telegram Business messages")
         if not chat_id_text:
@@ -756,6 +860,27 @@ class LifeInboxStore:
                 chat_type=chat_type,
                 now=now,
             )
+            if str(chat_type or "").lower() == "private":
+                self._upsert_business_user(
+                    conn,
+                    user_id=chat_id_text,
+                    username=chat_username_text,
+                    full_name=chat_name,
+                    is_bot=None,
+                    language_code=None,
+                    now=now,
+                )
+                self._ensure_chat_participant(conn, chat_id=chat_id_text, user_id=chat_id_text, now=now)
+            self._upsert_business_user(
+                conn,
+                user_id=sender_id_text,
+                username=sender_username_text,
+                full_name=sender_name,
+                is_bot=sender_is_bot,
+                language_code=sender_language_code_text,
+                now=now,
+            )
+            self._ensure_chat_participant(conn, chat_id=chat_id_text, user_id=sender_id_text, now=now)
             conn.execute(
                 """
                 INSERT INTO business_messages(
@@ -764,7 +889,7 @@ class LifeInboxStore:
                     text_sha256, text_preview, raw_text_stored, candidate_reasons_json,
                     first_seen_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
                 ON CONFLICT(connection_id, chat_id, message_id) DO UPDATE SET
                     update_id = excluded.update_id,
                     update_type = excluded.update_type,
@@ -777,7 +902,7 @@ class LifeInboxStore:
                     text_len = excluded.text_len,
                     text_sha256 = excluded.text_sha256,
                     text_preview = NULL,
-                    raw_text_stored = 0,
+                    raw_text_stored = excluded.raw_text_stored,
                     candidate_reasons_json = excluded.candidate_reasons_json,
                     updated_at = excluded.updated_at
                 """,
@@ -790,12 +915,13 @@ class LifeInboxStore:
                     chat_type,
                     chat_name,
                     message_id_text,
-                    _coerce_text(sender_id),
+                    sender_id_text,
                     sender_name,
                     _coerce_iso(message_date),
                     int(bool(text_value)),
                     len(text_value),
                     text_sha256,
+                    int(bool(text_value)),
                     _json_dumps(candidate_reasons),
                     now,
                     now,
@@ -810,7 +936,27 @@ class LifeInboxStore:
             ).fetchone()
             if row is None:
                 raise RuntimeError("business message insert succeeded but row lookup failed")
-            return int(row["id"])
+            business_message_id = int(row["id"])
+            if text_value:
+                conn.execute(
+                    """
+                    INSERT INTO business_message_text(
+                        business_message_id, text, text_sha256, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(business_message_id) DO UPDATE SET
+                        text = excluded.text,
+                        text_sha256 = excluded.text_sha256,
+                        updated_at = excluded.updated_at
+                    """,
+                    (business_message_id, text_value, text_sha256, now, now),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM business_message_text WHERE business_message_id = ?",
+                    (business_message_id,),
+                )
+            return business_message_id
 
     def record_deleted_business_messages(
         self,

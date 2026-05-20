@@ -151,6 +151,18 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # CLI/TUI pre-dispatch hook. Fired from the conversation loop once
+    # per turn, after the user message arrives but BEFORE it is appended
+    # to the message history. Mirrors pre_gateway_dispatch but for the
+    # non-gateway surfaces (`hermes chat`, `--tui`). Plugins may return:
+    #   {"action": "skip",    "reason": "..."}  -> drop turn, no LLM call
+    #   {"action": "rewrite", "text": "..."}    -> replace user_message
+    #   {"action": "allow"} / None              -> normal dispatch
+    # First non-None action wins. A `rewrite` updates both the message
+    # the LLM sees and the persisted transcript entry.
+    # Kwargs: message: str, session_id: str, platform: "cli" | "tui",
+    #         model: str.
+    "pre_user_message",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
@@ -381,6 +393,37 @@ class PluginContext:
             # Agent is idle — queue as next input
             cli._pending_input.put(msg)
         return True
+
+    # -- user interaction (AskUserQuestion-style overlay) ----------------------
+
+    def ask_user(self, question: str, choices: list[str]) -> str | None:
+        """Show an arrow-key selection overlay and return the chosen option.
+
+        Reuses the CLI's existing clarify-callback machinery — the same
+        prompt_toolkit overlay used by the ``clarify`` tool. Arrow-key
+        navigation, timeout-driven dismissal, plays nicely with the live
+        display.
+
+        Returns the selected choice string, or ``None`` when:
+          * no CLI reference is available (gateway/ACP/script contexts)
+          * the active CLI has no ``_clarify_callback`` (e.g. headless ``-q``)
+          * the user lets the overlay time out
+
+        Callers must handle ``None`` — typically by falling back to a
+        message-based approval flow (see prompt-optimizer's
+        ``_cli_interactive_approval`` for the established pattern).
+        """
+        cli = self._manager._cli_ref
+        if cli is None:
+            return None
+        cb = getattr(cli, "_clarify_callback", None)
+        if cb is None:
+            return None
+        try:
+            return cb(question, list(choices))
+        except Exception:
+            logger.warning("ask_user overlay failed", exc_info=True)
+            return None
 
     # -- CLI command registration --------------------------------------------
 

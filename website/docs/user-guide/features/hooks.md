@@ -383,6 +383,7 @@ def register(ctx):
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
+| [`pre_user_message`](#pre_user_message) | CLI/TUI conversation loop received a user message, before history append | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 | [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
 | [`post_approval_response`](#post_approval_response) | User responded to an approval prompt (or it timed out) | ignored |
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
@@ -911,6 +912,49 @@ def buffer_or_rewrite(event, **kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
+```
+
+---
+
+### `pre_user_message`
+
+Fires **once per turn** from the CLI/TUI conversation loop, after the user message arrives and **before** it is appended to the message history. This is the non-gateway counterpart to `pre_gateway_dispatch` — the same action-dict contract, applied to `hermes chat` and `--tui` surfaces.
+
+**Callback signature:**
+
+```python
+def my_callback(message, session_id, platform, model, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `message` | `str` | The user message about to be dispatched. |
+| `session_id` | `str` | Current session identifier. |
+| `platform` | `str` | `"cli"` or `"tui"`. |
+| `model` | `str` | Current model identifier (e.g. `"anthropic/claude-sonnet-4.6"`). |
+
+**Fires:** In `agent/conversation_loop.py`, inside `run_conversation()`, between capture of `original_user_message` and the `messages.append({"role": "user", ...})` step.
+
+**Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged; the loop always falls through to normal dispatch on error.
+
+| Return | Effect |
+|--------|--------|
+| `{"action": "skip", "reason": "..."}` | Drop the turn — no LLM call, returns early with `{"skipped": True, "skip_reason": ...}` in the conversation result. |
+| `{"action": "rewrite", "text": "new text"}` | Replace both `user_message` and `original_user_message`. Empty/whitespace text is ignored. |
+| `{"action": "allow"}` / `None` | Normal dispatch. |
+
+**Use cases:** Prompt-optimizer rewriting verbose prompts before they hit the LLM; profanity / PII redaction; canned-command expansion; per-session intent classification.
+
+**Example — silent prompt rewrite:**
+
+```python
+def tighten(message, **kwargs):
+    if len(message) < 80:
+        return None
+    return {"action": "rewrite", "text": _shorten(message)}
+
+def register(ctx):
+    ctx.register_hook("pre_user_message", tighten)
 ```
 
 ---

@@ -381,6 +381,45 @@ def run_conversation(
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
 
+    # Plugin hook: pre_user_message — fires on CLI/TUI surfaces before
+    # the message is appended to history. Mirrors pre_gateway_dispatch.
+    # First non-None action wins; rewrite replaces user_message and
+    # original_user_message; skip drops the turn with no LLM call.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _pre_results = _invoke_hook(
+            "pre_user_message",
+            message=user_message,
+            session_id=agent.session_id,
+            platform=getattr(agent, "platform", None) or "cli",
+            model=agent.model,
+        )
+        for _r in _pre_results:
+            if not isinstance(_r, dict):
+                continue
+            _action = _r.get("action")
+            if _action == "skip":
+                logger.info(
+                    "pre_user_message: turn skipped (%s)",
+                    _r.get("reason", "no reason given"),
+                )
+                return {
+                    "final_response": "",
+                    "messages": messages,
+                    "completed": True,
+                    "api_calls": 0,
+                    "skipped": True,
+                    "skip_reason": _r.get("reason", ""),
+                }
+            if _action == "rewrite":
+                _new_text = _r.get("text", "")
+                if isinstance(_new_text, str) and _new_text.strip():
+                    user_message = _new_text
+                    original_user_message = _new_text
+                    break
+    except Exception as exc:
+        logger.warning("pre_user_message hook failed: %s", exc)
+
     # Track memory nudge trigger (turn-based, checked here).
     # Skill trigger is checked AFTER the agent loop completes, based on
     # how many tool iterations THIS turn used.
@@ -1454,6 +1493,7 @@ def run_conversation(
                                 }
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
+                                agent._save_session_log(messages)
                                 restart_with_length_continuation = True
                                 break
 
@@ -3085,6 +3125,7 @@ def run_conversation(
                     if not agent.quiet_mode:
                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
                     agent._session_messages = messages
+                    agent._save_session_log(messages)
                     continue
 
                 agent._codex_incomplete_retries = 0
@@ -3409,6 +3450,7 @@ def run_conversation(
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
+                agent._save_session_log(messages)
                 
                 # Continue loop for next response
                 continue
@@ -3575,6 +3617,7 @@ def run_conversation(
                         interim_msg["_thinking_prefill"] = True
                         messages.append(interim_msg)
                         agent._session_messages = messages
+                        agent._save_session_log(messages)
                         continue
 
                     # ── Empty response retry ──────────────────────
@@ -3708,6 +3751,7 @@ def run_conversation(
                     }
                     messages.append(continue_msg)
                     agent._session_messages = messages
+                    agent._save_session_log(messages)
                     continue
 
                 codex_ack_continuations = 0

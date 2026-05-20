@@ -90,6 +90,20 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("device file", result["error"])
 
+    @unittest.skipUnless(
+        hasattr(os, "symlink") and os.path.exists("/dev/zero"),
+        "requires POSIX symlinks and /dev/zero",
+    )
+    def test_read_file_tool_rejects_symlink_to_device(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, "zero-link")
+            os.symlink("/dev/zero", link_path)
+
+            result = json.loads(read_file_tool(link_path, task_id="dev_symlink_test"))
+
+        self.assertIn("error", result)
+        self.assertIn("regular file", result["error"])
+
 
 # ---------------------------------------------------------------------------
 # Character-count limits

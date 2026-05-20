@@ -15,6 +15,13 @@ import json
 from pathlib import Path
 
 import pytest
+from typing import Any, cast
+
+
+@pytest.fixture(autouse=True)
+def _clear_external_auth_home(monkeypatch):
+    """Keep ambient service env from leaking into hermetic auth tests."""
+    monkeypatch.delenv("HERMES_AUTH_HOME", raising=False)
 
 
 def _make_auth_store(pool: dict | None = None, providers: dict | None = None) -> dict:
@@ -278,6 +285,86 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 # ---------------------------------------------------------------------------
 # Classic mode — no fallback path should ever trigger
 # ---------------------------------------------------------------------------
+
+
+def test_explicit_auth_home_is_authoritative_for_profile_reads(tmp_path, monkeypatch):
+    """HERMES_AUTH_HOME gives profiled workers one shared auth.json."""
+    from hermes_cli.auth import _auth_file_path, _global_auth_file_path, read_credential_pool
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    runtime_root = tmp_path / "runtime"
+    profile_dir = runtime_root / "profiles" / "coder"
+    profile_dir.mkdir(parents=True)
+    shared_auth = tmp_path / "shared-auth"
+    shared_auth.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+    monkeypatch.setenv("HERMES_AUTH_HOME", str(shared_auth))
+
+    _write(shared_auth / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "shared-codex",
+            "label": "shared-codex",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "oauth",
+            "access_token": "at-shared",
+            "refresh_token": "rt-shared",
+        }],
+    }))
+    _write(profile_dir / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "profile-stale",
+            "label": "profile-stale",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "oauth",
+            "access_token": "at-stale",
+            "refresh_token": "rt-stale",
+        }],
+    }))
+
+    assert _auth_file_path() == shared_auth / "auth.json"
+    assert _global_auth_file_path() is None
+    entries = cast(list[dict[str, Any]], read_credential_pool("openai-codex"))
+    assert [e["id"] for e in entries] == ["shared-codex"]
+    assert entries[0]["refresh_token"] == "rt-shared"
+
+
+def test_explicit_auth_home_is_authoritative_for_profile_writes(tmp_path, monkeypatch):
+    """Writes update the shared auth store, not the runtime profile store."""
+    from hermes_cli.auth import write_credential_pool
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    profile_dir = tmp_path / "runtime" / "profiles" / "coder"
+    profile_dir.mkdir(parents=True)
+    shared_auth = tmp_path / "shared-auth"
+    shared_auth.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+    monkeypatch.setenv("HERMES_AUTH_HOME", str(shared_auth))
+
+    _write(profile_dir / "auth.json", _make_auth_store(pool={}))
+    write_credential_pool("openai-codex", [{
+        "id": "shared-new",
+        "label": "shared-new",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "oauth",
+        "access_token": "at-new",
+        "refresh_token": "rt-new",
+    }])
+
+    shared_data = json.loads((shared_auth / "auth.json").read_text())
+    profile_data = json.loads((profile_dir / "auth.json").read_text())
+    assert shared_data["credential_pool"]["openai-codex"][0]["id"] == "shared-new"
+    assert profile_data["credential_pool"] == {}
 
 
 def test_classic_mode_does_not_double_read_same_file(tmp_path, monkeypatch):

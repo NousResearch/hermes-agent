@@ -798,13 +798,29 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
 # Auth Store — persistence layer for ~/.hermes/auth.json
 # =============================================================================
 
+def _auth_home_override() -> Optional[Path]:
+    """Return the explicit auth-store root, if configured.
+
+    ``HERMES_HOME`` scopes runtime/profile state. ``HERMES_AUTH_HOME`` scopes
+    long-lived OAuth credentials. Profiled workers can therefore keep isolated
+    config, logs, memory, etc. while sharing one ``auth.json`` and one lock for
+    single-use refresh-token providers such as OpenAI Codex.
+    """
+    raw = os.environ.get("HERMES_AUTH_HOME", "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
 def _auth_file_path() -> Path:
-    path = get_hermes_home() / "auth.json"
-    # Seat belt: if pytest is running and HERMES_HOME resolves to the real
-    # user's auth store, refuse rather than silently corrupt it. This catches
-    # tests that forgot to monkeypatch HERMES_HOME, tests invoked without the
-    # hermetic conftest, or sandbox escapes via threads/subprocesses. In
-    # production (no PYTEST_CURRENT_TEST) this is a single dict lookup.
+    auth_home = _auth_home_override()
+    path = (auth_home if auth_home is not None else get_hermes_home()) / "auth.json"
+    # Seat belt: if pytest is running and the selected auth root resolves to
+    # the real user's auth store, refuse rather than silently corrupt it. This
+    # catches tests that forgot to monkeypatch HERMES_HOME/HERMES_AUTH_HOME,
+    # tests invoked without the hermetic conftest, or sandbox escapes via
+    # threads/subprocesses. In production (no PYTEST_CURRENT_TEST) this is a
+    # single dict lookup.
     if os.environ.get("PYTEST_CURRENT_TEST"):
         real_home_auth = (Path.home() / ".hermes" / "auth.json").resolve(strict=False)
         try:
@@ -814,14 +830,19 @@ def _auth_file_path() -> Path:
         if resolved == real_home_auth:
             raise RuntimeError(
                 f"Refusing to touch real user auth store during test run: {path}. "
-                "Set HERMES_HOME to a tmp_path in your test fixture, or run "
-                "via scripts/run_tests.sh for hermetic CI-parity env."
+                "Set HERMES_HOME/HERMES_AUTH_HOME to a tmp_path in your test fixture, "
+                "or run via scripts/run_tests.sh for hermetic CI-parity env."
             )
     return path
 
 
 def _global_auth_file_path() -> Optional[Path]:
     """Return the global-root auth.json when the process is in profile mode.
+
+    Returns ``None`` when an explicit ``HERMES_AUTH_HOME`` is configured: in
+    that mode the shared auth root is already authoritative for both reads and
+    writes, so layering a read-only global fallback on top would reintroduce
+    split-brain credential state.
 
     Returns ``None`` when the profile and global root resolve to the same
     directory (classic mode, or custom HERMES_HOME that is not a profile).
@@ -830,6 +851,8 @@ def _global_auth_file_path() -> Optional[Path]:
 
     See issue #18594 follow-up (credential_pool shadowing).
     """
+    if _auth_home_override() is not None:
+        return None
     try:
         from hermes_constants import get_default_hermes_root
         global_root = get_default_hermes_root()

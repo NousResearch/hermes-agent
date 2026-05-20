@@ -382,6 +382,23 @@ class TestActiveQueries:
         assert registry.has_active_for_session("gw_session_1") is True
         assert registry.has_active_for_session("other") is False
 
+    def test_has_active_for_session_max_age_excludes_stale(self, registry):
+        stale = _make_session(sid="proc_stale")
+        stale.session_key = "gw_session_2"
+        stale.started_at = time.time() - 3600
+        registry._running[stale.id] = stale
+        # No TTL: stale process still counts as active.
+        assert registry.has_active_for_session("gw_session_2") is True
+        # With TTL of 300s, the 1h-old process is excluded.
+        assert registry.has_active_for_session("gw_session_2", max_age_seconds=300) is False
+
+        # A fresh process within the window still counts.
+        fresh = _make_session(sid="proc_fresh")
+        fresh.session_key = "gw_session_2"
+        fresh.started_at = time.time() - 10
+        registry._running[fresh.id] = fresh
+        assert registry.has_active_for_session("gw_session_2", max_age_seconds=300) is True
+
     def test_exited_not_active(self, registry):
         s = _make_session(task_id="t1", exited=True, exit_code=0)
         registry._finished[s.id] = s

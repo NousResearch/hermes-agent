@@ -756,10 +756,6 @@ class SessionStore:
         Used by the background expiry watcher to proactively flush memories.
         Sessions with active background processes are never considered expired.
         """
-        if self._has_active_processes_fn:
-            if self._has_active_processes_fn(entry.session_key):
-                return False
-
         policy = self.config.get_reset_policy(
             platform=entry.platform,
             session_type=entry.chat_type,
@@ -767,6 +763,15 @@ class SessionStore:
 
         if policy.mode == "none":
             return False
+
+        if self._has_active_processes_fn:
+            ttl = policy.idle_minutes * 60 if policy.mode in {"idle", "both"} else None
+            if self._has_active_processes_fn(entry.session_key, ttl):
+                logger.info(
+                    "session reset for %s skipped: active background process(es) within TTL",
+                    entry.session_key,
+                )
+                return False
 
         now = _now()
 
@@ -796,19 +801,24 @@ class SessionStore:
         
         Sessions with active background processes are never reset.
         """
-        if self._has_active_processes_fn:
-            session_key = self._generate_session_key(source)
-            if self._has_active_processes_fn(session_key):
-                return None
-
         policy = self.config.get_reset_policy(
             platform=source.platform,
             session_type=source.chat_type
         )
-        
+
         if policy.mode == "none":
             return None
-        
+
+        if self._has_active_processes_fn:
+            session_key = self._generate_session_key(source)
+            ttl = policy.idle_minutes * 60 if policy.mode in {"idle", "both"} else None
+            if self._has_active_processes_fn(session_key, ttl):
+                logger.info(
+                    "session reset for %s skipped: active background process(es) within TTL",
+                    session_key,
+                )
+                return None
+
         now = _now()
         
         if policy.mode in {"idle", "both"}:

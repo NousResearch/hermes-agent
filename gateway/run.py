@@ -1443,7 +1443,7 @@ class GatewayRunner:
         from tools.process_registry import process_registry
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
-            has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+            has_active_processes_fn=lambda key, max_age=None: process_registry.has_active_for_session(key, max_age),
         )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False

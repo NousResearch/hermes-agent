@@ -1239,19 +1239,27 @@ class ProcessRegistry:
                 for s in self._running.values()
             )
 
-    def has_active_for_session(self, session_key: str) -> bool:
-        """Check if there are active processes for a gateway session key."""
+    def has_active_for_session(self, session_key: str, max_age_seconds: Optional[float] = None) -> bool:
+        """Check if there are active processes for a gateway session key.
+
+        If max_age_seconds is provided, only processes started within that
+        window (time.time() - started_at <= max_age_seconds) count as active.
+        """
         with self._lock:
             sessions = list(self._running.values())
 
         for session in sessions:
             self._refresh_detached_session(session)
 
+        now = time.time()
         with self._lock:
-            return any(
-                s.session_key == session_key and not s.exited
-                for s in self._running.values()
-            )
+            for s in self._running.values():
+                if s.session_key != session_key or s.exited:
+                    continue
+                if max_age_seconds is not None and (now - s.started_at) > max_age_seconds:
+                    continue
+                return True
+            return False
 
     def kill_all(self, task_id: str = None) -> int:
         """Kill all running processes, optionally filtered by task_id. Returns count killed."""

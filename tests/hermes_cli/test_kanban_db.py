@@ -2919,6 +2919,62 @@ def test_dispatch_review_spawns_with_correct_skills(
     assert spawned_tasks[0].skills == ["github/cursor-bugbot-sweep", "github/github-pr-workflow"]
 
 
+def test_dispatch_review_spawn_failure_returns_to_review_below_threshold(
+    kanban_home, all_assignees_spawnable,
+):
+    """Review-origin spawn failures below breaker threshold stay in Review."""
+
+    def bad_spawn(task, workspace, board=None):
+        raise RuntimeError("synthetic spawn failure")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review spawn fail", assignee="alice")
+        _set_task_status(conn, t, "review")
+        res = kb.dispatch_once(conn, spawn_fn=bad_spawn, failure_limit=3)
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+
+    assert not res.spawned
+    assert not res.auto_blocked
+    assert task is not None
+    assert task.status == "review"
+    assert task.assignee == "alice"
+    assert task.claim_lock is None
+    assert run is not None
+    assert run.status == "spawn_failed"
+    assert run.outcome == "spawn_failed"
+    assert (run.metadata or {}).get("restore_status") == "review"
+
+
+def test_dispatch_review_spawn_failure_blocks_intentionally_at_threshold(
+    kanban_home, all_assignees_spawnable,
+):
+    """Breaker-tripped review spawn failures block intentionally, never ready."""
+
+    def bad_spawn(task, workspace, board=None):
+        raise RuntimeError("synthetic spawn failure")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review spawn fail", assignee="alice")
+        _set_task_status(conn, t, "review")
+        res = kb.dispatch_once(conn, spawn_fn=bad_spawn, failure_limit=1)
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert t in res.auto_blocked
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.assignee == "alice"
+    assert task.claim_lock is None
+    assert run is not None
+    assert run.status == "gave_up"
+    assert run.outcome == "gave_up"
+    assert (run.metadata or {}).get("restore_status") == "review"
+    gave_up = [event for event in events if event.kind == "gave_up"][-1]
+    assert (gave_up.payload or {}).get("restore_status") == "review"
+
+
 def test_dispatch_review_skips_unassigned(kanban_home):
     """Unassigned review tasks go to skipped_unassigned, not spawned."""
     with kb.connect() as conn:

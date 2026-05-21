@@ -1145,3 +1145,143 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
+
+
+# ------------------------------------------------------------------
+# Application-command mention normalisation (clicked slash suggestions)
+# ------------------------------------------------------------------
+
+from gateway.platforms.base import MessageType  # noqa: E402
+from gateway.platforms.discord import _normalize_app_command_mentions  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Bare top-level command, no surrounding text.
+        ("</status:123456789>", "/status"),
+        # Subcommand form: `</name sub:id>` -> `/name sub`.
+        ("</cron list:987654321098765432>", "/cron list"),
+        # Grouped-subcommand form: `</name group sub:id>` -> `/name group sub`.
+        ("</skill manage delete:111222333444555666>", "/skill manage delete"),
+        # Trailing user-typed arguments are preserved verbatim.
+        ("</skill search:42> ocr-and-documents", "/skill search ocr-and-documents"),
+        # Hyphens and underscores in command names are allowed by Discord.
+        ("</my-cmd_x:42>", "/my-cmd_x"),
+        # Multiple application-command mentions in a single message all resolve.
+        ("</status:1> and </help:2>", "/status and /help"),
+        # No application-command mention: pass-through, no rewrites.
+        ("/status", "/status"),
+        ("hello world", "hello world"),
+        # Bot mention syntax is NOT a command mention and must be left alone.
+        ("<@1234567890> what's up", "<@1234567890> what's up"),
+    ],
+)
+def test_normalize_app_command_mentions(raw, expected):
+    assert _normalize_app_command_mentions(raw) == expected
+
+
+def _slash_click_message(channel, *, command_payload, bot_user=None, author_id=42, mention_bot=False):
+    if mention_bot:
+        assert bot_user is not None, "mention_bot=True requires bot_user"
+        content = f"<@{bot_user.id}> {command_payload}"
+        # discord.py mention-detection compares by identity (`user in mentions`);
+        # pass through the exact bot_user object so the strip path fires.
+        mentions = [bot_user]
+    else:
+        content = command_payload
+        mentions = []
+    return SimpleNamespace(
+        author=SimpleNamespace(id=author_id, display_name="Jezza", bot=False, name="jezza"),
+        content=content,
+        channel=channel,
+        attachments=[],
+        message_snapshots=[],
+        mentions=mentions,
+        reference=None,
+        created_at=None,
+        id=12345,
+        guild=SimpleNamespace(id=1, name="TestGuild"),
+        type=_discord_mod.MessageType.default,
+    )
+
+
+@pytest.mark.asyncio
+async def test_clicked_slash_suggestion_dispatched_as_command(adapter, monkeypatch):
+    """A clicked `</status:id>` should reach handle_message as `/status` COMMAND."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(_FakeTextChannel(), command_payload="</status:123456789>")
+    await adapter._handle_message(msg)
+
+    assert len(captured) == 1
+    assert captured[0].text == "/status"
+    assert captured[0].message_type == MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+async def test_clicked_slash_suggestion_with_args_preserves_args(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(
+        _FakeTextChannel(), command_payload="</skill search:42> ocr-and-documents"
+    )
+    await adapter._handle_message(msg)
+
+    assert captured[0].text == "/skill search ocr-and-documents"
+    assert captured[0].message_type == MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+async def test_clicked_slash_suggestion_after_bot_mention_still_dispatches(adapter, monkeypatch):
+    """`<@bot> </status:id>` (auto-prepended mention) still arrives as `/status`."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(
+        _FakeTextChannel(),
+        command_payload="</status:123456789>",
+        mention_bot=True,
+        bot_user=adapter._client.user,
+    )
+    await adapter._handle_message(msg)
+
+    assert captured[0].text == "/status"
+    assert captured[0].message_type == MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+async def test_plain_text_with_lt_slash_substring_not_misinterpreted(adapter, monkeypatch):
+    """Literal `</` substrings in user text without an `:id>` suffix pass through."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(_FakeTextChannel(), command_payload="see </tag> in HTML")
+    await adapter._handle_message(msg)
+
+    assert captured[0].text == "see </tag> in HTML"
+    assert captured[0].message_type == MessageType.TEXT
+
+

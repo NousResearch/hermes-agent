@@ -300,6 +300,22 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+# Matches Discord application-command mention payloads.  When a user clicks an
+# autocomplete suggestion (rather than typing the slash command literally),
+# Discord delivers the message as `</name:command_id>` for top-level commands
+# and `</name sub:command_id>` / `</name group sub:command_id>` for subcommand
+# and grouped-subcommand variants.  Without normalisation these payloads fall
+# through the `/cmd` command dispatch entirely.  See #29528.
+_APP_COMMAND_MENTION_RE = re.compile(
+    r"</([a-zA-Z0-9_-]+(?:\s[a-zA-Z0-9_-]+){0,2}):\d+>"
+)
+
+
+def _normalize_app_command_mentions(text: str) -> str:
+    """Convert ``</name:id>`` payloads back to plain ``/name`` slash text."""
+    return _APP_COMMAND_MENTION_RE.sub(lambda m: "/" + m.group(1), text)
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -7105,6 +7121,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        # Clicked Discord slash-command suggestions arrive as `</cmd:id>` and
+        # must be normalised back to `/cmd` text before the command dispatch
+        # below; run after mention-stripping so the `</cmd:id>` payload is no
+        # longer adjacent to a bot mention.  See #29528.
+        if "</" in normalized_content:
+            new_normalized = _normalize_app_command_mentions(normalized_content).strip()
+            if new_normalized != normalized_content:
+                normalized_content = new_normalized
+                message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:

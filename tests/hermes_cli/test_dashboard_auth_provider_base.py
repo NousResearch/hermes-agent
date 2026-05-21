@@ -115,3 +115,68 @@ def test_assert_protocol_compliance_rejects_missing_display_name():
 
     with pytest.raises(TypeError, match="display_name"):
         assert_protocol_compliance(NoDisplay)
+
+
+# ---------------------------------------------------------------------------
+# Registry (Task 1.2)
+# ---------------------------------------------------------------------------
+
+
+from hermes_cli.dashboard_auth import (  # noqa: E402  (after-imports for clarity)
+    register_provider,
+    get_provider,
+    list_providers,
+    clear_providers,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_registry():
+    """Every test starts with an empty registry and leaves it empty."""
+    clear_providers()
+    yield
+    clear_providers()
+
+
+def test_registry_register_and_get():
+    p = _CompliantProvider()
+    register_provider(p)
+    assert get_provider("ok") is p
+
+
+def test_registry_get_missing_returns_none():
+    assert get_provider("nope") is None
+
+
+def test_registry_lists_in_registration_order():
+    class A(_CompliantProvider):
+        name = "a"
+        display_name = "A"
+
+    class B(_CompliantProvider):
+        name = "b"
+        display_name = "B"
+
+    register_provider(A())
+    register_provider(B())
+    names = [p.name for p in list_providers()]
+    assert names == ["a", "b"]
+
+
+def test_registry_rejects_non_compliant_provider():
+    with pytest.raises(TypeError):
+        register_provider(_BrokenProvider())  # type: ignore[abstract]
+
+
+def test_registry_rejects_duplicate_name():
+    register_provider(_CompliantProvider())
+    with pytest.raises(ValueError, match="already registered"):
+        register_provider(_CompliantProvider())
+
+
+def test_registry_clear_drops_all():
+    register_provider(_CompliantProvider())
+    assert get_provider("ok") is not None
+    clear_providers()
+    assert get_provider("ok") is None
+    assert list_providers() == []

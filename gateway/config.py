@@ -277,6 +277,55 @@ class SessionResetPolicy:
         )
 
 
+REPLY_TO_MODES: tuple[str, ...] = ("off", "first", "all")
+DEFAULT_REPLY_TO_MODE: str = "first"
+
+
+def normalize_reply_to_mode(value: Any, *, default: str = DEFAULT_REPLY_TO_MODE) -> str:
+    """Coerce a ``reply_to_mode`` value to one of ``REPLY_TO_MODES`` (#29623).
+
+    Older configs (and operators copying examples from chat) can hand us
+    anything from a YAML 1.1 boolean ``false`` (parsed from ``off``)
+    through a string ``"OFF"`` to a stray ``None``. The Discord and
+    Telegram adapters historically did
+    ``getattr(config, 'reply_to_mode', 'first') or 'first'`` which
+    silently mapped boolean ``False`` to ``"first"`` — exactly the
+    opposite of what the user asked for. Normalize at the config layer
+    so every adapter consumer gets a canonical string.
+
+    Rules:
+
+    * ``False`` / ``"false"`` / ``"no"`` / ``"0"`` / ``"off"`` → ``"off"``
+    * ``True`` / ``"true"`` / ``"yes"`` / ``"1"`` → ``default``
+      (boolean ``true`` historically meant "yes please reply", i.e.
+      the project default behaviour).
+    * ``None`` / missing / empty / unknown → ``default``.
+    * ``"first"`` / ``"FIRST"`` / ``"  first  "`` → ``"first"``
+    * ``"all"`` / ``"ALL"`` → ``"all"``
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        # Must precede the ``int`` branch because ``bool`` is an ``int``
+        # subclass in Python and would otherwise stringify to ``"0"``/``"1"``.
+        return "off" if value is False else default
+    if isinstance(value, (int, float)):
+        # YAML / env interop: tolerate numeric 0/1 the same way the legacy
+        # adapter would have if it were boolean-aware.
+        return "off" if value == 0 else default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if not lowered:
+            return default
+        if lowered in REPLY_TO_MODES:
+            return lowered
+        if lowered in {"false", "no", "0"}:
+            return "off"
+        if lowered in {"true", "yes", "1"}:
+            return default
+    return default
+
+
 @dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
@@ -289,7 +338,7 @@ class PlatformConfig:
     # - "off": Never thread replies to original message
     # - "first": Only first chunk threads to user's message (default)
     # - "all": All chunks in multi-part replies thread to user's message
-    reply_to_mode: str = "first"
+    reply_to_mode: str = DEFAULT_REPLY_TO_MODE
 
     # Whether the gateway is allowed to send "♻️ Gateway online" /
     # "♻ Gateway restarted" lifecycle notifications on this platform.
@@ -300,6 +349,13 @@ class PlatformConfig:
 
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Single point of truth for ``reply_to_mode`` shape (#29623).
+        # Applies to every construction path — direct ``PlatformConfig(…)``
+        # in tests, ``from_dict`` from YAML, env-var overrides further
+        # down, etc.
+        self.reply_to_mode = normalize_reply_to_mode(self.reply_to_mode)
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -335,7 +391,9 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            # ``__post_init__`` normalises this; the explicit call here
+            # is redundant but documents the contract at the boundary.
+            reply_to_mode=normalize_reply_to_mode(data.get("reply_to_mode")),
             gateway_restart_notification=_coerce_bool(_grn, True),
             extra=data.get("extra", {}),
         )

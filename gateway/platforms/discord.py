@@ -588,7 +588,15 @@ class DiscordAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator()
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
-        self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        # ``PlatformConfig.__post_init__`` already normalises this — the
+        # explicit call here is defence in depth for the rare path that
+        # bypasses the dataclass (e.g. a hand-rolled stub config in a
+        # downstream embedder), and matches the contract documented in
+        # ``gateway.config.normalize_reply_to_mode`` (#29623).
+        from gateway.config import normalize_reply_to_mode
+        self._reply_to_mode: str = normalize_reply_to_mode(
+            getattr(config, 'reply_to_mode', None)
+        )
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
         # In-memory cache of the bot's last message ID per channel, used by
         # history backfill to skip the full scan on hot paths.  Falls back to

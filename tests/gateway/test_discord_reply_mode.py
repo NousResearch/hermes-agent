@@ -84,10 +84,12 @@ class TestReplyToModeConfig:
         adapter = adapter_factory(reply_to_mode="all")
         assert adapter._reply_to_mode == "all"
 
-    def test_invalid_mode_stored_as_is(self, adapter_factory):
-        """Invalid modes are stored but send() handles them gracefully."""
+    def test_invalid_mode_normalised_to_default(self, adapter_factory):
+        """Garbage values now resolve to ``"first"`` at the config layer
+        (#29623). The old "store as-is and hope ``send()`` notices"
+        contract silently mishandled boolean ``False`` from legacy YAML."""
         adapter = adapter_factory(reply_to_mode="invalid")
-        assert adapter._reply_to_mode == "invalid"
+        assert adapter._reply_to_mode == "first"
 
     def test_none_mode_defaults_to_first(self):
         config = PlatformConfig(enabled=True, token="test-token")

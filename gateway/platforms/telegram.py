@@ -393,7 +393,13 @@ class TelegramAdapter(BasePlatformAdapter):
         self._bot: Optional[Bot] = None
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
-        self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        # Defensive normalisation — see ``DiscordAdapter.__init__`` /
+        # ``gateway.config.normalize_reply_to_mode`` (#29623). Catches any
+        # stub config that bypasses ``PlatformConfig.__post_init__``.
+        from gateway.config import normalize_reply_to_mode
+        self._reply_to_mode: str = normalize_reply_to_mode(
+            getattr(config, 'reply_to_mode', None)
+        )
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.

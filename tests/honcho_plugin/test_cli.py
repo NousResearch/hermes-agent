@@ -239,3 +239,151 @@ class TestCloneHonchoForProfile:
         assert "userPeerAliases" not in new_block
         assert "runtimePeerPrefix" not in new_block
         assert "pinPeerName" not in new_block
+
+
+class TestSetupWizardDeploymentShape:
+    """The deployment-shape step writes pinPeerName / userPeerAliases /
+    runtimePeerPrefix based on the operator's chosen shape.
+
+    Single-operator deployments collapse all platforms to peerName.
+    Multi-user gateways leave the resolver to route per-runtime.
+    Hybrid deployments alias the operator's own runtime IDs only.
+
+    These tests script the interactive _prompt calls and assert the
+    resulting hermes_host block, so the wizard's deployment-shape
+    semantics stay locked even as adjacent prompts are added.
+    """
+
+    def _run_setup(self, monkeypatch, tmp_path, *, answers, initial_cfg=None):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}")
+        cfg = initial_cfg if initial_cfg is not None else {"apiKey": "***"}
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
+        monkeypatch.setattr(honcho_cli, "_write_config", lambda *a, **k: None)
+
+        # Bypass config.yaml + connection test side effects.
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"memory": {}}, raising=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.save_config", lambda c: None, raising=False,
+        )
+
+        class _FakeClientCfg:
+            def resolve_session_name(self):
+                return "hermes-test"
+            workspace_id = "hermes"
+            peer_name = "eri"
+            ai_peer = "hermetika"
+            observation_mode = "directional"
+            write_frequency = "async"
+            recall_mode = "hybrid"
+            session_strategy = "per-session"
+
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: _FakeClientCfg(),
+        )
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.reset_honcho_client",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.get_honcho_client",
+            lambda hcfg: object(),
+        )
+
+        # Scripted _prompt: pop answers in order. Default-return for unconsumed prompts.
+        answer_iter = iter(answers)
+        def _scripted_prompt(label, default=None, secret=False):
+            try:
+                return next(answer_iter)
+            except StopIteration:
+                return default if default is not None else ""
+        monkeypatch.setattr(honcho_cli, "_prompt", _scripted_prompt)
+
+        honcho_cli.cmd_setup(SimpleNamespace())
+        return cfg["hosts"]["hermes"]
+
+    def test_single_shape_sets_pin_peer_name_and_clears_aliases(self, monkeypatch, tmp_path):
+        answers = [
+            "cloud",           # deployment
+            "",                # api key (keep)
+            "eri",             # peer name
+            "hermetika",       # ai peer
+            "hermes",          # workspace
+            "single",          # deployment shape ← key answer
+            # remaining prompts fall through to defaults
+        ]
+        initial_cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {
+                "userPeerAliases": {"old": "stale"},
+                "runtimePeerPrefix": "old_",
+            }},
+        }
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        assert host["pinPeerName"] is True
+        assert "userPeerAliases" not in host
+        assert "runtimePeerPrefix" not in host
+
+    def test_multi_shape_leaves_pin_false_and_accepts_prefix(self, monkeypatch, tmp_path):
+        answers = [
+            "cloud",           # deployment
+            "",                # api key (keep)
+            "eri",             # peer name
+            "hermetika",       # ai peer
+            "hermes",          # workspace
+            "multi",           # deployment shape
+            "telegram_",       # runtime peer prefix
+        ]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers)
+        assert host["pinPeerName"] is False
+        assert host["userPeerAliases"] == {}
+        assert host["runtimePeerPrefix"] == "telegram_"
+
+    def test_hybrid_shape_aliases_operator_runtime_ids_to_peer_name(self, monkeypatch, tmp_path):
+        answers = [
+            "cloud",           # deployment
+            "",                # api key (keep)
+            "eri",             # peer name
+            "hermetika",       # ai peer
+            "hermes",          # workspace
+            "hybrid",          # deployment shape
+            "86701400",        # telegram uid
+            "491827364",       # discord snowflake
+            "",                # slack (skip)
+            "",                # matrix (skip)
+            "",                # runtime peer prefix (skip)
+        ]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers)
+        assert host["pinPeerName"] is False
+        assert host["userPeerAliases"] == {
+            "86701400": "eri",
+            "491827364": "eri",
+        }
+        assert "runtimePeerPrefix" not in host
+
+    def test_skip_shape_preserves_existing_identity_config(self, monkeypatch, tmp_path):
+        initial_cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {
+                "pinPeerName": True,
+                "userPeerAliases": {"keep": "me"},
+                "runtimePeerPrefix": "keep_",
+            }},
+        }
+        answers = [
+            "cloud", "", "eri", "hermetika", "hermes", "skip",
+        ]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        assert host["pinPeerName"] is True
+        assert host["userPeerAliases"] == {"keep": "me"}
+        assert host["runtimePeerPrefix"] == "keep_"

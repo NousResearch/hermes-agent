@@ -25,6 +25,11 @@ declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
     __HERMES_BASE_PATH__?: string;
+    /** Server-injected flag: ``true`` when the dashboard's OAuth gate is
+     * engaged (public bind, no ``--insecure``). Toggles the SPA's
+     * WS-upgrade path from legacy ``?token=`` to single-use ``?ticket=``
+     * fetched via :func:`getWsTicket`. */
+    __HERMES_AUTH_REQUIRED__?: boolean;
   }
 }
 let _sessionToken: string | null = null;
@@ -64,6 +69,43 @@ async function getSessionToken(): Promise<string> {
     return _sessionToken;
   }
   throw new Error("Session token not available — page must be served by the Hermes dashboard server");
+}
+
+/**
+ * Fetch a single-use ticket for a WebSocket upgrade in gated mode.
+ *
+ * The dashboard's gated-mode WS auth (``hermes_cli.web_server._ws_auth_ok``)
+ * rejects the legacy ``?token=<_SESSION_TOKEN>`` path and only accepts
+ * ``?ticket=<minted>`` consumed against the in-memory ticket store. Browsers
+ * can't set ``Authorization`` on a WS upgrade, so this round-trip via the
+ * authenticated REST endpoint is the bridge from cookie auth to WS auth.
+ *
+ * Tickets are single-use and TTL=30s — every WS connect attempt must
+ * fetch a fresh ticket.
+ */
+export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: number }> {
+  const res = await fetch(`${BASE}/api/auth/ws-ticket`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Resolve the auth query-param pair (``[name, value]``) for a WebSocket
+ * connect. In gated mode mints a fresh single-use ticket; in loopback
+ * mode returns the injected session token.
+ */
+export async function buildWsAuthParam(): Promise<[string, string]> {
+  if (window.__HERMES_AUTH_REQUIRED__) {
+    const { ticket } = await getWsTicket();
+    return ["ticket", ticket];
+  }
+  const token = window.__HERMES_SESSION_TOKEN__ ?? "";
+  return ["token", token];
 }
 
 export const api = {

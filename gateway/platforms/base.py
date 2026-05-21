@@ -991,12 +991,26 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Command authority metadata. Platforms that need a stricter trust boundary
+    # (currently WhatsApp plugin override) can mark a message as conversational-
+    # only even when the literal text begins with "/".
+    participant_role: Optional[str] = None
+    message_classification: Optional[str] = None
+    command_authority_scope: Optional[str] = None
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
+
+    def allows_command_parsing(self) -> bool:
+        if self.message_classification == "conversational_only":
+            return False
+        if self.command_authority_scope == "none":
+            return False
+        return True
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.text.startswith("/")
+        return self.allows_command_parsing() and self.text.startswith("/")
     
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
@@ -1043,6 +1057,8 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
     """
     try:
         if event is None or event.message_type != MessageType.TEXT:
+            return
+        if not event.allows_command_parsing():
             return
         text = (event.text or "").strip()
         if not text or text.startswith("/"):

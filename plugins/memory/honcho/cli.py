@@ -40,12 +40,18 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     if new_host in hosts:
         return False  # already exists
 
-    # Clone settings from default block, override identity fields
+    # Clone settings from default block, override identity fields.
+    # Identity-mapping keys (pinPeerName, userPeerAliases, runtimePeerPrefix)
+    # carry the operator's runtime-to-peer routing intent from #27371.
+    # Without them in this allowlist, a cloned profile would silently lose
+    # the mapping and gateway users would resolve to raw runtime IDs,
+    # fragmenting Honcho memory across an unintended set of peers.
     new_block = {}
     for key in ("recallMode", "writeFrequency", "sessionStrategy",
                 "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
                 "dialecticDynamic", "dialecticMaxChars", "messageMaxChars",
-                "dialecticMaxInputChars", "saveMessages", "observation"):
+                "dialecticMaxInputChars", "saveMessages", "observation",
+                "pinPeerName", "userPeerAliases", "runtimePeerPrefix"):
         val = default_block.get(key)
         if val is not None:
             new_block[key] = val

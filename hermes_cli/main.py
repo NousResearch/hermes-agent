@@ -452,7 +452,25 @@ def _apply_profile_override() -> None:
         if Path(hermes_home_env).parent.name == "profiles":
             return
 
-    # 2. If no flag, check active_profile in the hermes root.
+    # 2. HERMES_PROFILE env var as explicit selector.
+    # Without this, sibling gateways launched as
+    # ``HERMES_PROFILE=alice hermes telegram --replace`` and
+    # ``HERMES_PROFILE=bob hermes telegram --replace`` from the same $HOME
+    # both fall through to ``active_profile`` and resolve to the same
+    # ``gateway.pid`` — ``--replace`` then SIGKILLs the sibling. See #29948.
+    # Priority: -p flag > HERMES_HOME profile path > HERMES_PROFILE > active_profile.
+    # ``HERMES_PROFILE=default`` is a no-op (mirrors the active_profile rule
+    # below) since the default profile IS ~/.hermes itself.
+    if profile_name is None:
+        env_profile = os.environ.get("HERMES_PROFILE", "").strip()
+        if env_profile and env_profile.casefold() != "default":
+            import re as _re
+
+            if _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", env_profile):
+                profile_name = env_profile
+                consume = 0  # don't strip anything from argv
+
+    # 3. If no flag and no env var, check active_profile in the hermes root.
     #
     # EXCEPTION: a supervised s6 gateway child (exported by the container
     # run-script as HERMES_S6_SUPERVISED_CHILD=1) must NOT follow the sticky
@@ -477,7 +495,7 @@ def _apply_profile_override() -> None:
         except (UnicodeDecodeError, OSError):
             pass  # corrupted file, skip
 
-    # 3. If we found a profile, resolve and set HERMES_HOME
+    # 4. If we found a profile, resolve and set HERMES_HOME
     if profile_name is not None:
         try:
             from hermes_cli.profiles import resolve_profile_env

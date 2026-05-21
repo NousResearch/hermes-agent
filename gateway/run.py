@@ -16417,6 +16417,18 @@ class GatewayRunner:
                             def _stream_delta_cb(text: str) -> None:
                                 if _run_still_current():
                                     _stream_consumer.on_delta(text)
+                                    try:
+                                        from gateway.pulse_voice_events import publish_voice_event
+                                        publish_voice_event(
+                                            "delta",
+                                            text,
+                                            session_id=session_id,
+                                            platform=platform_key,
+                                            chat_id=source.chat_id,
+                                            thread_id=source.thread_id,
+                                        )
+                                    except Exception:
+                                        pass
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
@@ -16424,6 +16436,19 @@ class GatewayRunner:
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
+                if str(text or "").strip():
+                    try:
+                        from gateway.pulse_voice_events import publish_voice_event
+                        publish_voice_event(
+                            "commentary",
+                            text,
+                            session_id=session_id,
+                            platform=platform_key,
+                            chat_id=source.chat_id,
+                            thread_id=source.thread_id,
+                        )
+                    except Exception:
+                        pass
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()

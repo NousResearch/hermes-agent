@@ -1,5 +1,19 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ChevronDown, Pencil, Plus, Terminal, Trash2, Users, X } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  ChevronDown,
+  Pencil,
+  Plus,
+  Terminal,
+  Trash2,
+  Users,
+  X,
+} from "lucide-react";
 import spinners from "unicode-animations";
 import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
@@ -14,7 +28,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -131,7 +145,10 @@ export default function ProfilesPage() {
     }
     try {
       await api.renameProfile(renamingFrom, target);
-      showToast(`${t.profiles.renamed}: ${renamingFrom} → ${target}`, "success");
+      showToast(
+        `${t.profiles.renamed}: ${renamingFrom} → ${target}`,
+        "success",
+      );
       setRenamingFrom(null);
       setRenameTo("");
       load();
@@ -214,10 +231,7 @@ export default function ProfilesPage() {
   // Put "Create" button in page header
   useLayoutEffect(() => {
     setEnd(
-      <Button
-        size="sm"
-        onClick={() => setCreateModalOpen(true)}
-      >
+      <Button size="sm" onClick={() => setCreateModalOpen(true)}>
         <Plus className="h-3 w-3" />
         {t.common.create}
       </Button>,
@@ -266,7 +280,9 @@ export default function ProfilesPage() {
         <div
           ref={createModalRef}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
-          onClick={(e) => e.target === e.currentTarget && setCreateModalOpen(false)}
+          onClick={(e) =>
+            e.target === e.currentTarget && setCreateModalOpen(false)
+          }
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-profile-title"
@@ -313,12 +329,22 @@ export default function ProfilesPage() {
                 </p>
               </div>
 
-              <Checkbox
-                id="clone-from-default"
-                checked={cloneFromDefault}
-                onChange={(e) => setCloneFromDefault(e.target.checked)}
-                label={t.profiles.cloneFromDefault}
-              />
+              <div className="flex items-center gap-2.5">
+                <Checkbox
+                  checked={cloneFromDefault}
+                  id="clone-from-default"
+                  onCheckedChange={(checked) =>
+                    setCloneFromDefault(checked === true)
+                  }
+                />
+
+                <Label
+                  className="font-sans normal-case tracking-normal text-sm cursor-pointer"
+                  htmlFor="clone-from-default"
+                >
+                  {t.profiles.cloneFromDefault}
+                </Label>
+              </div>
 
               <div className="flex justify-end">
                 <Button size="sm" onClick={handleCreate} disabled={creating}>
@@ -426,10 +452,7 @@ export default function ProfilesPage() {
                 <div className="flex items-center gap-1 shrink-0">
                   {isRenaming ? (
                     <>
-                      <Button
-                        size="sm"
-                        onClick={handleRenameSubmit}
-                      >
+                      <Button size="sm" onClick={handleRenameSubmit}>
                         {t.common.save}
                       </Button>
                       <Button

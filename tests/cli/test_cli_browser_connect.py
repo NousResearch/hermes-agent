@@ -1,11 +1,18 @@
 """Tests for CLI browser CDP auto-launch helpers."""
 
+from contextlib import redirect_stdout
+from io import StringIO
 import os
+from queue import Queue
 import subprocess
 from unittest.mock import patch
 
 from cli import HermesCLI
-from hermes_cli.browser_connect import manual_chrome_debug_command
+from hermes_cli.browser_connect import (
+    get_chrome_debug_candidates,
+    is_browser_debug_ready,
+    manual_chrome_debug_command,
+)
 
 
 def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
@@ -19,7 +26,35 @@ def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
     assert "chrome-debug" in user_data_args[0]
 
 
+class _FakeResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
 class TestChromeDebugLaunch:
+    def test_browser_debug_ready_requires_http_cdp_endpoint(self):
+        requested = []
+
+        def fake_urlopen(url, timeout):
+            requested.append(url)
+            if url.endswith("/json/version"):
+                return _FakeResponse()
+            raise OSError("unexpected probe")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            assert is_browser_debug_ready("http://127.0.0.1:9222", timeout=0.1) is True
+
+        assert requested == ["http://127.0.0.1:9222/json/version"]
+
+    def test_browser_debug_ready_rejects_non_cdp_listener(self):
+        with patch("urllib.request.urlopen", side_effect=OSError("not cdp")):
+            assert is_browser_debug_ready("http://127.0.0.1:9222", timeout=0.1) is False
+
     def test_windows_launch_uses_browser_found_on_path(self):
         captured = {}
 
@@ -72,6 +107,98 @@ class TestChromeDebugLaunch:
         assert command is not None
         assert command.startswith("/usr/bin/chromium --remote-debugging-port=9222")
 
+    def test_linux_candidates_prefer_chrome_before_brave_when_both_exist(self):
+        chrome = "/usr/bin/google-chrome"
+        brave = "/usr/bin/brave-browser"
+
+        def fake_which(name):
+            return {"google-chrome": chrome, "brave-browser": brave}.get(name)
+
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=fake_which), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path in {chrome, brave}):
+            candidates = get_chrome_debug_candidates("Linux")
+            command = manual_chrome_debug_command(9222, "Linux")
+
+        assert candidates[:2] == [chrome, brave]
+        assert command is not None
+        assert command.startswith(f"{chrome} --remote-debugging-port=9222")
+
+    def test_linux_candidates_prefer_chrome_install_path_before_brave_on_path(self):
+        chrome = "/opt/google/chrome/chrome"
+        brave = "/usr/bin/brave-browser"
+
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: brave if name == "brave-browser" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path in {chrome, brave}):
+            candidates = get_chrome_debug_candidates("Linux")
+
+        assert candidates[:2] == [chrome, brave]
+
+    def test_windows_candidates_prefer_chrome_install_path_before_brave_on_path(self, monkeypatch):
+        program_files = r"C:\Program Files"
+        chrome = os.path.join(program_files, "Google", "Chrome", "Application", "chrome.exe")
+        brave = r"C:\Brave\brave.exe"
+
+        monkeypatch.setenv("ProgramFiles", program_files)
+        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: brave if name == "brave.exe" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path in {chrome, brave}):
+            candidates = get_chrome_debug_candidates("Windows")
+
+        assert candidates[:2] == [chrome, brave]
+
+    def test_linux_candidates_include_arch_brave_install_path(self):
+        brave = "/opt/brave-bin/brave"
+
+        with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == brave):
+            candidates = get_chrome_debug_candidates("Linux")
+            command = manual_chrome_debug_command(9222, "Linux")
+
+        assert candidates == [brave]
+        assert command is not None
+        assert command.startswith(f"{brave} --remote-debugging-port=9222")
+
+    def test_linux_candidates_include_brave_binary_name(self):
+        brave = "/usr/bin/brave"
+
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: brave if name == "brave" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == brave):
+            candidates = get_chrome_debug_candidates("Linux")
+            command = manual_chrome_debug_command(9222, "Linux")
+
+        assert candidates == [brave]
+        assert command is not None
+        assert command.startswith(f"{brave} --remote-debugging-port=9222")
+
+    def test_linux_candidates_include_official_brave_and_edge_stable_paths(self):
+        brave = "/usr/bin/brave-browser-stable"
+        edge = "/usr/bin/microsoft-edge-stable"
+
+        with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path in {brave, edge}):
+            candidates = get_chrome_debug_candidates("Linux")
+
+        assert candidates == [brave, edge]
+
+    def test_launch_tries_next_browser_when_first_candidate_fails(self):
+        brave = "/usr/bin/brave-browser"
+        chrome = "/usr/bin/google-chrome"
+        attempts = []
+
+        def fake_popen(cmd, **kwargs):
+            attempts.append(cmd[0])
+            if cmd[0] == brave:
+                raise OSError("broken brave install")
+            return object()
+
+        with patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[brave, chrome]), \
+             patch("subprocess.Popen", side_effect=fake_popen):
+            assert HermesCLI._try_launch_chrome_debug(9222, "Linux") is True
+
+        assert attempts == [brave, chrome]
+
     def test_manual_command_uses_wsl_windows_chrome_when_available(self):
         chrome = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 
@@ -99,3 +226,28 @@ class TestChromeDebugLaunch:
         with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
              patch("hermes_cli.browser_connect.os.path.isfile", return_value=False):
             assert manual_chrome_debug_command(9222, "Linux") is None
+
+    def test_connect_context_note_allows_expected_browser_use(self, monkeypatch):
+        """`/browser connect` is an instruction to use the CDP browser.
+
+        The queued context note must not tell the model to wait for a second
+        permission step or imply that the attached browser is the user's main
+        everyday Chrome profile.
+        """
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._pending_input = Queue()
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+
+        with patch("cli.is_browser_debug_ready", return_value=True), \
+             patch("tools.browser_tool.cleanup_all_browsers"), \
+             patch("tools.browser_tool._ensure_cdp_supervisor"), \
+             redirect_stdout(StringIO()):
+            cli._handle_browser_command("/browser connect")
+
+        note = cli._pending_input.get_nowait()
+        assert "Chromium-family" in note
+        assert "dev/debug" in note
+        assert "using browser tools for their current browser-related request is expected" in note
+        assert "live Chrome browser" not in note
+        assert "real browser" not in note
+        assert "Please await their instruction" not in note

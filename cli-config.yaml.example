@@ -257,8 +257,26 @@ terminal:
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
+# -----------------------------------------------------------------------------
+# OPTION 7: Sprites cloud execution
+# Commands run in a Sprite — a stateful cloud sandbox on Fly.io with native
+# checkpoint & restore. Persistent by default; each Sprite is keyed by task_id
+# (hermes-{task_id}) so sessions resume cleanly across Hermes restarts.
+# Great for: Persistent cloud sandboxes, agent loops that need state to survive
+# Requires: pip install 'hermes-agent[sprites]', SPRITES_TOKEN env var
+# Note:     Sprites allocates compute dynamically (up to 8 CPU / 16 GB RAM).
+#           container_cpu / container_memory / container_disk are ignored on
+#           this backend; no region selector yet.
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "sprites"
+#   cwd: "/home/sprite"           # Sprite default home; "/root" / "~" auto-rewrite
+#   timeout: 180
+#   lifetime_seconds: 300
+#   container_persistent: true    # Leave Sprite alive on cleanup (delete if false)
+
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh/sprites) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores

@@ -121,6 +121,82 @@ class TestToolProgressScrollback:
 
         mock_print.assert_not_called()
 
+    def test_compact_mode_prints_tool_name_without_args(self):
+        """In 'compact' mode, show tool use without command/argument details."""
+        cli = _make_cli(tool_progress="compact")
+        cli._on_tool_progress(
+            "tool.started",
+            "terminal",
+            "git status --short --ignored",
+            {"command": "git status --short --ignored"},
+        )
+        assert "terminal" in cli._spinner_text
+        assert "git status" not in cli._spinner_text
+
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.5, is_error=False)
+
+        mock_print.assert_called_once()
+        line = mock_print.call_args[0][0]
+        assert "terminal" in line
+        assert "git status" not in line
+        assert "0.5s" in line
+
+    def test_compact_mode_includes_error_without_args(self):
+        """Compact mode still surfaces failures without leaking args/output."""
+        cli = _make_cli(tool_progress="compact")
+        cli._on_tool_progress(
+            "tool.started",
+            "terminal",
+            "secret-bearing command",
+            {"command": "secret-bearing command"},
+        )
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.5, is_error=True)
+
+        line = mock_print.call_args[0][0]
+        assert "terminal" in line
+        assert "[error]" in line
+        assert "secret-bearing" not in line
+
+    def test_tooltrace_on_sets_compact_mode(self):
+        """/tooltrace on is the specific compact tool-use toggle."""
+        cli = _make_cli(tool_progress="off")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            assert cli.process_command("/tooltrace on") is True
+        assert cli.tool_progress_mode == "compact"
+        assert cli.verbose is False
+        assert "Tool trace" in mock_print.call_args[0][0]
+        assert "ON" in mock_print.call_args[0][0]
+
+    def test_tooltrace_off_sets_off_mode(self):
+        """/tooltrace off hides tool-use lines."""
+        cli = _make_cli(tool_progress="compact")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            assert cli.process_command("/tooltrace off") is True
+        assert cli.tool_progress_mode == "off"
+        assert cli.verbose is False
+        assert "Tool trace" in mock_print.call_args[0][0]
+        assert "OFF" in mock_print.call_args[0][0]
+
+    def test_tooltrace_status_reports_current_mode(self):
+        """/tooltrace status reports without changing mode."""
+        cli = _make_cli(tool_progress="new")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            assert cli.process_command("/tooltrace status") is True
+        assert cli.tool_progress_mode == "new"
+        assert "mode=new" in mock_print.call_args[0][0]
+
+    def test_verbose_cycle_does_not_enter_compact(self):
+        """/verbose remains the general verbosity cycle; compact belongs to /tooltrace."""
+        cli = _make_cli(tool_progress="off")
+        seen = []
+        with patch.object(_cli_mod, "_cprint"):
+            for _ in range(4):
+                assert cli.process_command("/verbose") is True
+                seen.append(cli.tool_progress_mode)
+        assert seen == ["new", "all", "verbose", "off"]
+
     def test_error_suffix_on_failed_tool(self):
         """When is_error=True, the stacked line includes [error]."""
         cli = _make_cli(tool_progress="all")

@@ -65,6 +65,28 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_RUNTIME_AWARENESS_APPROVAL_RE = re.compile(
+    r"^\s*APPROVE\s+runtime-awareness\s+repair\s+(20\d{6}T\d{6}Z)\s*$",
+    re.IGNORECASE,
+)
+_RUNTIME_AWARENESS_DISPATCH_SCRIPT = "/home/alcoo/.hermes/scripts/runtime-awareness-approval-dispatch.sh"
+
+
+def _runtime_awareness_approval_run_id(text: str) -> Optional[str]:
+    """Return watchdog run id for the exact Runtime Awareness approval phrase."""
+    match = _RUNTIME_AWARENESS_APPROVAL_RE.match(text or "")
+    return match.group(1) if match else None
+
+
+def _build_runtime_awareness_dispatch_command(run_id: str) -> list[str]:
+    """Build the out-of-band repair command without involving the agent session."""
+    return [
+        os.environ.get("HERMES_RUNTIME_AWARENESS_DISPATCH_SCRIPT", _RUNTIME_AWARENESS_DISPATCH_SCRIPT),
+        "APPROVE",
+        "runtime-awareness",
+        "repair",
+        run_id,
+    ]
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -6417,6 +6439,38 @@ class GatewayRunner:
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _dispatch_runtime_awareness_approval_background(self, source, run_id: str) -> None:
+        """Run Runtime Awareness approved repair out-of-band and notify the source.
+
+        This bypasses the active agent/session path so an exact approval phrase
+        cannot interrupt or contaminate an ongoing Telegram build conversation.
+        """
+        command = _build_runtime_awareness_dispatch_command(run_id)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_b, stderr_b = await proc.communicate()
+            stdout = stdout_b.decode("utf-8", errors="replace").strip()
+            stderr = stderr_b.decode("utf-8", errors="replace").strip()
+            if proc.returncode == 0:
+                message = stdout or f"RUNTIME AWARENESS REPAIR: PASS\nrun_id: {run_id}"
+            else:
+                message = "\n".join(
+                    part for part in [
+                        "RUNTIME AWARENESS REPAIR: FAIL",
+                        f"run_id: {run_id}",
+                        stdout,
+                        f"stderr: {stderr}" if stderr else "",
+                    ] if part
+                )
+        except Exception as exc:
+            logger.exception("Runtime Awareness approval dispatch failed for run_id=%s", run_id)
+            message = f"RUNTIME AWARENESS REPAIR: FAIL\nrun_id: {run_id}\nerror: {exc}"
+        await self._deliver_platform_notice(source, message)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -6523,6 +6577,17 @@ class GatewayRunner:
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        _runtime_awareness_run_id = None if is_internal else _runtime_awareness_approval_run_id(event.text or "")
+        if _runtime_awareness_run_id:
+            asyncio.create_task(
+                self._dispatch_runtime_awareness_approval_background(source, _runtime_awareness_run_id)
+            )
+            return (
+                "RUNTIME AWARENESS REPAIR: APPROVED\n"
+                f"run_id: {_runtime_awareness_run_id}\n"
+                "running out-of-band; this does not interrupt the active session"
+            )
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher

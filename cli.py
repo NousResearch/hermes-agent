@@ -2641,7 +2641,7 @@ class HermesCLI:
         self.console = Console()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
-        # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
+        # tool_progress: "off", "compact", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
@@ -8039,6 +8039,8 @@ class HermesCLI:
             self._console_print(f"  Status bar {state}")
         elif canonical == "verbose":
             self._toggle_verbose()
+        elif canonical == "tooltrace":
+            self._handle_tooltrace_command(cmd_original)
         elif canonical == "footer":
             self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
@@ -9088,7 +9090,7 @@ class HermesCLI:
             _cprint("  Failed to save runtime_footer setting to config.yaml")
 
     def _toggle_verbose(self):
-        """Cycle tool progress mode: off → new → all → verbose → off."""
+        """Cycle general tool progress mode: off → new → all → verbose → off."""
         cycle = ["off", "new", "all", "verbose"]
         try:
             idx = cycle.index(self.tool_progress_mode)
@@ -9114,6 +9116,38 @@ class HermesCLI:
             "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, think blocks, and debug logs.",
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
+
+    def _handle_tooltrace_command(self, cmd: str):
+        """Handle /tooltrace [on|off|status] for compact tool-use display."""
+        from hermes_cli.colors import Colors as _Colors
+
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "status"
+        if arg in ("on", "enable", "true", "1"):
+            new_mode = "compact"
+        elif arg in ("off", "disable", "false", "0"):
+            new_mode = "off"
+        elif arg in ("", "status"):
+            state = (
+                f"{_Colors.GREEN}ON{_Colors.RESET}"
+                if self.tool_progress_mode == "compact"
+                else f"{_Colors.DIM}OFF{_Colors.RESET}"
+            )
+            _cprint(f"  Tool trace: {state} — mode={self.tool_progress_mode}")
+            return
+        else:
+            _cprint("  Usage: /tooltrace [on|off|status]")
+            return
+
+        self.tool_progress_mode = new_mode
+        self.verbose = False
+        if self.agent:
+            self.agent.verbose_logging = False
+            self.agent.quiet_mode = True
+            self.agent.reasoning_callback = self._current_reasoning_callback()
+        state = f"{_Colors.GREEN}ON{_Colors.RESET}" if new_mode == "compact" else f"{_Colors.DIM}OFF{_Colors.RESET}"
+        detail = "compact tool names/status only" if new_mode == "compact" else "no tool activity shown"
+        _cprint(f"  Tool trace: {state} — {detail}")
 
     def _toggle_yolo(self):
         """Toggle YOLO mode — skip all dangerous command approval prompts."""
@@ -9994,8 +10028,8 @@ class HermesCLI:
         """
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
-            # Print stacked scrollback line for "all" / "new" modes
-            if function_name and self.tool_progress_mode in {"all", "new"}:
+            # Print stacked scrollback line for "compact" / "all" / "new" modes
+            if function_name and self.tool_progress_mode in {"compact", "all", "new"}:
                 duration = kwargs.get("duration", 0.0)
                 is_error = kwargs.get("is_error", False)
                 # Pop stored args from tool.started for this function
@@ -10010,7 +10044,12 @@ class HermesCLI:
                 self._last_scrollback_tool = function_name
                 try:
                     from agent.display import get_cute_tool_message
-                    line = get_cute_tool_message(function_name, stored_args, duration)
+                    line = get_cute_tool_message(
+                        function_name,
+                        stored_args,
+                        duration,
+                        compact=self.tool_progress_mode == "compact",
+                    )
                     if is_error:
                         line = f"{line} [error]"
                     _cprint(f"  {line}")
@@ -10048,7 +10087,7 @@ class HermesCLI:
         if function_name and not function_name.startswith("_"):
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(function_name)
-            label = preview or function_name
+            label = function_name if self.tool_progress_mode == "compact" else (preview or function_name)
             from agent.display import get_tool_preview_max_len
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:

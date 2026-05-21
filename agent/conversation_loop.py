@@ -1909,6 +1909,11 @@ def run_conversation(
                     # we don't false-trip on other URL validation
                     # errors. (issue #23570)
                     "image_url'. expected",
+                    # ChatGPT-account Codex can also reject corrupt/unsupported
+                    # native image payloads with this wording. Treat it like a
+                    # provider image rejection so the loop strips images and
+                    # retries text-only instead of aborting the session.
+                    "image data you provided does not represent a valid image",
                     # DeepSeek's OpenAI-compatible API reports text-only
                     # request-body variants as:
                     # "unknown variant `image_url`, expected `text`".

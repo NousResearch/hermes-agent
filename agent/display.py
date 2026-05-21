@@ -827,7 +827,12 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
 
 
 def get_cute_tool_message(
-    tool_name: str, args: dict, duration: float, result: str | None = None,
+    tool_name: str,
+    args: dict,
+    duration: float,
+    result: str | None = None,
+    *,
+    compact: bool = False,
 ) -> str:
     """Generate a formatted tool completion line for CLI quiet mode.
 
@@ -835,10 +840,21 @@ def get_cute_tool_message(
 
     When *result* is provided the line is checked for failure indicators.
     Failed tool calls get a red prefix and an informational suffix.
+
+    When *compact* is true, hide arguments and show only tool name, duration,
+    and failure status.
     """
     dur = f"{duration:.1f}s"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     skin_prefix = get_skin_tool_prefix()
+
+    if compact:
+        emoji = get_tool_emoji(tool_name, default="⚡")
+        safe_name = str(tool_name or "tool")[:28]
+        line = f"┊ {emoji} tool      {safe_name}  {dur}"
+        if skin_prefix != "┊":
+            line = line.replace("┊", skin_prefix, 1)
+        return f"{line}{failure_suffix}" if is_failure else line
 
     def _trunc(s, n=40):
         s = str(s)

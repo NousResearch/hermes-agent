@@ -22,6 +22,7 @@ TIPS = [
     "/undo removes the last user/assistant exchange from the conversation.",
     "/retry resends your last message — useful when the agent's response wasn't quite right.",
     "/verbose cycles tool progress display: off → new → all → verbose.",
+    "/tooltrace on shows compact tool-use lines; /tooltrace off hides them.",
     "/reasoning high increases the model's thinking depth. /reasoning show displays the reasoning.",
     "/fast toggles priority processing for faster API responses (provider-dependent).",
     "/yolo skips all dangerous command approval prompts for the rest of the session.",

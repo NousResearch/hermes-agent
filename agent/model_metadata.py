@@ -641,7 +641,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         return cache
 
     except Exception as e:
-        logging.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
+        logger.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
         return _model_metadata_cache or {}
 
 

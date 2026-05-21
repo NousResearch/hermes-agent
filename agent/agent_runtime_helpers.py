@@ -132,7 +132,7 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
                     except json.JSONDecodeError:
                         # This shouldn't happen since we validate and retry during conversation,
                         # but if it does, log warning and use empty dict
-                        logging.warning(f"Unexpected invalid JSON in trajectory conversion: {tool_call['function']['arguments'][:100]}")
+                        logger.warning(f"Unexpected invalid JSON in trajectory conversion: {tool_call['function']['arguments'][:100]}")
                         arguments = {}
                     
                     tool_call_json = {
@@ -747,7 +747,7 @@ def try_recover_primary_transport(
         time.sleep(wait_time)
         return True
     except Exception as e:
-        logging.warning("Primary transport recovery failed: %s", e)
+        logger.warning("Primary transport recovery failed: %s", e)
         return False
 
 # ── End provider fallback ──────────────────────────────────────────────
@@ -910,19 +910,20 @@ def restore_primary_runtime(agent) -> bool:
             base_url=rt["compressor_base_url"],
             api_key=rt["compressor_api_key"],
             provider=rt["compressor_provider"],
+            api_mode=rt.get("compressor_api_mode", ""),
         )
 
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
 
-        logging.info(
+        logger.info(
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
         return True
     except Exception as e:
-        logging.warning("Failed to restore primary runtime: %s", e)
+        logger.warning("Failed to restore primary runtime: %s", e)
         return False
 
 # Which error types indicate a transient transport failure worth
@@ -1093,7 +1094,7 @@ def dump_api_request_debug(
         return dump_file
     except Exception as dump_error:
         if agent.verbose_logging:
-            logging.warning(f"Failed to dump API request debug payload: {dump_error}")
+            logger.warning(f"Failed to dump API request debug payload: {dump_error}")
         return None
 
 
@@ -1478,6 +1479,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
         "compressor_provider": getattr(_cc, "provider", agent.provider) if _cc else agent.provider,
         "compressor_context_length": _cc.context_length if _cc else 0,
+        "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
         "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
     }
     if api_mode == "anthropic_messages":
@@ -1509,7 +1511,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
 
-    logging.info(
+    logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
         old_model, old_provider, new_model, new_provider,
     )

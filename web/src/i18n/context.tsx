@@ -44,7 +44,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 export const LOCALE_META: Record<Locale, { name: string; flagCountryCode: string }> = {
   en: { name: "English", flagCountryCode: "gb" },
   zh: { name: "简体中文", flagCountryCode: "cn" },
-  "zh-hant": { name: "繁體中文", flagCountryCode: "tw" },
+  "zh-hant": { name: "繁體中文", flagCountryCode: "cn" },
   ja: { name: "日本語", flagCountryCode: "jp" },
   de: { name: "Deutsch", flagCountryCode: "de" },
   es: { name: "Español", flagCountryCode: "es" },

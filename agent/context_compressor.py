@@ -1665,37 +1665,24 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # If every compaction path failed, preserve the original messages.
         # Dropping middle history without a real summary/native artifact is a
-        # correctness bug; callers can warn from _last_summary_error, but the
-        # active model context remains intact.
+        # correctness bug. When configured, mark the compression as aborted so
+        # callers can warn and stop retry loops; either way, keep context intact.
         if not summary:
-            if not self.quiet_mode:
+            if self.abort_on_summary_failure:
+                n_skipped = compress_end - compress_start
+                self._last_summary_dropped_count = 0  # nothing actually dropped
+                self._last_summary_fallback_used = False
+                self._last_compress_aborted = True
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Summary generation failed — aborting compression "
+                        "(compression.abort_on_summary_failure=true). "
+                        "%d message(s) preserved unchanged. Conversation is "
+                        "frozen until the next /compress or /new.",
+                        n_skipped,
+                    )
+            elif not self.quiet_mode:
                 logger.warning("Summary generation failed — preserving original context without compression")
-            return messages
-
-        # If summary generation failed, behavior splits on
-        # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
-        #   True  → ABORT compression entirely. Return messages unchanged
-        #           and set _last_compress_aborted=True so callers can warn
-        #           the user and stop the auto-compress retry loop.
-        #   False → Fall through to the legacy fallback path below: insert
-        #           a static "summary unavailable" placeholder and drop the
-        #           middle window.  Records _last_summary_fallback_used /
-        #           _last_summary_dropped_count for gateway hygiene to
-        #           surface a warning.
-        # Default is False (historical behavior).
-        if not summary and self.abort_on_summary_failure:
-            n_skipped = compress_end - compress_start
-            self._last_summary_dropped_count = 0  # nothing actually dropped
-            self._last_summary_fallback_used = False
-            self._last_compress_aborted = True
-            if not self.quiet_mode:
-                logger.warning(
-                    "Summary generation failed — aborting compression "
-                    "(compression.abort_on_summary_failure=true). "
-                    "%d message(s) preserved unchanged. Conversation is "
-                    "frozen until the next /compress or /new.",
-                    n_skipped,
-                )
             return messages
 
         # Phase 4: Assemble compressed message list

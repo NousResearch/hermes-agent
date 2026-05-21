@@ -17,6 +17,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.tools.conftest import register_all_web_providers
+
 
 # ---------------------------------------------------------------------------
 # SearXNGWebSearchProvider unit tests
@@ -301,36 +303,7 @@ class TestCheckWebApiKey:
 class TestSearXNGOnlyExtractCrawlErrors:
     """When searxng is the active backend, extract/crawl must return clear errors."""
 
-    @staticmethod
-    def _register_providers():
-        """Populate the web-search registry with every bundled provider.
-
-        Under xdist, other test files' import side-effects register
-        providers, but when this file runs in isolation the
-        registry is empty and the "search-only" error path is never
-        reached (falls through to "no available backend" instead).
-        """
-        from agent.web_search_registry import register_provider
-        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
-        from plugins.web.ddgs.provider import DDGSWebSearchProvider
-        from plugins.web.exa.provider import ExaWebSearchProvider
-        from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
-        from plugins.web.parallel.provider import ParallelWebSearchProvider
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        from plugins.web.tavily.provider import TavilyWebSearchProvider
-        from plugins.web.xai.provider import XAIWebSearchProvider
-
-        for cls in (
-            BraveFreeWebSearchProvider,
-            DDGSWebSearchProvider,
-            ExaWebSearchProvider,
-            FirecrawlWebSearchProvider,
-            ParallelWebSearchProvider,
-            SearXNGWebSearchProvider,
-            TavilyWebSearchProvider,
-            XAIWebSearchProvider,
-        ):
-            register_provider(cls())
+    _register_providers = staticmethod(register_all_web_providers)
 
     @pytest.fixture(autouse=True)
     def _populate_web_registry(self):

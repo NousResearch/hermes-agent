@@ -16,6 +16,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.tools.conftest import register_all_web_providers
+
 
 def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None):
     """Install a stub ``ddgs`` module in sys.modules for the duration of a test.
@@ -212,36 +214,7 @@ class TestDDGSBackendWiring:
 
 
 class TestDDGSSearchOnlyErrors:
-    @staticmethod
-    def _register_providers():
-        """Register all bundled web providers into the registry.
-
-        Under xdist, other test files' import side effects already
-        register providers, but when this file runs in isolation the
-        registry is empty and the "search-only" error path is never
-        reached (falls through to "no available backend" instead).
-        """
-        from agent.web_search_registry import register_provider
-        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
-        from plugins.web.ddgs.provider import DDGSWebSearchProvider
-        from plugins.web.exa.provider import ExaWebSearchProvider
-        from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
-        from plugins.web.parallel.provider import ParallelWebSearchProvider
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        from plugins.web.tavily.provider import TavilyWebSearchProvider
-        from plugins.web.xai.provider import XAIWebSearchProvider
-
-        for cls in (
-            BraveFreeWebSearchProvider,
-            DDGSWebSearchProvider,
-            ExaWebSearchProvider,
-            FirecrawlWebSearchProvider,
-            ParallelWebSearchProvider,
-            SearXNGWebSearchProvider,
-            TavilyWebSearchProvider,
-            XAIWebSearchProvider,
-        ):
-            register_provider(cls())
+    _register_providers = staticmethod(register_all_web_providers)
 
     @pytest.fixture(autouse=True)
     def _populate_web_registry(self):

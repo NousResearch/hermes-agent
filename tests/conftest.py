@@ -292,7 +292,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "WECOM_HOME_CHANNEL_NAME",
     # Platform gating — set by load_gateway_config() as a side effect when
     # a config.yaml is present, so individual test bodies that call the
-    # loader leak these values into later tests on the same xdist worker.
+    # loader leak these values into later tests in the same process.
     # Force-clear on every test setup so the leak can't happen.
     "SLACK_REQUIRE_MENTION",
     "SLACK_STRICT_MENTION",

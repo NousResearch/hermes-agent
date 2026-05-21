@@ -743,6 +743,8 @@ def _emit_post_tool_call_hook(
     function_name: str,
     function_args: Dict[str, Any],
     result: Any,
+    original_args: Optional[Dict[str, Any]] = None,
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
     task_id: Optional[str] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
@@ -759,6 +761,8 @@ def _emit_post_tool_call_hook(
             "post_tool_call",
             tool_name=function_name,
             args=function_args,
+            original_args=original_args if isinstance(original_args, dict) else function_args,
+            middleware_trace=middleware_trace or [],
             result=result,
             task_id=task_id or "",
             session_id=session_id or "",
@@ -815,6 +819,27 @@ def handle_function_call(
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+    if not isinstance(function_args, dict):
+        function_args = {}
+    original_function_args = dict(function_args)
+    middleware_trace: List[Dict[str, Any]] = []
+
+    try:
+        from hermes_cli.middleware import apply_tool_request_middleware
+        request_middleware = apply_tool_request_middleware(
+            function_name,
+            function_args,
+            task_id=task_id or "",
+            session_id=session_id or "",
+            tool_call_id=tool_call_id or "",
+            turn_id=turn_id or "",
+            api_request_id=api_request_id or "",
+        )
+        function_args = request_middleware.payload
+        middleware_trace = request_middleware.trace
+        original_function_args = request_middleware.original_payload
+    except Exception as _middleware_err:
+        logger.debug("tool request middleware error: %s", _middleware_err)
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
@@ -842,6 +867,8 @@ def handle_function_call(
                     tool_call_id=tool_call_id or "",
                     turn_id=turn_id or "",
                     api_request_id=api_request_id or "",
+                    original_args=original_function_args,
+                    middleware_trace=middleware_trace,
                 )
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
@@ -851,6 +878,8 @@ def handle_function_call(
                 _emit_post_tool_call_hook(
                     function_name=function_name,
                     function_args=function_args,
+                    original_args=original_function_args,
+                    middleware_trace=middleware_trace,
                     result=result,
                     task_id=task_id,
                     session_id=session_id,
@@ -911,17 +940,36 @@ def handle_function_call(
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-                result = registry.dispatch(
-                    function_name, function_args,
-                    task_id=task_id,
-                    enabled_tools=sandbox_enabled,
-                )
+                def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    return registry.dispatch(
+                        function_name, next_args,
+                        task_id=task_id,
+                        enabled_tools=sandbox_enabled,
+                    )
             else:
-                result = registry.dispatch(
-                    function_name, function_args,
-                    task_id=task_id,
-                    user_task=user_task,
+                def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    return registry.dispatch(
+                        function_name, next_args,
+                        task_id=task_id,
+                        user_task=user_task,
+                    )
+            try:
+                from hermes_cli.middleware import run_tool_execution_middleware
+                result = run_tool_execution_middleware(
+                    function_name,
+                    function_args,
+                    _dispatch,
+                    original_args=original_function_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                    turn_id=turn_id or "",
+                    api_request_id=api_request_id or "",
+                    middleware_trace=middleware_trace,
                 )
+            except Exception as _middleware_err:
+                logger.debug("tool execution middleware error: %s", _middleware_err)
+                result = _dispatch(function_args)
         finally:
             if _approval_tokens is not None and reset_current_observability_context is not None:
                 try:
@@ -934,6 +982,8 @@ def handle_function_call(
         _emit_post_tool_call_hook(
             function_name=function_name,
             function_args=function_args,
+            original_args=original_function_args,
+            middleware_trace=middleware_trace,
             result=result,
             task_id=task_id,
             session_id=session_id,
@@ -959,6 +1009,8 @@ def handle_function_call(
                 tool_name=function_name,
                 args=function_args,
                 result=result,
+                original_args=original_function_args,
+                middleware_trace=middleware_trace,
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",

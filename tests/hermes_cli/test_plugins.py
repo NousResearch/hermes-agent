@@ -13,6 +13,7 @@ import yaml
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
+    VALID_MIDDLEWARE,
     LoadedPlugin,
     PluginContext,
     PluginManager,
@@ -494,6 +495,73 @@ class TestPluginHooks:
             mgr.discover_and_load()
 
         assert any("on_banana" in record.message for record in caplog.records)
+
+    def test_valid_middleware_kinds_include_adaptive_surfaces(self):
+        assert "tool_request" in VALID_MIDDLEWARE
+        assert "tool_execution" in VALID_MIDDLEWARE
+        assert "api_request" in VALID_MIDDLEWARE
+        assert "api_execution" in VALID_MIDDLEWARE
+
+    def test_register_and_invoke_middleware(self, tmp_path, monkeypatch):
+        """Registered middleware callbacks are collected by invoke_middleware()."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "middleware_plugin",
+            register_body=(
+                'ctx.register_middleware("tool_request", '
+                'lambda **kw: {"args": {"path": kw["args"]["path"] + ".bak"}, "source": "test"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_middleware(
+            "tool_request",
+            tool_name="read_file",
+            args={"path": "a.txt"},
+            original_args={"path": "a.txt"},
+            telemetry_schema_version="hermes.observer.v1",
+            middleware_schema_version="hermes.middleware.v1",
+        )
+
+        assert results == [{"args": {"path": "a.txt.bak"}, "source": "test"}]
+        listing = {p["name"]: p for p in mgr.list_plugins()}
+        assert listing["middleware_plugin"]["middleware"] == 1
+
+    def test_middleware_exception_does_not_propagate(self, tmp_path, monkeypatch):
+        """A middleware callback that raises does not crash the caller."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "bad_middleware",
+            register_body='ctx.register_middleware("tool_request", lambda **kw: 1/0)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr.invoke_middleware("tool_request", args={}, original_args={}) == []
+
+    def test_invalid_middleware_name_warns(self, tmp_path, monkeypatch, caplog):
+        """Unknown middleware kinds are retained for forward compatibility."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "warn_middleware",
+            register_body='ctx.register_middleware("tool_banana", lambda **kw: None)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert "tool_banana" in mgr._middleware
+        assert any("tool_banana" in record.message for record in caplog.records)
 
 
 class TestPreToolCallBlocking:

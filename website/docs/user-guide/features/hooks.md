@@ -353,6 +353,9 @@ Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp, 
 
 [Plugins](/docs/user-guide/features/plugins) can register hooks that fire in **both CLI and gateway** sessions. These are registered programmatically via `ctx.register_hook()` in your plugin's `register()` function.
 
+For the stable payload fields and behavior-changing middleware surfaces, see
+the [Plugin Middleware Contract](/docs/developer-guide/plugin-middleware-contract).
+
 ```python
 def register(ctx):
     ctx.register_hook("pre_tool_call", my_tool_observer)

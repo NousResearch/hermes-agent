@@ -190,6 +190,9 @@ When you upgrade to a version of Hermes that has opt-in plugins (config schema v
 ## Available hooks
 
 Plugins can register callbacks for these lifecycle events. See the **[Event Hooks page](/docs/user-guide/features/hooks#plugin-hooks)** for full details, callback signatures, and examples.
+Plugins that need a stable observer payload contract or behavior-changing
+execution middleware should also read the
+[Plugin Middleware Contract](/docs/developer-guide/plugin-middleware-contract).
 
 | Hook | Fires when |
 |------|-----------|

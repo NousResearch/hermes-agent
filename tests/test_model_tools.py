@@ -59,6 +59,8 @@ class TestHandleFunctionCall:
                 "pre_tool_call",
                 tool_name="web_search",
                 args={"q": "test"},
+                original_args={"q": "test"},
+                middleware_trace=[],
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
@@ -70,6 +72,8 @@ class TestHandleFunctionCall:
                 "post_tool_call",
                 tool_name="web_search",
                 args={"q": "test"},
+                original_args={"q": "test"},
+                middleware_trace=[],
                 result='{"ok":true}',
                 task_id="task-1",
                 session_id="session-1",
@@ -87,6 +91,8 @@ class TestHandleFunctionCall:
                 tool_name="web_search",
                 args={"q": "test"},
                 result='{"ok":true}',
+                original_args={"q": "test"},
+                middleware_trace=[],
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
@@ -126,6 +132,77 @@ class TestHandleFunctionCall:
         assert post_duration == transform_duration
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
+
+    def test_tool_request_middleware_rewrites_args_before_hooks_and_dispatch(self, monkeypatch):
+        hook_calls = []
+        dispatched = {}
+
+        def fake_invoke_middleware(kind, **kwargs):
+            if kind == "tool_request":
+                assert kwargs["args"] == {"q": "original"}
+                assert kwargs["original_args"] == {"q": "original"}
+                return [{"args": {"q": "rewritten"}, "source": "test-middleware"}]
+            return []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
+            return []
+
+        def fake_dispatch(tool_name, args, **kwargs):
+            dispatched["tool_name"] = tool_name
+            dispatched["args"] = args
+            return json.dumps({"ok": True, "args": args})
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", fake_invoke_middleware)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call("web_search", {"q": "original"}, task_id="t1"))
+
+        assert result == {"ok": True, "args": {"q": "rewritten"}}
+        assert dispatched == {"tool_name": "web_search", "args": {"q": "rewritten"}}
+        pre_call = next(call for call in hook_calls if call[0] == "pre_tool_call")
+        assert pre_call[1]["args"] == {"q": "rewritten"}
+        assert pre_call[1]["original_args"] == {"q": "original"}
+        assert pre_call[1]["middleware_trace"] == [{"source": "test-middleware"}]
+
+    def test_tool_execution_middleware_wraps_dispatch(self, monkeypatch):
+        dispatched = {}
+        middleware_seen = {}
+
+        def around_tool(**kwargs):
+            middleware_seen["tool_name"] = kwargs["tool_name"]
+            middleware_seen["args"] = kwargs["args"]
+            middleware_seen["schema"] = kwargs["middleware_schema_version"]
+            next_args = dict(kwargs["args"])
+            next_args["wrapped"] = True
+            return kwargs["next_call"](next_args)
+
+        class Manager:
+            _middleware = {"tool_execution": [around_tool]}
+
+        def fake_dispatch(tool_name, args, **kwargs):
+            dispatched["tool_name"] = tool_name
+            dispatched["args"] = args
+            return json.dumps({"ok": True, "args": args})
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", lambda kind, **kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda hook_name, **kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: Manager())
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call("web_search", {"q": "test"}, task_id="t1"))
+
+        assert result == {"ok": True, "args": {"q": "test", "wrapped": True}}
+        assert dispatched == {
+            "tool_name": "web_search",
+            "args": {"q": "test", "wrapped": True},
+        }
+        assert middleware_seen == {
+            "tool_name": "web_search",
+            "args": {"q": "test"},
+            "schema": "hermes.middleware.v1",
+        }
 
 
 # =========================================================================

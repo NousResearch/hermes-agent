@@ -997,6 +997,28 @@ def run_conversation(
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+                _original_api_kwargs = dict(api_kwargs)
+                _api_middleware_trace = []
+                try:
+                    from hermes_cli.middleware import apply_api_request_middleware
+                    _api_request_middleware = apply_api_request_middleware(
+                        api_kwargs,
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        session_id=agent.session_id or "",
+                        platform=agent.platform or "",
+                        model=agent.model,
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        api_call_count=api_call_count,
+                    )
+                    api_kwargs = _api_request_middleware.payload
+                    _original_api_kwargs = _api_request_middleware.original_payload
+                    _api_middleware_trace = _api_request_middleware.trace
+                except Exception:
+                    pass
 
                 try:
                     from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
@@ -1033,6 +1055,8 @@ def run_conversation(
                         max_tokens=agent.max_tokens,
                         started_at=api_start_time,
                         request=agent._api_request_payload_for_hook(api_kwargs),
+                        original_request=agent._api_request_payload_for_hook(_original_api_kwargs),
+                        middleware_trace=_api_middleware_trace,
                         telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                     )
                 except Exception:
@@ -1084,12 +1108,33 @@ def run_conversation(
                     if isinstance(getattr(agent, "client", None), Mock):
                         _use_streaming = False
 
-                if _use_streaming:
-                    response = agent._interruptible_streaming_api_call(
-                        api_kwargs, on_first_delta=_stop_spinner
+                def _perform_api_call(next_api_kwargs):
+                    if _use_streaming:
+                        return agent._interruptible_streaming_api_call(
+                            next_api_kwargs, on_first_delta=_stop_spinner
+                        )
+                    return agent._interruptible_api_call(next_api_kwargs)
+
+                try:
+                    from hermes_cli.middleware import run_api_execution_middleware
+                    response = run_api_execution_middleware(
+                        api_kwargs,
+                        _perform_api_call,
+                        original_request=_original_api_kwargs,
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        session_id=agent.session_id or "",
+                        platform=agent.platform or "",
+                        model=agent.model,
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        api_call_count=api_call_count,
+                        middleware_trace=_api_middleware_trace,
                     )
-                else:
-                    response = agent._interruptible_api_call(api_kwargs)
+                except Exception:
+                    response = _perform_api_call(api_kwargs)
                 
                 api_duration = time.time() - api_start_time
                 
@@ -3025,6 +3070,8 @@ def run_conversation(
                         assistant_message,
                         finish_reason=finish_reason,
                     ),
+                    original_request=agent._api_request_payload_for_hook(_original_api_kwargs),
+                    middleware_trace=_api_middleware_trace,
                     usage=agent._usage_summary_for_api_request_hook(response),
                     assistant_message=assistant_message,
                     assistant_content_chars=len(_assistant_text),

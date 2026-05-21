@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
+from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool, _iter_custom_providers
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
@@ -455,8 +455,36 @@ def _try_resolve_from_custom_pool(
     identity as ``custom:<name>`` instead of collapsing to bare ``custom``,
     so downstream callers (TUI display, credential lookups) see the actual
     sub-provider rather than a flattened sentinel.
+
+    FIX (#29872): When provider_name is given, cross-check that get_custom_provider_pool_key
+    returns the EXACT pool key for that name. Without this check, a provider with a similar
+    base_url but different name could be picked up via fallback URL matching, causing wrong
+    API key pickup from auth.json pools.
     """
-    pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
+    if provider_name:
+        # Compute the expected pool key by matching provider_name against config entries.
+        normalized_requested = _normalize_custom_provider_name(provider_name)
+        found_expected = None
+        try:
+            for norm_name, entry in _iter_custom_providers():
+                if norm_name == normalized_requested:
+                    found_expected = f"custom:{norm_name}"
+                    break
+        except Exception:
+            pass
+        # If no config entry matches this provider_name, there's nothing to do.
+        if not found_expected:
+            return None
+
+        # Now get the actual pool key (which may fall back to URL matching).
+        pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
+        # Cross-check: if the resolved key differs from the name-match key,
+        # a fallback base_url match picked a DIFFERENT provider. Reject it.
+        if pool_key != found_expected:
+            return None
+    else:
+        pool_key = get_custom_provider_pool_key(base_url)
+
     if not pool_key:
         return None
     try:

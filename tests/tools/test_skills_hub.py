@@ -1279,10 +1279,11 @@ class TestUnifiedSearchDedup:
         return src
 
     def test_dedup_keeps_first_seen(self):
+        # Same identifier from two sources — only the first (community) is kept when equal trust.
         s1 = SkillMeta(name="skill", description="from A", source="a",
-                        identifier="a/skill", trust_level="community")
+                        identifier="shared/skill", trust_level="community")
         s2 = SkillMeta(name="skill", description="from B", source="b",
-                        identifier="b/skill", trust_level="community")
+                        identifier="shared/skill", trust_level="community")
         src_a = self._make_source("a", [s1])
         src_b = self._make_source("b", [s2])
         results = unified_search("skill", [src_a, src_b])
@@ -1290,10 +1291,11 @@ class TestUnifiedSearchDedup:
         assert results[0].description == "from A"
 
     def test_dedup_prefers_trusted_over_community(self):
+        # Same identifier — trusted wins over community.
         community = SkillMeta(name="skill", description="community", source="a",
-                               identifier="a/skill", trust_level="community")
+                               identifier="shared/skill", trust_level="community")
         trusted = SkillMeta(name="skill", description="trusted", source="b",
-                             identifier="b/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         src_a = self._make_source("a", [community])
         src_b = self._make_source("b", [trusted])
         results = unified_search("skill", [src_a, src_b])
@@ -1303,9 +1305,9 @@ class TestUnifiedSearchDedup:
     def test_dedup_prefers_builtin_over_trusted(self):
         """Regression: builtin must not be overwritten by trusted."""
         builtin = SkillMeta(name="skill", description="builtin", source="a",
-                             identifier="a/skill", trust_level="builtin")
+                             identifier="shared/skill", trust_level="builtin")
         trusted = SkillMeta(name="skill", description="trusted", source="b",
-                             identifier="b/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         src_a = self._make_source("a", [builtin])
         src_b = self._make_source("b", [trusted])
         results = unified_search("skill", [src_a, src_b])
@@ -1314,13 +1316,30 @@ class TestUnifiedSearchDedup:
 
     def test_dedup_trusted_not_overwritten_by_community(self):
         trusted = SkillMeta(name="skill", description="trusted", source="a",
-                             identifier="a/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         community = SkillMeta(name="skill", description="community", source="b",
-                               identifier="b/skill", trust_level="community")
+                               identifier="shared/skill", trust_level="community")
         src_a = self._make_source("a", [trusted])
         src_b = self._make_source("b", [community])
         results = unified_search("skill", [src_a, src_b])
         assert results[0].trust_level == "trusted"
+
+    def test_browse_sh_same_name_different_site_not_deduped(self):
+        # Browse.sh skills from different hostnames share task names (e.g. "search-listings")
+        # but have unique identifiers. They must NOT be collapsed into one result.
+        airbnb = SkillMeta(
+            name="search-listings", description="Airbnb search", source="browse-sh",
+            identifier="browse-sh/airbnb.com/search-listings-ddgioa", trust_level="community",
+        )
+        booking = SkillMeta(
+            name="search-listings", description="Booking.com search", source="browse-sh",
+            identifier="browse-sh/booking.com/search-listings-xyzab", trust_level="community",
+        )
+        src = self._make_source("browse-sh", [airbnb, booking])
+        results = unified_search("search-listings", [src])
+        assert len(results) == 2, (
+            "browse-sh skills with the same name but different sites must not be deduplicated"
+        )
 
     def test_source_filter(self):
         s1 = SkillMeta(name="s1", description="d", source="a",

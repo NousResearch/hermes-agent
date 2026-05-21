@@ -41,7 +41,11 @@ dependencies = [
   "ruamel.yaml==0.18.17",
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",
-  "pydantic==2.12.5",
+  # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
+  # pydantic-core 2.41.5 (pulled by 2.12.5) segfaults when the OpenAI SDK's
+  # Responses API resource is exercised from a non-main thread, which is the
+  # codex_responses dispatch in agent/chat_completion_helpers.py:_call.
+  "pydantic==2.13.4",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).

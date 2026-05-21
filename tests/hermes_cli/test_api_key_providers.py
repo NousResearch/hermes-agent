@@ -1225,6 +1225,104 @@ class TestNovitaProvider:
 
 
 # =============================================================================
+# Ambient provider tests
+# =============================================================================
+
+class TestAmbientProvider:
+    """Tests for Ambient — verified AI inference with cryptographic proof."""
+
+    def test_ambient_profile_loads(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("ambient")
+        assert profile is not None
+        assert profile.name == "ambient"
+        assert profile.display_name == "Ambient"
+        assert profile.base_url == "https://api.ambient.xyz/v1"
+        assert "AMBIENT_API_KEY" in profile.env_vars
+
+    def test_ambient_in_provider_registry(self):
+        """Auto-registration from ProviderProfile should expose Ambient."""
+        assert "ambient" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["ambient"]
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.id == "ambient"
+        assert pconfig.inference_base_url == "https://api.ambient.xyz/v1"
+        assert pconfig.api_key_env_vars == ("AMBIENT_API_KEY",)
+        assert pconfig.base_url_env_var == "AMBIENT_BASE_URL"
+
+    def test_models_py_has_ambient(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "ambient" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["ambient"]) >= 1
+
+    def test_ambient_models_use_org_name_format(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        for model in _PROVIDER_MODELS["ambient"]:
+            assert "/" in model, f"Ambient model {model!r} missing org/ prefix"
+
+    def test_ambient_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "ambient" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["ambient"] == "Ambient"
+
+    def test_ambient_in_provider_prefixes(self):
+        from agent.model_metadata import _PROVIDER_PREFIXES
+        assert "ambient" in _PROVIDER_PREFIXES
+
+    def test_ambient_url_to_provider(self):
+        from agent.model_metadata import _URL_TO_PROVIDER
+        assert _URL_TO_PROVIDER.get("api.ambient.xyz") == "ambient"
+
+    def test_ambient_pricing_dispatch(self, monkeypatch):
+        """get_pricing_for_provider('ambient') routes to fetch_models_with_pricing
+        with /v1 stripped, and parses Ambient's canonical pricing shape."""
+        from hermes_cli import models as models_mod
+        monkeypatch.setenv("AMBIENT_API_KEY", "sk-test-key")
+        monkeypatch.delenv("AMBIENT_BASE_URL", raising=False)
+        models_mod._pricing_cache.pop("https://api.ambient.xyz", None)
+
+        seen_urls: list[str] = []
+        fake_payload = {
+            "data": [
+                {
+                    "id": "zai-org/GLM-5.1-FP8",
+                    "pricing": {
+                        "prompt": "0.0000014",
+                        "completion": "0.0000044",
+                        "input_cache_read": "0",
+                        "input_cache_write": "0",
+                    },
+                }
+            ]
+        }
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                import json as _json
+                return _json.dumps(fake_payload).encode()
+
+        def fake_urlopen(req, timeout=None):
+            seen_urls.append(req.full_url)
+            return _FakeResp()
+
+        monkeypatch.setattr(
+            models_mod.urllib.request, "urlopen", fake_urlopen
+        )
+
+        result = models_mod.get_pricing_for_provider("ambient")
+        assert seen_urls == ["https://api.ambient.xyz/v1/models"]
+        assert "zai-org/GLM-5.1-FP8" in result
+        assert result["zai-org/GLM-5.1-FP8"]["prompt"] == "0.0000014"
+        assert result["zai-org/GLM-5.1-FP8"]["completion"] == "0.0000044"
+
+
+# =============================================================================
 # MiniMax OAuth provider tests (added by feat/minimax-oauth-provider)
 # =============================================================================
 

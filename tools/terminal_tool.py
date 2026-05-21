@@ -1240,9 +1240,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         from tools.environments.sprites import SpritesEnvironment as _SpritesEnvironment
         return _SpritesEnvironment(
             cwd=cwd, timeout=timeout,
-            cpu=int(cpu), memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
-            region=cc.get("sprites_region") or None,
         )
 
     elif env_type == "ssh":

@@ -1751,18 +1751,9 @@ def setup_terminal_backend(config: dict):
         elif current_base:
             remove_env_value("SPRITES_BASE_URL")
 
-        # Region (passed to SpriteConfig at creation time)
         print()
-        current_region = cfg_get(config, "terminal", "sprites_region", default="")
-        region = prompt("  Region (blank to let Sprites choose)", current_region)
-        if region:
-            config.setdefault("terminal", {})["sprites_region"] = region
-            save_env_value("TERMINAL_SPRITES_REGION", region)
-        elif current_region:
-            config["terminal"]["sprites_region"] = ""
-            remove_env_value("TERMINAL_SPRITES_REGION")
-
-        _prompt_container_resources(config)
+        print_info("Note: Sprites uses platform-default compute sizing.")
+        print_info("CPU/memory/disk and region are not yet user-configurable.")
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

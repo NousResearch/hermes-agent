@@ -40,12 +40,8 @@ class SpritesEnvironment(BaseEnvironment):
         self,
         cwd: str = "/root",
         timeout: int = 60,
-        cpu: int = 1,
-        memory: int = 5120,
-        disk: int = 51200,
         persistent_filesystem: bool = True,
         task_id: str = "default",
-        region: str | None = None,
     ):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
@@ -60,7 +56,6 @@ class SpritesEnvironment(BaseEnvironment):
 
         from sprites import SpritesClient
         from sprites.exceptions import NotFoundError, SpriteError
-        from sprites.types import SpriteConfig
 
         self._NotFoundError = NotFoundError
         self._SpriteError = SpriteError
@@ -82,20 +77,12 @@ class SpritesEnvironment(BaseEnvironment):
         self._task_id = task_id
         self._lock = threading.Lock()
         self._sprite = None
-        self._cmd_timeout = float(timeout) if timeout and timeout > 0 else None
 
+        # Sprites does not yet honor SpriteConfig sizing knobs (cpu / ram /
+        # storage / region) — sandboxes get default sizing. We omit SpriteConfig
+        # entirely so the wire format stays minimal until the platform exposes
+        # these knobs.
         sprite_name = f"hermes-{task_id}"
-        config = SpriteConfig(
-            ram_mb=int(memory) if memory else None,
-            cpus=int(cpu) if cpu else None,
-            region=region or None,
-            storage_gb=max(1, int(disk) // 1024) if disk else None,
-        )
-
-        # Try to get an existing sprite first (no remote call); fall back
-        # to creating one when the first command surfaces NotFoundError.
-        # This mirrors Daytona's persistent-resume pattern but defers the
-        # round-trip until we actually need to talk to the sprite.
         try:
             self._sprite = self._client.get_sprite(sprite_name)
             logger.info(
@@ -103,7 +90,7 @@ class SpritesEnvironment(BaseEnvironment):
                 self._sprite.name, task_id,
             )
         except NotFoundError:
-            self._sprite = self._client.create_sprite(sprite_name, config=config)
+            self._sprite = self._client.create_sprite(sprite_name)
             logger.info(
                 "Sprites: created sprite %s for task %s",
                 self._sprite.name, task_id,

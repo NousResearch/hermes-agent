@@ -83,11 +83,11 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, a Sprites (Fly.io) sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | sprites | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
@@ -96,7 +96,7 @@ terminal:
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
 ```
 
-For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For cloud sandboxes such as Modal, Daytona, Vercel Sandbox, and Sprites, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
 ### Backend Overview
 
@@ -108,6 +108,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
+| **sprites** | Sprites (Fly.io) sandbox | Full (cloud VM) | Persistent cloud sandboxes with native checkpoint support |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -275,6 +276,33 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 **Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
 
+### Sprites Backend
+
+Runs commands in a [Sprites](https://sprites.dev) cloud sandbox backed by Fly.io. Sprites persist between sessions by default and are reused by task identity — Hermes names sandboxes `hermes-{task_id}` and on each session start either resumes the existing sprite or creates a fresh one.
+
+```yaml
+terminal:
+  backend: sprites
+  cwd: /home/sprite                # Sprite default home; "/root" / "~" auto-rewrite
+  container_persistent: true       # Leave sprite alive on cleanup (delete if false)
+```
+
+Sprites uses platform-default compute sizing — CPU, memory, disk, and region are not yet user-configurable, so the usual `container_cpu` / `container_memory` / `container_disk` knobs are ignored on this backend.
+
+**Required install:** Install the optional SDK extra:
+
+```bash
+pip install 'hermes-agent[sprites]'
+```
+
+**Required authentication:** `SPRITES_TOKEN` environment variable. Get a token with `sprite login` or `sprite auth setup --token …` from the [Sprites CLI](https://sprites.dev).
+
+**Optional:** `SPRITES_BASE_URL` overrides the default `https://api.sprites.dev` endpoint (useful for self-hosted deployments).
+
+**Persistence:** With `container_persistent: true`, `cleanup()` leaves the sprite running so the next session can resume against the same filesystem and live VM. With `persistent: false`, the sprite is deleted on cleanup. Sprites also support server-side checkpoints exposed by the SDK (`sprite.create_checkpoint`, `sprite.restore_checkpoint`), but Hermes does not invoke them automatically — manage checkpoints via the `sprite-env` CLI if needed.
+
+**Credential files:** Hermes pushes `~/.hermes/` credentials/skills/cache into the sprite at startup via the Sprites filesystem API. Files modified by the agent inside the sprite are **not** synced back to the host on cleanup (see _Remote-to-Host File Sync_ — sync_back is unsupported on this backend).
+
 ### Singularity/Apptainer Backend
 
 Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available.
@@ -305,6 +333,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
+- **Sprites** — Needs `SPRITES_TOKEN` plus the optional `sprites-py` SDK (`pip install 'hermes-agent[sprites]'`).
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.

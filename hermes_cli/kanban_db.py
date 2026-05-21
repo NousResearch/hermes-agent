@@ -58,11 +58,11 @@ worktrees so that research / ops / digital-twin workloads work alongside
 coding workloads.  See ``docs/hermes-kanban-v1-spec.pdf`` for the full
 design specification.
 
-Concurrency strategy: WAL mode + ``BEGIN IMMEDIATE`` for write
+Concurrency strategy: rollback-journal mode + ``BEGIN IMMEDIATE`` for write
 transactions + compare-and-swap (CAS) updates on ``tasks.status`` and
-``tasks.claim_lock``.  SQLite serializes writers via its WAL lock, so at
-most one claimer can win any given task.  Losers observe zero affected
-rows and move on -- no retry loops, no distributed-lock machinery.
+``tasks.claim_lock``.  SQLite serializes writers through its transaction
+lock, so at most one claimer can win any given task.  Losers observe zero
+affected rows and move on -- no retry loops, no distributed-lock machinery.
 The CAS coordination is **per-board** — each board is a separate DB,
 so multi-board installs get the same atomicity guarantees without any
 new locking.
@@ -1005,6 +1005,35 @@ def _validate_sqlite_header(path: Path) -> None:
     )
 
 
+def _enforce_rollback_journal(conn: sqlite3.Connection, path: Path) -> str:
+    """Keep Kanban out of WAL mode and return the effective journal mode."""
+    row = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
+    mode = str(row[0]).lower() if row and row[0] is not None else ""
+    if mode == "delete":
+        return mode
+
+    # If another connection left the DB in WAL mode, a checkpoint followed by a
+    # second DELETE request often clears the persistent journal-mode bit. This
+    # is intentionally best-effort: active readers may prevent the transition on
+    # this connection, and the next short-lived Kanban connection will try again.
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.DatabaseError:
+        pass
+    try:
+        row = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
+        mode = str(row[0]).lower() if row and row[0] is not None else mode
+    except sqlite3.DatabaseError:
+        pass
+    if mode != "delete":
+        _log.warning(
+            "kanban.db journal_mode stayed %s after DELETE request for %s",
+            mode or "unknown",
+            path,
+        )
+    return mode
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1012,8 +1041,9 @@ def connect(
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
-    WAL mode is enabled on every connection; it's a no-op after the first
-    time but keeps the code robust if the DB file is ever re-created.
+    Rollback-journal mode is enforced on every connection. This install has
+    shown intermittent disk I/O and malformed-read failures when the high-churn
+    Kanban board runs with WAL sidecar files.
 
     The first connection to a given path auto-runs :func:`init_db` so
     fresh installs and test harnesses that construct `connect()`
@@ -1039,18 +1069,15 @@ def connect(
     try:
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:
-            # WAL activation can take an exclusive lock while SQLite creates the
-            # sidecar files for a fresh database. Keep it in the same process-local
-            # critical section as schema initialization so concurrent gateway
-            # startup threads do not race before _INITIALIZED_PATHS is populated.
-            # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-            # falls back to DELETE with one WARNING so kanban stays usable there.
-            # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-            from hermes_state import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+            needs_init = resolved not in _INITIALIZED_PATHS
+            # Kanban is touched by the gateway dispatcher, dashboard API/SSE,
+            # CLI tools, and worker processes. On this install WAL mode has
+            # intermittently produced disk I/O errors and malformed DB reads,
+            # so keep the board in rollback-journal mode. It is less concurrent,
+            # but avoids WAL/SHM sidecar churn for this high-churn board.
+            _enforce_rollback_journal(conn, path)
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
-            needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
                 # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
                 # migrations. Cached so subsequent connect() calls in the same
@@ -2972,6 +2999,8 @@ class ReviewOutcomeProcessResult:
 
 REVIEW_OUTCOME_SCHEMA = "cato_review_outcome.v1"
 REVIEW_OUTCOME_HANDLER_AUTHOR = "review-outcome-handler"
+BLOCKED_RECOVERY_HANDLER_AUTHOR = "blocked-recovery-handler"
+BLOCKED_RECOVERY_ASSIGNEE = "default"
 HUMAN_REVIEW_OUTCOMES = {"HUMAN_DECISION_REQUIRED"}
 FIXABLE_REVIEW_OUTCOMES = {"CHANGES_REQUIRED"}
 UNSAFE_REVIEW_FINDING_FLAGS = {
@@ -3257,6 +3286,168 @@ def _human_decision_body(review_task: Task, outcome: dict, finding: Optional[dic
             "- The review outcome was not converted into automatic fix work because it requires human approval, access, credentials, external/destructive action, client-system mutation, expense, or scope clarification.",
         ]
     )
+
+
+@dataclass
+class BlockedRecoveryProcessResult:
+    processed: list[str] = field(default_factory=list)
+    recovery_tasks: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+
+
+def _latest_recoverable_block_event(conn: sqlite3.Connection, task_id: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT id, kind, payload, created_at
+          FROM task_events
+         WHERE task_id = ?
+           AND kind IN ('blocked', 'gave_up')
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+
+
+def _blocked_recovery_already_handled(conn: sqlite3.Connection, task_id: str, event_id: int) -> bool:
+    return bool(
+        conn.execute(
+            """
+            SELECT 1 FROM task_events
+             WHERE task_id = ?
+               AND kind = 'blocked_recovery_planned'
+               AND json_extract(payload, '$.block_event_id') = ?
+             LIMIT 1
+            """,
+            (task_id, int(event_id)),
+        ).fetchone()
+    )
+
+
+def _block_event_payload(row: sqlite3.Row) -> dict:
+    raw = row["payload"] if row and "payload" in row.keys() else None
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _block_reason_from_event(row: sqlite3.Row) -> str:
+    payload = _block_event_payload(row)
+    for key in ("reason", "error", "last_failure_error", "detail", "summary"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if row["kind"] == "gave_up":
+        trigger = payload.get("trigger_outcome")
+        failures = payload.get("failures")
+        if trigger or failures:
+            return f"Task auto-blocked after {failures or '?'} failure(s); trigger={trigger or 'unknown'}."
+        return "Task auto-blocked by the dispatcher failure circuit breaker."
+    return "Task was blocked without a structured reason."
+
+
+def _blocked_recovery_body(task: Task, block_event: sqlite3.Row, reason: str) -> str:
+    body_excerpt = (task.body or "").strip()
+    if len(body_excerpt) > 4000:
+        body_excerpt = body_excerpt[:4000].rstrip() + "\n...[truncated]"
+    return "\n".join(
+        [
+            "Request type: Plan / unblock recovery",
+            "Mode: Automated Marcus blocked-task recovery",
+            "",
+            f"Blocked task: {task.id}",
+            f"Blocked task title: {task.title}",
+            f"Blocked task assignee: {task.assignee or 'unassigned'}",
+            f"Block event: {block_event['id']} ({block_event['kind']})",
+            "",
+            "Block reason:",
+            reason,
+            "",
+            "Goal:",
+            "- Review the blocked task and identify exactly what is needed to resolve the block.",
+            "- Create a concrete Kanban plan or follow-up task(s) with the right owners to address the block reason.",
+            "- Link any follow-up task(s) into the dependency chain so the blocked task can safely resume after the blockers are done.",
+            "- If the block is already resolved, add a concise comment explaining the evidence and unblock the original task.",
+            "- Do not perform unrelated implementation work in this recovery-planning task.",
+            "",
+            "Original task body:",
+            body_excerpt or "(empty)",
+        ]
+    )
+
+
+def process_blocked_recoveries(conn: sqlite3.Connection) -> BlockedRecoveryProcessResult:
+    """Create one Marcus recovery-planning task for each new blocked event.
+
+    Cato review outcomes already materialize fix/re-review work. This handler
+    covers the more general case: any worker can park a task in ``blocked`` with
+    a reason, and Marcus should automatically inspect that reason and create a
+    concrete recovery plan. Idempotency is per block/gave_up event, so a task can
+    be blocked, unblocked, and blocked again without duplicating old recovery
+    plans.
+    """
+    result = BlockedRecoveryProcessResult()
+    rows = conn.execute(
+        """
+        SELECT * FROM tasks
+         WHERE status = 'blocked'
+         ORDER BY COALESCE(started_at, created_at, 0) ASC, id ASC
+        """
+    ).fetchall()
+    for row in rows:
+        task = Task.from_row(row)
+        if task.created_by == BLOCKED_RECOVERY_HANDLER_AUTHOR:
+            result.skipped.append(task.id)
+            continue
+        block_event = _latest_recoverable_block_event(conn, task.id)
+        if block_event is None:
+            result.skipped.append(task.id)
+            continue
+        block_event_id = int(block_event["id"])
+        if _blocked_recovery_already_handled(conn, task.id, block_event_id):
+            continue
+        reason = _block_reason_from_event(block_event)
+        recovery_id = create_task(
+            conn,
+            title=f"Marcus recover blocked task: {task.title}",
+            body=_blocked_recovery_body(task, block_event, reason),
+            assignee=BLOCKED_RECOVERY_ASSIGNEE,
+            created_by=BLOCKED_RECOVERY_HANDLER_AUTHOR,
+            priority=(task.priority or 0) + 1,
+            idempotency_key=f"kanban:blocked-recovery:{task.id}:{block_event_id}",
+        )
+        with write_txn(conn):
+            if not _would_cycle(conn, recovery_id, task.id):
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                    (recovery_id, task.id),
+                )
+                if cur.rowcount:
+                    _append_event(
+                        conn,
+                        task.id,
+                        "linked",
+                        {"parent": recovery_id, "child": task.id},
+                    )
+            if not _blocked_recovery_already_handled(conn, task.id, block_event_id):
+                _append_event(
+                    conn,
+                    task.id,
+                    "blocked_recovery_planned",
+                    {
+                        "block_event_id": block_event_id,
+                        "block_event_kind": block_event["kind"],
+                        "recovery_task": recovery_id,
+                        "assignee": BLOCKED_RECOVERY_ASSIGNEE,
+                    },
+                )
+                result.processed.append(task.id)
+                result.recovery_tasks.append(recovery_id)
+    return result
 
 
 def process_review_outcomes(conn: sqlite3.Connection) -> ReviewOutcomeProcessResult:
@@ -4090,6 +4281,10 @@ class DispatchResult:
     """Cato re-review task ids created from structured review outcomes."""
     review_outcome_human_tasks: list[str] = field(default_factory=list)
     """Blocked human-decision task ids created from structured review outcomes."""
+    blocked_recoveries_processed: list[str] = field(default_factory=list)
+    """Blocked task ids whose latest block event was materialized for Marcus review."""
+    blocked_recovery_tasks: list[str] = field(default_factory=list)
+    """Marcus recovery-planning task ids created for blocked tasks."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5173,6 +5368,9 @@ def dispatch_once(
         result.review_outcome_fix_tasks = review_outcomes.fix_tasks
         result.review_outcome_rereview_tasks = review_outcomes.rereview_tasks
         result.review_outcome_human_tasks = review_outcomes.human_tasks
+        blocked_recoveries = process_blocked_recoveries(conn)
+        result.blocked_recoveries_processed = blocked_recoveries.processed
+        result.blocked_recovery_tasks = blocked_recoveries.recovery_tasks
     result.promoted = recompute_ready(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather

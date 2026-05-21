@@ -891,6 +891,66 @@ def test_process_review_outcome_safety_flags_create_human_task_without_fixes(kan
         assert kb.parent_ids(conn, human_task.id) == [review]
 
 
+def test_process_blocked_recovery_creates_marcus_plan_task_idempotently(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Implement contract-sensitive metric",
+            body="Implement the metric after the contract is clear.",
+            assignee="vitruvius",
+            priority=4,
+        )
+        kb.claim_task(conn, task_id)
+        assert kb.block_task(
+            conn,
+            task_id,
+            reason="Contract ambiguity blocks implementation until Titus revises the rules.",
+        )
+
+        dispatch = kb.dispatch_once(conn, max_spawn=0)
+        second = kb.process_blocked_recoveries(conn)
+
+        assert dispatch.blocked_recoveries_processed == [task_id]
+        assert second.processed == []
+        assert len(dispatch.blocked_recovery_tasks) == 1
+        recovery = kb.get_task(conn, dispatch.blocked_recovery_tasks[0])
+        assert recovery.assignee == kb.BLOCKED_RECOVERY_ASSIGNEE
+        assert recovery.status == "ready"
+        assert recovery.created_by == kb.BLOCKED_RECOVERY_HANDLER_AUTHOR
+        assert recovery.title.startswith("Marcus recover blocked task:")
+        assert "Blocked task: " + task_id in (recovery.body or "")
+        assert "Contract ambiguity blocks implementation" in (recovery.body or "")
+        assert recovery.id in kb.parent_ids(conn, task_id)
+        handled = [
+            event for event in kb.list_events(conn, task_id)
+            if event.kind == "blocked_recovery_planned"
+        ]
+        assert len(handled) == 1
+        assert handled[0].payload["recovery_task"] == recovery.id
+
+
+def test_process_blocked_recovery_ignores_initial_human_decision_blocks(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Needs Corey: approve production access",
+            body="Waiting for explicit approval.",
+            assignee="marcus",
+            created_by=kb.REVIEW_OUTCOME_HANDLER_AUTHOR,
+            initial_status="blocked",
+        )
+
+        result = kb.process_blocked_recoveries(conn)
+
+        assert result.processed == []
+        assert result.recovery_tasks == []
+        assert kb.child_ids(conn, task_id) == []
+        assert [
+            event for event in kb.list_events(conn, task_id)
+            if event.kind == "blocked_recovery_planned"
+        ] == []
+
+
 
 def test_unblock_resets_failure_counters(kanban_home):
     """unblock_task must reset consecutive_failures and last_failure_error."""
@@ -2173,16 +2233,15 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
 
 
 # ---------------------------------------------------------------------------
-# NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
+# Rollback-journal mode for high-churn kanban DBs
 # ---------------------------------------------------------------------------
 
-def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
-    """kanban_db.connect() must handle ``locking protocol`` on NFS/SMB.
+def test_connect_uses_delete_without_touching_wal_on_locking_protocol(kanban_home):
+    """kanban_db.connect() must avoid WAL setup on NFS/SMB-like filesystems.
 
-    Without this fallback, the gateway's kanban dispatcher crashes every
-    60s and the kanban migration (``consecutive_failures`` ADD COLUMN) is
-    retried forever — which is what the real-world user report shows
-    (see hermes-agent issue #22032).
+    The Kanban board is touched by gateway, dashboard, CLI, and workers. On
+    filesystems that reject WAL locking, the durable contract is now to enforce
+    rollback-journal mode directly instead of attempting WAL and falling back.
     """
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
@@ -2204,17 +2263,9 @@ def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
         )
 
     with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
-        with caplog.at_level("WARNING", logger="hermes_state"):
-            conn = kb.connect()
+        conn = kb.connect()
 
-    # One fallback warning, naming kanban.db
-    warnings = [
-        r for r in caplog.records
-        if r.levelname == "WARNING" and "kanban.db" in r.getMessage()
-    ]
-    assert len(warnings) >= 1, (
-        f"Expected a kanban.db WARNING, got: {[r.getMessage() for r in caplog.records]}"
-    )
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
 
     # DB still usable end-to-end — create + list a task
     t = kb.create_task(conn, title="post-fallback task")

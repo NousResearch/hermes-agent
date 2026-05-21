@@ -142,3 +142,123 @@ def test_compress_none_focus_by_default():
     compressor.compress(messages, current_tokens=100000)
 
     assert received_kwargs.get("focus_topic") is None
+
+
+# ---------------------------------------------------------------------------
+# provider_context injection tests (issue #23367)
+# ---------------------------------------------------------------------------
+
+
+def test_provider_context_injected_into_summary_prompt():
+    """When provider_context is provided, the LLM prompt includes the memory block."""
+    compressor = _make_compressor()
+    turns = [
+        {"role": "user", "content": "Set up the database"},
+        {"role": "assistant", "content": "Done, using PostgreSQL 15."},
+    ]
+
+    captured_prompt = {}
+
+    def mock_call_llm(**kwargs):
+        captured_prompt["messages"] = kwargs["messages"]
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = "## Goal\nDB setup."
+        return resp
+
+    with patch("agent.context_compressor.call_llm", mock_call_llm):
+        compressor._generate_summary(
+            turns,
+            provider_context="User prefers PostgreSQL over MySQL",
+        )
+
+    text = captured_prompt["messages"][0]["content"]
+    assert "MEMORY PROVIDER CONTEXT" in text
+    assert "User prefers PostgreSQL over MySQL" in text
+
+
+def test_empty_provider_context_not_injected():
+    """Empty provider_context must not add the block to the prompt."""
+    compressor = _make_compressor()
+    turns = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there"},
+    ]
+
+    captured_prompt = {}
+
+    def mock_call_llm(**kwargs):
+        captured_prompt["messages"] = kwargs["messages"]
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = "## Goal\nGreeting."
+        return resp
+
+    with patch("agent.context_compressor.call_llm", mock_call_llm):
+        compressor._generate_summary(turns, provider_context="")
+
+    text = captured_prompt["messages"][0]["content"]
+    assert "MEMORY PROVIDER CONTEXT" not in text
+
+
+def test_provider_context_and_focus_topic_coexist():
+    """provider_context and focus_topic can both appear in the same prompt."""
+    compressor = _make_compressor()
+    turns = [
+        {"role": "user", "content": "fix the auth bug"},
+        {"role": "assistant", "content": "Fixed JWT expiry check."},
+    ]
+
+    captured_prompt = {}
+
+    def mock_call_llm(**kwargs):
+        captured_prompt["messages"] = kwargs["messages"]
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = "## Goal\nAuth fix."
+        return resp
+
+    with patch("agent.context_compressor.call_llm", mock_call_llm):
+        compressor._generate_summary(
+            turns,
+            focus_topic="authentication",
+            provider_context="User uses JWT tokens with 1h expiry",
+        )
+
+    text = captured_prompt["messages"][0]["content"]
+    assert 'FOCUS TOPIC: "authentication"' in text
+    assert "MEMORY PROVIDER CONTEXT" in text
+    assert "JWT" in text
+
+
+def test_compress_passes_provider_context_to_generate_summary():
+    """compress() passes provider_context through to _generate_summary."""
+    compressor = _make_compressor()
+
+    received_kwargs = {}
+
+    def tracking_generate(turns, **kwargs):
+        received_kwargs.update(kwargs)
+        return "## Goal\nTest."
+
+    compressor._generate_summary = tracking_generate
+
+    messages = [
+        {"role": "system", "content": "System prompt"},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply1"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "reply2"},
+        {"role": "user", "content": "third"},
+        {"role": "assistant", "content": "reply3"},
+        {"role": "user", "content": "fourth"},
+        {"role": "assistant", "content": "reply4"},
+    ]
+
+    compressor.compress(
+        messages,
+        current_tokens=100000,
+        provider_context="User fact: prefers dark mode",
+    )
+
+    assert received_kwargs.get("provider_context") == "User fact: prefers dark mode"

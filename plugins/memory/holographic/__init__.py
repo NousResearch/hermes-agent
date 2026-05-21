@@ -250,6 +250,32 @@ class HolographicMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Return top-trust stored facts as compression hints.
+
+        Tells the compressor which facts are already persisted in the
+        holographic memory bank so it can preserve surrounding conversation
+        context that led to or elaborates on those facts.
+        """
+        if not self._store:
+            return ""
+        try:
+            rows = self._store.list_facts(
+                min_trust=self._min_trust,
+                limit=15,
+            )
+            if not rows:
+                return ""
+            lines = "\n".join(f"- {r['content']}" for r in rows)
+            return (
+                "The following facts are stored in the holographic memory bank "
+                "(highest trust first). Preserve conversation context related to "
+                "these facts and any updates or corrections to them:\n" + lines
+            )
+        except Exception as e:
+            logger.debug("Holographic on_pre_compress failed: %s", e)
+            return ""
+
     def shutdown(self) -> None:
         self._store = None
         self._retriever = None

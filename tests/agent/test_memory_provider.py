@@ -326,6 +326,45 @@ class TestMemoryManager:
         mgr.on_pre_compress([{"role": "user", "content": "old"}])
         assert p.pre_compress_called
 
+    def test_on_pre_compress_returns_combined_text(self):
+        """MemoryManager.on_pre_compress returns joined hint text from providers."""
+        mgr = MemoryManager()
+
+        class HintProvider(FakeMemoryProvider):
+            def on_pre_compress(self, messages):
+                self.pre_compress_called = True
+                return "important fact from provider"
+
+        p = HintProvider("ext")
+        mgr.add_provider(p)
+
+        result = mgr.on_pre_compress([{"role": "user", "content": "msg"}])
+        assert result == "important fact from provider"
+        assert p.pre_compress_called
+
+    def test_on_pre_compress_empty_provider_returns_empty(self):
+        """MemoryManager.on_pre_compress returns empty string when provider returns nothing."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext")  # base returns ""
+        mgr.add_provider(p)
+
+        result = mgr.on_pre_compress([{"role": "user", "content": "msg"}])
+        assert result == ""
+
+    def test_on_pre_compress_whitespace_only_skipped(self):
+        """MemoryManager skips providers whose on_pre_compress returns only whitespace."""
+        mgr = MemoryManager()
+
+        class WhitespaceProvider(FakeMemoryProvider):
+            def on_pre_compress(self, messages):
+                return "   \n  "
+
+        p = WhitespaceProvider("ext")
+        mgr.add_provider(p)
+
+        result = mgr.on_pre_compress([])
+        assert result == ""
+
     def test_shutdown_all_reverse_order(self):
         mgr = MemoryManager()
         order = []

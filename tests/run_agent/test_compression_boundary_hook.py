@@ -1,4 +1,9 @@
-"""Test: the context engine is notified of a compression-boundary rollover.
+"""Tests: compression boundary hook and memory provider context chain.
+
+Tests that:
+1. The context engine is notified of a compression-boundary rollover.
+2. on_pre_compress return value is forwarded to compress() as provider_context
+   (issue #23367 — the chain was broken: return value was discarded).
 
 When _compress_context rotates session_id (compression split), the active
 context engine receives on_session_start(new_sid, boundary_reason="compression",
@@ -160,3 +165,123 @@ class TestCompressionBoundaryHook:
             )
             assert compressed
             assert agent.session_id != original_sid
+
+
+class TestMemoryProviderContextChain:
+    """Regression tests for issue #23367.
+
+    on_pre_compress() return value was silently discarded in
+    conversation_compression.py — it was never forwarded to compress() as
+    provider_context, so memory providers could never guide the compressor.
+    """
+
+    def _make_agent(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            from run_agent import AIAgent
+            return AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=None,
+                session_id="test-session",
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+    def test_on_pre_compress_return_value_forwarded_to_compress(self):
+        """provider_context from on_pre_compress must reach compress()."""
+        agent = self._make_agent()
+
+        # Inject a mock memory manager whose on_pre_compress returns a hint
+        mock_mgr = MagicMock()
+        mock_mgr.on_pre_compress.return_value = "User prefers PostgreSQL over MySQL"
+        mock_mgr.build_system_prompt.return_value = ""
+        agent._memory_manager = mock_mgr
+
+        # Intercept compress() to capture what provider_context it receives
+        received = {}
+        compressor = MagicMock()
+
+        def capture_compress(messages, **kwargs):
+            received["provider_context"] = kwargs.get("provider_context", "")
+            return [{"role": "user", "content": "summary"}]
+
+        compressor.compress.side_effect = capture_compress
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 0
+        compressor.last_completion_tokens = 0
+        compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        agent.context_compressor = compressor
+
+        agent._compress_context(
+            [{"role": "user", "content": "msg"}], "sys", approx_tokens=100
+        )
+
+        assert received.get("provider_context") == "User prefers PostgreSQL over MySQL", (
+            "provider_context from on_pre_compress was not forwarded to compress(). "
+            f"Got: {received.get('provider_context')!r}"
+        )
+
+    def test_empty_on_pre_compress_forwards_empty_string(self):
+        """When on_pre_compress returns empty, compress() receives empty string."""
+        agent = self._make_agent()
+
+        mock_mgr = MagicMock()
+        mock_mgr.on_pre_compress.return_value = ""
+        mock_mgr.build_system_prompt.return_value = ""
+        agent._memory_manager = mock_mgr
+
+        received = {}
+        compressor = MagicMock()
+
+        def capture_compress(messages, **kwargs):
+            received["provider_context"] = kwargs.get("provider_context", "MISSING")
+            return [{"role": "user", "content": "summary"}]
+
+        compressor.compress.side_effect = capture_compress
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 0
+        compressor.last_completion_tokens = 0
+        compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        agent.context_compressor = compressor
+
+        agent._compress_context(
+            [{"role": "user", "content": "msg"}], "sys", approx_tokens=100
+        )
+
+        assert received.get("provider_context") == "", (
+            f"Expected empty string, got: {received.get('provider_context')!r}"
+        )
+
+    def test_no_memory_manager_still_compresses(self):
+        """Without a memory manager, compress() is still called normally."""
+        agent = self._make_agent()
+        agent._memory_manager = None
+
+        received = {}
+        compressor = MagicMock()
+
+        def capture_compress(messages, **kwargs):
+            received["called"] = True
+            received["provider_context"] = kwargs.get("provider_context", "MISSING")
+            return [{"role": "user", "content": "summary"}]
+
+        compressor.compress.side_effect = capture_compress
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 0
+        compressor.last_completion_tokens = 0
+        compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        agent.context_compressor = compressor
+
+        agent._compress_context(
+            [{"role": "user", "content": "msg"}], "sys", approx_tokens=100
+        )
+
+        assert received.get("called"), "compress() was never called"
+        assert received.get("provider_context") == "", (
+            f"Expected empty string without memory manager, got: {received.get('provider_context')!r}"
+        )

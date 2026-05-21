@@ -305,18 +305,27 @@ def compress_context(
         "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
     )
 
-    # Notify external memory provider before compression discards context
+    # Notify external memory provider before compression discards context.
+    # Capture the returned hint text (if any) to inject into the compression
+    # prompt so the summarisation LLM knows which facts to preserve.
+    _provider_context = ""
     if agent._memory_manager:
         try:
-            agent._memory_manager.on_pre_compress(messages)
+            _provider_context = agent._memory_manager.on_pre_compress(messages) or ""
         except Exception:
             pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        compressed = agent.context_compressor.compress(
+            messages,
+            current_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+            provider_context=_provider_context,
+        )
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
+        # focus_topic / force / provider_context — fall back to calling without them.
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
 
     # If compression aborted (aux LLM failed to produce a usable summary)

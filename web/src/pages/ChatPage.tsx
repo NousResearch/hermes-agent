@@ -104,6 +104,23 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
+// Default xterm.js scrollback for the dashboard chat — see the comment at
+// the call site below. Keep in sync with
+// ``website/docs/reference/environment-variables.md``.
+const DASHBOARD_CHAT_SCROLLBACK_DEFAULT = 50000;
+// Hard upper bound on operator overrides so a typo (e.g. an extra zero)
+// can't OOM the browser tab.
+const DASHBOARD_CHAT_SCROLLBACK_CEILING = 500000;
+
+function dashboardChatScrollback(): number {
+  if (typeof window === "undefined") return DASHBOARD_CHAT_SCROLLBACK_DEFAULT;
+  const raw = window.__HERMES_DASHBOARD_CHAT_SCROLLBACK__;
+  if (raw === undefined || raw === null) return DASHBOARD_CHAT_SCROLLBACK_DEFAULT;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return DASHBOARD_CHAT_SCROLLBACK_DEFAULT;
+  return Math.min(Math.floor(n), DASHBOARD_CHAT_SCROLLBACK_CEILING);
+}
+
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -298,9 +315,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // is false; enabling it gives users a single-action selection
       // path on top of the modifier-based bypass above.
       rightClickSelectsWord: true,
-      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
-      // history in xterm.js so the browser wheel can scroll it directly.
-      scrollback: 5000,
+      // Browser-embedded chat runs the TUI in inline mode (see
+      // ``HERMES_TUI_INLINE`` in the PTY env), so the only transcript
+      // history the wheel handler below can scroll through is xterm.js's
+      // own scrollback buffer — the inline TUI does not retain a separate
+      // scrollback of its own. The previous 5,000-line cap was easy to
+      // exhaust on long sessions (a few hundred messages × tool calls /
+      // code blocks ≈ tens of thousands of rows), which surfaced as
+      // "scroll-up hits a wall and older messages are missing"
+      // (#29562 on v0.14.0). 50,000 lines is roughly enough for
+      // ~1.5–3k typical chat messages at a memory budget of ~60–90 MB
+      // worst case (xterm.js stores ~12 B/cell × cols × rows); operators
+      // who need more can set ``HERMES_DASHBOARD_CHAT_SCROLLBACK`` which
+      // the server forwards into the ``window`` global below.
+      scrollback: dashboardChatScrollback(),
       theme: TERMINAL_THEME,
     });
     termRef.current = term;
@@ -861,5 +889,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
+    /**
+     * Operator override for the dashboard chat's xterm.js scrollback
+     * cap (#29562). Injected by ``hermes_cli/web_server.py`` from the
+     * ``HERMES_DASHBOARD_CHAT_SCROLLBACK`` env var; defaults to
+     * ``DASHBOARD_CHAT_SCROLLBACK_DEFAULT`` when unset / invalid.
+     */
+    __HERMES_DASHBOARD_CHAT_SCROLLBACK__?: number | string;
   }
 }

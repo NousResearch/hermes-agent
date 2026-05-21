@@ -90,6 +90,33 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
 
+# Upper bound for the dashboard-chat xterm.js scrollback override below.
+# Mirrors ``DASHBOARD_CHAT_SCROLLBACK_CEILING`` in
+# ``web/src/pages/ChatPage.tsx`` — a typo with an extra zero shouldn't be
+# allowed to OOM the browser tab.
+_DASHBOARD_CHAT_SCROLLBACK_CEILING = 500_000
+
+
+def _dashboard_chat_scrollback_js() -> str:
+    """Render the ``window.__HERMES_DASHBOARD_CHAT_SCROLLBACK__`` payload.
+
+    Returns a JS literal — either a clamped positive integer when the
+    operator set ``HERMES_DASHBOARD_CHAT_SCROLLBACK`` to a valid number,
+    or the literal ``null`` so the frontend falls back to
+    ``DASHBOARD_CHAT_SCROLLBACK_DEFAULT``. Anything malformed (negative,
+    non-numeric, blank) also resolves to ``null`` — see #29562.
+    """
+    raw = os.environ.get("HERMES_DASHBOARD_CHAT_SCROLLBACK")
+    if not raw or not raw.strip():
+        return "null"
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return "null"
+    if value <= 0:
+        return "null"
+    return str(min(value, _DASHBOARD_CHAT_SCROLLBACK_CEILING))
+
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
@@ -3681,9 +3708,11 @@ def mount_spa(application: FastAPI):
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
+        scrollback_js = _dashboard_chat_scrollback_js()
         token_script = (
             f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+            f"window.__HERMES_DASHBOARD_CHAT_SCROLLBACK__={scrollback_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
         )
         if prefix:

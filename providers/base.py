@@ -68,6 +68,18 @@ class ProviderProfile:
     # ── Client-level quirks (set once at client construction) ─
     default_headers: dict[str, str] = field(default_factory=dict)
 
+    # ── Rate-limit / retry tuning ───────────────────────────
+    # Per-provider overrides for jittered_backoff().  When set, the
+    # conversation loop uses these instead of the global defaults.
+    # Providers with aggressive free-tier limits (e.g. NVIDIA NIM)
+    # benefit from a higher base_delay so the rate-limit window has
+    # time to reset between retries.
+    backoff_base_delay: float | None = None   # seconds; global default 10.0
+    backoff_max_delay: float | None = None    # seconds; global default 120.0
+    # Minimum seconds between consecutive API requests.  Enforced
+    # pre-request in the conversation loop.  0 = no throttle (default).
+    min_request_interval: float = 0.0
+
     # ── Request-level quirks ─────────────────────────────────
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None

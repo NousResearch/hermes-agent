@@ -46,6 +46,31 @@ class TestNvidiaProfile:
         p = get_provider_profile("nvidia")
         assert p.default_headers == {}
 
+    def test_backoff_tuning(self):
+        p = get_provider_profile("nvidia")
+        assert p.backoff_base_delay == 30.0
+        assert p.backoff_max_delay == 120.0
+
+    def test_min_request_interval(self):
+        p = get_provider_profile("nvidia")
+        assert p.min_request_interval == 2.0
+
+
+class TestBackoffDefaults:
+    """ProviderProfile rate-limit fields default to None / 0."""
+
+    def test_base_delay_default_none(self):
+        p = ProviderProfile(name="test")
+        assert p.backoff_base_delay is None
+
+    def test_max_delay_default_none(self):
+        p = ProviderProfile(name="test")
+        assert p.backoff_max_delay is None
+
+    def test_min_interval_default_zero(self):
+        p = ProviderProfile(name="test")
+        assert p.min_request_interval == 0.0
+
 
 class TestKimiProfile:
     def test_temperature_omit(self):

@@ -651,7 +651,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
-      ws.close();
+      // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
+      // ticket fetch makes the open async). The cleanup runs at the outer
+      // effect's top level so it can't reach into that scope — close via
+      // the ref instead. ``?.`` covers the race where unmount fires before
+      // the ticket fetch resolves and ``wsRef.current`` was never assigned.
+      wsRef.current?.close();
       wsRef.current = null;
       term.dispose();
       termRef.current = null;

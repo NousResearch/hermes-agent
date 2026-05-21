@@ -2155,7 +2155,12 @@ def _ensure_mcp_loop():
         _mcp_thread.start()
 
 
-def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
+def _run_on_mcp_loop(
+    coro_or_factory,
+    timeout: float = 30,
+    *,
+    cancel_on_timeout: bool = True,
+):
     """Schedule a coroutine on the MCP event loop and block until done.
 
     Accepts either a coroutine object or a zero-arg callable that returns one.
@@ -2196,7 +2201,8 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
         if deadline is not None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                future.cancel()
+                if cancel_on_timeout:
+                    future.cancel()
                 elapsed = time.monotonic() - start_time
                 raise TimeoutError(
                     f"MCP call timed out after {elapsed:.1f}s "
@@ -3186,7 +3192,12 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
+def register_mcp_servers(
+    servers: Dict[str, dict],
+    *,
+    startup_timeout: Optional[float] = None,
+    continue_in_background: bool = False,
+) -> List[str]:
     """Connect to explicit MCP servers and register their tools.
 
     Idempotent for already-connected server names. Servers with
@@ -3194,6 +3205,12 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     Args:
         servers: Mapping of ``{server_name: server_config}``.
+        startup_timeout: Optional bounded wait for startup-time discovery.
+            When omitted, waits for the full discovery window.
+        continue_in_background: When True and ``startup_timeout`` expires,
+            keep discovery running on the MCP loop and return immediately so
+            Hermes startup is not blocked by a slow or unhealthy optional MCP
+            server.
 
     Returns:
         List of all currently registered MCP tool names.
@@ -3258,8 +3275,23 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     _was_interrupted = _is_interrupted()
     if _was_interrupted:
         _set_interrupt(False)
+    discovery_wait = 120 if startup_timeout is None else float(startup_timeout)
     try:
-        _run_on_mcp_loop(_discover_all, timeout=120)
+        _run_on_mcp_loop(
+            _discover_all,
+            timeout=discovery_wait,
+            cancel_on_timeout=not continue_in_background,
+        )
+    except TimeoutError:
+        if not continue_in_background:
+            raise
+        logger.warning(
+            "MCP discovery still running after %.1fs; continuing startup "
+            "without waiting for: %s",
+            discovery_wait,
+            ", ".join(sorted(new_servers)),
+        )
+        return _existing_tool_names()
     finally:
         if _was_interrupted:
             _set_interrupt(True)
@@ -3281,7 +3313,11 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
-def discover_mcp_tools() -> List[str]:
+def discover_mcp_tools(
+    *,
+    startup_timeout: Optional[float] = None,
+    continue_in_background: bool = False,
+) -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
     Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
@@ -3289,6 +3325,11 @@ def discover_mcp_tools() -> List[str]:
 
     Idempotent for already-connected servers. If some servers failed on a
     previous call, only the missing ones are retried.
+
+    Args:
+        startup_timeout: Optional bounded wait for startup discovery.
+        continue_in_background: When True and ``startup_timeout`` expires,
+            continue startup while discovery finishes on the MCP loop.
 
     Returns:
         List of all registered MCP tool names.
@@ -3309,7 +3350,11 @@ def discover_mcp_tools() -> List[str]:
             if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
         ]
 
-    tool_names = register_mcp_servers(servers)
+    tool_names = register_mcp_servers(
+        servers,
+        startup_timeout=startup_timeout,
+        continue_in_background=continue_in_background,
+    )
     if not new_server_names:
         return tool_names
 

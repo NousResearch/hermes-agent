@@ -3214,6 +3214,59 @@ class TestDiscoveryFailedCount:
         _servers.pop("fail1", None)
 
 
+class TestMCPStartupSoftFail:
+    """Startup-time discovery should not block Hermes on slow optional MCPs."""
+
+    def test_discover_timeout_continues_in_background(self):
+        from tools.mcp_tool import discover_mcp_tools, _servers, _ensure_mcp_loop
+
+        fake_config = {
+            "slow_server": {"command": "npx", "args": ["slow"]},
+        }
+
+        async def slow_register(name, cfg):
+            await asyncio.sleep(0.05)
+            from tools.mcp_tool import MCPServerTask
+            server = MCPServerTask(name)
+            server.session = MagicMock()
+            server._registered_tool_names = ["mcp_slow_server_tool_a"]
+            _servers[name] = server
+            return server._registered_tool_names
+
+        with patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._discover_and_register_server", side_effect=slow_register), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._existing_tool_names", side_effect=lambda: [
+                 "mcp_slow_server_tool_a"
+             ] if "slow_server" in _servers else []):
+            _ensure_mcp_loop()
+
+            start = time.monotonic()
+            with patch("tools.mcp_tool.logger") as mock_logger:
+                result = discover_mcp_tools(
+                    startup_timeout=0.01,
+                    continue_in_background=True,
+                )
+                elapsed = time.monotonic() - start
+
+                assert elapsed < 0.05, (
+                    f"startup discovery should return quickly, took {elapsed:.3f}s"
+                )
+                assert result == []
+                warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
+                assert any("continuing startup" in call for call in warning_calls), (
+                    f"expected startup soft-fail warning, got: {warning_calls}"
+                )
+
+            deadline = time.monotonic() + 1.0
+            while "slow_server" not in _servers and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+            assert "slow_server" in _servers, "background discovery never finished"
+
+        _servers.pop("slow_server", None)
+
+
 class TestMCPSelectiveToolLoading:
     """Tests for per-server MCP filtering and utility tool policies."""
 

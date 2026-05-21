@@ -25,6 +25,7 @@ from agent.skill_utils import (
     skill_matches_platform,
 )
 from utils import atomic_json_write
+from agent.swarm_prompt import build_swarm_operator_prompt, swarm_operator_enabled
 
 logger = logging.getLogger(__name__)
 

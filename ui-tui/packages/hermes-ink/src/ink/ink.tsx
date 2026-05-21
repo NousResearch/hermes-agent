@@ -573,9 +573,11 @@ export default class Ink {
       this.resizeSettleTimer = null
     }
 
-    if (this.altScreenMouseTracking !== 'off') {
-      this.options.stdout.write(enableMouseTrackingFor(this.altScreenMouseTracking))
-    }
+    // Mouse tracking — DISABLE first so we land in the exact preset state
+    // even if an external app/terminal/tmux left DEC 1003 hover asserted.
+    // DISABLE_MOUSE_TRACKING is idempotent (resets all four modes
+    // unconditionally), safe to send even when current preset is 'off'.
+    this.options.stdout.write(DISABLE_MOUSE_TRACKING + enableMouseTrackingFor(this.altScreenMouseTracking))
 
     this.resetFramesForAltScreen()
     this.needsEraseBeforePaint = true
@@ -1347,9 +1349,10 @@ export default class Ink {
     }
 
     // Mouse tracking — idempotent, safe to re-assert on every stdin gap.
-    if (this.altScreenMouseTracking !== 'off') {
-      this.options.stdout.write(enableMouseTrackingFor(this.altScreenMouseTracking))
-    }
+    // DISABLE first so we land in the exact preset state even if an
+    // external app or tmux left DEC 1003 hover asserted out from under us
+    // since the last assertion.
+    this.options.stdout.write(DISABLE_MOUSE_TRACKING + enableMouseTrackingFor(this.altScreenMouseTracking))
 
     // Alt-screen re-entry — destructive (ERASE_SCREEN). Only for callers that
     // have a strong signal the terminal actually dropped mode 1049.
@@ -1405,8 +1408,17 @@ export default class Ink {
    * stays true. ENTER_ALT_SCREEN is a terminal-side no-op if already in alt.
    */
   private reenterAltScreen(): void {
+    // DISABLE_MOUSE_TRACKING before enableMouseTrackingFor — same as
+    // setAltScreenMouseTracking / AlternateScreen mount / handleResize.
+    // DEC private modes have no atomic "set this bitmask" sequence, only
+    // per-mode set/reset, so for 'wheel'/'buttons' presets we must reset
+    // first to drop any lingering DEC 1003 hover from before re-entry.
     this.options.stdout.write(
-      ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME + enableMouseTrackingFor(this.altScreenMouseTracking)
+      ENTER_ALT_SCREEN +
+        ERASE_SCREEN +
+        CURSOR_HOME +
+        DISABLE_MOUSE_TRACKING +
+        enableMouseTrackingFor(this.altScreenMouseTracking)
     )
     this.resetFramesForAltScreen()
     // ERASE_SCREEN above leaves the physical alt screen blank, and

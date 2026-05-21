@@ -63,12 +63,14 @@ def _child_execute_swarm(
     store_base_dir: str,
     max_children: int,
 ) -> None:
-    try:
-        os.setsid()
-    except OSError:
-        # Best-effort process-group isolation. The monitor still kills the
-        # direct child if the platform refuses to create a new session.
-        pass
+    setsid = getattr(os, "setsid", None)
+    if callable(setsid):
+        try:
+            setsid()
+        except OSError:
+            # Best-effort process-group isolation. The monitor still kills the
+            # direct child if the platform refuses to create a new session.
+            pass
     store = SwarmStore(base_dir=store_base_dir)
     try:
         store.append_event(
@@ -141,9 +143,10 @@ def _isolated_process_group_id(process: Any) -> Optional[int]:
 
 def _terminate_process_tree(process: Any) -> None:
     pgid = _isolated_process_group_id(process)
-    if pgid is not None:
+    killpg = getattr(os, "killpg", None)
+    if pgid is not None and callable(killpg):
         try:
-            os.killpg(pgid, signal.SIGTERM)
+            killpg(pgid, signal.SIGTERM)
             return
         except ProcessLookupError:
             return
@@ -157,9 +160,10 @@ def _terminate_process_tree(process: Any) -> None:
 
 def _kill_process_tree(process: Any) -> None:
     pgid = _isolated_process_group_id(process)
-    if pgid is not None:
+    killpg = getattr(os, "killpg", None)
+    if pgid is not None and callable(killpg):
         try:
-            os.killpg(pgid, signal.SIGKILL)
+            killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))
             return
         except ProcessLookupError:
             return

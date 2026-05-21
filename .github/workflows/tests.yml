@@ -23,10 +23,21 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3, 4]
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Restore duration cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: test_durations.json
+          # Single stable key. main always overwrites, PRs always find it.
+          key: test-durations
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -54,7 +65,7 @@ jobs:
           source .venv/bin/activate
           uv pip install -e ".[all,dev]"
 
-      - name: Run tests
+      - name: Run tests (slice ${{ matrix.slice }}/4)
         # Per-file isolation via scripts/run_tests_parallel.py: discovers
         # every test_*.py file under tests/ (excluding integration/ + e2e/),
         # then runs `python -m pytest <file>` in a freshly-spawned subprocess
@@ -72,14 +83,60 @@ jobs:
         # state across files, which is exactly the leakage we wanted to
         # fix. ThreadPoolExecutor + subprocess.run is ~60 lines and does
         # the job with cleaner semantics.
+        #
+        # Matrix slicing (--slice I/N): files are distributed across 4
+        # jobs by cached duration (LPT algorithm) so each job gets
+        # roughly equal wall time. Without a cache, files default to 2s
+        # estimate and get split roughly evenly by count — still correct,
+        # just not perfectly balanced.
         run: |
           source .venv/bin/activate
-          python scripts/run_tests_parallel.py
+          python scripts/run_tests_parallel.py --slice ${{ matrix.slice }}/4
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+      - name: Upload per-slice durations
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: test-durations-slice-${{ matrix.slice }}
+          path: test_durations.json
+          retention-days: 1
+
+  # Merge per-slice duration data into a single cache, so future runs
+  # (including PRs) get balanced slicing.
+  save-durations:
+    needs: test
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all slice durations
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: test-durations-slice-*
+          path: durations
+          merge-multiple: true
+
+      - name: Merge into single durations file
+        run: |
+          python3 -c "
+          import json, glob, os
+          merged = {}
+          for f in glob.glob('durations/*test_durations.json'):
+            with open(f) as fh:
+              merged.update(json.load(fh))
+          with open('test_durations.json', 'w') as fh:
+            json.dump(merged, fh, indent=2, sort_keys=True)
+          print(f'Merged {len(merged)} file durations')
+          "
+
+      - name: Save merged duration cache
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: test_durations.json
+          key: test-durations
 
   e2e:
     runs-on: ubuntu-latest

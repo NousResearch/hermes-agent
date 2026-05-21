@@ -128,18 +128,70 @@ def test_repair_does_not_rewind_ongoing_dialog_tool_pair():
     assert messages == original
 
 
-def test_repair_drops_stray_tool_with_unknown_tool_call_id():
+def test_repair_preserves_orphan_tool_content_in_preceding_message():
+    """Orphan tool result content is merged into the preceding message
+    instead of being silently dropped."""
     agent = _bare_agent()
     messages = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello"},
-        {"role": "tool", "tool_call_id": "orphan", "content": "stray"},
+        {"role": "tool", "tool_call_id": "orphan", "content": "stray result"},
         {"role": "user", "content": "real"},
     ]
 
     repairs = AIAgent._repair_message_sequence(agent, messages)
 
     assert repairs >= 1
+    # Tool content should be merged into the preceding assistant message
+    assert messages[1]["content"] == "hello\n\nstray result"
+    # No tool-role messages should remain
+    assert all(m.get("role") != "tool" for m in messages)
+
+
+def test_repair_preserves_orphan_tool_content_after_compression():
+    """After context compression removes the assistant(tool_calls) message,
+    the orphan tool result content must be preserved in the next message."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "write a script"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "write_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "script.py written"},
+        {"role": "user", "content": "run it"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "t2", "type": "function",
+                         "function": {"name": "terminal", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t2", "content": "output: hello world"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    # Both t1 and t2 are valid (matching tool_call_ids in preceding assistants
+    # before the position where repair runs). No repairs needed.
+    assert repairs == 0
+    assert len(messages) == 6
+
+
+def test_repair_merges_orphan_tool_into_user_message():
+    """If compression removes the assistant, the orphan tool content
+    should be merged into the following user message."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do something"},
+        {"role": "assistant", "content": "summarized"},
+        {"role": "tool", "tool_call_id": "orphan1", "content": "result1"},
+        {"role": "tool", "tool_call_id": "orphan2", "content": "result2"},
+        {"role": "user", "content": "continue"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 2
+    # Both tool results merged into the preceding assistant message
+    assert "result1" in messages[1]["content"]
+    assert "result2" in messages[1]["content"]
+    assert any(m.get("role") == "user" and m.get("content") == "continue" for m in messages)
     assert all(m.get("role") != "tool" for m in messages)
 
 

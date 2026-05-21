@@ -351,10 +351,11 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     host code) can feed in already-broken histories.
 
     Repairs applied:
-      1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
-         any preceding assistant tool_call — dropped.
-      2. Consecutive ``user`` messages — merged with newline separator
-         so no user input is lost.
+       1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
+          any preceding assistant tool_call — content is preserved by
+          appending to the preceding message instead of being dropped.
+       2. Consecutive ``user`` messages — merged with newline separator
+          so no user input is lost.
 
     Deliberately does NOT rewind orphan ``assistant(tool_calls)+tool``
     pairs that precede a user message — that pattern IS valid when the
@@ -392,6 +393,21 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             if tc_id and tc_id in known_tool_ids:
                 filtered.append(msg)
             else:
+                # Orphan tool result — likely from context compression
+                # removing the parent assistant(tool_calls) message.
+                # Preserve content by appending to the preceding message
+                # so no tool output is permanently lost.
+                if filtered and isinstance(filtered[-1], dict):
+                    prev = filtered[-1]
+                    prev_content = prev.get("content", "") or ""
+                    tool_content = msg.get("content", "") or ""
+                    if tool_content:
+                        if isinstance(prev_content, str):
+                            prev["content"] = (
+                                prev_content + "\n\n" + tool_content
+                                if prev_content
+                                else tool_content
+                            )
                 repairs += 1
         else:
             if role == "user":

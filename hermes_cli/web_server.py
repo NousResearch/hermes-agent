@@ -160,6 +160,22 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def should_require_auth(host: str, allow_public: bool) -> bool:
+    """Return True iff the dashboard OAuth auth gate must be active.
+
+    Truth table:
+      host == loopback                              → False (no auth)
+      host != loopback AND allow_public (--insecure)→ False (legacy escape hatch)
+      host != loopback AND NOT allow_public         → True  (gate engages)
+
+    "Loopback" matches the same set used by ``--insecure`` enforcement in
+    ``start_server``: 127.0.0.1, localhost, ::1. RFC1918 / CGNAT / link-local
+    are deliberately treated as PUBLIC — a hostile device on the same LAN is
+    exactly the threat model the gate is designed for.
+    """
+    return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 

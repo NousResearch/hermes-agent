@@ -262,8 +262,14 @@ def _load_cron_protected() -> Optional[Set[str]]:
     """
     try:
         from cron.jobs import get_active_skill_refs
-    except ImportError:
-        return set()
+    except ModuleNotFoundError:
+        return set()  # cron subsystem not installed — no jobs exist
+    except ImportError as e:
+        logger.warning(
+            "curator: cron.jobs failed to import — "
+            "auto-archive transitions will be skipped this run: %s", e,
+        )
+        return None  # cron present but broken — fail-closed
     try:
         return get_active_skill_refs()
     except Exception as e:

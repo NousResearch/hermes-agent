@@ -575,13 +575,28 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
         return {"success": False, "error": pinned_err}
 
     # Curator-fork-only guard: refuse to delete a skill still referenced by an
-    # active cron job.  cron.jobs is optional — ImportError means no cron jobs.
+    # active cron job.  ModuleNotFoundError = not installed (skip).
+    # Other ImportError = cron present but broken (fail-closed).
     from tools.skill_provenance import is_background_review
     if is_background_review():
+        _get_refs = None
         try:
             from cron.jobs import get_active_skill_refs as _get_refs
-        except ImportError:
-            _get_refs = None  # cron not installed — no active jobs, guard not needed
+        except ModuleNotFoundError:
+            pass  # cron not installed — no active jobs, guard not needed
+        except ImportError as e:
+            logger.warning(
+                "skill_manager: cron.jobs failed to import for '%s': %s",
+                name, e, exc_info=True,
+            )
+            return {
+                "success": False,
+                "error": (
+                    f"Cannot verify cron job references for '{name}' "
+                    "(cron import error — see server logs). "
+                    "Resolve the cron issue and retry."
+                ),
+            }
         if _get_refs is not None:
             try:
                 _active_refs = _get_refs()

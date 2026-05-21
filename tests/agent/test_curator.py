@@ -273,6 +273,38 @@ def test_load_cron_protected_returns_none_and_warns_on_runtime_error(
     assert any("auto-archive transitions will be skipped" in rec.message for rec in caplog.records)
 
 
+def test_apply_automatic_transitions_skips_when_cron_store_raises(
+    curator_env, monkeypatch
+):
+    """When apply_automatic_transitions fetches cron_protected internally and
+    get_active_skill_refs raises, it must return zero counts (fail-closed) rather
+    than archiving skills whose cron dependency cannot be verified."""
+    import cron.jobs as cron_jobs
+
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    skill_dir = _write_skill(skills_dir, "old-skill")
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+    data = u.load_usage()
+    data["old-skill"] = u._empty_record()
+    data["old-skill"]["created_by"] = "agent"
+    data["old-skill"]["last_used_at"] = super_old
+    data["old-skill"]["created_at"] = super_old
+    u.save_usage(data)
+
+    def _raise():
+        raise RuntimeError("io error")
+
+    monkeypatch.setattr(cron_jobs, "get_active_skill_refs", _raise)
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts == {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
+    assert skill_dir.exists(), "skill must not be archived when cron store is unreadable"
+
+
 def test_stale_skill_reactivates_on_recent_use(curator_env):
     c = curator_env["curator"]
     u = curator_env["usage"]

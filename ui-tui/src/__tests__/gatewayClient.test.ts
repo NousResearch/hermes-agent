@@ -100,6 +100,7 @@ describe('GatewayClient websocket attach mode', () => {
     originalGatewayUrl = process.env.HERMES_TUI_GATEWAY_URL
     originalSidecarUrl = process.env.HERMES_TUI_SIDECAR_URL
     FakeWebSocket.reset()
+    delete process.env.HERMES_TUI_SIDECAR_URL
     ;(globalThis as { WebSocket?: unknown }).WebSocket = FakeWebSocket as unknown as typeof WebSocket
   })
 

@@ -1,4 +1,4 @@
-import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -139,6 +139,7 @@ export function useMainApp(gw: GatewayClient) {
   const msgIdsRef = useRef(new WeakMap<Msg, string>())
   const msgIdSeqRef = useRef(0)
   const heightCachesRef = useRef(new Map<string, Map<string, number>>())
+  const gatewayRestartTimerRef = useRef<null | ReturnType<typeof setTimeout>>(null)
 
   colsRef.current = cols
   historyItemsRef.current = historyItems
@@ -604,13 +605,30 @@ export function useMainApp(gw: GatewayClient) {
   onEventRef.current = onEvent
 
   useEffect(() => {
-    const handler = (ev: GatewayEvent) => onEventRef.current(ev)
+    const handler = (ev: GatewayEvent) => {
+      if (ev.type === 'gateway.ready' && gatewayRestartTimerRef.current) {
+        clearTimeout(gatewayRestartTimerRef.current)
+        gatewayRestartTimerRef.current = null
+      }
+
+      onEventRef.current(ev)
+    }
 
     const exitHandler = () => {
       turnController.reset()
-      patchUiState({ busy: false, sid: null, status: 'gateway exited' })
-      turnController.pushActivity('gateway exited · /logs to inspect', 'error')
-      sys('error: gateway exited')
+      patchUiState({ busy: false, sid: null, status: 'gateway restarting…' })
+      turnController.pushActivity('gateway exited · restarting transport', 'error')
+      sys('error: gateway exited; restarting transport')
+
+      if (gatewayRestartTimerRef.current) {
+        return
+      }
+
+      gatewayRestartTimerRef.current = setTimeout(() => {
+        gatewayRestartTimerRef.current = null
+        gw.start()
+      }, 500)
+      gatewayRestartTimerRef.current.unref?.()
     }
 
     gw.on('event', handler)
@@ -619,6 +637,11 @@ export function useMainApp(gw: GatewayClient) {
 
     // entry.tsx's setupGracefulExit handles process cleanup on real exit.
     return () => {
+      if (gatewayRestartTimerRef.current) {
+        clearTimeout(gatewayRestartTimerRef.current)
+        gatewayRestartTimerRef.current = null
+      }
+
       gw.off('event', handler)
       gw.off('exit', exitHandler)
     }

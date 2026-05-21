@@ -437,6 +437,46 @@ def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
         assert "reclaimed" not in kinds
 
 
+def test_stale_claim_with_live_pid_and_stale_heartbeat_gets_reclaimed(
+    kanban_home, monkeypatch,
+):
+    """Live PIDs should not extend expired claims forever once heartbeat
+    evidence is stale for longer than the stale-heartbeat window."""
+    import signal
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+
+        old_expires = int(time.time()) - 60
+        old_started_at = int(time.time()) - (_kb._STALE_HEARTBEAT_GAP_SECONDS + 600)
+        old_heartbeat = int(time.time()) - (_kb._STALE_HEARTBEAT_GAP_SECONDS + 300)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET claim_expires = ?, started_at = ?, "
+                "last_heartbeat_at = ? WHERE id = ?",
+                (old_expires, old_started_at, old_heartbeat, t),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ?, last_heartbeat_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (old_started_at, old_heartbeat, t),
+            )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        killed: list[int] = []
+        reclaimed = kb.release_stale_claims(
+            conn, signal_fn=lambda _p, sig: killed.append(sig),
+        )
+        assert reclaimed == 1
+        assert kb.get_task(conn, t).status == "ready"
+        assert killed
+        assert killed[0] == signal.SIGTERM
+
+
 def test_stale_claim_with_live_pid_uses_env_ttl_override(
     kanban_home, monkeypatch,
 ):

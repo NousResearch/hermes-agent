@@ -2382,12 +2382,19 @@ def release_stale_claims(
 
     A stale-by-TTL claim whose host-local worker PID is still alive is
     *extended* (with a ``claim_extended`` event) instead of being
-    reclaimed. Reclaiming a live worker mid-flight produces the spawn-
-    then-immediately-reclaim loop seen on slow models that spend longer
-    than ``DEFAULT_CLAIM_TTL_SECONDS`` inside a single tool-free LLM
-    call (#23025): no tool calls means no ``kanban_heartbeat``, even
-    though the subprocess is healthy. ``enforce_max_runtime`` and
-    ``detect_crashed_workers`` remain the upper bounds for genuinely
+    reclaimed, but only while the run still shows recent activity. A
+    worker qualifies for extension when either:
+
+    - ``last_heartbeat_at`` is newer than
+      ``_STALE_HEARTBEAT_GAP_SECONDS``; or
+    - the active run itself started less than
+      ``_STALE_HEARTBEAT_GAP_SECONDS`` ago, which preserves the
+      post-#23025 behavior for slow tool-free LLM calls that have not
+      emitted an explicit ``kanban_heartbeat`` yet.
+
+    Once both windows go stale, a live-but-unresponsive PID is reclaimed
+    normally instead of being extended forever. ``enforce_max_runtime``
+    and ``detect_crashed_workers`` remain the upper bounds for genuinely
     wedged or dead workers.
 
     Returns the number of stale claims actually reclaimed (live-pid
@@ -2397,16 +2404,33 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
-        "FROM tasks "
-        "WHERE status = 'running' AND claim_expires IS NOT NULL "
-        "  AND claim_expires < ?",
+        "SELECT t.id, t.claim_lock, t.worker_pid, t.claim_expires, "
+        "       t.last_heartbeat_at, "
+        "       COALESCE(r.started_at, t.started_at) AS active_started_at "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' AND t.claim_expires IS NOT NULL "
+        "  AND t.claim_expires < ?",
         (now,),
     ).fetchall()
     for row in stale:
         lock = row["claim_lock"] or ""
         host_local = lock.startswith(host_prefix)
-        if host_local and row["worker_pid"] and _pid_alive(row["worker_pid"]):
+        last_hb = row["last_heartbeat_at"]
+        hb_age = (now - int(last_hb)) if last_hb is not None else None
+        started_at = row["active_started_at"]
+        started_age = (now - int(started_at)) if started_at is not None else None
+        has_recent_activity = (
+            (hb_age is not None and hb_age < _STALE_HEARTBEAT_GAP_SECONDS)
+            or (started_age is not None and started_age < _STALE_HEARTBEAT_GAP_SECONDS)
+        )
+
+        if (
+            host_local
+            and row["worker_pid"]
+            and _pid_alive(row["worker_pid"])
+            and has_recent_activity
+        ):
             new_expires = now + _resolve_claim_ttl_seconds()
             with write_txn(conn):
                 cur = conn.execute(
@@ -2434,9 +2458,12 @@ def release_stale_claims(
                         "claim_expires_was": int(row["claim_expires"]),
                         "claim_expires_now": new_expires,
                         "last_heartbeat_at": (
-                            int(row["last_heartbeat_at"])
-                            if row["last_heartbeat_at"] is not None
+                            int(last_hb)
+                            if last_hb is not None
                             else None
+                        ),
+                        "active_started_at": (
+                            int(started_at) if started_at is not None else None
                         ),
                     },
                     run_id=run_id,

@@ -67,7 +67,9 @@ kanban_complete(
 
 **Coding task that needs human review (review-required):**
 
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+For most code-changing tasks, prefer creating a dedicated review gate task instead of relying only on a human unblock. The new first-class pattern is to create the implementation card with a reviewer attached (`hermes kanban create ... --reviewer <profile>` or `kanban_create(..., reviewer=...)`), which produces a dependent `review: ...` child card that must PASS before downstream work should depend on it. That reviewer should load the `kanban-adversarial-reviewer` skill and verify target-workspace reality, not just trust the implementer summary.
+
+The older `review-required:` block convention still exists as the fallback when there is no dedicated reviewer profile or the review must be done by a human operator. In that case, block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
 
 ```python
 import json

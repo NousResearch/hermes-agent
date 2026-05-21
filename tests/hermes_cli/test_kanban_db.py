@@ -780,6 +780,50 @@ def test_create_with_parents_stays_todo_until_parents_done(kanban_home):
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_create_review_pair_creates_dependent_review_gate(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        created = kb.create_review_pair(
+            conn,
+            title="ship auth flow",
+            assignee="coder",
+            reviewer_assignee="reviewer",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            skills=["requesting-code-review"],
+            review_skills=["github-code-review"],
+        )
+        impl = kb.get_task(conn, created["implementation_task_id"])
+        review = kb.get_task(conn, created["review_task_id"])
+        assert impl is not None
+        assert review is not None
+        parents = kb.parent_ids(conn, review.id)
+
+    assert impl.status == "ready"
+    assert review.status == "todo"
+    assert parents == [impl.id]
+    assert review.workspace_kind == "dir"
+    assert review.workspace_path == str(tmp_path)
+    assert review.skills == [
+        kb.DEFAULT_ADVERSARIAL_REVIEW_SKILL,
+        "github-code-review",
+    ]
+    assert created["promote_after_task_id"] == review.id
+    assert "Hello Hermes regression" in (review.body or "")
+
+
+def test_create_review_pair_validates_review_skills_before_implementation(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="'terminal' is a toolset name"):
+            kb.create_review_pair(
+                conn,
+                title="ship auth flow",
+                assignee="coder",
+                reviewer_assignee="reviewer",
+                review_skills=["terminal"],
+            )
+        assert kb.list_tasks(conn) == []
+
+
 def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
     """unblock_task must re-gate on parent completion (Fix 3).
 
@@ -1881,6 +1925,50 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+
+
+    def test_dispatcher_spawn_skips_missing_bundled_adversarial_reviewer_skill(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "reviewer"
+        profile_home.mkdir(parents=True)
+        (profile_home / "skills").mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_review_env",
+            title="review: x",
+            body="review contract is in the body",
+            assignee="reviewer",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="dir",
+            workspace_path=str(tmp_path / "ws"),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            skills=[kb.DEFAULT_ADVERSARIAL_REVIEW_SKILL],
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        cmd = captured["cmd"]
+        assert captured["env"]["HERMES_HOME"] == str(profile_home)
+        assert kb.DEFAULT_ADVERSARIAL_REVIEW_SKILL not in cmd
 
 
 # ---------------------------------------------------------------------------

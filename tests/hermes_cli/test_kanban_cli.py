@@ -129,6 +129,25 @@ def test_run_slash_create_with_parent_and_cascade(kanban_home):
     assert "child" in ready_list
 
 
+def test_run_slash_create_with_reviewer_gate(kanban_home):
+    out = kc.run_slash(
+        "create 'ship auth flow' --assignee coder --reviewer reviewer "
+        "--review-skill github-code-review"
+    )
+    assert "Created" in out
+    assert "Review gate:" in out
+    assert "Downstream tasks should depend on:" in out
+
+    with kb.connect() as conn:
+        tasks = {t.title: t for t in kb.list_tasks(conn)}
+    assert tasks["ship auth flow"].status == "ready"
+    assert tasks["review: ship auth flow"].status == "todo"
+    assert tasks["review: ship auth flow"].skills == [
+        kb.DEFAULT_ADVERSARIAL_REVIEW_SKILL,
+        "github-code-review",
+    ]
+
+
 def test_run_slash_show_includes_comments(kanban_home):
     out = kc.run_slash("create 'x'")
     import re

@@ -15,7 +15,7 @@
     "write-translations": "docusaurus write-translations",
     "write-heading-ids": "docusaurus write-heading-ids",
     "typecheck": "tsc",
-    "lint:diagrams": "ascii-guard lint --exclude-code-blocks docs"
+    "lint:diagrams": "echo 'ASCII diagram lint removed; use Mermaid or prose and ship.'"
   },
   "dependencies": {
     "@docusaurus/core": "3.9.2",

@@ -332,6 +332,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(repeatable). Appended to the built-in "
                                "kanban-worker skill. Example: "
                                "--skill translation --skill github-code-review")
+    p_create.add_argument("--reviewer", default=None,
+                          help="Optional reviewer profile. When set, create an "
+                               "implementation card plus a dependent review gate.")
+    p_create.add_argument("--review-title", default=None,
+                          help="Optional title for the generated review task")
+    p_create.add_argument("--review-body", default=None,
+                          help="Optional body for the generated review task")
+    p_create.add_argument("--review-skill", action="append", default=[], dest="review_skills",
+                          help="Extra skill to force-load into the generated review worker "
+                               "(repeatable). The adversarial review skill is loaded automatically.")
     p_create.add_argument("--max-retries", type=int, default=None,
                           metavar="N",
                           help="Per-task override for the consecutive-failure "
@@ -1287,30 +1297,76 @@ def _cmd_create(args: argparse.Namespace) -> int:
         )
         return 2
     with kb.connect() as conn:
-        task_id = kb.create_task(
-            conn,
-            title=args.title,
-            body=args.body,
-            assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
-            workspace_kind=ws_kind,
-            workspace_path=ws_path,
-            branch_name=branch_name,
-            tenant=args.tenant,
-            priority=args.priority,
-            parents=tuple(args.parent or ()),
-            triage=bool(getattr(args, "triage", False)),
-            idempotency_key=getattr(args, "idempotency_key", None),
-            max_runtime_seconds=max_runtime,
-            skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries,
-            initial_status=getattr(args, "initial_status", "running"),
-        )
-        task = kb.get_task(conn, task_id)
+        if getattr(args, "reviewer", None):
+            created = kb.create_review_pair(
+                conn,
+                title=args.title,
+                body=args.body,
+                assignee=args.assignee,
+                reviewer_assignee=args.reviewer,
+                review_title=getattr(args, "review_title", None),
+                review_body=getattr(args, "review_body", None),
+                review_skills=getattr(args, "review_skills", None) or None,
+                created_by=args.created_by or _profile_author(),
+                workspace_kind=ws_kind,
+                workspace_path=ws_path,
+                branch_name=branch_name,
+                tenant=args.tenant,
+                priority=args.priority,
+                parents=tuple(args.parent or ()),
+                triage=bool(getattr(args, "triage", False)),
+                idempotency_key=getattr(args, "idempotency_key", None),
+                max_runtime_seconds=max_runtime,
+                skills=getattr(args, "skills", None) or None,
+                max_retries=max_retries,
+                initial_status=getattr(args, "initial_status", "running"),
+            )
+            task_id = created["implementation_task_id"]
+            review_task_id = created["review_task_id"]
+            promote_after_task_id = created["promote_after_task_id"]
+            task = kb.get_task(conn, task_id)
+            review_task = kb.get_task(conn, review_task_id)
+        else:
+            task_id = kb.create_task(
+                conn,
+                title=args.title,
+                body=args.body,
+                assignee=args.assignee,
+                created_by=args.created_by or _profile_author(),
+                workspace_kind=ws_kind,
+                workspace_path=ws_path,
+                branch_name=branch_name,
+                tenant=args.tenant,
+                priority=args.priority,
+                parents=tuple(args.parent or ()),
+                triage=bool(getattr(args, "triage", False)),
+                idempotency_key=getattr(args, "idempotency_key", None),
+                max_runtime_seconds=max_runtime,
+                skills=getattr(args, "skills", None) or None,
+                max_retries=max_retries,
+                initial_status=getattr(args, "initial_status", "running"),
+            )
+            task = kb.get_task(conn, task_id)
+            review_task = None
+            review_task_id = None
+            promote_after_task_id = None
     if getattr(args, "json", False):
-        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+        payload = _task_to_dict(task)
+        if review_task is not None:
+            payload.update({
+                "review_task_id": review_task_id,
+                "review_status": review_task.status,
+                "review_assignee": review_task.assignee,
+                "promote_after_task_id": promote_after_task_id,
+            })
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        if review_task is not None:
+            print(
+                f"Review gate: {review_task_id}  ({review_task.status}, assignee={review_task.assignee or '-'})"
+            )
+            print(f"Downstream tasks should depend on: {promote_after_task_id}")
 
         # Warn when the task would sit in `ready` because no dispatcher is
         # present. Only warn on ready+assigned tasks — triage/todo are

@@ -768,6 +768,38 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_with_reviewer_gate(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "ship auth flow",
+        "assignee": "coder",
+        "reviewer": "reviewer",
+        "review_skills": ["github-code-review"],
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["review_task_id"]
+    assert d["promote_after_task_id"] == d["review_task_id"]
+    assert d["review_status"] == "todo"
+
+    conn = kb.connect()
+    try:
+        impl = kb.get_task(conn, d["task_id"])
+        review = kb.get_task(conn, d["review_task_id"])
+        assert impl is not None
+        assert review is not None
+        assert review.assignee == "reviewer"
+        assert review.skills == [
+            kb.DEFAULT_ADVERSARIAL_REVIEW_SKILL,
+            "github-code-review",
+        ]
+        assert kb.parent_ids(conn, review.id) == [impl.id]
+    finally:
+        conn.close()
+
+
 def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     """When the agent loop runs under ACP, the server propagates the
     originating chat session id via HERMES_SESSION_ID. ``kanban_create``

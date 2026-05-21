@@ -188,6 +188,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-devops',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/devops/devops-kanban-adversarial-reviewer',
                     'user-guide/skills/bundled/devops/devops-kanban-orchestrator',
                     'user-guide/skills/bundled/devops/devops-kanban-worker',
                     'user-guide/skills/bundled/devops/devops-webhook-subscriptions',

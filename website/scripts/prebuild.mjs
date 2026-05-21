@@ -24,6 +24,33 @@ const websiteDir = resolve(scriptDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const outputFile = join(websiteDir, "src", "data", "skills.json");
+const repoDir = resolve(websiteDir, "..");
+
+function pythonCandidates() {
+  const names = process.platform === "win32" ? ["python.exe"] : ["python"];
+  return [
+    ...names.map((name) => join(repoDir, ".venv", process.platform === "win32" ? "Scripts" : "bin", name)),
+    ...names.map((name) => join(repoDir, "venv", process.platform === "win32" ? "Scripts" : "bin", name)),
+    "python3",
+    "python",
+  ];
+}
+
+function runPythonScript(script, label) {
+  if (!existsSync(script)) {
+    return { ok: false, reason: `${label} missing` };
+  }
+  for (const python of pythonCandidates()) {
+    if (python.includes("/bin/") || python.includes("\\Scripts\\")) {
+      if (!existsSync(python)) continue;
+    }
+    const r = spawnSync(python, [script], { stdio: "inherit", cwd: websiteDir });
+    if (r.error && r.error.code === "ENOENT") continue;
+    if (r.status === 0) return { ok: true, python };
+    return { ok: false, reason: `${label} exited with status ${r.status}` };
+  }
+  return { ok: false, reason: "python not found" };
+}
 
 function writeEmptyFallback(reason) {
   mkdirSync(dirname(outputFile), { recursive: true });
@@ -35,35 +62,17 @@ function writeEmptyFallback(reason) {
 }
 
 function runPython(script, label) {
-  if (!existsSync(script)) {
-    console.warn(`[prebuild] ${label} skipped (script missing)`);
-    return false;
+  const result = runPythonScript(script, label);
+  if (!result.ok) {
+    console.warn(`[prebuild] ${label} skipped (${result.reason})`);
   }
-  const r = spawnSync("python3", [script], { stdio: "inherit", cwd: websiteDir });
-  if (r.error && r.error.code === "ENOENT") {
-    console.warn(`[prebuild] ${label} skipped (python3 not found)`);
-    return false;
-  }
-  if (r.status !== 0) {
-    console.warn(`[prebuild] ${label} exited with status ${r.status}`);
-    return false;
-  }
-  return true;
+  return result.ok;
 }
 
 // 1) skills.json — required for the Skills Hub page.
-if (!existsSync(extractScript)) {
-  writeEmptyFallback("extract script missing");
-} else {
-  const r = spawnSync("python3", [extractScript], {
-    stdio: "inherit",
-    cwd: websiteDir,
-  });
-  if (r.error && r.error.code === "ENOENT") {
-    writeEmptyFallback("python3 not found");
-  } else if (r.status !== 0) {
-    writeEmptyFallback(`extract-skills.py exited with status ${r.status}`);
-  }
+const extractResult = runPythonScript(extractScript, "extract-skills.py");
+if (!extractResult.ok) {
+  writeEmptyFallback(extractResult.reason);
 }
 
 // 2) llms.txt + llms-full.txt — agent-friendly docs entrypoints. Non-fatal.

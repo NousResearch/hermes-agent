@@ -668,15 +668,25 @@ def _handle_create(args: dict, **kw) -> str:
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
     skills = args.get("skills")
+    reviewer = args.get("reviewer")
+    review_title = args.get("review_title")
+    review_body = args.get("review_body")
+    review_skills = args.get("review_skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
         skills = [skills]
+    if isinstance(review_skills, str):
+        review_skills = [review_skills]
+    if isinstance(parents, str):
+        parents = [parents]
     if skills is not None and not isinstance(skills, (list, tuple)):
         return tool_error(
             f"skills must be a list of skill names, got {type(skills).__name__}"
         )
-    if isinstance(parents, str):
-        parents = [parents]
+    if review_skills is not None and not isinstance(review_skills, (list, tuple)):
+        return tool_error(
+            f"review_skills must be a list of skill names, got {type(review_skills).__name__}"
+        )
     if not isinstance(parents, (list, tuple)):
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
@@ -685,6 +695,44 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            if reviewer:
+                created = kb.create_review_pair(
+                    conn,
+                    title=str(title).strip(),
+                    body=body,
+                    assignee=str(assignee),
+                    reviewer_assignee=str(reviewer),
+                    review_title=review_title,
+                    review_body=review_body,
+                    review_skills=review_skills,
+                    parents=tuple(parents),
+                    tenant=tenant,
+                    priority=int(priority) if priority is not None else 0,
+                    workspace_kind=str(workspace_kind),
+                    workspace_path=workspace_path,
+                    triage=triage,
+                    idempotency_key=idempotency_key,
+                    max_runtime_seconds=(
+                        int(max_runtime_seconds)
+                        if max_runtime_seconds is not None else None
+                    ),
+                    skills=skills,
+                    initial_status=str(initial_status),
+                    created_by=os.environ.get("HERMES_PROFILE") or "worker",
+                    session_id=session_id,
+                )
+                new_tid = created["implementation_task_id"]
+                review_tid = created["review_task_id"]
+                new_task = kb.get_task(conn, new_tid)
+                review_task = kb.get_task(conn, review_tid)
+                return _ok(
+                    task_id=new_tid,
+                    status=new_task.status if new_task else None,
+                    review_task_id=review_tid,
+                    review_status=review_task.status if review_task else None,
+                    review_assignee=review_task.assignee if review_task else None,
+                    promote_after_task_id=created["promote_after_task_id"],
+                )
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -1164,6 +1212,33 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "reviewer": {
+                "type": "string",
+                "description": (
+                    "Optional reviewer profile. When set, kanban_create "
+                    "creates an implementation task plus a dependent "
+                    "adversarial review gate assigned to this profile. "
+                    "Downstream tasks should depend on the returned "
+                    "review_task_id / promote_after_task_id."
+                ),
+            },
+            "review_title": {
+                "type": "string",
+                "description": "Optional title override for the generated review task.",
+            },
+            "review_body": {
+                "type": "string",
+                "description": "Optional body override for the generated review task.",
+            },
+            "review_skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Extra skill names to force-load into the generated "
+                    "review worker. Hermes automatically prepends the "
+                    "official adversarial review skill."
                 ),
             },
             "board": _board_schema_prop(),

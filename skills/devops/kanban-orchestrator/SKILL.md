@@ -154,7 +154,7 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 
 **Parallel implementation + validation:** one implementer card makes the change while one explorer/researcher card verifies config, docs, or source mapping. A reviewer card can depend on both. Do not make the implementer own unrelated verification just because the user mentioned both in one sentence.
 
-**Pipeline with gates:** `planner → implementer → reviewer`. Each stage's `parents=[previous_task]`. Reviewer blocks or completes; if reviewer blocks, the operator unblocks with feedback and respawns.
+**Pipeline with gates:** `planner → implementer → reviewer`. Each stage's `parents=[previous_task]`. For new implementation cards, prefer the built-in helper `hermes kanban create ... --reviewer reviewer` (or `kanban_create(..., reviewer="reviewer")`), which creates the implementation task plus a dependent `review: ...` gate that should load `kanban-adversarial-reviewer`. Reviewer blocks or completes; if reviewer blocks, the operator unblocks with feedback and respawns.
 
 **Same-profile queue:** N tasks, all assigned to the same profile, no dependencies between them. Dispatcher serializes — that profile processes them in priority order, accumulating experience in its own memory.
 

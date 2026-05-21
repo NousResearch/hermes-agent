@@ -97,6 +97,7 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+DEFAULT_ADVERSARIAL_REVIEW_SKILL = "kanban-adversarial-reviewer"
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -1391,6 +1392,54 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Normalize and validate per-task skill names.
+
+    ``None`` means no explicit override. An empty iterable is preserved as an
+    explicit empty list. Toolset names are rejected because they are a common
+    agent mistake and fail much later if we let them through.
+    """
+    if skills is None:
+        return None
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    # Collect all toolset-name confusions up front so the user sees the whole
+    # list at once. Raising on the first hit is friendly when the input has one
+    # mistake, but agents that confuse skills with toolsets usually pass several
+    # at once (`skills=["web", "browser", "terminal"]`) and serial-correcting
+    # one per failure round-trip wastes tokens.
+    toolset_typos: list[str] = []
+    for s in skills:
+        if not s:
+            continue
+        name = str(s).strip()
+        if not name:
+            continue
+        if "," in name:
+            raise ValueError(
+                f"skill name cannot contain comma: {name!r} "
+                f"(pass a list of separate names instead of a comma-joined string)"
+            )
+        if name.casefold() in KNOWN_TOOLSET_NAMES:
+            toolset_typos.append(name)
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        cleaned.append(name)
+    if toolset_typos:
+        quoted = ", ".join(repr(n) for n in toolset_typos)
+        noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
+        raise ValueError(
+            f"{quoted} {noun}, not skill name(s). "
+            "Put toolsets in the assignee profile's `toolsets:` config "
+            "instead of per-task skills. Skills are named skill bundles "
+            "(e.g. `kanban-worker`, `blogwatcher`); toolsets are runtime "
+            "capabilities (e.g. `web`, `browser`, `terminal`)."
+        )
+    return cleaned
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -1460,45 +1509,7 @@ def create_task(
     # invisibly splatter a comma-joined string into one argv slot — the
     # `hermes --skills X,Y` comma syntax is handled in the dispatcher,
     # not here.
-    skills_list: Optional[list[str]] = None
-    if skills is not None:
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        # Collect all toolset-name confusions up front so the user sees the
-        # whole list at once. Raising on the first hit is friendly when the
-        # input has one mistake, but agents that confuse skills with toolsets
-        # usually pass several at once (`skills=["web", "browser", "terminal"]`)
-        # and serial-correcting one per failure round-trips wastes tokens.
-        toolset_typos: list[str] = []
-        for s in skills:
-            if not s:
-                continue
-            name = str(s).strip()
-            if not name:
-                continue
-            if "," in name:
-                raise ValueError(
-                    f"skill name cannot contain comma: {name!r} "
-                    f"(pass a list of separate names instead of a comma-joined string)"
-                )
-            if name.casefold() in KNOWN_TOOLSET_NAMES:
-                toolset_typos.append(name)
-                continue
-            if name in seen:
-                continue
-            seen.add(name)
-            cleaned.append(name)
-        if toolset_typos:
-            quoted = ", ".join(repr(n) for n in toolset_typos)
-            noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
-            raise ValueError(
-                f"{quoted} {noun}, not skill name(s). "
-                "Put toolsets in the assignee profile's `toolsets:` config "
-                "instead of per-task skills. Skills are named skill bundles "
-                "(e.g. `kanban-worker`, `blogwatcher`); toolsets are runtime "
-                "capabilities (e.g. `web`, `browser`, `terminal`)."
-            )
-        skills_list = cleaned
+    skills_list = _normalize_task_skills(skills)
 
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
@@ -1617,6 +1628,138 @@ def create_task(
             # Retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
+
+
+def _default_review_task_body(
+    *,
+    implementation_task_id: str,
+    implementation_title: str,
+    workspace_kind: str,
+    workspace_path: Optional[str],
+    branch_name: Optional[str],
+    reviewer_skill: str,
+) -> str:
+    repo_hint = workspace_path or "(dispatcher-managed workspace root; inspect HERMES_KANBAN_WORKSPACE at runtime)"
+    branch_hint = branch_name or "(none recorded)"
+    return (
+        f"Adversarial review gate for implementation task {implementation_task_id} ({implementation_title}).\n\n"
+        "Do not trust the implementer summary by default. Verify reality in the actual target workspace before passing this card.\n\n"
+        f"Expected workspace:\n- workspace_kind: {workspace_kind}\n- workspace_path: {repo_hint}\n- branch_name: {branch_hint}\n\n"
+        "Required checks:\n"
+        "1. Read the implementation task via kanban_show and inspect comments / run metadata for claimed changed_files, repo_path, commit sha, commands run, tests, and artifact URLs.\n"
+        "2. In the real workspace, verify claimed files exist there — not only in scratch copies, temp dirs, or a different worktree.\n"
+        "3. Verify git reality matches the claims: status, branch, staged/unstaged changes, commit sha, push/deploy evidence where relevant.\n"
+        "4. Re-run or independently verify the acceptance checks (tests/build/deploy/smoke checks) when feasible.\n"
+        "5. Fail if placeholder config, TODO scaffolding, or missing target-repo artifacts remain unless the implementation task explicitly allowed them.\n"
+        "6. Use the Hello Hermes regression as the anti-pattern: PASS must be denied when artifacts only exist in a scratch/worktree context and are absent from the true target repo.\n\n"
+        f"Load the `{reviewer_skill}` skill for the detailed review playbook.\n\n"
+        "Termination contract:\n"
+        "- PASS: append a comment with concrete evidence, then kanban_complete with a concise verdict and machine-readable metadata.\n"
+        "- FAIL: append a comment with concrete findings and evidence, then create/queue a correction task for the implementer (parent this review card to keep the audit trail) or block with the exact gap if human input is required.\n"
+    )
+
+
+def create_review_pair(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    reviewer_assignee: str,
+    body: Optional[str] = None,
+    assignee: Optional[str] = None,
+    created_by: Optional[str] = None,
+    workspace_kind: str = "scratch",
+    workspace_path: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    tenant: Optional[str] = None,
+    priority: int = 0,
+    parents: Iterable[str] = (),
+    triage: bool = False,
+    idempotency_key: Optional[str] = None,
+    max_runtime_seconds: Optional[int] = None,
+    skills: Optional[Iterable[str]] = None,
+    max_retries: Optional[int] = None,
+    initial_status: str = "running",
+    session_id: Optional[str] = None,
+    board: Optional[str] = None,
+    review_title: Optional[str] = None,
+    review_body: Optional[str] = None,
+    review_skills: Optional[Iterable[str]] = None,
+) -> dict[str, str]:
+    """Create an implementation task plus a dependent adversarial review gate.
+
+    The implementation card is created exactly as a normal task would be.
+    A second review card is then created as its child so the reviewer cannot
+    run until implementation finishes. Downstream tasks should depend on the
+    returned ``review_task_id`` / ``promote_after_task_id`` rather than the
+    implementation task id.
+    """
+    normalized_reviewer = _canonical_assignee(reviewer_assignee)
+    if not normalized_reviewer:
+        raise ValueError("reviewer_assignee is required")
+    reviewer_assignee = normalized_reviewer
+
+    reviewer_skill = DEFAULT_ADVERSARIAL_REVIEW_SKILL
+    merged_review_skills = _normalize_task_skills([reviewer_skill, *list(review_skills or [])]) or []
+    normalized_review_title = (review_title or f"review: {title}").strip()
+    if not normalized_review_title:
+        raise ValueError("review_title is required")
+
+    implementation_task_id = create_task(
+        conn,
+        title=title,
+        body=body,
+        assignee=assignee,
+        created_by=created_by,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        branch_name=branch_name,
+        tenant=tenant,
+        priority=priority,
+        parents=parents,
+        triage=triage,
+        idempotency_key=idempotency_key,
+        max_runtime_seconds=max_runtime_seconds,
+        skills=skills,
+        max_retries=max_retries,
+        initial_status=initial_status,
+        session_id=session_id,
+        board=board,
+    )
+
+    review_task_id = create_task(
+        conn,
+        title=normalized_review_title,
+        body=review_body or _default_review_task_body(
+            implementation_task_id=implementation_task_id,
+            implementation_title=title,
+            workspace_kind=workspace_kind,
+            workspace_path=workspace_path,
+            branch_name=branch_name,
+            reviewer_skill=reviewer_skill,
+        ),
+        assignee=reviewer_assignee,
+        created_by=created_by,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        branch_name=branch_name,
+        tenant=tenant,
+        priority=priority,
+        parents=[implementation_task_id],
+        triage=False,
+        idempotency_key=(f"{idempotency_key}:review" if idempotency_key else None),
+        max_runtime_seconds=max_runtime_seconds,
+        skills=merged_review_skills,
+        max_retries=max_retries,
+        initial_status="running",
+        session_id=session_id,
+        board=board,
+    )
+
+    return {
+        "implementation_task_id": implementation_task_id,
+        "review_task_id": review_task_id,
+        "promote_after_task_id": review_task_id,
+    }
 
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
@@ -5199,6 +5342,32 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
+def _skill_available_for_home(hermes_home: Optional[str], skill_name: str) -> bool:
+    """True if ``skill_name`` resolves for the home the spawned worker will use."""
+    from pathlib import Path as _Path
+
+    name = str(skill_name).strip()
+    if not name:
+        return False
+    # An unset HERMES_HOME means the worker falls back to the default root
+    # home (``~/.hermes``), which ships bundled skills.
+    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
+    skills_root = base / "skills"
+    if not skills_root.is_dir():
+        return False
+    # Canonical bundled location first (cheap), then a bounded scan for
+    # profiles that have it nested elsewhere.
+    if (skills_root / "devops" / name / "SKILL.md").is_file():
+        return True
+    try:
+        for skill_md in skills_root.rglob(f"{name}/SKILL.md"):
+            if skill_md.is_file():
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     """True if the bundled ``kanban-worker`` skill resolves for the home the
     spawned worker will run under.
@@ -5213,25 +5382,7 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     the kanban lifecycle contract is still injected via ``KANBAN_GUIDANCE``, so
     omitting the flag only drops the supplementary pattern library.
     """
-    from pathlib import Path as _Path
-
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
-        return False
-    # Canonical bundled location first (cheap), then a bounded scan for
-    # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
-        return True
-    try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
-    return False
+    return _skill_available_for_home(hermes_home, "kanban-worker")
 
 
 def _worker_terminal_timeout_env(
@@ -5386,8 +5537,16 @@ def _default_spawn(
     # if a task author asks for it explicitly.
     if task.skills:
         for sk in task.skills:
-            if sk and sk != "kanban-worker":
-                cmd.extend(["--skills", sk])
+            if not sk or sk == "kanban-worker":
+                continue
+            if sk == DEFAULT_ADVERSARIAL_REVIEW_SKILL and not _skill_available_for_home(
+                env.get("HERMES_HOME"), sk
+            ):
+                # Review tasks still carry the review contract in their body.
+                # Do not crash profile-scoped workers that have not copied the
+                # bundled adversarial-reviewer skill into their own home.
+                continue
+            cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
     cmd.extend([

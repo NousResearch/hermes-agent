@@ -280,18 +280,23 @@ class MattermostAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
 
+        effective_root_id = metadata.get("thread_id") if metadata else None
+
         last_id = None
         for chunk in chunks:
             payload: Dict[str, Any] = {
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
-                # Ensure root_id points to the thread root, not a reply.
-                # Mattermost rejects non-root post IDs as root_id.
-                resolved_root = await self._resolve_root_id(reply_to)
-                payload["root_id"] = resolved_root
+            # Thread support: prefer an explicit thread root from metadata,
+            # otherwise resolve reply_to to the Mattermost thread root.
+            if self._reply_mode == "thread":
+                if effective_root_id:
+                    payload["root_id"] = effective_root_id
+                elif reply_to:
+                    # Ensure root_id points to the thread root, not a reply.
+                    # Mattermost rejects non-root post IDs as root_id.
+                    payload["root_id"] = await self._resolve_root_id(reply_to)
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -786,8 +791,16 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id.
-        thread_id = post.get("root_id") or None
+        # Thread support: use root_id for replies. In thread mode,
+        # top-level posts are their own thread roots, so key sessions by
+        # post id to avoid context bleed between unrelated channel threads.
+        root_id = post.get("root_id") or None
+        if root_id:
+            thread_id = root_id
+        elif self._reply_mode == "thread":
+            thread_id = post.get("id")
+        else:
+            thread_id = None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []

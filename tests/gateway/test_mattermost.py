@@ -253,6 +253,58 @@ class TestMattermostSend:
 
         assert result.success is False
 
+    @pytest.mark.asyncio
+    async def test_send_thread_prefers_metadata_thread_id_over_reply_to(self):
+        """metadata[\"thread_id\"] is the true root and overrides reply_to."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_new"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.get = MagicMock()
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            reply_to="some_reply_post",
+            metadata={"thread_id": "real_root_post"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "real_root_post"
+        self.adapter._session.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_thread_uses_metadata_thread_id_when_no_reply_to(self):
+        """metadata[\"thread_id\"] alone sets root_id for thread deliveries."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_new"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Cron post",
+            reply_to=None,
+            metadata={"thread_id": "real_root"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "real_root"
+
 
 # ---------------------------------------------------------------------------
 # WebSocket event parsing
@@ -403,6 +455,31 @@ class TestMattermostWebSocketParsing:
 
         await self.adapter._handle_ws_event(event)
         assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_top_level_post_in_thread_mode_uses_post_id_as_thread_id(self):
+        """Top-level posts in thread mode key sessions by post id."""
+        self.adapter._reply_mode = "thread"
+        post_data = {
+            "id": "post_top_level",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id New top-level message",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id == "post_top_level"
 
 
 # ---------------------------------------------------------------------------

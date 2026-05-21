@@ -6,6 +6,7 @@ without risk of circular imports.
 
 import os
 from pathlib import Path
+from typing import Optional
 
 
 _profile_fallback_warned: bool = False
@@ -107,7 +108,7 @@ def get_default_hermes_root() -> Path:
     return env_path
 
 
-def get_optional_skills_dir(default: Path | None = None) -> Path:
+def get_optional_skills_dir(default: Optional[Path] = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 
     Packaged installs may ship ``optional-skills`` outside the Python package
@@ -162,7 +163,7 @@ def display_hermes_home() -> str:
         return str(home)
 
 
-def get_subprocess_home() -> str | None:
+def get_subprocess_home() -> Optional[str]:
     """Return a per-profile HOME directory for subprocesses, or None.
 
     When ``{HERMES_HOME}/home/`` exists on disk, subprocesses should use it

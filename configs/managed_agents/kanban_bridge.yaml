@@ -1,0 +1,19 @@
+version: "2026-05-21"
+auto_create:
+  steps_gte: 4
+  agents_gte: 2
+  risk_gte: R2
+  needs_review: true
+  cross_session_recovery: true
+  code_test_acceptance: true
+states:
+  - created
+  - planned
+  - delegated
+  - in_progress
+  - review_pending
+  - changes_requested
+  - approved
+  - done
+  - blocked
+  - failed

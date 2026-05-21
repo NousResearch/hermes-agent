@@ -1,0 +1,39 @@
+version: "2026-05-21"
+
+priority_order:
+  - safety
+  - user_explicit_instruction
+  - soul_global_policy
+  - managed_agents_policy
+  - router_policy
+  - skill_policy
+  - agent_preference
+
+rules:
+  - id: destructive_actions_require_safety_block
+    priority: safety
+    when:
+      action_type: delete_file
+    decision: deny
+    reason: destructive_actions_require_human_approval
+
+  - id: deployment_requires_safety_block
+    priority: safety
+    when:
+      action_type: deploy
+    decision: deny
+    reason: production_deploy_requires_human_approval
+
+  - id: soul_policy_allowed
+    priority: soul_global_policy
+    when:
+      source: soul
+    decision: allow
+    reason: soul_global_policy_wins_over_skill_policy
+
+  - id: user_override_allowed
+    priority: user_explicit_instruction
+    when:
+      user_override: claude
+    decision: allow
+    reason: explicit_user_agent_choice

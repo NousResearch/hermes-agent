@@ -3160,6 +3160,179 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+_MANAGED_AGENTS_CONFIG = "configs/managed_agents/agents.yaml"
+
+
+def _find_managed_agents_config() -> Optional["Path"]:
+    from pathlib import Path
+
+    candidates = [
+        Path.cwd() / _MANAGED_AGENTS_CONFIG,
+        Path(__file__).resolve().parent.parent / _MANAGED_AGENTS_CONFIG,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _run_managed_preflight(
+    agent_id: str,
+    goal: str,
+    parent_agent: Any,
+) -> Optional[str]:
+    """Run DelegationGateway preflight for a managed agent_id.
+
+    Returns a tool_error string if the preflight rejects, None if accepted.
+    The real child runtime is NOT invoked — a no-op runtime is used so the
+    gateway only validates registry/policy/permissions and writes audit events.
+    """
+    config_path = _find_managed_agents_config()
+    if config_path is None:
+        return None  # no managed config → legacy path
+
+    try:
+        from agent.managed_agents.gateway import DelegationGateway, DelegationGatewayError
+        from agent.managed_agents.registry import RiskLevel, load_agent_registry
+        from agent.managed_agents.policy import PolicyEngine
+        from agent.managed_agents.permissions import PermissionGuard, DelegationPermissionError
+        from agent.session_event_log import EventLog
+        from agent.task_card import TaskCard, ExecutionPlan
+    except ImportError as exc:
+        logger.debug("Managed agents modules unavailable, skipping preflight: %s", exc)
+        return None
+
+    try:
+        registry = load_agent_registry(config_path)
+    except Exception as exc:
+        logger.debug("Could not load managed agent registry: %s", exc)
+        return None
+
+    if agent_id not in registry.agents:
+        return None  # agent not in managed registry → legacy path
+
+    try:
+        policy_engine = PolicyEngine(
+            version="managed-preflight",
+            priority_order=(
+                "safety",
+                "user_explicit_instruction",
+                "soul_global_policy",
+                "managed_agents_policy",
+                "router_policy",
+                "skill_policy",
+                "agent_preference",
+            ),
+            rules=(),
+        )
+    except Exception as exc:
+        logger.debug("Could not construct policy engine: %s", exc)
+        return None
+
+    # Resolve or build a minimal TaskCard. Always bind the preflight target
+    # to the requested agent_id; the parent's current TaskCard may be routed
+    # to a different owner than this delegate_task call.
+    parent_task_card = getattr(parent_agent, "_current_task_card", None)
+    if parent_task_card is not None:
+        task_card = TaskCard.from_dict(parent_task_card.to_dict())
+        task_card.execution_plan = ExecutionPlan(
+            mode="single_agent",
+            agents=[agent_id],
+            delegation_reason="managed_preflight",
+        )
+        if hasattr(parent_task_card, "risk_level"):
+            task_card.risk_level = getattr(parent_task_card, "risk_level")
+    else:
+        session_id = getattr(parent_agent, "session_id", "") or ""
+        task_id = getattr(parent_agent, "_current_task_id", None) or ""
+        task_card = TaskCard.create(user_request=goal, session_id=session_id)
+        if task_id:
+            task_card.task_id = task_id
+        task_card.execution_plan = ExecutionPlan(mode="single_agent", agents=[agent_id])
+    if not hasattr(task_card, "risk_level"):
+        agent_spec = registry.get(agent_id)
+        ordered_risks = (RiskLevel.R0, RiskLevel.R1, RiskLevel.R2, RiskLevel.R3, RiskLevel.R4)
+        fallback_risk = next(
+            (risk for risk in ordered_risks if risk in agent_spec.risk_allowed),
+            RiskLevel.R0,
+        )
+        task_card.risk_level = fallback_risk.value
+
+    event_log = EventLog()
+
+    def _noop_runtime(agent, tc, ctx):  # noqa: ANN001
+        from agent.managed_agents.gateway import TaskResult
+        return TaskResult(
+            task_id=str(getattr(tc, "task_id", "")),
+            agent_id=agent.agent_id,
+            status="accepted",
+            summary="preflight accepted",
+            accepted=True,
+        )
+
+    gateway = DelegationGateway(
+        registry=registry,
+        policy_engine=policy_engine,
+        event_log=event_log,
+        runtime=_noop_runtime,
+        permission_guard=PermissionGuard(),
+    )
+
+    try:
+        gateway.delegate(task_card)
+    except (DelegationGatewayError, DelegationPermissionError) as exc:
+        return tool_error(f"Managed agent preflight rejected delegation: {exc}")
+    except Exception as exc:
+        logger.warning("Managed agent preflight raised unexpected error: %s", exc)
+        return tool_error(f"Managed agent preflight failed: {exc}")
+    finally:
+        try:
+            event_log.close()
+        except Exception:
+            pass
+
+    return None  # accepted
+
+
+def _load_managed_subagent_profile(agent_id: str) -> tuple[Optional[dict], Optional[dict]]:
+    """Load a named subagent from managed YAML if available, else legacy JSON."""
+    config_path = _find_managed_agents_config()
+    if config_path is not None:
+        try:
+            from agent.managed_agents.registry import load_agent_registry
+
+            registry = load_agent_registry(config_path)
+            agent = registry.agents.get(agent_id)
+            if agent is not None:
+                agent_config = {
+                    "id": agent.agent_id,
+                    "type": agent.role,
+                    "capabilities": list(agent.capabilities),
+                }
+                blocked_tools = (
+                    sorted(READONLY_STRIP_TOOLS)
+                    if agent.permission.value == "read_only"
+                    else []
+                )
+                profile = {
+                    "model": "default",
+                    "toolsets": list(agent.tools),
+                    "blocked_tools": blocked_tools,
+                    "permission_mode": agent.permission.value,
+                    "isolation": "readonly" if agent.permission.value == "read_only" else "shared",
+                    "allow_background": False,
+                    "required_mcp_servers": [],
+                }
+                return agent_config, profile
+        except Exception as exc:
+            logger.debug("Managed subagent profile unavailable: %s", exc)
+
+    try:
+        return _load_subagent_profile(agent_id)
+    except Exception:
+        return None, None
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -3208,15 +3381,32 @@ def delegate_task(
             "or role for legacy leaf/orchestrator behavior."
         )
 
+    # Managed agents preflight only applies to the named-agent path.
+    # If it accepts, we still continue through the legacy execution path.
+    if agent_id:
+        _preflight_error = _run_managed_preflight(
+            agent_id=agent_id,
+            goal=goal or (
+                tasks[0].get("goal", "")
+                if tasks and isinstance(tasks, list) and tasks and isinstance(tasks[0], dict)
+                else ""
+            ),
+            parent_agent=parent_agent,
+        )
+        if _preflight_error is not None:
+            return _preflight_error
+
     # ── Phase A: resolve agent_id profile ──────────────────────────────
     _resolved_agent_config: Optional[dict] = None
     _resolved_profile: Optional[dict] = None
     _requested_isolation: Optional[str] = isolation
     if agent_id:
-        try:
-            _resolved_agent_config, _resolved_profile = _load_subagent_profile(agent_id)
-        except ValueError as exc:
-            return tool_error(str(exc))
+        _resolved_agent_config, _resolved_profile = _load_managed_subagent_profile(agent_id)
+        if _resolved_agent_config is None or _resolved_profile is None:
+            try:
+                _resolved_agent_config, _resolved_profile = _load_subagent_profile(agent_id)
+            except ValueError as exc:
+                return tool_error(str(exc))
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
@@ -3346,7 +3536,9 @@ def delegate_task(
             task_profile = None
             if effective_agent_id:
                 try:
-                    task_agent_config, task_profile = _load_subagent_profile(effective_agent_id)
+                    task_agent_config, task_profile = _load_managed_subagent_profile(effective_agent_id)
+                    if task_agent_config is None or task_profile is None:
+                        task_agent_config, task_profile = _load_subagent_profile(effective_agent_id)
                 except ValueError:
                     pass  # fall through: per-task profile load failure → skip agent_id path
             # Per-task blocked_tools — can only add to profile blocked

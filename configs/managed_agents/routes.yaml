@@ -1,0 +1,42 @@
+version: "2026-05-21"
+
+routes:
+  - id: readonly_lookup
+    when:
+      task_category: explain_code
+    owner_agent: hermes-internal
+    risk_level: R0
+
+  - id: small_fix
+    when:
+      task_category: tests
+      risk_max: R1
+    owner_agent: deepseek-tui
+    fallback_agent: claude
+    reviewers: [codex]
+
+  - id: standard_feature
+    when:
+      task_category: feature
+      risk_level: R2
+    planner: codex
+    owner_agent: claude
+    support_agents: [deepseek-tui]
+    reviewers: [codex]
+
+  - id: architecture_change
+    when:
+      task_category: architecture_change
+      risk_level: R3
+    planner: [nesta, codex]
+    owner_agent: claude
+    support_agents: [deepseek-tui]
+    reviewers: [codex, ambrosini]
+
+  - id: production_or_destructive
+    when:
+      risk_level: R4
+    planner: [nesta, codex]
+    requires_human_approval: true
+    owner_agent: claude
+    reviewers: [ambrosini, codex]

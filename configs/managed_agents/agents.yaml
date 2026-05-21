@@ -1,0 +1,166 @@
+version: "2026-05-21"
+
+agents:
+  - agent_id: nesta
+    name: 内斯塔
+    role: technical_analyst
+    tools: [file, terminal]
+    permission: ask
+    can_delegate: false
+    capabilities: [technical_analysis, code_review, script_analysis]
+    risk_allowed: [R0, R1, R2]
+
+  - agent_id: claude
+    name: Claude Code
+    role: lead_implementer
+    tools: [file, terminal, git]
+    permission: ask
+    can_delegate: false
+    capabilities: [code_edit, test_run, refactor, git_diff]
+    risk_allowed: [R1, R2, R3]
+
+  - agent_id: codex
+    name: Codex GPT-5.5
+    role: principal_engineer
+    tools: [file, terminal]
+    permission: read_only
+    can_delegate: false
+    capabilities: [architecture_review, code_review, implementation_planning, technical_arbitration]
+    risk_allowed: [R0, R1, R2, R3, R4]
+
+  - agent_id: deepseek-tui
+    name: DeepSeek TUI
+    role: fast_worker
+    tools: [file, terminal]
+    permission: ask
+    can_delegate: false
+    capabilities: [small_fix, test_generation, bug_reproduction, spike, log_analysis]
+    risk_allowed: [R0, R1, R2]
+
+  - agent_id: pirlo
+    name: 皮尔洛
+    role: planning_strategist
+    tools: [file]
+    permission: read_only
+    can_delegate: false
+    capabilities: [strategy_planning, product_planning, proposal_design]
+    risk_allowed: [R0, R1, R2]
+
+  - agent_id: intelligence
+    name: Intelligence
+    role: research_analyst
+    tools: [file, web]
+    permission: ask
+    can_delegate: false
+    capabilities: [research, information_synthesis, competitive_analysis]
+    risk_allowed: [R0, R1, R2]
+
+  - agent_id: ambrosini
+    name: 安布罗西尼
+    role: quality_gate
+    tools: [file]
+    permission: read_only
+    can_delegate: false
+    capabilities: [review, validation, risk_assessment, release_gate]
+    risk_allowed: [R0, R1, R2, R3, R4]
+
+  - agent_id: openclaw
+    name: OpenClaw
+    role: desktop_operator
+    tools: [desktop, file]
+    permission: ask
+    can_delegate: false
+    capabilities: [desktop_control, app_operation, screenshot]
+    risk_allowed: [R0, R1, R2]
+
+  - agent_id: agent-tars
+    name: Agent TARS
+    role: desktop_operator
+    tools: [desktop, browser]
+    permission: ask
+    can_delegate: false
+    capabilities: [desktop_control, browser_operation, gui_workflow]
+    risk_allowed: [R0, R1, R2]
+
+  - agent_id: hermes-internal
+    name: Hermes Internal
+    role: internal_reasoner
+    tools: [file]
+    permission: read_only
+    can_delegate: false
+    capabilities: [analysis, decision_making, coordination]
+    risk_allowed: [R0, R1, R2, R3]
+
+  - agent_id: kanban
+    name: Kanban
+    role: task_state_manager
+    tools: [kanban]
+    permission: ask
+    can_delegate: false
+    capabilities: [task_tracking, state_management, recovery]
+    risk_allowed: [R0, R1, R2, R3]
+
+routing:
+  default_route:
+    mode: review_only
+    agents: [codex]
+    reason: unresolved_route_requires_review
+  fallback_route:
+    mode: review_only
+    agents: [codex]
+    reason: unresolved_route_requires_review
+  rules:
+    - id: readonly_lookup
+      when:
+        task_category: explain_code
+      mode: single_agent
+      agents: [hermes-internal]
+      reason: read_only_analysis
+
+    - id: small_test_generation
+      when:
+        task_category: tests
+        risk_max: R1
+      mode: single_agent
+      agents: [deepseek-tui]
+      reason: targeted_test_generation
+
+    - id: standard_feature
+      when:
+        task_category: feature
+        risk_level: R2
+      mode: single_agent
+      agents: [claude]
+      reason: default_feature_implementation
+
+    - id: code_maintenance
+      when:
+        task_category: code_maintenance
+      mode: single_agent
+      agents: [claude]
+      reason: default_code_implementation
+
+    - id: architecture_change
+      when:
+        task_category: architecture_change
+      mode: pipeline
+      agents: [nesta, codex, claude, deepseek-tui]
+      require_gate: review
+      reason: architecture_runtime_change
+
+    - id: high_risk_pipeline
+      when:
+        risk_level: R3
+      mode: pipeline
+      agents: [nesta, codex, claude, deepseek-tui]
+      require_gate: review
+      reason: risk_escalation
+
+    - id: production_or_destructive
+      when:
+        risk_level: R4
+      mode: pipeline
+      agents: [nesta, codex, claude, ambrosini]
+      require_gate: review
+      requires_human_approval: true
+      reason: production_or_destructive_requires_approval

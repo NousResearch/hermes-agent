@@ -1,0 +1,36 @@
+version: "2026-05-21"
+review_required_when:
+  - risk_level:
+      - R2
+      - R3
+      - R4
+  - files_changed_gte: 3
+  - touches:
+      - configs/**
+      - agent/managed_agents/**
+      - agent/delegation/**
+      - soul/**
+      - .env*
+      - migrations/**
+  - actions:
+      - install_dependency
+      - delete_file
+      - git_operation
+      - deploy
+      - modify_permission
+reviewers:
+  R1:
+    optional:
+      - codex
+  R2:
+    required:
+      - codex
+  R3:
+    required:
+      - codex
+      - ambrosini
+  R4:
+    required:
+      - codex
+      - ambrosini
+    requires_human_approval: true

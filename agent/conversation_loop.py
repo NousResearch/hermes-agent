@@ -36,6 +36,7 @@ from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.task_card import TaskCard, save_task_card
 from agent.review_gate import ReviewGate
+from agent.managed_agents import build_kanban_bridge, should_auto_create_card
 from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
@@ -180,6 +181,7 @@ def run_conversation(
         )
         save_task_card(task_card)
         agent._current_task_card = task_card
+        agent._current_kanban_bridge = None
         agent._event_log.log_task_created(
             task_id=task_card.task_id,
             session_id=agent.session_id,
@@ -215,6 +217,13 @@ def run_conversation(
             tc.execution_plan.delegation_reason = routing.reason
             tc.routing_basis = routing.routing_basis
             save_task_card(tc)
+            if should_auto_create_card(tc):
+                try:
+                    agent._current_kanban_bridge = build_kanban_bridge(tc)
+                    agent._current_kanban_bridge.sync_execution_plan(tc)
+                except Exception:
+                    logger.warning("Kanban bridge execution plan sync failed", exc_info=True)
+                    agent._current_kanban_bridge = None
             agent._event_log.log_task_updated(
                 task_id=tc.task_id,
                 session_id=agent.session_id,
@@ -230,6 +239,7 @@ def run_conversation(
         except Exception:
             logger.warning("Agent routing failed", exc_info=True)
             agent._current_task_card = None
+            agent._current_kanban_bridge = None
 
     
     # Reset retry counters and iteration budget at the start of each turn
@@ -3839,6 +3849,7 @@ def run_conversation(
 
     # Hermes 2.8: Review Gate.
     tc = getattr(agent, "_current_task_card", None)
+    kb_bridge = getattr(agent, "_current_kanban_bridge", None)
     _review_blocked = False
     _review_risks = []
     if tc is not None and completed and final_response:
@@ -3875,6 +3886,25 @@ def run_conversation(
             )
             tc.review_result = review_result.to_dict()
             save_task_card(tc)
+            if kb_bridge is not None:
+                try:
+                    kb_bridge.request_review(["codex"])
+                    kb_bridge.complete_review(
+                        {
+                            "decision": "changes_requested"
+                            if review_result.needs_revision
+                            else "approved",
+                            "severity": {
+                                "p0": 1 if agent._review_gate.is_blocked(review_result) else 0,
+                                "p1": 0,
+                                "p2": 0,
+                                "p3": 0,
+                            },
+                            "required_fixes": [review_result.revision_instruction] if review_result.needs_revision else [],
+                        }
+                    )
+                except Exception:
+                    logger.warning("Kanban bridge review sync failed", exc_info=True)
             agent._event_log.log_task_updated(
                 task_id=tc.task_id,
                 session_id=agent.session_id,
@@ -3925,6 +3955,11 @@ def run_conversation(
                 tc.status = "completed"
                 tc.result_summary = (final_response or "")[:500]
                 save_task_card(tc)
+                if kb_bridge is not None:
+                    try:
+                        kb_bridge.approve()
+                    except Exception:
+                        logger.warning("Kanban bridge completion sync failed", exc_info=True)
             else:
                 to_status = "partial" if interrupted else "failed"
                 agent._event_log.log_execution_failed(
@@ -3944,7 +3979,15 @@ def run_conversation(
                 tc.status = to_status
                 tc.result_summary = (final_response or "")[:500]
                 save_task_card(tc)
+                if kb_bridge is not None:
+                    try:
+                        kb_bridge.fail(
+                            "Task interrupted" if interrupted else "Task incomplete"
+                        )
+                    except Exception:
+                        logger.warning("Kanban bridge failure sync failed", exc_info=True)
             agent._current_task_card = None
+            agent._current_kanban_bridge = None
         except Exception:
             logger.warning("Failed to write completion events", exc_info=True)
 

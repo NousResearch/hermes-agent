@@ -191,10 +191,17 @@ class TestExaCredentialPool:
                 assert calls == ["key-A", "key-B"]
 
     def test_is_available_via_pool_only(self):
-        pool = _FakePool([_FakePoolEntry("pool-only-key")])
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("EXA_API_KEY", None)
-            with patch("plugins.web.exa.provider.load_pool", return_value=pool):
+            with patch("hermes_cli.auth.read_credential_pool", return_value=[{"id": "k1"}]):
                 from plugins.web.exa.provider import ExaWebSearchProvider
 
                 assert ExaWebSearchProvider().is_available() is True
+
+    def test_is_available_false_when_no_env_and_empty_pool(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("EXA_API_KEY", None)
+            with patch("hermes_cli.auth.read_credential_pool", return_value=[]):
+                from plugins.web.exa.provider import ExaWebSearchProvider
+
+                assert ExaWebSearchProvider().is_available() is False

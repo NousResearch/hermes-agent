@@ -27,16 +27,20 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
-from agent.credential_pool import CredentialPool, PooledCredential, load_pool
+from agent.credential_pool import load_pool
 from agent.web_search_provider import WebSearchProvider
+
+if TYPE_CHECKING:
+    from agent.credential_pool import CredentialPool, PooledCredential
 
 logger = logging.getLogger(__name__)
 
 _POOL_PROVIDER = "exa"
 _ROTATE_STATUSES = frozenset({401, 403, 429})
-_STATUS_RE = re.compile(r"\b(401|403|429)\b")
+# Anchored to HTTP/status so trace IDs containing 401/403/429 don't false-positive.
+_STATUS_RE = re.compile(r"\b(?:HTTP|status[a-z_ ]*)\W{0,4}(401|403|429)\b", re.IGNORECASE)
 
 T = TypeVar("T")
 
@@ -46,7 +50,7 @@ T = TypeVar("T")
 # that public module (see :func:`_get_exa_client`).
 
 
-def _load_exa_pool() -> Optional[CredentialPool]:
+def _load_exa_pool() -> Optional["CredentialPool"]:
     """Return the Exa credential pool, or ``None`` if loading fails."""
     try:
         return load_pool(_POOL_PROVIDER)
@@ -55,19 +59,20 @@ def _load_exa_pool() -> Optional[CredentialPool]:
         return None
 
 
-def _resolve_exa_key() -> Tuple[Optional[str], Optional[CredentialPool], Optional[PooledCredential]]:
-    """Resolve an Exa API key, preferring the credential pool over the env var.
+def _pool_runtime_api_key(entry: Any) -> str:
+    if entry is None:
+        return ""
+    key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+    return str(key or "").strip()
 
-    Returns ``(api_key, pool, entry)``. ``pool``/``entry`` are ``None`` when
-    the key came from the environment, signalling that rotation should not
-    be attempted on auth failures.
-    """
+
+def _resolve_exa_key() -> Tuple[Optional[str], Optional["CredentialPool"], Optional["PooledCredential"]]:
+    """Resolve an Exa API key (pool-first, env fallback). ``pool``/``entry`` are ``None`` for env."""
     pool = _load_exa_pool()
     if pool is not None and pool.has_credentials():
         entry = pool.select()
         if entry is not None:
-            api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-            api_key = str(api_key).strip() if api_key else ""
+            api_key = _pool_runtime_api_key(entry)
             if api_key:
                 return api_key, pool, entry
 
@@ -75,15 +80,23 @@ def _resolve_exa_key() -> Tuple[Optional[str], Optional[CredentialPool], Optiona
     return (env_key or None), None, None
 
 
-def _invalidate_exa_client() -> None:
-    """Drop the cached Exa SDK client so the next call rebuilds with fresh creds."""
-    import tools.web_tools as _wt
+def _pool_has_entries() -> bool:
+    """Cheap probe for ``is_available()`` — no seeding/persisting."""
+    try:
+        from hermes_cli.auth import read_credential_pool
 
-    _wt._exa_client = None
+        entries = read_credential_pool(_POOL_PROVIDER)
+    except Exception:
+        return False
+    return bool(entries)
 
 
-def _build_exa_client(api_key: str) -> Any:
-    """Construct (and cache) a fresh Exa SDK client bound to ``api_key``."""
+def _build_exa_client(
+    api_key: str,
+    pool: Optional["CredentialPool"] = None,
+    entry: Optional["PooledCredential"] = None,
+) -> Any:
+    """Build, cache, and return an Exa SDK client; stash pool state for rotation."""
     import tools.web_tools as _wt
 
     try:
@@ -99,30 +112,29 @@ def _build_exa_client(api_key: str) -> Any:
 
     client = Exa(api_key=api_key)
     client.headers["x-exa-integration"] = "hermes-agent"
+    client._hermes_pool_state = (
+        (pool, entry, api_key) if pool is not None and entry is not None else None
+    )
     _wt._exa_client = client
     return client
 
 
 def _get_exa_client() -> Any:
-    """Return a cached Exa SDK client, building it on demand.
-
-    Credential resolution prefers the credential pool over ``EXA_API_KEY``.
-    Raises ``ValueError`` when no credential is available from either source.
-    """
+    """Return a cached Exa SDK client (pool-first, env fallback). Raises ``ValueError`` if neither."""
     import tools.web_tools as _wt
 
     cached = getattr(_wt, "_exa_client", None)
     if cached is not None:
         return cached
 
-    api_key, _, _ = _resolve_exa_key()
+    api_key, pool, entry = _resolve_exa_key()
     if not api_key:
         raise ValueError(
             "EXA_API_KEY environment variable not set. "
             "Get your API key at https://exa.ai"
         )
 
-    return _build_exa_client(api_key)
+    return _build_exa_client(api_key, pool, entry)
 
 
 def _exa_error_status(exc: BaseException) -> Optional[int]:
@@ -145,24 +157,25 @@ def _exa_error_status(exc: BaseException) -> Optional[int]:
 
 
 def _call_with_rotation(fn: Callable[[Any], T]) -> T:
-    """Invoke ``fn(client)`` against the cached Exa client, rotating on 401/403/429.
-
-    Resolves credentials once up front so the rotation path can mark the
-    *currently active* pool entry exhausted. On retry, the cached SDK client
-    is rebuilt with the rotated key. Only one rotation attempt is made;
-    further failures propagate.
-    """
-    api_key, pool, entry = _resolve_exa_key()
-    if not api_key:
-        raise ValueError(
-            "EXA_API_KEY environment variable not set. "
-            "Get your API key at https://exa.ai"
-        )
-
+    """Invoke ``fn(client)``; on 401/403/429 mark the cached client's entry exhausted and retry once."""
     import tools.web_tools as _wt
 
     cached = getattr(_wt, "_exa_client", None)
-    client = cached if cached is not None else _build_exa_client(api_key)
+    if cached is not None:
+        client = cached
+        state = getattr(client, "_hermes_pool_state", None)
+        if state is not None:
+            pool, entry, api_key = state
+        else:
+            pool, entry, api_key = None, None, str(getattr(client, "api_key", "") or "")
+    else:
+        api_key, pool, entry = _resolve_exa_key()
+        if not api_key:
+            raise ValueError(
+                "EXA_API_KEY environment variable not set. "
+                "Get your API key at https://exa.ai"
+            )
+        client = _build_exa_client(api_key, pool, entry)
 
     for attempt in (1, 2):
         try:
@@ -177,27 +190,23 @@ def _call_with_rotation(fn: Callable[[Any], T]) -> T:
                 and entry is not None
                 and status in _ROTATE_STATUSES
             ):
-                rotated = pool.mark_exhausted_and_rotate(status_code=status)
+                rotated = pool.mark_exhausted_and_rotate(
+                    status_code=status,
+                    error_context={"message": str(exc), "status_code": status},
+                )
                 if rotated is not None:
-                    new_key = getattr(rotated, "runtime_api_key", None) or getattr(rotated, "access_token", "")
-                    new_key = str(new_key).strip() if new_key else ""
+                    new_key = _pool_runtime_api_key(rotated)
                     if new_key and new_key != api_key:
                         logger.info(
                             "exa: rotating credential after HTTP %s and retrying", status
                         )
                         entry = rotated
                         api_key = new_key
-                        _invalidate_exa_client()
-                        client = _build_exa_client(api_key)
+                        client = _build_exa_client(api_key, pool, entry)
                         continue
             raise
 
     raise RuntimeError("exa: _call_with_rotation exited retry loop unexpectedly")
-
-
-def _reset_client_for_tests() -> None:
-    """Drop the cached Exa client so tests can re-instantiate cleanly."""
-    _invalidate_exa_client()
 
 
 class ExaWebSearchProvider(WebSearchProvider):
@@ -217,11 +226,10 @@ class ExaWebSearchProvider(WebSearchProvider):
         return "Exa"
 
     def is_available(self) -> bool:
-        """Return True when an Exa credential is available via env or pool."""
+        """Return True when an Exa credential is available via env or pool. Must stay cheap."""
         if os.getenv("EXA_API_KEY", "").strip():
             return True
-        pool = _load_exa_pool()
-        return pool is not None and pool.has_credentials()
+        return _pool_has_entries()
 
     def supports_search(self) -> bool:
         return True

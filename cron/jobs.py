@@ -22,7 +22,7 @@ from typing import Optional, Dict, List, Any, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_json_write, atomic_replace
 
 try:
     from croniter import croniter
@@ -453,22 +453,28 @@ def load_jobs() -> List[Dict[str, Any]]:
 
 
 def save_jobs(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage."""
+    """Save all jobs to storage.
+
+    Uses utils.atomic_json_write so that existing file permissions are
+    preserved across rewrites. This matters for shared-volume deployments
+    (e.g. WebUI + gateway containers running as different UIDs/GIDs sharing
+    the Hermes home) where the operator has intentionally set group-readable
+    permissions like 0o664. Previously save_jobs() always forced 0o600 via
+    _secure_file(), which clobbered the deployment's chosen mode on every
+    write and broke shared access (issue #29660).
+
+    For brand-new files (no existing jobs.json yet) we still default to
+    0o600 to preserve the original security posture for single-user installs.
+    """
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, JOBS_FILE)
+    existed = JOBS_FILE.exists()
+    atomic_json_write(
+        JOBS_FILE,
+        {"jobs": jobs, "updated_at": _hermes_now().isoformat()},
+        indent=2,
+    )
+    if not existed:
         _secure_file(JOBS_FILE)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:

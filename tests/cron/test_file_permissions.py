@@ -57,6 +57,35 @@ class TestCronFilePermissions(unittest.TestCase):
             file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
             self.assertEqual(file_mode, 0o600)
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX file modes not applicable on Windows')
+    def test_save_jobs_preserves_existing_mode(self):
+        """Regression test for #29660.
+
+        Shared-volume deployments (e.g. WebUI + gateway containers under
+        different UIDs) intentionally set group-readable modes like 0o664
+        on jobs.json. save_jobs() must not clobber those on every write.
+        """
+        cron_dir = Path(self.tmpdir) / 'cron'
+        output_dir = cron_dir / 'output'
+        jobs_file = cron_dir / 'jobs.json'
+
+        with patch('cron.jobs.CRON_DIR', cron_dir), \
+             patch('cron.jobs.OUTPUT_DIR', output_dir), \
+             patch('cron.jobs.JOBS_FILE', jobs_file):
+            from cron.jobs import save_jobs
+            # First save creates the file with default secure mode (0o600).
+            save_jobs([{'id': 'a', 'prompt': 'hi'}])
+            self.assertEqual(stat.S_IMODE(os.stat(jobs_file).st_mode), 0o600)
+
+            # Deployment relaxes the permission to allow a sibling UID/GID
+            # to read/write the shared jobs file.
+            os.chmod(jobs_file, 0o664)
+
+            # Subsequent save must preserve the operator's chosen mode.
+            save_jobs([{'id': 'b', 'prompt': 'again'}])
+            file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
+            self.assertEqual(file_mode, 0o664)
+
     def test_save_job_output_sets_0600(self):
         output_dir = Path(self.tmpdir) / "output"
         with patch("cron.jobs.OUTPUT_DIR", output_dir), \

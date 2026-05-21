@@ -322,3 +322,45 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+def test_fireworks_kimi_k2p6_resolves_with_full_model_path():
+    """Fireworks model ids look like accounts/fireworks/models/<name>;
+    the routing layer must strip the prefix so the dict lookup succeeds."""
+    entry = get_pricing_entry(
+        "accounts/fireworks/models/kimi-k2p6",
+        provider="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.95
+    assert float(entry.output_cost_per_million) == 4.00
+    assert float(entry.cache_read_cost_per_million) == 0.16
+    assert entry.source == "official_docs_snapshot"
+
+
+def test_fireworks_base_url_host_match_alone_routes_to_pricing():
+    """Provider not explicitly passed; routing infers fireworks from the host."""
+    entry = get_pricing_entry(
+        "accounts/fireworks/models/deepseek-v4-pro",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.74
+    assert float(entry.output_cost_per_million) == 3.48
+
+
+def test_fireworks_qwen3p6_plus_estimate_usage_cost():
+    """End-to-end: Fireworks Qwen3.6-Plus sessions report a dollar estimate."""
+    result = estimate_usage_cost(
+        "accounts/fireworks/models/qwen3p6-plus",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=500_000),
+        provider="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $0.50/M + 500K output × $3.00/M = $0.50 + $1.50 = $2.00
+    assert float(result.amount_usd) == 2.00

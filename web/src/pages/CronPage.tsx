@@ -7,7 +7,7 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
-import type { CronJob, CronJobUpdate, ProfileInfo } from "@/lib/api";
+import type { CronJob, CronJobCreatePayload, CronJobUpdate, ProfileInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
@@ -101,7 +101,7 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
   completed: "destructive",
 };
 
-interface CronEditForm {
+interface CronJobConfigForm {
   name: string;
   prompt: string;
   schedule: string;
@@ -117,6 +117,26 @@ interface CronEditForm {
   baseUrl: string;
   contextFrom: string;
   enabledToolsets: string;
+}
+
+function emptyCronForm(): CronJobConfigForm {
+  return {
+    name: "",
+    prompt: "",
+    schedule: "",
+    deliver: "local",
+    repeat: "",
+    skills: "",
+    script: "",
+    noAgent: false,
+    workdir: "",
+    runProfile: "",
+    model: "",
+    provider: "",
+    baseUrl: "",
+    contextFrom: "",
+    enabledToolsets: "",
+  };
 }
 
 function joinList(value: unknown): string {
@@ -141,7 +161,7 @@ function repeatTimes(job: CronJob): string {
   return typeof times === "number" && times > 0 ? String(times) : "";
 }
 
-function jobToEditForm(job: CronJob): CronEditForm {
+function jobToEditForm(job: CronJob): CronJobConfigForm {
   return {
     name: asText(job.name),
     prompt: asText(job.prompt),
@@ -161,7 +181,7 @@ function jobToEditForm(job: CronJob): CronEditForm {
   };
 }
 
-function buildCronUpdate(job: CronJob, form: CronEditForm): CronJobUpdate {
+function parseCronForm(form: CronJobConfigForm) {
   const schedule = form.schedule.trim();
   if (!schedule) throw new Error("Schedule is required");
 
@@ -189,12 +209,8 @@ function buildCronUpdate(job: CronJob, form: CronEditForm): CronJobUpdate {
     prompt: form.prompt.trim(),
     schedule,
     deliver: form.deliver.trim() || "local",
-    repeat: {
-      times: repeat,
-      completed: job.repeat?.completed ?? 0,
-    },
+    repeat,
     skills,
-    skill: skills[0] ?? null,
     script,
     no_agent: form.noAgent,
     workdir: nullableText(form.workdir),
@@ -205,6 +221,230 @@ function buildCronUpdate(job: CronJob, form: CronEditForm): CronJobUpdate {
     context_from: contextFrom.length ? contextFrom : null,
     enabled_toolsets: enabledToolsets.length ? enabledToolsets : null,
   };
+}
+
+function buildCronCreate(form: CronJobConfigForm): CronJobCreatePayload {
+  return parseCronForm(form);
+}
+
+function buildCronUpdate(job: CronJob, form: CronJobConfigForm): CronJobUpdate {
+  const parsed = parseCronForm(form);
+  return {
+    ...parsed,
+    repeat: {
+      times: parsed.repeat,
+      completed: job.repeat?.completed ?? 0,
+    },
+  };
+}
+
+function CronJobConfigFields({
+  form,
+  setField,
+  profiles,
+  idPrefix,
+  autoFocusName = false,
+}: {
+  form: CronJobConfigForm;
+  setField<K extends keyof CronJobConfigForm>(key: K, value: CronJobConfigForm[K]): void;
+  profiles: ProfileInfo[];
+  idPrefix: string;
+  autoFocusName?: boolean;
+}) {
+  const { t } = useI18n();
+  const profileOptionsId = `${idPrefix}-profile-options`;
+  const textAreaClass =
+    "flex min-h-[72px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25";
+  return (
+    <>
+      <section className="grid gap-3">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Core
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-name`}>{t.cron.nameOptional}</Label>
+            <Input
+              id={`${idPrefix}-name`}
+              autoFocus={autoFocusName}
+              placeholder={t.cron.namePlaceholder}
+              value={form.name}
+              onChange={(e) => setField("name", e.target.value)}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-schedule`}>{t.cron.schedule}</Label>
+            <Input
+              id={`${idPrefix}-schedule`}
+              placeholder={t.cron.schedulePlaceholder}
+              value={form.schedule}
+              onChange={(e) => setField("schedule", e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor={`${idPrefix}-prompt`}>{t.cron.prompt}</Label>
+          <textarea
+            id={`${idPrefix}-prompt`}
+            className={textAreaClass}
+            placeholder={t.cron.promptPlaceholder}
+            value={form.prompt}
+            onChange={(e) => setField("prompt", e.target.value)}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-deliver`}>{t.cron.deliverTo}</Label>
+            <Input
+              id={`${idPrefix}-deliver`}
+              value={form.deliver}
+              onChange={(e) => setField("deliver", e.target.value)}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              local, telegram, discord, signal, email, or platform:chat_id
+            </p>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-repeat`}>Repeat count</Label>
+            <Input
+              id={`${idPrefix}-repeat`}
+              inputMode="numeric"
+              placeholder="blank = unlimited"
+              value={form.repeat}
+              onChange={(e) => setField("repeat", e.target.value)}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-3">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Execution
+        </h3>
+        <div className="grid gap-2">
+          <Label htmlFor={`${idPrefix}-skills`}>Skills</Label>
+          <textarea
+            id={`${idPrefix}-skills`}
+            className={textAreaClass}
+            placeholder="one skill per line"
+            value={form.skills}
+            onChange={(e) => setField("skills", e.target.value)}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-script`}>Script</Label>
+            <Input
+              id={`${idPrefix}-script`}
+              placeholder="relative to ~/.hermes/scripts/"
+              value={form.script}
+              onChange={(e) => setField("script", e.target.value)}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-workdir`}>Workdir</Label>
+            <Input
+              id={`${idPrefix}-workdir`}
+              placeholder="/absolute/project/path"
+              value={form.workdir}
+              onChange={(e) => setField("workdir", e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="flex items-center gap-2.5">
+            <Checkbox
+              checked={form.noAgent}
+              id={`${idPrefix}-no-agent`}
+              onCheckedChange={(checked) =>
+                setField("noAgent", checked === true)
+              }
+            />
+            <Label
+              className="font-sans normal-case tracking-normal text-sm cursor-pointer"
+              htmlFor={`${idPrefix}-no-agent`}
+            >
+              No-agent mode
+            </Label>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-run-profile`}>Run profile</Label>
+            <Input
+              id={`${idPrefix}-run-profile`}
+              list={profileOptionsId}
+              placeholder="blank = scheduler default"
+              value={form.runProfile}
+              onChange={(e) => setField("runProfile", e.target.value)}
+            />
+            <datalist id={profileOptionsId}>
+              {profiles.map((profile) => (
+                <option key={profile.name} value={profile.name} />
+              ))}
+            </datalist>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-3">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Advanced model and context
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-provider`}>Provider</Label>
+            <Input
+              id={`${idPrefix}-provider`}
+              value={form.provider}
+              onChange={(e) => setField("provider", e.target.value)}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-model`}>Model</Label>
+            <Input
+              id={`${idPrefix}-model`}
+              value={form.model}
+              onChange={(e) => setField("model", e.target.value)}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-base-url`}>Base URL</Label>
+            <Input
+              id={`${idPrefix}-base-url`}
+              value={form.baseUrl}
+              onChange={(e) => setField("baseUrl", e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-context-from`}>Context from</Label>
+            <textarea
+              id={`${idPrefix}-context-from`}
+              className={textAreaClass}
+              placeholder="one job ID per line"
+              value={form.contextFrom}
+              onChange={(e) => setField("contextFrom", e.target.value)}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor={`${idPrefix}-toolsets`}>Enabled toolsets</Label>
+            <textarea
+              id={`${idPrefix}-toolsets`}
+              className={textAreaClass}
+              placeholder="one toolset per line"
+              value={form.enabledToolsets}
+              onChange={(e) => setField("enabledToolsets", e.target.value)}
+            />
+          </div>
+        </div>
+      </section>
+    </>
+  );
 }
 
 function CronJobEditModal({
@@ -221,12 +461,12 @@ function CronJobEditModal({
   showToast(message: string, tone: "success" | "error"): void;
 }) {
   const { t } = useI18n();
-  const [form, setForm] = useState<CronEditForm>(() => jobToEditForm(job));
+  const [form, setForm] = useState<CronJobConfigForm>(() => jobToEditForm(job));
   const [saving, setSaving] = useState(false);
   const modalRef = useModalBehavior({ open: true, onClose });
   const storageProfile = getJobProfile(job);
 
-  const setField = <K extends keyof CronEditForm>(key: K, value: CronEditForm[K]) => {
+  const setField = <K extends keyof CronJobConfigForm>(key: K, value: CronJobConfigForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
   };
 
@@ -243,9 +483,6 @@ function CronJobEditModal({
       setSaving(false);
     }
   };
-
-  const textAreaClass =
-    "flex min-h-[72px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25";
 
   return (
     <div
@@ -281,190 +518,13 @@ function CronJobEditModal({
         </header>
 
         <div className="p-5 overflow-y-auto grid gap-5">
-          <section className="grid gap-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Core
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-name">{t.cron.nameOptional}</Label>
-                <Input
-                  id="edit-cron-name"
-                  autoFocus
-                  value={form.name}
-                  onChange={(e) => setField("name", e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-schedule">{t.cron.schedule}</Label>
-                <Input
-                  id="edit-cron-schedule"
-                  placeholder={t.cron.schedulePlaceholder}
-                  value={form.schedule}
-                  onChange={(e) => setField("schedule", e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="grid gap-2">
-              <Label htmlFor="edit-cron-prompt">{t.cron.prompt}</Label>
-              <textarea
-                id="edit-cron-prompt"
-                className={textAreaClass}
-                value={form.prompt}
-                onChange={(e) => setField("prompt", e.target.value)}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-deliver">{t.cron.deliverTo}</Label>
-                <Input
-                  id="edit-cron-deliver"
-                  value={form.deliver}
-                  onChange={(e) => setField("deliver", e.target.value)}
-                />
-                <p className="text-[11px] text-muted-foreground">
-                  local, telegram, discord, signal, email, or platform:chat_id
-                </p>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-repeat">Repeat count</Label>
-                <Input
-                  id="edit-cron-repeat"
-                  inputMode="numeric"
-                  placeholder="blank = unlimited"
-                  value={form.repeat}
-                  onChange={(e) => setField("repeat", e.target.value)}
-                />
-              </div>
-            </div>
-          </section>
-
-          <section className="grid gap-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Execution
-            </h3>
-            <div className="grid gap-2">
-              <Label htmlFor="edit-cron-skills">Skills</Label>
-              <textarea
-                id="edit-cron-skills"
-                className={textAreaClass}
-                placeholder="one skill per line"
-                value={form.skills}
-                onChange={(e) => setField("skills", e.target.value)}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-script">Script</Label>
-                <Input
-                  id="edit-cron-script"
-                  placeholder="relative to ~/.hermes/scripts/"
-                  value={form.script}
-                  onChange={(e) => setField("script", e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-workdir">Workdir</Label>
-                <Input
-                  id="edit-cron-workdir"
-                  placeholder="/absolute/project/path"
-                  value={form.workdir}
-                  onChange={(e) => setField("workdir", e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="flex items-center gap-2.5">
-                <Checkbox
-                  checked={form.noAgent}
-                  id="edit-cron-no-agent"
-                  onCheckedChange={(checked) =>
-                    setField("noAgent", checked === true)
-                  }
-                />
-                <Label
-                  className="font-sans normal-case tracking-normal text-sm cursor-pointer"
-                  htmlFor="edit-cron-no-agent"
-                >
-                  No-agent mode
-                </Label>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-run-profile">Run profile</Label>
-                <Input
-                  id="edit-cron-run-profile"
-                  list="cron-profile-options"
-                  placeholder="blank = scheduler default"
-                  value={form.runProfile}
-                  onChange={(e) => setField("runProfile", e.target.value)}
-                />
-                <datalist id="cron-profile-options">
-                  {profiles.map((profile) => (
-                    <option key={profile.name} value={profile.name} />
-                  ))}
-                </datalist>
-              </div>
-            </div>
-          </section>
-
-          <section className="grid gap-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Advanced model and context
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-provider">Provider</Label>
-                <Input
-                  id="edit-cron-provider"
-                  value={form.provider}
-                  onChange={(e) => setField("provider", e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-model">Model</Label>
-                <Input
-                  id="edit-cron-model"
-                  value={form.model}
-                  onChange={(e) => setField("model", e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-base-url">Base URL</Label>
-                <Input
-                  id="edit-cron-base-url"
-                  value={form.baseUrl}
-                  onChange={(e) => setField("baseUrl", e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-context-from">Context from</Label>
-                <textarea
-                  id="edit-cron-context-from"
-                  className={textAreaClass}
-                  placeholder="one job ID per line"
-                  value={form.contextFrom}
-                  onChange={(e) => setField("contextFrom", e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit-cron-toolsets">Enabled toolsets</Label>
-                <textarea
-                  id="edit-cron-toolsets"
-                  className={textAreaClass}
-                  placeholder="one toolset per line"
-                  value={form.enabledToolsets}
-                  onChange={(e) => setField("enabledToolsets", e.target.value)}
-                />
-              </div>
-            </div>
-          </section>
+          <CronJobConfigFields
+            form={form}
+            setField={setField}
+            profiles={profiles}
+            idPrefix="edit-cron"
+            autoFocusName
+          />
         </div>
 
         <footer className="p-4 border-t border-border flex justify-end gap-2">
@@ -496,18 +556,28 @@ export default function CronPage() {
 
   // New job modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [prompt, setPrompt] = useState("");
-  const [schedule, setSchedule] = useState("");
-  const [name, setName] = useState("");
+  const [createForm, setCreateForm] = useState<CronJobConfigForm>(() => emptyCronForm());
+  const [createStorageProfile, setCreateStorageProfile] = useState("default");
   const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
   const createModalRef = useModalBehavior({
     open: createModalOpen,
     onClose: closeCreateModal,
   });
-  const [deliver, setDeliver] = useState("local");
   const [creating, setCreating] = useState(false);
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
-  const createProfile = selectedProfile === "all" ? "default" : selectedProfile;
+
+  const setCreateField = <K extends keyof CronJobConfigForm>(
+    key: K,
+    value: CronJobConfigForm[K],
+  ) => {
+    setCreateForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const openCreateModal = useCallback(() => {
+    setCreateStorageProfile(selectedProfile === "all" ? "default" : selectedProfile);
+    setCreateForm(emptyCronForm());
+    setCreateModalOpen(true);
+  }, [selectedProfile]);
 
   const loadJobs = useCallback(() => {
     api
@@ -529,26 +599,11 @@ export default function CronPage() {
   }, [loadJobs]);
 
   const handleCreate = async () => {
-    if (!prompt.trim() || !schedule.trim()) {
-      showToast(`${t.cron.prompt} & ${t.cron.schedule} required`, "error");
-      return;
-    }
     setCreating(true);
     try {
-      await api.createCronJob(
-        {
-          prompt: prompt.trim(),
-          schedule: schedule.trim(),
-          name: name.trim() || undefined,
-          deliver,
-        },
-        createProfile,
-      );
+      await api.createCronJob(buildCronCreate(createForm), createStorageProfile);
       showToast(t.common.create + " ✓", "success");
-      setPrompt("");
-      setSchedule("");
-      setName("");
-      setDeliver("local");
+      setCreateForm(emptyCronForm());
       setCreateModalOpen(false);
       loadJobs();
     } catch (e) {
@@ -621,7 +676,7 @@ export default function CronPage() {
       <Button
         className="uppercase"
         size="sm"
-        onClick={() => setCreateModalOpen(true)}
+        onClick={openCreateModal}
       >
         {t.common.create}
       </Button>,
@@ -629,7 +684,7 @@ export default function CronPage() {
     return () => {
       setEnd(null);
     };
-  }, [setEnd, t.common.create, loading]);
+  }, [setEnd, t.common.create, loading, openCreateModal]);
 
   if (loading) {
     return (
@@ -684,7 +739,12 @@ export default function CronPage() {
           aria-modal="true"
           aria-labelledby="create-cron-title"
         >
-          <div className={cn(themedBody, "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col")}>
+          <div
+            className={cn(
+              themedBody,
+              "relative w-full max-w-4xl max-h-[88vh] border border-border bg-card shadow-2xl flex flex-col",
+            )}
+          >
             <Button
               ghost
               size="icon"
@@ -704,13 +764,13 @@ export default function CronPage() {
               </h2>
             </header>
 
-            <div className="p-5 grid gap-4">
+            <div className="p-5 overflow-y-auto grid gap-5">
               <div className="grid gap-2">
                 <Label htmlFor="cron-profile">Profile</Label>
                 <Select
                   id="cron-profile"
-                  value={createProfile}
-                  onValueChange={(v) => setSelectedProfile(v)}
+                  value={createStorageProfile}
+                  onValueChange={(v) => setCreateStorageProfile(v)}
                 >
                   {profiles.map((profile) => (
                     <SelectOption key={profile.name} value={profile.name}>
@@ -720,77 +780,33 @@ export default function CronPage() {
                 </Select>
               </div>
 
-              <div className="grid gap-2">
-                <Label htmlFor="cron-name">{t.cron.nameOptional}</Label>
-                <Input
-                  id="cron-name"
-                  autoFocus
-                  placeholder={t.cron.namePlaceholder}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="cron-prompt">{t.cron.prompt}</Label>
-                <textarea
-                  id="cron-prompt"
-                  className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
-                  placeholder={t.cron.promptPlaceholder}
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="cron-schedule">{t.cron.schedule}</Label>
-                  <Input
-                    id="cron-schedule"
-                    placeholder={t.cron.schedulePlaceholder}
-                    value={schedule}
-                    onChange={(e) => setSchedule(e.target.value)}
-                  />
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="cron-deliver">{t.cron.deliverTo}</Label>
-                  <Select
-                    id="cron-deliver"
-                    value={deliver}
-                    onValueChange={(v) => setDeliver(v)}
-                  >
-                    <SelectOption value="local">
-                      {t.cron.delivery.local}
-                    </SelectOption>
-                    <SelectOption value="telegram">
-                      {t.cron.delivery.telegram}
-                    </SelectOption>
-                    <SelectOption value="discord">
-                      {t.cron.delivery.discord}
-                    </SelectOption>
-                    <SelectOption value="slack">
-                      {t.cron.delivery.slack}
-                    </SelectOption>
-                    <SelectOption value="email">
-                      {t.cron.delivery.email}
-                    </SelectOption>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="flex justify-end">
-                <Button
-                  className="uppercase"
-                  size="sm"
-                  onClick={handleCreate}
-                  disabled={creating}
-                  prefix={creating ? <Spinner /> : undefined}
-                >
-                  {creating ? t.common.creating : t.common.create}
-                </Button>
-              </div>
+              <CronJobConfigFields
+                form={createForm}
+                setField={setCreateField}
+                profiles={profiles}
+                idPrefix="create-cron"
+                autoFocusName
+              />
             </div>
+
+            <footer className="p-4 border-t border-border flex justify-end gap-2">
+              <Button
+                outlined
+                size="sm"
+                onClick={() => setCreateModalOpen(false)}
+                disabled={creating}
+              >
+                {t.common.cancel}
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleCreate}
+                disabled={creating}
+                prefix={creating ? <Spinner /> : <Plus />}
+              >
+                {creating ? t.common.creating : t.common.create}
+              </Button>
+            </footer>
           </div>
         </div>
       )}

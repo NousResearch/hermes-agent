@@ -23,7 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
 
@@ -55,7 +55,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, ConfigDict
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -67,7 +67,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, ConfigDict
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -2553,17 +2553,65 @@ async def get_logs(
 
 
 class CronJobCreate(BaseModel):
-    prompt: str
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = ""
     schedule: str
     name: str = ""
     deliver: str = "local"
+    repeat: Optional[int] = None
+    skills: Optional[List[str]] = None
+    script: Optional[str] = None
+    no_agent: bool = False
+    workdir: Optional[str] = None
+    profile: Optional[str] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    context_from: Optional[Union[str, List[str]]] = None
+    enabled_toolsets: Optional[List[str]] = None
 
 
 class CronJobUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     updates: dict
 
 
 _CRON_PROFILE_LOCK = threading.RLock()
+_CRON_JOB_CONFIG_FIELDS = frozenset(
+    {
+        "name",
+        "prompt",
+        "schedule",
+        "deliver",
+        "repeat",
+        "skills",
+        "script",
+        "no_agent",
+        "workdir",
+        "profile",
+        "model",
+        "provider",
+        "base_url",
+        "context_from",
+        "enabled_toolsets",
+    }
+)
+
+
+def _cron_job_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(updates, dict):
+        raise HTTPException(status_code=400, detail="Cron updates must be an object")
+
+    unknown = sorted(set(updates) - _CRON_JOB_CONFIG_FIELDS)
+    if unknown:
+        allowed = ", ".join(sorted(_CRON_JOB_CONFIG_FIELDS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported cron update field(s): {', '.join(unknown)}. Allowed: {allowed}",
+        )
+    return dict(updates)
 
 
 def _cron_profile_dicts() -> List[Dict[str, Any]]:
@@ -2601,7 +2649,7 @@ def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[st
     return annotated
 
 
-def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
+def _call_cron_for_profile(storage_profile: Optional[str], func_name: str, *args, **kwargs):
     """Run cron.jobs helpers against the selected profile's cron directory.
 
     cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
@@ -2609,7 +2657,7 @@ def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwar
     process that can inspect many profiles, so temporarily retarget those
     globals while holding a lock and restore them immediately after the call.
     """
-    profile_name, home = _cron_profile_home(profile)
+    profile_name, home = _cron_profile_home(storage_profile)
     with _CRON_PROFILE_LOCK:
         from cron import jobs as cron_jobs
 
@@ -2683,7 +2731,20 @@ async def create_cron_job(body: CronJobCreate, profile: str = "default"):
             schedule=body.schedule,
             name=body.name,
             deliver=body.deliver,
+            repeat=body.repeat,
+            skills=body.skills,
+            script=body.script,
+            no_agent=body.no_agent,
+            workdir=body.workdir,
+            profile=body.profile,
+            model=body.model,
+            provider=body.provider,
+            base_url=body.base_url,
+            context_from=body.context_from,
+            enabled_toolsets=body.enabled_toolsets,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")
         raise HTTPException(status_code=400, detail=str(e))
@@ -2695,7 +2756,14 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
     try:
-        job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+        job = _call_cron_for_profile(
+            selected,
+            "update_job",
+            job_id,
+            _cron_job_config_updates(body.updates),
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         _log.exception("PUT /api/cron/jobs/%s failed", job_id)
         raise HTTPException(status_code=400, detail=str(e))

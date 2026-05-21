@@ -145,7 +145,7 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }, profile = "default") =>
+  createCronJob: (job: CronJobCreatePayload, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -603,7 +603,24 @@ export interface CronJobUpdate {
   deliver?: string;
   repeat?: { times: number | null; completed?: number | null };
   skills?: string[];
-  skill?: string | null;
+  script?: string | null;
+  no_agent?: boolean;
+  workdir?: string | null;
+  profile?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
+  context_from?: string[] | null;
+  enabled_toolsets?: string[] | null;
+}
+
+export interface CronJobCreatePayload {
+  name?: string;
+  prompt?: string;
+  schedule: string;
+  deliver?: string;
+  repeat?: number | null;
+  skills?: string[];
   script?: string | null;
   no_agent?: boolean;
   workdir?: string | null;

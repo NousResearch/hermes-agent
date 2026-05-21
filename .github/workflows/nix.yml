@@ -4,6 +4,25 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+    paths:
+      # Keep PR Nix focused on package/reproducibility surfaces. Broad Python
+      # correctness is covered by Tests; push/main remains a full-sweep Nix
+      # backstop so every merge still receives Nix coverage.
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'nix/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'web/package.json'
+      - 'web/package-lock.json'
+      - 'ui-tui/package.json'
+      - 'ui-tui/package-lock.json'
+      - 'ui-tui/packages/hermes-ink/**'
+      - '.github/workflows/nix.yml'
+      - '.github/actions/nix-setup/**'
 
 permissions:
   contents: read

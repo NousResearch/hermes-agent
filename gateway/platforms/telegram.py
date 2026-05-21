@@ -1871,10 +1871,18 @@ class TelegramAdapter(BasePlatformAdapter):
             # so without this the "...typing" bubble disappears mid-response
             # (especially noticeable when the agent sends intermediate progress
             # messages like "Checking:" before running tools).
-            try:
-                await self.send_typing(chat_id, metadata=metadata)
-            except Exception:
-                pass  # Typing failures are non-fatal
+            #
+            # SKIP for the final response: base.py marks the final outbound
+            # message with metadata["notify"]=True. Telegram's typing action
+            # lasts ~5s server-side with no explicit stop, so re-arming it
+            # right after the final reply leaves a "...typing" bubble lingering
+            # for several seconds after the agent is actually done — the
+            # classic "it says you're still typing when you're not" bug.
+            if not (metadata and metadata.get("notify")):
+                try:
+                    await self.send_typing(chat_id, metadata=metadata)
+                except Exception:
+                    pass  # Typing failures are non-fatal
 
             return SendResult(
                 success=True,

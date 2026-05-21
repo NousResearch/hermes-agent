@@ -1277,3 +1277,98 @@ async def test_send_retries_retry_after_errors():
     assert result.success is True
     assert result.message_id == "300"
     assert attempt[0] == 2
+
+
+# ── Typing re-arm after send (regression for "bot keeps typing forever") ─────
+#
+# The adapter re-fires ``send_typing`` after every outbound message so the
+# "...typing" bubble stays visible between intermediate progress messages.
+# Telegram's typing action lasts ~5s server-side with no explicit stop, so
+# re-arming after the FINAL reply leaves a stale bubble lingering for several
+# seconds after the agent is done.  ``base.py`` marks the final outbound
+# message with ``metadata["notify"] = True``; the adapter must skip the
+# re-trigger in that case.
+
+
+@pytest.mark.asyncio
+async def test_typing_not_rearmed_on_final_reply():
+    """metadata={'notify': True} marks the final outbound — no typing refresh."""
+    adapter = _make_adapter()
+    sends = []
+    typings = []
+
+    async def mock_send_message(**kwargs):
+        sends.append(dict(kwargs))
+        return SimpleNamespace(message_id=42)
+
+    async def mock_send_chat_action(**kwargs):
+        typings.append(dict(kwargs))
+
+    adapter._bot = SimpleNamespace(
+        send_message=mock_send_message,
+        send_chat_action=mock_send_chat_action,
+    )
+
+    result = await adapter.send(
+        chat_id="12345",
+        content="all done!",
+        metadata={"notify": True},
+    )
+
+    assert result.success is True
+    assert len(sends) == 1
+    assert typings == [], (
+        "send_typing must NOT be re-armed after the final reply — "
+        "the ~5s server-side typing TTL would leave a stale bubble."
+    )
+
+
+@pytest.mark.asyncio
+async def test_typing_rearmed_on_intermediate_message():
+    """Intermediate progress sends (no notify flag) refresh the typing bubble."""
+    adapter = _make_adapter()
+    typings = []
+
+    async def mock_send_message(**kwargs):
+        return SimpleNamespace(message_id=43)
+
+    async def mock_send_chat_action(**kwargs):
+        typings.append(dict(kwargs))
+
+    adapter._bot = SimpleNamespace(
+        send_message=mock_send_message,
+        send_chat_action=mock_send_chat_action,
+    )
+
+    await adapter.send(chat_id="12345", content="Checking docs…", metadata=None)
+
+    assert len(typings) == 1, (
+        "Intermediate sends must re-arm typing so the bubble stays visible "
+        "across progress messages."
+    )
+
+
+@pytest.mark.asyncio
+async def test_typing_rearmed_when_notify_falsey():
+    """metadata present but notify=False/missing should still re-arm typing."""
+    adapter = _make_adapter()
+    typings = []
+
+    async def mock_send_message(**kwargs):
+        return SimpleNamespace(message_id=44)
+
+    async def mock_send_chat_action(**kwargs):
+        typings.append(dict(kwargs))
+
+    adapter._bot = SimpleNamespace(
+        send_message=mock_send_message,
+        send_chat_action=mock_send_chat_action,
+    )
+
+    await adapter.send(
+        chat_id="12345",
+        content="step 2 of 3",
+        metadata={"notify": False, "thread_id": None},
+    )
+
+    assert len(typings) == 1

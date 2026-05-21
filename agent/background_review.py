@@ -390,6 +390,24 @@ def _run_review_in_thread(
             # parent below so memory(action="add") writes from
             # the review still land on disk; the review just
             # has zero side effects on external providers.
+            # Inherit the parent's toolset configuration so the review
+            # fork's outbound request body has byte-identical ``tools[]``
+            # with the parent's last main-turn request. Without this,
+            # ``enabled_toolsets=None`` defaults to "all registered tools"
+            # and the fork transmits every tool descriptor (including any
+            # the user has disabled via ``hermes tools disable``), while
+            # the parent transmits only its narrower configured set —
+            # making the two requests diverge in ``tools[]`` even though
+            # they share ``messages[0..N]`` and ``system`` byte-for-byte.
+            # Anthropic's prompt-cache key includes ``tools[]``, so any
+            # divergence forks the cache lineage and forces a full
+            # prefix rewrite (~100-200K tokens per turn for long convs).
+            # The post-construction whitelist (``set_thread_tool_whitelist``
+            # below) still restricts which tools the model is allowed
+            # to dispatch — this change only aligns what the request
+            # body transmits, not what the review is allowed to do.
+            # This extends the byte-stability invariant established by
+            # PR #17276 (which fixed ``system``) to ``tools[]``.
             review_agent = AIAgent(
                 model=agent.model,
                 max_iterations=16,
@@ -401,6 +419,8 @@ def _run_review_in_thread(
                 api_key=_parent_runtime.get("api_key") or None,
                 credential_pool=getattr(agent, "_credential_pool", None),
                 parent_session_id=agent.session_id,
+                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 skip_memory=True,
             )
             review_agent._memory_write_origin = "background_review"

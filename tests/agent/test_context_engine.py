@@ -4,7 +4,7 @@ import json
 import pytest
 from typing import Any, Dict, List
 
-from agent.context_engine import ContextEngine
+from agent.context_engine import ContextEngine, should_emit_automatic_compaction_status
 from agent.context_compressor import ContextCompressor
 
 
@@ -123,6 +123,19 @@ class TestDefaults:
     def test_should_compress_preflight_default_false(self):
         engine = StubEngine()
         assert engine.should_compress_preflight([]) is False
+
+    def test_builtin_compressor_emits_automatic_compaction_status_by_default(self):
+        engine = ContextCompressor(model="test", quiet_mode=True, config_context_length=200000)
+        assert should_emit_automatic_compaction_status(engine) is True
+
+    def test_plugin_engines_suppress_automatic_compaction_status_by_default(self):
+        engine = StubEngine()
+        assert should_emit_automatic_compaction_status(engine) is False
+
+    def test_plugin_engines_can_opt_into_automatic_compaction_status(self):
+        engine = StubEngine()
+        engine.emit_automatic_compaction_status = True
+        assert should_emit_automatic_compaction_status(engine) is True
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,25 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 
 
+def should_emit_automatic_compaction_status(engine: Any) -> bool:
+    """Return whether automatic compaction should be user-visible.
+
+    The built-in compressor historically emits lifecycle/status text when it
+    runs automatically. Third-party context engines, such as LCM, often treat
+    compaction as routine background maintenance; surfacing the host's generic
+    "compression" wording on every over-threshold turn is noisy and can imply
+    the lossy built-in compressor is active. Plugin engines can opt back into
+    the automatic status with ``emit_automatic_compaction_status = True``.
+    """
+
+    explicit = getattr(engine, "emit_automatic_compaction_status", None)
+    if explicit is not None:
+        return bool(explicit)
+
+    name = getattr(engine, "name", "compressor")
+    return not isinstance(name, str) or name in {"", "compressor"}
+
+
 class ContextEngine(ABC):
     """Base class all context engines must implement."""
 

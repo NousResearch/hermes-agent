@@ -493,6 +493,64 @@ class TestPreflightCompression:
             for ev, msg in status_messages
         )
 
+    def test_preflight_plugin_context_engine_compacts_without_user_visible_status(self, agent):
+        """Plugin context engines can handle normal automatic maintenance silently."""
+
+        class _PluginContextEngine:
+            name = "lcm"
+            protect_first_n = 0
+            protect_last_n = 0
+            context_length = 2_000
+            threshold_tokens = 200
+            compression_count = 0
+            last_prompt_tokens = 0
+            last_completion_tokens = 0
+            _last_compress_aborted = False
+            _last_summary_error = None
+            _last_aux_model_failure_model = None
+            _last_aux_model_failure_error = None
+
+            def __init__(self):
+                self.calls = []
+
+            def compress(self, messages, current_tokens=None, focus_topic=None, force=False):
+                self.calls.append((messages, current_tokens, focus_topic, force))
+                self.compression_count += 1
+                return [
+                    {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
+                    {"role": "user", "content": "hello"},
+                ]
+
+        agent.compression_enabled = True
+        engine = _PluginContextEngine()
+        agent.context_compressor = engine
+        big_history = []
+        for i in range(20):
+            big_history.append({"role": "user", "content": f"Message number {i} with some extra text padding"})
+            big_history.append({"role": "assistant", "content": f"Response number {i} with extra padding here"})
+
+        ok_resp = _mock_response(content="After preflight", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+        status_messages = []
+        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        assert engine.calls, "plugin context engine did not compact"
+        assert result["completed"] is True
+        assert result["final_response"] == "After preflight"
+        assert not [
+            msg for ev, msg in status_messages
+            if ev == "lifecycle" and (
+                "Preflight compression" in msg or "Compacting context" in msg
+            )
+        ]
+
     def test_no_preflight_when_under_threshold(self, agent):
         """When history fits within context, no preflight compression needed."""
         agent.compression_enabled = True
@@ -584,6 +642,63 @@ class TestToolResultPreflightCompression:
 
         mock_compress.assert_called_once()
         assert result["completed"] is True
+
+    def test_post_tool_plugin_context_engine_compacts_without_safe_print(self, agent):
+        """Automatic post-tool plugin compaction should not print status text."""
+
+        class _PluginContextEngine:
+            name = "lcm"
+            protect_first_n = 0
+            protect_last_n = 0
+            context_length = 200_000
+            threshold_tokens = 130_000
+            last_prompt_tokens = 0
+            last_completion_tokens = 0
+            compression_count = 0
+
+            def update_from_response(self, usage):
+                self.last_prompt_tokens = usage.get("prompt_tokens", 0)
+                self.last_completion_tokens = usage.get("completion_tokens", 0)
+
+            def should_compress(self, prompt_tokens=None):
+                tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
+                return tokens >= self.threshold_tokens
+
+        agent.compression_enabled = True
+        agent.context_compressor = _PluginContextEngine()
+        tc = SimpleNamespace(
+            id="tc1", type="function",
+            function=SimpleNamespace(name="web_search", arguments='{"query":"test"}'),
+        )
+        tool_resp = _mock_response(
+            content=None, finish_reason="stop", tool_calls=[tc],
+            usage={"prompt_tokens": 130_000, "completion_tokens": 5_000, "total_tokens": 135_000},
+        )
+        ok_resp = _mock_response(
+            content="Done after compression", finish_reason="stop",
+            usage={"prompt_tokens": 50_000, "completion_tokens": 100, "total_tokens": 50_100},
+        )
+        agent.client.chat.completions.create.side_effect = [tool_resp, ok_resp]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="x" * 100_000),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_safe_print") as mock_safe_print,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}], "compressed prompt",
+            )
+            result = agent.run_conversation("hello")
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert not [
+            call.args[0] for call in mock_safe_print.call_args_list
+            if call.args and "compacting context" in str(call.args[0])
+        ]
 
     def test_anthropic_prompt_too_long_safety_net(self, agent):
         """Anthropic 'prompt is too long' error triggers compression as safety net."""

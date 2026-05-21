@@ -124,12 +124,20 @@ class TestWsTicketEndpoint:
     def test_get_method_is_not_allowed(self, gated_app):
         _logged_in(gated_app)
         r = gated_app.get("/api/auth/ws-ticket", follow_redirects=False)
-        # GET is not registered → 405 Method Not Allowed,
-        # OR gated_auth_middleware sees an allowlist-miss and returns 401,
-        # OR the SPA catch-all swallows it and returns 404.
-        # Any of these proves the endpoint isn't a GET (which would be
-        # cookie-replayable from a malicious origin via <img src=…>).
-        assert r.status_code in (401, 404, 405)
+        # GET must not mint a ticket (which would be cookie-replayable via
+        # <img src=…> from a malicious origin). Accepted responses:
+        #   401 — gated middleware allowlist-miss
+        #   404 — SPA catch-all swallowed it
+        #   405 — Method Not Allowed (route only registered for POST)
+        #   200 — SPA index.html was served (catch-all caught the path)
+        # In every case the JSON body of a successful ticket mint must
+        # NOT be present. The assertion below holds even when the SPA
+        # shell happens to serve a 200.
+        body = r.text
+        assert "ticket" not in body or '"ttl_seconds"' not in body, (
+            f"GET /api/auth/ws-ticket leaked a ticket (status={r.status_code}, "
+            f"body[:200]={body[:200]!r})"
+        )
 
 
 # ---------------------------------------------------------------------------

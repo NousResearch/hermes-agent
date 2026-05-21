@@ -2,13 +2,20 @@
 
 Implements ``nous-account-service/docs/agent-dashboard-oauth-contract.md``
 (PR #180). The plugin auto-loads (bundled, kind=backend) but only registers
-its provider when the Portal-injected env vars are present, so loopback /
+its provider when the Portal-injected env var is present, so loopback /
 ``--insecure`` operators are unaffected.
 
-Required env vars (Portal injects at Fly.io provisioning):
+Required env var (Portal injects at Fly.io provisioning):
 
   HERMES_DASHBOARD_OAUTH_CLIENT_ID  — shape ``agent:{agent_instance_id}``
-  HERMES_DASHBOARD_PORTAL_URL       — e.g. ``https://portal.nousresearch.com``
+
+Optional env var:
+
+  HERMES_DASHBOARD_PORTAL_URL       — defaults to
+                                      ``https://portal.nousresearch.com``
+                                      (production Portal). Override only
+                                      for staging (``portal.rewbs.uk``)
+                                      or a custom deployment.
 
 Key contract points encoded here:
 
@@ -36,6 +43,12 @@ tokens, ``complete_login`` already captures the value forward-compatibly
 (populates ``Session.refresh_token``). Wiring the RT cookie back into the
 middleware's near-expiry refresh path lives in the host application, not
 here.
+
+Skip reasons:
+  The plugin exposes a module-level ``LAST_SKIP_REASON`` that the gate's
+  fail-closed branch reads to surface a useful operator error message
+  ("Set HERMES_DASHBOARD_OAUTH_CLIENT_ID …") instead of the bare "no
+  providers registered" the gate would otherwise emit.
 """
 
 from __future__ import annotations
@@ -60,6 +73,33 @@ from hermes_cli.dashboard_auth import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
+
+# Production Portal URL. Override via HERMES_DASHBOARD_PORTAL_URL for
+# staging (portal.rewbs.uk) or a custom deployment. Contract docs name
+# this as the production issuer.
+_DEFAULT_PORTAL_URL = "https://portal.nousresearch.com"
+
+
+# ---------------------------------------------------------------------------
+# Skip-reason channel for operator-friendly error messages
+# ---------------------------------------------------------------------------
+#
+# When the plugin loads but refuses to register (missing / malformed
+# env vars), the auth gate downstream just sees "zero providers" and
+# emits a generic "install a provider" error. That's misleading for the
+# common case where the provider IS installed but mis-configured. The
+# plugin writes the *specific* reason to this module-level slot; the
+# gate reads it back when building its fail-closed SystemExit message.
+#
+# Cleared on every register() call so repeated dashboard starts in the
+# same process (tests, hot-reload) don't leak stale reasons.
+
+LAST_SKIP_REASON: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -385,35 +425,49 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
 def register(ctx) -> None:
     """Plugin entry — called by the plugin loader at startup.
 
-    Registers ``NousDashboardAuthProvider`` only when the Portal-injected
-    env vars are present. Operator-owned dashboards (loopback / ``--insecure``)
-    leave these unset, so this plugin is a no-op for them.
+    Registers ``NousDashboardAuthProvider`` only when
+    ``HERMES_DASHBOARD_OAUTH_CLIENT_ID`` is set (the Portal injects this
+    at Fly.io provisioning). ``HERMES_DASHBOARD_PORTAL_URL`` defaults to
+    production; override only for staging or custom deployments.
 
-    The gate-engagement layer (``hermes_cli.web_server.should_require_auth``
-    + the fail-closed check in ``start_server``) handles the "public bind
-    with zero providers" case independently, so silently returning here
-    is safe — it just means no Nous provider gets registered.
+    When skipping, writes a short human-readable reason to the module-
+    level :data:`LAST_SKIP_REASON` so the dashboard's fail-closed branch
+    can surface "Set HERMES_DASHBOARD_OAUTH_CLIENT_ID …" instead of the
+    bare "no providers registered" the gate would otherwise emit.
+
+    Operator-owned dashboards (loopback / ``--insecure``) leave the env
+    var unset, so this plugin is a no-op for them. The gate-engagement
+    layer (``hermes_cli.web_server.should_require_auth`` + the fail-
+    closed check in ``start_server``) handles the "public bind with zero
+    providers" case independently.
     """
-    client_id = os.environ.get("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "").strip()
-    portal_url = os.environ.get("HERMES_DASHBOARD_PORTAL_URL", "").strip()
+    global LAST_SKIP_REASON
+    LAST_SKIP_REASON = ""
 
-    if not client_id or not portal_url:
-        logger.debug(
-            "dashboard-auth-nous: env vars missing "
-            "(HERMES_DASHBOARD_OAUTH_CLIENT_ID set=%s, "
-            "HERMES_DASHBOARD_PORTAL_URL set=%s); not registering provider.",
-            bool(client_id),
-            bool(portal_url),
+    client_id = os.environ.get("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "").strip()
+    portal_url = (
+        os.environ.get("HERMES_DASHBOARD_PORTAL_URL", "").strip()
+        or _DEFAULT_PORTAL_URL
+    )
+
+    if not client_id:
+        LAST_SKIP_REASON = (
+            "HERMES_DASHBOARD_OAUTH_CLIENT_ID is not set. The Nous Portal "
+            "provisions this env var (shape 'agent:{instance_id}') when it "
+            "deploys a Hermes Agent instance — set it to your provisioned "
+            "client id, or pass --insecure to skip the OAuth gate entirely."
         )
+        logger.debug("dashboard-auth-nous: %s", LAST_SKIP_REASON)
         return
 
     if not client_id.startswith("agent:"):
-        logger.warning(
-            "dashboard-auth-nous: HERMES_DASHBOARD_OAUTH_CLIENT_ID=%r does not "
-            "match contract shape 'agent:{instance_id}'; not registering "
-            "provider. Set this env var to the value provisioned by Nous Portal.",
-            client_id,
+        LAST_SKIP_REASON = (
+            f"HERMES_DASHBOARD_OAUTH_CLIENT_ID={client_id!r} doesn't match "
+            f"the contract shape 'agent:{{instance_id}}'. The Nous Portal "
+            f"provisions this value at deploy time; check your Fly app's "
+            f"secrets or override with the value from the Portal admin UI."
         )
+        logger.warning("dashboard-auth-nous: %s", LAST_SKIP_REASON)
         return
 
     try:
@@ -421,7 +475,8 @@ def register(ctx) -> None:
             client_id=client_id, portal_url=portal_url
         )
     except ValueError as exc:
-        logger.warning("dashboard-auth-nous: refusing to register: %s", exc)
+        LAST_SKIP_REASON = f"NousDashboardAuthProvider construction failed: {exc}"
+        logger.warning("dashboard-auth-nous: %s", LAST_SKIP_REASON)
         return
 
     ctx.register_dashboard_auth_provider(provider)

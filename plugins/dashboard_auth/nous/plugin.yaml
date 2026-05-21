@@ -1,8 +1,7 @@
 name: nous
 version: 1.0.0
-description: "Dashboard auth provider — OAuth 2.0 (authorization-code + PKCE) against Nous Portal. Auto-activates when HERMES_DASHBOARD_OAUTH_CLIENT_ID is set (Portal injects this at Fly.io provisioning)."
+description: "Dashboard auth provider — OAuth 2.0 (authorization-code + PKCE) against Nous Portal. Auto-activates when HERMES_DASHBOARD_OAUTH_CLIENT_ID is set (Portal injects this at Fly.io provisioning). HERMES_DASHBOARD_PORTAL_URL is optional and defaults to https://portal.nousresearch.com."
 author: NousResearch
 kind: backend
 requires_env:
   - HERMES_DASHBOARD_OAUTH_CLIENT_ID
-  - HERMES_DASHBOARD_PORTAL_URL

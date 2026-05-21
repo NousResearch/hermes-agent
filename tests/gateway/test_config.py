@@ -61,6 +61,17 @@ class TestPlatformConfigRoundtrip:
         assert PlatformConfig().gateway_restart_notification is True
         assert PlatformConfig.from_dict({}).gateway_restart_notification is True
 
+    def test_gateway_restart_notification_defaults_false_for_slack(self):
+        restored = PlatformConfig.from_dict({}, platform=Platform.SLACK)
+        assert restored.gateway_restart_notification is False
+
+    def test_gateway_restart_notification_explicit_true_for_slack(self):
+        restored = PlatformConfig.from_dict(
+            {"gateway_restart_notification": True},
+            platform=Platform.SLACK,
+        )
+        assert restored.gateway_restart_notification is True
+
     def test_gateway_restart_notification_roundtrip_false(self):
         pc = PlatformConfig(enabled=True, gateway_restart_notification=False)
         restored = PlatformConfig.from_dict(pc.to_dict())

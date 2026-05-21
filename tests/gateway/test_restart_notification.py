@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
-from gateway.config import HomeChannel, Platform
+from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import (
@@ -530,6 +530,59 @@ async def test_send_home_channel_startup_notification_default_flag_true(
     # silently flipping the default to False.
     assert runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification is True
 
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_slack_default_skips(
+    tmp_path, monkeypatch
+):
+    """Slack defaults to no lifecycle pings unless explicitly opted in."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms = {
+        Platform.SLACK: PlatformConfig.from_dict(
+            {"enabled": True},
+            platform=Platform.SLACK,
+        )
+    }
+    runner.config.platforms[Platform.SLACK].home_channel = HomeChannel(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        name="Ops",
+    )
+    runner.adapters = {Platform.SLACK: adapter}
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_non_slack_default_fires(
+    tmp_path, monkeypatch
+):
+    """Non-Slack platforms keep the prior default notification behavior."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM] = PlatformConfig.from_dict(
+        {"enabled": True},
+        platform=Platform.TELEGRAM,
+    )
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
         platform=Platform.TELEGRAM,
         chat_id="home-42",

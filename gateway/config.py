@@ -199,6 +199,14 @@ class Platform(Enum):
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
 
+def _platform_value(platform: Optional[Platform | str]) -> Optional[str]:
+    if isinstance(platform, Platform):
+        return platform.value
+    if isinstance(platform, str):
+        return platform.strip().lower()
+    return None
+
+
 @dataclass
 class HomeChannel:
     """
@@ -279,7 +287,13 @@ class SessionResetPolicy:
 
 @dataclass
 class PlatformConfig:
-    """Configuration for a single messaging platform."""
+    """Configuration for a single messaging platform.
+
+    ``gateway_restart_notification`` controls lifecycle pings such as
+    "Gateway online" and "Gateway restarted". The generic dataclass default is
+    True for backwards compatibility, but platform-aware parsing defaults it to
+    False for Slack unless the operator explicitly sets it to true.
+    """
     enabled: bool = False
     token: Optional[str] = None  # Bot token (Telegram, Discord)
     api_key: Optional[str] = None  # API key if different from token
@@ -317,7 +331,11 @@ class PlatformConfig:
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        platform: Optional[Platform | str] = None,
+    ) -> "PlatformConfig":
         home_channel = None
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
@@ -329,6 +347,9 @@ class PlatformConfig:
         _grn = data.get("gateway_restart_notification")
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
+        default_gateway_restart_notification = (
+            False if _platform_value(platform) == Platform.SLACK.value else True
+        )
 
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
@@ -336,7 +357,10 @@ class PlatformConfig:
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
-            gateway_restart_notification=_coerce_bool(_grn, True),
+            gateway_restart_notification=_coerce_bool(
+                _grn,
+                default_gateway_restart_notification,
+            ),
             extra=data.get("extra", {}),
         )
 
@@ -594,7 +618,10 @@ class GatewayConfig:
         for platform_name, platform_data in data.get("platforms", {}).items():
             try:
                 platform = Platform(platform_name)
-                platforms[platform] = PlatformConfig.from_dict(platform_data)
+                platforms[platform] = PlatformConfig.from_dict(
+                    platform_data,
+                    platform=platform,
+                )
             except ValueError:
                 pass  # Skip unknown platforms
         
@@ -1372,7 +1399,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if slack_token:
         if Platform.SLACK not in config.platforms:
             # No yaml config for Slack — env-only setup, enable it
-            config.platforms[Platform.SLACK] = PlatformConfig()
+            config.platforms[Platform.SLACK] = PlatformConfig(
+                gateway_restart_notification=False,
+            )
             config.platforms[Platform.SLACK].enabled = True
         else:
             slack_config = config.platforms[Platform.SLACK]

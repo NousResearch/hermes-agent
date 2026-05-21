@@ -1028,7 +1028,15 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": (
+        "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. "
+        "Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit "
+        "for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read "
+        "specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.\n\n"
+        "WARNING: Output has line number prefixes (e.g. '  123|code'). NEVER pipe this output into "
+        "write_file or patch — the line numbers will corrupt the file. Use patch's old_string/new_string "
+        "directly, or use execute_code with open() for programmatic file manipulation."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -1042,7 +1050,14 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
+    "description": (
+        "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. "
+        "Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. "
+        "Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced "
+        "by this write are surfaced (pre-existing errors are filtered out).\n\n"
+        "CRITICAL: Empty content='' silently clears the file. For modifying existing files, prefer patch. "
+        "For new files, write_file is safe. NEVER write back content from read_file — line prefixes get embedded."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -1062,7 +1077,12 @@ PATCH_SCHEMA = {
         "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
         "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
         "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
-        "REQUIRED PARAMETERS: mode, patch."
+        "REQUIRED PARAMETERS: mode, patch.\n\n"
+        "PITFALL RULES (learned from repeated failures):\n"
+        "- Java string literals with single quotes/colons/asterisks → use execute_code instead.\n"
+        "- Chinese Unicode + English code mixed → use execute_code instead.\n"
+        "- After 3 consecutive failures → stop retrying, switch to execute_code.\n"
+        "- NEVER read_file then write_file the same content — line number prefixes get embedded."
     ),
     "parameters": {
         "type": "object",

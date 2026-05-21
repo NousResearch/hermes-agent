@@ -4716,6 +4716,12 @@ def start_server(
     global _DASHBOARD_EMBEDDED_CHAT_ENABLED
     _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
+    # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
+    # injection / WS-auth paths can branch on it consistently.  At Phase 0 the
+    # flag is set but nothing reads it yet — later phases register the gate
+    # middleware and the gated /auth/* routes.
+    app.state.auth_required = should_require_auth(host, allow_public)
+
     _LOCALHOST = ("127.0.0.1", "localhost", "::1")
     if host not in _LOCALHOST and not allow_public:
         raise SystemExit(

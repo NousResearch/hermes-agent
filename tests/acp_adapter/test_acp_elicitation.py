@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from acp_adapter.elicitation import (
     build_clarify_requested_schema,
+    extract_clarify_answer,
     supports_form_elicitation,
 )
 
@@ -50,3 +51,27 @@ def test_choice_clarify_schema_preserves_other_path():
     assert "Strict" in props["answer"].get("enum", [])
     assert "Fallback" in props["answer"].get("enum", [])
     assert "Other (type your answer)" in props["answer"].get("enum", [])
+
+
+def test_extract_answer_from_accept_dict():
+    response = {"action": "accept", "content": {"answer": "Strict"}}
+    assert extract_clarify_answer(response) == "Strict"
+
+
+def test_extract_other_answer_from_accept_dict():
+    response = {
+        "action": "accept",
+        "content": {"answer": "Other (type your answer)", "other_answer": "Use raw JSON-RPC"},
+    }
+    assert extract_clarify_answer(response) == "Use raw JSON-RPC"
+
+
+def test_extract_answer_from_accept_object():
+    response = SimpleNamespace(action="accept", content={"answer": "Fallback"})
+    assert extract_clarify_answer(response) == "Fallback"
+
+
+def test_decline_cancel_or_missing_returns_standard_sentinel():
+    assert extract_clarify_answer({"action": "decline"}) == "[user declined the clarification]"
+    assert extract_clarify_answer({"action": "cancel"}) == "[user cancelled the clarification]"
+    assert extract_clarify_answer(None) == "[clarify prompt could not be delivered]"

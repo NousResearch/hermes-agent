@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["OTHER_LABEL", "build_clarify_requested_schema", "supports_form_elicitation"]
+__all__ = [
+    "OTHER_LABEL",
+    "build_clarify_requested_schema",
+    "extract_clarify_answer",
+    "supports_form_elicitation",
+]
 
 OTHER_LABEL = "Other (type your answer)"
 
@@ -82,6 +87,30 @@ def build_clarify_requested_schema(*, question: str, choices: list[str] | None) 
         },
         "required": ["answer"],
     }
+
+
+def extract_clarify_answer(response: object) -> str:
+    """Convert an ACP elicitation response into Hermes' clarify string result."""
+    if response is None:
+        return "[clarify prompt could not be delivered]"
+
+    action = _get_attr_or_key(response, "action")
+    if action == "decline":
+        return "[user declined the clarification]"
+    if action == "cancel":
+        return "[user cancelled the clarification]"
+    if action != "accept":
+        return "[clarify prompt could not be delivered]"
+
+    content = _get_attr_or_key(response, "content")
+    if content is None:
+        return "[clarify prompt could not be delivered]"
+
+    answer = _get_attr_or_key(content, "answer", "")
+    other = _get_attr_or_key(content, "other_answer", "")
+    if str(answer).strip() == OTHER_LABEL and str(other).strip():
+        return str(other).strip()
+    return str(answer or "").strip()
 
 
 def supports_form_elicitation(client_capabilities: object) -> bool:

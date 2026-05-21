@@ -1096,6 +1096,11 @@ def init_agent(
     # cached system prompt so prefix cache stays warm.
     agent.time_injection = bool(_agent_section.get("time_injection", False))
 
+    # Cost tagging — when True, attaches departmental/service tags to
+    # token usage data for downstream cost attribution.
+    agent.cost_tagging = bool(_agent_section.get("cost_tagging", False))
+    agent.cost_tags: Dict[str, str] = {}
+
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
     try:

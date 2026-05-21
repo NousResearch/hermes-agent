@@ -744,6 +744,20 @@ class TestSanitizeEnvLines:
             "OPENAI_BASE_URL=https://api.openai.com/v1\n",
         ]
 
+    def test_removes_stale_placeholder_keys(self):
+        """A line containing a known key set to '***' is removed."""
+        lines = [
+            "OPENAI_API_KEY=sk-xxx\n",
+            "ANTHROPIC_API_KEY=***\n",
+            "TAVILY_API_KEY=***\n",
+            "OTHER_VAR=***\n",  # Unknown key, should be preserved!
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            "OPENAI_API_KEY=sk-xxx\n",
+            "OTHER_VAR=***\n",
+        ]
+
     def test_preserves_clean_file(self):
         """A well-formed .env file passes through unchanged (modulo trailing newlines)."""
         lines = [

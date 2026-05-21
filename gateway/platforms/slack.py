@@ -2242,6 +2242,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
@@ -2256,6 +2257,9 @@ class SlackAdapter(BasePlatformAdapter):
             cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
             thread_ts = self._resolve_thread_ts(None, metadata)
 
+            _rationale_text = (
+                f"{contextual_reason}\n\n" if contextual_reason else ""
+            )
             blocks = [
                 {
                     "type": "section",
@@ -2263,6 +2267,7 @@ class SlackAdapter(BasePlatformAdapter):
                         "type": "mrkdwn",
                         "text": (
                             f":warning: *Command Approval Required*\n"
+                            f"{_rationale_text}"
                             f"```{cmd_preview}```\n"
                             f"Reason: {description}"
                         ),

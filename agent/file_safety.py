@@ -16,9 +16,19 @@ def _hermes_home_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+def _hermes_root_path() -> Path:
+    """Resolve the Hermes root dir (always the parent of any profile, never per-profile)."""
+    try:
+        from hermes_constants import get_default_hermes_root  # local import to avoid cycles
+        return get_default_hermes_root()
+    except Exception:
+        return Path(os.path.expanduser("~/.hermes"))
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
+    hermes_root = _hermes_root_path()
     return {
         os.path.realpath(p)
         for p in [
@@ -26,7 +36,11 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
+            # Active profile .env (or top-level .env when not in profile mode).
             str(hermes_home / ".env"),
+            # Top-level .env, even when running under a profile — overwriting it
+            # leaks credentials across every profile that inherits from root (#15981).
+            str(hermes_root / ".env"),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),

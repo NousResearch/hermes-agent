@@ -317,6 +317,19 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
+def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict:
+    """Build a tool-result message dict with both the OpenAI-format ``name``
+    field (required by the wire format and provider adapters) and the internal
+    ``tool_name`` field (written to the session DB messages table)."""
+    return {
+        "role": "tool",
+        "name": name,
+        "tool_name": name,
+        "content": content,
+        "tool_call_id": tool_call_id,
+    }
+
+
 __all__ = [
     "_NEVER_PARALLEL_TOOLS",
     "_PARALLEL_SAFE_TOOLS",
@@ -333,4 +346,5 @@ __all__ = [
     "_extract_file_mutation_targets",
     "_extract_error_preview",
     "_trajectory_normalize_msg",
+    "make_tool_result_message",
 ]

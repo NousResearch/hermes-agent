@@ -101,6 +101,11 @@ def _locales_dir() -> Path:
         p = Path(bundled)
         if p.is_dir():
             return p
+        logger.warning(
+            "HERMES_BUNDLED_LOCALES points to non-existent or non-directory path "
+            "(%s); falling back to repo-root locales/",
+            bundled,
+        )
     # agent/i18n.py -> agent/ -> repo root
     return Path(__file__).resolve().parent.parent / "locales"
 

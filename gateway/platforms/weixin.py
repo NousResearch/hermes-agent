@@ -83,10 +83,35 @@ EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
 
-LONG_POLL_TIMEOUT_MS = 35_000
-API_TIMEOUT_MS = 15_000
-CONFIG_TIMEOUT_MS = 10_000
-QR_TIMEOUT_MS = 35_000
+
+def _env_int(name: str, default: int) -> int:
+    """Return a positive integer from the environment, or a safe default."""
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return default
+    return value
+
+
+LONG_POLL_TIMEOUT_MS = _env_int("WEIXIN_LONG_POLL_TIMEOUT_MS", 35_000)
+API_TIMEOUT_MS = _env_int("WEIXIN_API_TIMEOUT_MS", 15_000)
+CONFIG_TIMEOUT_MS = _env_int("WEIXIN_CONFIG_TIMEOUT_MS", 10_000)
+QR_TIMEOUT_MS = _env_int("WEIXIN_QR_TIMEOUT_MS", 35_000)
+
+
+def _bounded_long_poll_timeout_ms(suggested_timeout: Any, current_timeout_ms: int) -> int:
+    """Apply iLink's suggested timeout without exceeding the local safety cap."""
+    if isinstance(suggested_timeout, int) and suggested_timeout > 0:
+        return min(suggested_timeout, LONG_POLL_TIMEOUT_MS)
+    return current_timeout_ms
+
 
 MAX_CONSECUTIVE_FAILURES = 3
 RETRY_DELAY_SECONDS = 2
@@ -1326,8 +1351,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     timeout_ms=timeout_ms,
                 )
                 suggested_timeout = response.get("longpolling_timeout_ms")
-                if isinstance(suggested_timeout, int) and suggested_timeout > 0:
-                    timeout_ms = suggested_timeout
+                timeout_ms = _bounded_long_poll_timeout_ms(suggested_timeout, timeout_ms)
 
                 ret = response.get("ret", 0)
                 errcode = response.get("errcode", 0)

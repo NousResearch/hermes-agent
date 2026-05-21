@@ -27,6 +27,25 @@ def _make_adapter() -> WeixinAdapter:
     )
 
 
+class TestWeixinTimeoutConfig:
+    def test_env_int_reads_positive_integer(self, monkeypatch):
+        monkeypatch.setenv("WEIXIN_LONG_POLL_TIMEOUT_MS", "12000")
+
+        assert weixin._env_int("WEIXIN_LONG_POLL_TIMEOUT_MS", 35_000) == 12_000
+
+    def test_env_int_falls_back_for_invalid_values(self, monkeypatch):
+        monkeypatch.setenv("WEIXIN_LONG_POLL_TIMEOUT_MS", "not-an-int")
+
+        assert weixin._env_int("WEIXIN_LONG_POLL_TIMEOUT_MS", 35_000) == 35_000
+
+    def test_long_poll_suggestion_is_capped_by_local_timeout(self, monkeypatch):
+        monkeypatch.setattr(weixin, "LONG_POLL_TIMEOUT_MS", 12_000)
+
+        assert weixin._bounded_long_poll_timeout_ms(60_000, 12_000) == 12_000
+        assert weixin._bounded_long_poll_timeout_ms(5_000, 12_000) == 5_000
+        assert weixin._bounded_long_poll_timeout_ms("60000", 12_000) == 12_000
+
+
 class TestWeixinFormatting:
     def test_format_message_preserves_markdown(self):
         adapter = _make_adapter()

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _hermes_home_path() -> Path:
@@ -98,7 +101,25 @@ def is_write_denied(
     ``home`` selects which user-home denylist paths are evaluated.
     """
     home = os.path.realpath(os.path.expanduser(home or "~"))
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    base_root = (
+        os.path.realpath(os.path.expanduser(str(base_dir)))
+        if base_dir
+        else None
+    )
+    path_str = os.path.expanduser(str(path))
+    if os.path.isabs(path_str):
+        resolved = os.path.realpath(path_str)
+    elif base_root:
+        resolved = os.path.realpath(os.path.join(base_root, path_str))
+        if _is_outside_root(resolved, base_root):
+            logger.debug(
+                "Denied write path outside base_dir: path=%r base_dir=%r",
+                path,
+                base_dir,
+            )
+            return True
+    else:
+        resolved = os.path.realpath(path_str)
 
     if resolved in build_write_denied_paths(home):
         return True
@@ -106,10 +127,10 @@ def is_write_denied(
         if resolved.startswith(prefix):
             return True
 
-    if base_dir:
-        base_root = os.path.realpath(os.path.expanduser(str(base_dir)))
-        if _is_outside_root(resolved, base_root):
-            return True
+    # Absolute paths skip the relative-join check above, so enforce base_root
+    # containment for both absolute and relative inputs here.
+    if base_root and _is_outside_root(resolved, base_root):
+        return True
 
     safe_root = get_safe_write_root()
     if safe_root and _is_outside_root(resolved, safe_root):

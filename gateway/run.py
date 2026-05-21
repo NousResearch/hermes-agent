@@ -5398,7 +5398,10 @@ class GatewayRunner:
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
-        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
+        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist.
+        # Discord keeps this gateway-level bypass aligned with adapter behavior:
+        # if DISCORD_ALLOW_BOTS is permissive and the message reaches here as a
+        # bot sender, this layer should not re-reject it on user allowlists.
         platform_allow_bots_map = {
             Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",

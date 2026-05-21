@@ -6682,7 +6682,25 @@ def _update_via_zip(args):
     import zipfile
     from urllib.request import urlretrieve
 
-    branch = "main"
+    # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
+    # static archive from GitHub, which is fine for the default "main"
+    # channel but would silently ignore --branch and update from main even
+    # if the user asked for something else — exactly the silent-divergence
+    # bug --branch was added to prevent. Refuse to proceed in that case
+    # rather than lie.
+    branch = _resolve_update_branch(args)
+    if branch != "main":
+        print(
+            f"✗ --branch={branch} is not supported on the Windows ZIP-fallback "
+            "update path."
+        )
+        print(
+            "  This path runs when git file I/O is broken on the system. "
+            "Either resolve the git-side breakage (typically an antivirus "
+            "or NTFS filter holding files open) and rerun `hermes update "
+            f"--branch {branch}`, or update against main with `hermes update`."
+        )
+        sys.exit(1)
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
@@ -8045,18 +8063,36 @@ def _finalize_update_output(state):
             pass
 
 
-def _cmd_update_check(branch: str = "main"):
+def _resolve_update_branch(args) -> str:
+    """Normalize ``args.branch`` into a non-empty branch name.
+
+    Centralizes the "default to main, accept --branch override, treat empty
+    or whitespace-only values as the default" parsing so every consumer of
+    ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
+    the same answer.
+    """
+    return (getattr(args, "branch", None) or "main").strip() or "main"
+
+
+def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
     ``branch`` selects which branch the check compares against. Default is
     "main"; callers can pass another branch to ask "are there new commits
     on origin/<branch>?" without performing the update.
+
+    ``branch_explicit`` is True iff the caller passed --branch on the CLI.
+    PyPI installs can't honor non-default branches, so when this is True
+    on a PyPI install we surface a one-line notice instead of silently
+    dropping the flag.
     """
     from hermes_cli.config import detect_install_method
     method = detect_install_method(PROJECT_ROOT)
     if method == "pip":
         from hermes_cli.config import recommended_update_command
         from hermes_cli.banner import check_via_pypi
+        if branch_explicit and branch != "main":
+            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
         result = check_via_pypi()
         if result is None:
             print("✗ Could not reach PyPI to check for updates.")
@@ -8125,6 +8161,20 @@ def _cmd_update_check(branch: str = "main"):
             print("✗ Failed to fetch.")
             if stderr:
                 print(f"  {stderr.splitlines()[0]}")
+        sys.exit(1)
+
+    # Verify the compare ref actually exists before asking rev-list about it.
+    # Without this, `git rev-list HEAD..origin/<bogus> --count` exits 128 and
+    # (with check=True) raises CalledProcessError, surfacing a Python
+    # traceback. Friendlier to detect-and-report.
+    verify_result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if verify_result.returncode != 0:
+        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
 
     rev_result = subprocess.run(
@@ -8347,8 +8397,11 @@ def cmd_update(args):
     if getattr(args, "check", False):
         # --check honors --branch so the "any new commits?" answer matches
         # what a subsequent `hermes update --branch=<x>` would actually pull.
-        branch = (getattr(args, "branch", None) or "main").strip() or "main"
-        _cmd_update_check(branch=branch)
+        branch = _resolve_update_branch(args)
+        _cmd_update_check(
+            branch=branch,
+            branch_explicit=bool(getattr(args, "branch", None)),
+        )
         return
 
     gateway_mode = getattr(args, "gateway", False)
@@ -8511,7 +8564,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Determine the target branch. Default is "main" (the long-standing
         # CLI behavior); --branch overrides for callers that want to update
         # against a non-default channel.
-        branch = (getattr(args, "branch", None) or "main").strip() or "main"
+        branch = _resolve_update_branch(args)
 
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical

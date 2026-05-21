@@ -10682,7 +10682,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "chat", "secrets",
+        "version", "webhook", "whatsapp", "workflow", "chat", "secrets",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -12496,6 +12496,16 @@ Examples:
         plugins_command(args)
 
     plugins_parser.set_defaults(func=cmd_plugins)
+
+    # =========================================================================
+    # workflow command — local Codex to Claude alignment gate launcher
+    # =========================================================================
+    try:
+        from hermes_cli.workflow_launcher import register_workflow_subparser
+
+        register_workflow_subparser(subparsers)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("workflow CLI wiring failed: %s", _exc)
 
     # =========================================================================
     # Plugin CLI commands — dynamically registered by memory/general plugins.

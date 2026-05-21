@@ -346,6 +346,11 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     assert '"wifi_analyzer_feature_matrix"' in diagnostics_bridge
     assert '"wifi_analyzer_workflow_routes"' in diagnostics_bridge
     assert '"wifi_scan_policy_matrix"' in diagnostics_bridge
+    assert '"wifi_scan_control"' in diagnostics_bridge
+    assert 'scan_mode=paused' in diagnostics_bridge
+    assert 'scan_mode=resumed' in diagnostics_bridge
+    assert 'Pause/resume scan control' in diagnostics_bridge
+    assert 'Route pause or resume scan mode' in diagnostics_bridge
     assert '"wifi_channel_utilization"' in diagnostics_bridge
     assert '"wifi_access_point_semantics"' in diagnostics_bridge
     assert '"wifi_band_coverage"' in diagnostics_bridge
@@ -361,6 +366,9 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     assert '"wifi_band_coverage"' in chat_client
     assert '"wifi_analyzer_workflow_routes"' in chat_client
     assert '"wifi_scan_policy_matrix"' in chat_client
+    assert '"wifi_scan_control"' in chat_client
+    assert '"scan_mode"' in chat_client
+    assert 'Wi-Fi scan mode for direct Wi-Fi actions' in chat_client
     assert '"wifi_channel_utilization" -> wifiChannelUtilizationRow(row)' in diagnostic_cards
     assert '"wifi_access_point_semantics" -> wifiAccessPointSemanticRow(row)' in diagnostic_cards
     assert '"wifi_band_coverage" -> wifiBandCoverageRow(row)' in diagnostic_cards

@@ -88,12 +88,13 @@ class NativeToolCallingChatClientTest {
     @Test
     fun extractsExplicitWifiChannelUtilizationDiagnosticQuickActionArguments() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
-            "Run android_device_diagnostics_tool action=wifi_channel_utilization refresh=false",
+            "Run android_device_diagnostics_tool action=wifi_channel_utilization refresh=false scan_mode=paused",
         )
 
         requireNotNull(parsed)
         assertEquals("wifi_channel_utilization", parsed.getString("action"))
         assertFalse(parsed.getBoolean("refresh"))
+        assertEquals("paused", parsed.getString("scan_mode"))
     }
 
     @Test

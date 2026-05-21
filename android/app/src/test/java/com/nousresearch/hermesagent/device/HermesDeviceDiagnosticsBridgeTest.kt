@@ -898,6 +898,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(featureLabels.contains("Identify nearby access points"))
         assertTrue(featureLabels.contains("Channel signal graph"))
         assertTrue(featureLabels.contains("Channel utilization occupancy"))
+        assertTrue(featureLabels.contains("Pause/resume scan control"))
         assertTrue(featureLabels.contains("Band coverage and 2.4/5/6GHz visibility"))
         assertTrue(featureLabels.contains("Band, security, signal, and SSID filters"))
         assertTrue(featureLabels.contains("Agent AP semantic and risk labels"))
@@ -907,13 +908,43 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(routeLabels.contains("Route best-channel analysis"))
         assertTrue(routeLabels.contains("Route full AP metadata"))
         assertTrue(routeLabels.contains("Route AP export"))
+        assertTrue(routeLabels.contains("Route pause or resume scan mode"))
         assertTrue(policyLabels.contains("Android scan throttling"))
+        assertTrue(policyLabels.contains("Pause/resume scan mode"))
         assertTrue(policyLabels.contains("Passive report default"))
         assertTrue(policyLabels.contains("Analysis and privacy boundary"))
+        assertTrue(result.has("wifi_scan_control"))
+        assertTrue(result.getJSONObject("wifi_scan_control").getBoolean("pause_resume_supported"))
         assertTrue(result.getJSONArray("cards").toString().contains("Wi-Fi Analyzer Readiness"))
         assertTrue(result.getInt("wifi_analyzer_feature_count") >= 8)
         assertTrue(result.getInt("wifi_analyzer_workflow_route_count") >= 6)
         assertTrue(result.getInt("wifi_scan_policy_count") >= 5)
+    }
+
+    @Test
+    fun wifiScanModePausedSuppressesActiveRefreshAndResumedRequestsIt() {
+        val paused = HermesDeviceDiagnosticsBridge.wifiScanJson(
+            context,
+            JSONObject()
+                .put("refresh", true)
+                .put("scan_mode", "paused"),
+        )
+        val resumed = HermesDeviceDiagnosticsBridge.wifiScanJson(
+            context,
+            JSONObject().put("scan_mode", "resumed"),
+        )
+
+        val pausedControl = paused.getJSONObject("wifi_scan_control")
+        val resumedControl = resumed.getJSONObject("wifi_scan_control")
+
+        assertEquals("paused", pausedControl.getString("scan_mode"))
+        assertTrue(pausedControl.getBoolean("pause_resume_supported"))
+        assertTrue(pausedControl.getBoolean("user_refresh_requested"))
+        assertFalse(pausedControl.getBoolean("effective_refresh_requested"))
+        assertTrue(pausedControl.getBoolean("refresh_suppressed_by_pause"))
+        assertEquals("resumed", resumedControl.getString("scan_mode"))
+        assertTrue(resumedControl.getBoolean("effective_refresh_requested"))
+        assertTrue(resumedControl.getBoolean("resumed_requests_active_scan"))
     }
 
     @Test

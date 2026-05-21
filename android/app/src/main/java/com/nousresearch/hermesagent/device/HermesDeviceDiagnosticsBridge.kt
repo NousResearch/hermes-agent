@@ -196,7 +196,9 @@ object HermesDeviceDiagnosticsBridge {
     fun wifiScanJson(context: Context, arguments: JSONObject = JSONObject(), actionName: String = "wifi_scan"): JSONObject {
         val appContext = context.applicationContext
         val limit = arguments.optInt("limit", DEFAULT_LIMIT).coerceIn(1, MAX_WIFI_RESULTS)
-        val refresh = arguments.optBoolean("refresh", false)
+        val requestedRefresh = arguments.optBoolean("refresh", false)
+        val scanMode = normalizedWifiScanMode(arguments)
+        val refresh = effectiveWifiRefreshRequested(requestedRefresh, scanMode)
         val wifiManager = appContext.getSystemService(WifiManager::class.java)
         val permissionStatus = wifiPermissionStatusJson(appContext)
         val canReadScan = permissionStatus.optBoolean("can_read_scan_results", false)
@@ -206,6 +208,21 @@ object HermesDeviceDiagnosticsBridge {
                 .put("action", actionName)
                 .put("error", "Wi-Fi service is unavailable on this device")
                 .put("wifi_scan_permission_status", permissionStatus)
+                .put("wifi_scan_control", wifiScanControlJson(scanMode, requestedRefresh, refresh, false))
+                .put(
+                    "wifi_scan_status",
+                    wifiScanStatusJson(
+                        refreshRequested = refresh,
+                        refreshAccepted = false,
+                        wifiEnabled = false,
+                        permissionStatus = permissionStatus,
+                        totalScanResultCount = 0,
+                        returnedNetworkCount = 0,
+                        latestScanAgeMs = null,
+                        scanMode = scanMode,
+                        userRefreshRequested = requestedRefresh,
+                    ),
+                )
         }
         if (!canReadScan) {
             return JSONObject()
@@ -213,6 +230,21 @@ object HermesDeviceDiagnosticsBridge {
                 .put("action", actionName)
                 .put("error", "Wi-Fi scan results require nearby Wi-Fi/location permissions and location services on supported Android versions")
                 .put("wifi_scan_permission_status", permissionStatus)
+                .put("wifi_scan_control", wifiScanControlJson(scanMode, requestedRefresh, refresh, false))
+                .put(
+                    "wifi_scan_status",
+                    wifiScanStatusJson(
+                        refreshRequested = refresh,
+                        refreshAccepted = false,
+                        wifiEnabled = wifiManager.isWifiEnabled,
+                        permissionStatus = permissionStatus,
+                        totalScanResultCount = 0,
+                        returnedNetworkCount = 0,
+                        latestScanAgeMs = null,
+                        scanMode = scanMode,
+                        userRefreshRequested = requestedRefresh,
+                    ),
+                )
                 .put("settings_actions", JSONArray().put("open_location_settings").put("open_app_settings"))
         }
         val refreshAccepted = if (refresh) runCatching {
@@ -268,12 +300,17 @@ object HermesDeviceDiagnosticsBridge {
             totalScanResultCount = allNetworks.length(),
             returnedNetworkCount = networks.length(),
             latestScanAgeMs = latestScanAgeMs,
+            scanMode = scanMode,
+            userRefreshRequested = requestedRefresh,
         )
         return JSONObject()
             .put("success", true)
             .put("action", actionName)
-            .put("refresh_requested", refresh)
+            .put("refresh_requested", requestedRefresh)
+            .put("effective_refresh_requested", refresh)
             .put("refresh_accepted", refreshAccepted)
+            .put("wifi_scan_mode", scanMode)
+            .put("wifi_scan_control", wifiScanControlJson(scanMode, requestedRefresh, refresh, refreshAccepted))
             .put("result_count", networks.length())
             .put("total_scan_result_count", allNetworks.length())
             .put("wifi_scan_age_ms", latestScanAgeMs ?: JSONObject.NULL)
@@ -441,6 +478,9 @@ object HermesDeviceDiagnosticsBridge {
             returnedNetworkCount = 0,
             latestScanAgeMs = null,
         )
+        val scanControl = scanStatus.optJSONObject("wifi_scan_control")
+            ?: scanResult?.optJSONObject("wifi_scan_control")
+            ?: wifiScanControlJson(WIFI_SCAN_MODE_AUTO, false, false, false)
         val featureRows = wifiAnalyzerFeatureRows(
             wifiAvailable = wifiManager != null,
             permissionStatus = permissionStatus,
@@ -509,6 +549,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("report_scope", "WiFiAnalyzer-style readiness and routing report for AP discovery, signal/channel graphs, AP history, channel rating, channel utilization/occupancy inference, filter facets, OUI/vendor lookup, export, scan throttling, and privacy boundaries.")
             .put("wifi_scan_permission_status", permissionStatus)
             .put("wifi_scan_status", scanStatus)
+            .put("wifi_scan_control", scanControl)
             .put("wifi_networks", networks)
             .put("wifi_access_point_details", accessPointDetails)
             .put("wifi_channel_ratings", channelRatings)
@@ -2717,6 +2758,20 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 capabilityRow(
                     category = "wifi_analyzer_parity",
+                    label = "Pause/resume scan control",
+                    ready = true,
+                    valueLabel = "scan_mode ready",
+                    detail = "Hermes accepts scan_mode=paused to reuse cached AP rows/history without active startScan, and scan_mode=resumed to request a fresh Android scan on direct Wi-Fi actions.",
+                    recommendation = "Pause repeated scans during passive review; resume only when the user asks for a fresh nearby Wi-Fi reading.",
+                    fraction = 0.9f,
+                    extra = JSONObject()
+                        .put("tool_action", "wifi_scan")
+                        .put("feature_source", "WiFiAnalyzer pause/resume scanning"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "wifi_analyzer_parity",
                     label = "Band coverage and 2.4/5/6GHz visibility",
                     ready = observedBandCount > 0 || scanReady,
                     valueLabel = "$observedBandCount observed band(s)",
@@ -2884,6 +2939,18 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 capabilityRow(
                     category = "wifi_analyzer_route",
+                    label = "Route pause or resume scan mode",
+                    ready = true,
+                    valueLabel = "scan_mode",
+                    detail = "Use scan_mode=paused with wifi_scan, wifi_ap_details, wifi_export, wifi_channel_rating, or wifi_channel_utilization to keep analysis cached; use scan_mode=resumed to request a fresh direct scan.",
+                    recommendation = "Prefer paused mode for repeated card review and resumed mode for explicit fresh-scan requests.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "wifi_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "wifi_analyzer_route",
                     label = "Route scan policy explanation",
                     ready = true,
                     valueLabel = "wifi_analyzer_report",
@@ -2938,6 +3005,20 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Prefer passive scan reads, scan age, and cached history over tight refresh loops.",
                     fraction = 0.8f,
                     extra = JSONObject().put("constraint_type", "android_policy"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "wifi_scan_policy",
+                    label = "Pause/resume scan mode",
+                    ready = true,
+                    valueLabel = scanStatus.optJSONObject("wifi_scan_control")?.optString("scan_mode").orEmpty().ifBlank { WIFI_SCAN_MODE_AUTO },
+                    detail = "scan_mode=paused suppresses active refresh even when refresh=true, while scan_mode=resumed requests a fresh Android scan on direct Wi-Fi actions.",
+                    recommendation = "Use paused mode for cached signal dashboards and resumed mode for explicit fresh nearby-signal scans.",
+                    fraction = 0.9f,
+                    extra = JSONObject()
+                        .put("constraint_type", "agent_scan_control")
+                        .put("tool_action", "wifi_scan"),
                 ),
             )
             .put(
@@ -7624,6 +7705,66 @@ object HermesDeviceDiagnosticsBridge {
         return ((nowMicros - timestampMicros) / 1_000L).coerceAtLeast(0L)
     }
 
+    private fun normalizedWifiScanMode(arguments: JSONObject): String {
+        val requested = arguments.optString("scan_mode").ifBlank {
+            arguments.optString("wifi_scan_mode").ifBlank {
+                arguments.optString("scan_control")
+            }
+        }
+        return when (requested.trim().lowercase(Locale.US)) {
+            "pause", "paused", "passive", "cached", "hold", "stop" -> WIFI_SCAN_MODE_PAUSED
+            "resume", "resumed", "active", "fresh", "refresh", "live" -> WIFI_SCAN_MODE_RESUMED
+            else -> WIFI_SCAN_MODE_AUTO
+        }
+    }
+
+    private fun effectiveWifiRefreshRequested(refreshRequested: Boolean, scanMode: String): Boolean {
+        return when (scanMode) {
+            WIFI_SCAN_MODE_PAUSED -> false
+            WIFI_SCAN_MODE_RESUMED -> true
+            else -> refreshRequested
+        }
+    }
+
+    private fun wifiScanControlJson(
+        scanMode: String,
+        userRefreshRequested: Boolean,
+        effectiveRefreshRequested: Boolean,
+        refreshAccepted: Boolean,
+    ): JSONObject {
+        return JSONObject()
+            .put("scan_mode", scanMode)
+            .put("pause_resume_supported", true)
+            .put("user_refresh_requested", userRefreshRequested)
+            .put("effective_refresh_requested", effectiveRefreshRequested)
+            .put("refresh_suppressed_by_pause", userRefreshRequested && !effectiveRefreshRequested && scanMode == WIFI_SCAN_MODE_PAUSED)
+            .put("refresh_accepted", refreshAccepted)
+            .put("paused_uses_cached_scan_results", scanMode == WIFI_SCAN_MODE_PAUSED)
+            .put("resumed_requests_active_scan", scanMode == WIFI_SCAN_MODE_RESUMED)
+            .put("android_scope", "Per diagnostic request; Android exposes cached scan results and may throttle active startScan calls.")
+            .put("agent_instruction", wifiScanModeInstruction(scanMode, userRefreshRequested, effectiveRefreshRequested, refreshAccepted))
+    }
+
+    private fun wifiScanModeInstruction(
+        scanMode: String,
+        userRefreshRequested: Boolean,
+        effectiveRefreshRequested: Boolean,
+        refreshAccepted: Boolean,
+    ): String {
+        return when {
+            scanMode == WIFI_SCAN_MODE_PAUSED && userRefreshRequested ->
+                "Active Wi-Fi refresh was paused; explain cached scan age/history instead of polling again."
+            scanMode == WIFI_SCAN_MODE_PAUSED ->
+                "Use cached Wi-Fi scan rows/history and avoid active refresh while scan mode is paused."
+            scanMode == WIFI_SCAN_MODE_RESUMED && refreshAccepted ->
+                "Android accepted the resumed active scan request; read scan age and rows before advising."
+            scanMode == WIFI_SCAN_MODE_RESUMED && effectiveRefreshRequested ->
+                "A resumed active scan was requested; Android may still return cached rows if throttled."
+            else ->
+                "Auto mode follows the refresh argument and reports Android throttling or cached scan age honestly."
+        }
+    }
+
     private fun wifiScanStatusJson(
         refreshRequested: Boolean,
         refreshAccepted: Boolean,
@@ -7632,10 +7773,15 @@ object HermesDeviceDiagnosticsBridge {
         totalScanResultCount: Int,
         returnedNetworkCount: Int,
         latestScanAgeMs: Long?,
+        scanMode: String = WIFI_SCAN_MODE_AUTO,
+        userRefreshRequested: Boolean = refreshRequested,
     ): JSONObject {
         return JSONObject()
             .put("refresh_requested", refreshRequested)
             .put("refresh_accepted", refreshAccepted)
+            .put("user_refresh_requested", userRefreshRequested)
+            .put("wifi_scan_mode", scanMode)
+            .put("wifi_scan_control", wifiScanControlJson(scanMode, userRefreshRequested, refreshRequested, refreshAccepted))
             .put("wifi_enabled", wifiEnabled)
             .put("scan_permission_ready", permissionStatus.optBoolean("can_read_scan_results", false))
             .put("location_enabled", permissionStatus.optBoolean("location_enabled", false))
@@ -8070,6 +8216,9 @@ object HermesDeviceDiagnosticsBridge {
     private const val MAX_WIFI_HISTORY_SERIES_POINTS = 8
     private const val WIFI_SIGNAL_HISTORY_PREFS = "hermes_wifi_signal_history"
     private const val WIFI_SIGNAL_HISTORY_KEY = "signal_history"
+    private const val WIFI_SCAN_MODE_AUTO = "auto"
+    private const val WIFI_SCAN_MODE_PAUSED = "paused"
+    private const val WIFI_SCAN_MODE_RESUMED = "resumed"
     private val WIFI_BAND_COVERAGE_BASE_BANDS = listOf("2.4GHz", "5GHz", "6GHz")
     private val WIFI_ATTENTION_SECURITY_MODES = setOf("Open", "WEP")
     private const val MAX_BLUETOOTH_RESULTS = 40

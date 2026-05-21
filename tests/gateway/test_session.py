@@ -1184,3 +1184,168 @@ class TestTimeContextInjection:
 
         assert "User Time Context" not in prompt
         assert "smoke" not in prompt
+
+
+# =========================================================================
+# Pending sub-agent announcements injection (S-0518-01 Phase G)
+# =========================================================================
+#
+# Artemis ships scripts/compute-pending-announcements.py that scans
+# strategy.json for action_queue/archive items with
+# announcement_consumed=false. build_session_context_prompt invokes it
+# per-turn so Coach gets an explicit reminder of which action_id to call
+# consume_announcement on if the user turn is a confirm.
+
+class TestPendingAnnouncementsInjection:
+    def _make_source(self, user_id="U0TESTUSER"):
+        return SessionSource(
+            platform=Platform.SLACK,
+            chat_id="D_TEST",
+            chat_name="dm",
+            chat_type="dm",
+            user_id=user_id,
+            user_name="alice",
+        )
+
+    def _config(self):
+        return GatewayConfig(
+            platforms={Platform.SLACK: PlatformConfig(enabled=True, token="fake")},
+        )
+
+    def test_inject_when_pending_present(self, tmp_path, monkeypatch):
+        """When the helper script reports a pending announcement, the prompt
+        contains the explicit action_id + announcement text."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        script = scripts_dir / "compute-pending-announcements.py"
+        script.write_text(
+            '#!/usr/bin/env python3\n'
+            'import json\n'
+            'print(json.dumps({"pending": [{"action_id": "adjust-scout-x", '
+            '"sub_agent": "scout", "announcement": "Scout is recalibrating.", '
+            '"location": "archive"}]}))\n'
+        )
+        script.chmod(0o755)
+
+        ctx = build_session_context(self._make_source(), self._config())
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**Pending sub-agent announcements**" in prompt
+        assert "adjust-scout-x" in prompt
+        assert "Scout is recalibrating." in prompt
+        assert "consume_announcement" in prompt
+
+    def test_skip_when_empty_pending_list(self, tmp_path, monkeypatch):
+        """No pending items → no reminder block, no error."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        script = scripts_dir / "compute-pending-announcements.py"
+        script.write_text(
+            '#!/usr/bin/env python3\n'
+            'import json\n'
+            'print(json.dumps({"pending": []}))\n'
+        )
+        script.chmod(0o755)
+
+        ctx = build_session_context(self._make_source(), self._config())
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Pending sub-agent announcements" not in prompt
+
+    def test_skip_when_script_missing(self, tmp_path, monkeypatch):
+        """No helper script → no reminder, no error."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Don't create the script.
+
+        ctx = build_session_context(self._make_source(), self._config())
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Pending sub-agent announcements" not in prompt
+
+    def test_skip_when_script_returns_non_json(self, tmp_path, monkeypatch):
+        """Garbage stdout must not crash or leak."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        script = scripts_dir / "compute-pending-announcements.py"
+        script.write_text(
+            '#!/usr/bin/env python3\n'
+            'print("nope")\n'
+        )
+        script.chmod(0o755)
+
+        ctx = build_session_context(self._make_source(), self._config())
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Pending sub-agent announcements" not in prompt
+        assert "nope" not in prompt
+
+    def test_skip_when_script_exits_nonzero(self, tmp_path, monkeypatch):
+        """Non-zero exit code → silently skip."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        script = scripts_dir / "compute-pending-announcements.py"
+        script.write_text(
+            '#!/usr/bin/env python3\n'
+            'import sys; sys.exit(2)\n'
+        )
+        script.chmod(0o755)
+
+        ctx = build_session_context(self._make_source(), self._config())
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Pending sub-agent announcements" not in prompt
+
+    def test_inject_multiple_pending_items(self, tmp_path, monkeypatch):
+        """Multiple unconsumed announcements all appear, each with its
+        action_id."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        script = scripts_dir / "compute-pending-announcements.py"
+        script.write_text(
+            '#!/usr/bin/env python3\n'
+            'import json\n'
+            'print(json.dumps({"pending": ['
+            '{"action_id": "a1", "sub_agent": "scout", '
+            '"announcement": "Scout one.", "location": "queue"},'
+            '{"action_id": "a2", "sub_agent": "analyst", '
+            '"announcement": "Analyst two.", "location": "archive"}'
+            ']}))\n'
+        )
+        script.chmod(0o755)
+
+        ctx = build_session_context(self._make_source(), self._config())
+        prompt = build_session_context_prompt(ctx)
+
+        assert "a1" in prompt
+        assert "a2" in prompt
+        assert "Scout one." in prompt
+        assert "Analyst two." in prompt
+
+    def test_skip_for_invalid_user_id_format(self, tmp_path, monkeypatch):
+        """Bot-id-format user_id short-circuits per-user injection."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        script = scripts_dir / "compute-pending-announcements.py"
+        script.write_text(
+            '#!/usr/bin/env python3\n'
+            'import json\n'
+            'print(json.dumps({"pending": [{"action_id": "smoke", '
+            '"sub_agent": "scout", "announcement": "x", '
+            '"location": "queue"}]}))\n'
+        )
+        script.chmod(0o755)
+
+        ctx = build_session_context(
+            self._make_source(user_id="B0BOTID01"),
+            self._config(),
+        )
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Pending sub-agent announcements" not in prompt
+        assert "smoke" not in prompt

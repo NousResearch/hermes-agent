@@ -366,6 +366,55 @@ def build_session_context_prompt(
                 except (subprocess.TimeoutExpired, OSError,
                         json.JSONDecodeError):
                     pass
+
+            # S-0518-01 Phase G: pending sub-agent announcements. Compresses
+            # Coach LLM's freedom to "forget" calling consume_announcement on
+            # the Confirm leg. Reads strategy.json action_queue + archive for
+            # any item with announcement_consumed=false and tells Coach
+            # explicitly which action_id to consume if this turn is a confirm.
+            _pa_script = (
+                Path(os.environ.get(
+                    "HERMES_HOME", str(Path.home() / ".hermes")
+                )) / "scripts" / "compute-pending-announcements.py"
+            )
+            if _pa_script.exists():
+                try:
+                    _pa_proc = subprocess.run(
+                        ["python3", str(_pa_script), _raw_uid],
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                        check=False,
+                    )
+                    if _pa_proc.returncode == 0 and _pa_proc.stdout.strip():
+                        _pa_data = json.loads(_pa_proc.stdout.strip())
+                        _pending = _pa_data.get("pending") or []
+                        if _pending:
+                            lines.append("")
+                            lines.append(
+                                "**Pending sub-agent announcements** "
+                                "(unconsumed — if this user turn appears to "
+                                "be a Confirm/Approve response to the prior "
+                                "Coach turn, you MUST call "
+                                "`consume_announcement(action_id=...)` for "
+                                "the matching item before any other tool or "
+                                "reply text; if the user is pivoting / "
+                                "retracting / asking something unrelated, "
+                                "skip and handle the new direction):"
+                            )
+                            for _item in _pending:
+                                _aid = _item.get("action_id", "")
+                                _sa = _item.get("sub_agent", "")
+                                _ann = _item.get("announcement", "")
+                                _loc = _item.get("location", "")
+                                lines.append(
+                                    f"  - `action_id=\"{_aid}\"` "
+                                    f"(sub_agent={_sa}, in {_loc}): "
+                                    f"\"{_ann}\""
+                                )
+                except (subprocess.TimeoutExpired, OSError,
+                        json.JSONDecodeError):
+                    pass
         elif _raw_uid:
             logger.warning(
                 "session: skipping per-user context inject — bad user_id format: %r",

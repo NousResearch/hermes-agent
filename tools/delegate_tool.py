@@ -1904,6 +1904,8 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1913,6 +1915,8 @@ def delegate_task(
       - Single: provide goal (+ optional context, toolsets, role)
       - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
 
+    The 'model' and 'provider' parameters allow dynamic model routing:
+    subagents can run on a different model/provider than the parent agent.
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
@@ -1977,6 +1981,37 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # LLM-supplied model/provider overrides config-level delegation settings.
+    # When the caller specifies a provider, resolve its full credential bundle
+    # (base_url, api_key, api_mode) via the same runtime provider system used
+    # by config-level delegation.provider.  Priority: LLM-supplied > config > parent.
+    if provider and provider != creds.get("provider"):
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            _runtime = resolve_runtime_provider(
+                requested=provider, target_model=model or creds.get("model")
+            )
+            _api_key = _runtime.get("api_key", "")
+            if _api_key:
+                creds = {
+                    **creds,
+                    "provider": provider,
+                    "model": model or creds.get("model"),
+                    "base_url": _runtime.get("base_url"),
+                    "api_key": _api_key,
+                    "api_mode": _runtime.get("api_mode"),
+                    "command": _runtime.get("command"),
+                    "args": list(_runtime.get("args") or []),
+                }
+        except Exception as exc:
+            logger.warning(
+                "delegate_task: LLM-supplied provider=%r failed to resolve: %s; "
+                "falling back to config credentials",
+                provider, exc,
+            )
+    elif model:
+        creds = {**creds, "model": model}
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -1997,7 +2032,7 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "model": model, "provider": provider}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2043,11 +2078,11 @@ def delegate_task(
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=t.get("model") or model or creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
+                override_provider=t.get("provider") or provider or creds["provider"],
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
@@ -2702,6 +2737,22 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override. When set, this task's subagent "
+                                "uses the specified model instead of the parent's model. "
+                                "See top-level 'model' for semantics."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override. When set, this task's subagent "
+                                "uses the specified provider (must be configured with credentials). "
+                                "See top-level 'provider' for semantics."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2737,6 +2788,30 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Model for the child agent(s). When set, overrides both the "
+                    "delegation.model config and the parent agent's model. "
+                    "Useful for routing specific tasks to models with different "
+                    "strengths (e.g. a coding model for code tasks, a reasoning "
+                    "model for analysis). The specified model must be available "
+                    "on the target provider. Leave empty to use the configured "
+                    "delegation model or inherit from the parent agent."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Provider for the child agent(s). When set, overrides the "
+                    "delegation.provider config and forces children to use this "
+                    "provider. Requires that credentials for the provider are "
+                    "configured (API key in .env or via 'hermes auth'). The "
+                    "provider's base_url, api_mode, and api_key are resolved "
+                    "automatically. Leave empty to use the configured "
+                    "delegation provider or inherit from the parent agent."
+                ),
+            },
         },
         "required": [],
     },
@@ -2759,6 +2834,8 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

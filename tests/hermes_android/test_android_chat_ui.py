@@ -93,3 +93,15 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
     assert 'id = "bluetooth_history"' in actions
     assert 'id = "sensor_analyzer"' in actions
     assert 'id = "motion_history"' in actions
+
+
+def test_expanded_activity_rows_show_every_agent_visible_diagnostic_card():
+    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+
+    assert "COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT = 3" in diagnostic_cards
+    assert "return if (expanded) cards else cards.take(COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT)" in diagnostic_cards
+    assert "hiddenDiagnosticCardCountForActivityPreview(" in diagnostic_cards
+    assert "diagnosticCards.take(3)" not in chat_screen
+    assert "visibleDiagnosticCards.forEach" in chat_screen
+    assert '"+$hiddenDiagnosticCardCount more cards"' in chat_screen

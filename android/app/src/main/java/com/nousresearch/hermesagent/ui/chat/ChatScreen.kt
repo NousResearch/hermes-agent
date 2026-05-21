@@ -1012,6 +1012,8 @@ private fun CompactActivityRow(
 ) {
     var expanded by rememberSaveable(content.take(64)) { mutableStateOf(false) }
     val diagnosticCards = remember(content) { extractDiagnosticCards(content) }
+    val visibleDiagnosticCards = diagnosticCardsForActivityPreview(diagnosticCards, expanded)
+    val hiddenDiagnosticCardCount = hiddenDiagnosticCardCountForActivityPreview(diagnosticCards, expanded)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1035,11 +1037,18 @@ private fun CompactActivityRow(
                 )
                 Text(if (expanded) "Hide" else "Details", style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.72f))
             }
-            diagnosticCards.take(3).forEach { card ->
+            visibleDiagnosticCards.forEach { card ->
                 DiagnosticSummaryCard(
                     card = card,
                     expanded = expanded,
                     contentColor = contentColor,
+                )
+            }
+            if (hiddenDiagnosticCardCount > 0) {
+                Text(
+                    text = "+$hiddenDiagnosticCardCount more cards",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = contentColor.copy(alpha = 0.62f),
                 )
             }
             if (expanded) {

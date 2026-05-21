@@ -20,6 +20,22 @@ internal data class DiagnosticGraphRow(
     val fraction: Float,
 )
 
+internal const val COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT = 3
+
+internal fun diagnosticCardsForActivityPreview(
+    cards: List<DiagnosticCardSummary>,
+    expanded: Boolean,
+): List<DiagnosticCardSummary> {
+    return if (expanded) cards else cards.take(COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT)
+}
+
+internal fun hiddenDiagnosticCardCountForActivityPreview(
+    cards: List<DiagnosticCardSummary>,
+    expanded: Boolean,
+): Int {
+    return if (expanded) 0 else (cards.size - COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT).coerceAtLeast(0)
+}
+
 internal fun extractDiagnosticCards(content: String): List<DiagnosticCardSummary> {
     val parsed = runCatching { JSONObject(content.trim()) }.getOrNull() ?: return emptyList()
     val cards = parsed.optJSONArray("cards") ?: return emptyList()

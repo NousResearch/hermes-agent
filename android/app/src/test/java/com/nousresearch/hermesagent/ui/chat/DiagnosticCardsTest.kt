@@ -8,6 +8,25 @@ import org.junit.Test
 
 class DiagnosticCardsTest {
     @Test
+    fun activityPreviewKeepsCollapsedRowsCompactButShowsAllCardsWhenExpanded() {
+        val cards = (1..6).map { index ->
+            DiagnosticCardSummary(
+                title = "Signal card $index",
+                body = "Agent-visible signal dashboard card $index",
+            )
+        }
+
+        val collapsed = diagnosticCardsForActivityPreview(cards, expanded = false)
+        val expanded = diagnosticCardsForActivityPreview(cards, expanded = true)
+
+        assertEquals(COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT, collapsed.size)
+        assertEquals(listOf("Signal card 1", "Signal card 2", "Signal card 3"), collapsed.map { it.title })
+        assertEquals(cards, expanded)
+        assertEquals(3, hiddenDiagnosticCardCountForActivityPreview(cards, expanded = false))
+        assertEquals(0, hiddenDiagnosticCardCountForActivityPreview(cards, expanded = true))
+    }
+
+    @Test
     fun parsesWifiGraphRowsForExpandableSignalCards() {
         val content = JSONObject()
             .put(

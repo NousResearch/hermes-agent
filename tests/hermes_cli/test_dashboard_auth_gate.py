@@ -137,13 +137,14 @@ def test_start_server_insecure_public_sets_auth_required_false(monkeypatch):
 
 
 def test_start_server_public_without_insecure_records_auth_required(monkeypatch):
-    """Public bind without --insecure: the gate is meant to engage.
+    """Public bind without --insecure: the gate engages and auth_required=True.
 
-    Until Phase 3 lands, start_server still raises SystemExit on this path
-    (the legacy "refusing to bind" guard).  We must still observe the
-    auth_required flag being set on app.state BEFORE the exit happens, so
-    the rest of the system can branch on it consistently.
+    With no providers registered, this fails closed with SystemExit. The
+    flag-stashing happens BEFORE the exit so the rest of the system can
+    branch on it. (See task 3.5 tests below for the with-provider path.)
     """
+    from hermes_cli.dashboard_auth import clear_providers
+    clear_providers()
     _stub_uvicorn_run(monkeypatch)
     web_server.app.state.auth_required = None
     with pytest.raises(SystemExit):
@@ -152,3 +153,70 @@ def test_start_server_public_without_insecure_records_auth_required(monkeypatch)
             open_browser=False, allow_public=False,
         )
     assert web_server.app.state.auth_required is True
+
+
+# ---------------------------------------------------------------------------
+# Task 3.5: start_server fail-closed + proxy_headers + index-token suppression
+# ---------------------------------------------------------------------------
+
+
+def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeypatch):
+    """With at least one provider, public bind + no --insecure starts the server.
+
+    The SystemExit-refusing-to-bind guard is REPLACED in gated mode by
+    "the gate engages", so as long as a provider is registered the bind
+    succeeds.  uvicorn is called with proxy_headers=True so X-Forwarded-Proto
+    from Fly's TLS terminator is honoured for cookie Secure-flag decisions.
+    """
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    clear_providers()
+    register_provider(StubAuthProvider())
+    captured = _stub_uvicorn_run(monkeypatch)
+    try:
+        web_server.app.state.auth_required = None
+        web_server.start_server(
+            host="0.0.0.0", port=9119,
+            open_browser=False, allow_public=False,
+        )
+        assert web_server.app.state.auth_required is True
+        assert captured["kwargs"].get("host") == "0.0.0.0"
+        assert captured["kwargs"].get("proxy_headers") is True
+    finally:
+        clear_providers()
+
+
+def test_start_server_gate_without_provider_fails_closed(monkeypatch):
+    """No providers + gate would activate → SystemExit with a clear message."""
+    from hermes_cli.dashboard_auth import clear_providers
+
+    clear_providers()
+    _stub_uvicorn_run(monkeypatch)
+    web_server.app.state.auth_required = None
+    with pytest.raises(SystemExit, match=r"no auth providers"):
+        web_server.start_server(
+            host="0.0.0.0", port=9119,
+            open_browser=False, allow_public=False,
+        )
+
+
+def test_start_server_loopback_keeps_proxy_headers_off(monkeypatch):
+    """Loopback bind: proxy_headers stays False (no TLS terminator in front)."""
+    captured = _stub_uvicorn_run(monkeypatch)
+    web_server.start_server(
+        host="127.0.0.1", port=9119,
+        open_browser=False, allow_public=False,
+    )
+    assert captured["kwargs"].get("proxy_headers") is False
+
+
+def test_start_server_insecure_keeps_proxy_headers_off(monkeypatch):
+    """--insecure: gate stays off, proxy_headers stays off."""
+    captured = _stub_uvicorn_run(monkeypatch)
+    web_server.start_server(
+        host="0.0.0.0", port=9119,
+        open_browser=False, allow_public=True,
+    )
+    assert web_server.app.state.auth_required is False
+    assert captured["kwargs"].get("proxy_headers") is False

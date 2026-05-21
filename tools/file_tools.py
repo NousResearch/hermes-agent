@@ -154,6 +154,135 @@ _SENSITIVE_PATH_PREFIXES = (
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
+# ── Expanded sensitive path denylist for reads ────────────────────────────
+# These paths contain credentials, auth tokens, or system secrets that the
+# LLM should never be allowed to read directly via file tools.
+_SENSITIVE_READ_PATH_PREFIXES = (
+    "/etc/shadow", "/etc/passwd", "/etc/gshadow",
+    "/proc/", "/sys/",
+)
+_SENSITIVE_READ_EXACT_PATHS = frozenset({
+    "/etc/shadow", "/etc/shadow-",
+    "/etc/gshadow", "/etc/gshadow-",
+    "/etc/sudoers", "/etc/sudoers.d",
+    "/var/run/docker.sock", "/run/docker.sock",
+})
+
+# Home-directory credential paths that should be blocked regardless of sandbox.
+# These are resolved against the actual filesystem before checking.
+_SENSITIVE_READ_HOME_PATHS = frozenset({
+    ".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/id_ecdsa", ".ssh/id_dsa",
+    ".ssh/authorized_keys", ".ssh/known_hosts", ".ssh/config",
+    ".aws/credentials", ".aws/config",
+    ".azure/credentials", ".azure/msal_token_cache.json",
+    ".gcp/credentials.json", ".config/gcloud/credentials.db",
+    ".docker/config.json", ".docker/daemon.json",
+    ".npmrc", ".pypirc",
+    ".netrc", ".wgetrc", ".curlrc",
+    ".hermes/.env", ".hermes/config.yaml", ".hermes/auth.json",
+    ".bash_history", ".zsh_history",
+    ".git-credentials", ".gitconfig",
+})
+
+
+def _get_file_sandbox_root(task_id: str = "default") -> Path:
+    """Return the root directory that file operations must stay within.
+
+    Resolves to the task's live terminal cwd when available, otherwise
+    ``TERMINAL_CWD``, then the process CWD.  Absolute paths outside this
+    root are rejected unless they are explicitly whitelisted (e.g. project
+    workspace directories configured by the user).
+    """
+    live = _get_live_tracking_cwd(task_id)
+    if live:
+        return Path(live).resolve()
+    env_cwd = os.environ.get("TERMINAL_CWD")
+    if env_cwd:
+        return Path(env_cwd).resolve()
+    return Path(os.getcwd()).resolve()
+
+
+def _is_path_in_sandbox(resolved: Path, sandbox_root: Path) -> bool:
+    """Return True if *resolved* does not escape *sandbox_root* via .. traversal.
+
+    Uses ``Path.is_relative_to`` semantics: the resolved path must be
+    equal to or inside the sandbox root.  Symlinks are followed during
+    resolution so a symlink pointing outside the sandbox is still caught.
+    """
+    try:
+        resolved.resolve().relative_to(sandbox_root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_sandbox_path(filepath: str, task_id: str = "default", operation: str = "access") -> str | None:
+    """Return an error message if the path violates traversal or sensitive-path rules.
+
+    Checks, in order:
+    1. Path traversal via ``..`` escaping the project/workspace root.
+    2. Denied read paths (credentials, /proc, /sys, etc.).
+    3. Denied write paths (/etc, /boot, docker.sock, etc.).
+
+    Absolute paths outside the workspace are allowed **unless** they hit the
+    sensitive-path denylist.  This prevents breaking legitimate cross-directory
+    references (e.g. ``/tmp/artifacts``, ``/opt/shared``) while still blocking
+    escapes like ``../../etc/passwd``.
+    """
+    try:
+        p = Path(filepath).expanduser()
+        resolved = p.resolve()
+    except (OSError, ValueError):
+        return f"Invalid path: {filepath}"
+
+    # ── Path-traversal guard (.. escape) ──
+    # Only trigger when the raw input contains ".." — explicit absolute paths
+    # like /tmp/test.txt are allowed as long as they're not sensitive.
+    if ".." in Path(filepath).parts:
+        sandbox_root = _get_file_sandbox_root(task_id)
+        if not _is_path_in_sandbox(resolved, sandbox_root):
+            return (
+                f"Path traversal blocked: {filepath} resolves outside the "
+                f"allowed workspace ({sandbox_root}). "
+                f"Use a path within the project directory, or use the terminal tool "
+                f"for system-level file operations."
+            )
+
+    # ── Sensitive read guard ──
+    if operation in ("read", "access"):
+        resolved_str = str(resolved)
+        for prefix in _SENSITIVE_READ_PATH_PREFIXES:
+            if resolved_str.startswith(prefix):
+                return (
+                    f"Refusing to read sensitive system path: {filepath}\n"
+                    f"Use the terminal tool with explicit user confirmation if needed."
+                )
+        if resolved_str in _SENSITIVE_READ_EXACT_PATHS:
+            return (
+                f"Refusing to read sensitive system path: {filepath}\n"
+                f"Use the terminal tool with explicit user confirmation if needed."
+            )
+        # Check home-directory credential paths (e.g. ~/.ssh/id_rsa)
+        try:
+            home = Path.home()
+            relative_to_home = resolved.relative_to(home)
+            relative_str = str(relative_to_home)
+            for sensitive_rel in _SENSITIVE_READ_HOME_PATHS:
+                if relative_str == sensitive_rel or relative_str.startswith(sensitive_rel + "/"):
+                    return (
+                        f"Refusing to read credential file: {filepath}\n"
+                        f"Use the terminal tool with explicit user confirmation if needed."
+                    )
+        except (ValueError, RuntimeError):
+            pass  # Not under home directory
+
+    # ── Sensitive write guard (existing) ──
+    write_err = _check_sensitive_path(filepath, task_id)
+    if write_err:
+        return write_err
+
+    return None
+
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
@@ -459,6 +588,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                     "block or produce infinite output."
                 ),
             })
+
+        # ── Sandbox / traversal guard ───────────────────────────────────
+        sandbox_err = _validate_sandbox_path(path, task_id, operation="read")
+        if sandbox_err:
+            return json.dumps({"error": sandbox_err}, ensure_ascii=False)
 
         _resolved = _resolve_path_for_task(path, task_id)
 
@@ -792,6 +926,9 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
+    sandbox_err = _validate_sandbox_path(path, task_id, operation="write")
+    if sandbox_err:
+        return tool_error(sandbox_err)
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -859,6 +996,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         import re as _re
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
             _paths_to_check.append(_m.group(1).strip())
+    for _p in _paths_to_check:
+        sandbox_err = _validate_sandbox_path(_p, task_id, operation="write")
+        if sandbox_err:
+            return tool_error(sandbox_err)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
@@ -948,6 +1089,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 output_mode: str = "content", context: int = 0,
                 task_id: str = "default") -> str:
     """Search for content or files."""
+    sandbox_err = _validate_sandbox_path(path, task_id, operation="read")
+    if sandbox_err:
+        return json.dumps({"error": sandbox_err}, ensure_ascii=False)
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 

@@ -13,12 +13,19 @@ import yaml
 
 from hermes_cli.plugins_cmd import (
     PluginOperationError,
+    _SOURCE_SIDECAR_NAME,
     _copy_example_files,
+    _discover_manifests_in_clone,
+    _filter_manifests_by_names,
+    _install_subplugin_dir,
+    _prompt_subset_selection,
     _read_manifest,
+    _read_source_sidecar,
     _repo_name_from_url,
     _resolve_git_executable,
     _resolve_git_url,
     _sanitize_plugin_name,
+    _write_source_sidecar,
     plugins_command,
 )
 
@@ -277,6 +284,568 @@ class TestCmdInstall:
         mock_display_after_install.assert_not_called()
 
 
+# ── multi-plugin repo helpers ───────────────────────────────────────────────
+
+
+def _make_clone(tmp_path: Path, layout: dict[str, dict]) -> Path:
+    """Materialize a fake cloned repo on disk.
+
+    *layout* maps "relative path of plugin dir" → manifest dict. A special
+    key "<root-extra>" maps to a dict of additional plain files to drop into
+    the clone root (e.g. ``{"after-install.md": "hello"}``).
+    """
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    extras = layout.pop("<root-extra>", {})
+    for rel, manifest in layout.items():
+        plugin_dir = clone if rel == "." else clone / rel
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
+        (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+    for name, content in extras.items():
+        (clone / name).write_text(content, encoding="utf-8")
+    return clone
+
+
+class TestDiscoverManifestsInClone:
+    """`_discover_manifests_in_clone` resolves the four layout cases the installer must handle."""
+
+    def test_root_manifest_only_returns_single(self, tmp_path):
+        clone = _make_clone(tmp_path, {".": {"name": "solo", "version": "1.0"}})
+        is_root, manifests = _discover_manifests_in_clone(clone)
+        assert is_root is True
+        assert len(manifests) == 1
+        assert manifests[0][0] == clone
+        assert manifests[0][1]["name"] == "solo"
+
+    def test_nested_manifests_under_plugins_dir(self, tmp_path):
+        clone = _make_clone(
+            tmp_path,
+            {
+                "plugins/alpha": {"name": "alpha"},
+                "plugins/beta": {"name": "beta"},
+            },
+        )
+        is_root, manifests = _discover_manifests_in_clone(clone)
+        assert is_root is False
+        assert [m["name"] for _, m in manifests] == ["alpha", "beta"]
+        assert {p.name for p, _ in manifests} == {"alpha", "beta"}
+
+    def test_direct_child_manifests_also_discovered(self, tmp_path):
+        clone = _make_clone(
+            tmp_path,
+            {
+                "alpha": {"name": "alpha"},
+                "beta": {"name": "beta"},
+            },
+        )
+        is_root, manifests = _discover_manifests_in_clone(clone)
+        assert is_root is False
+        assert [m["name"] for _, m in manifests] == ["alpha", "beta"]
+
+    def test_root_manifest_wins_over_nested(self, tmp_path):
+        clone = _make_clone(
+            tmp_path,
+            {
+                ".": {"name": "the-root-one"},
+                "plugins/ignored": {"name": "ignored"},
+            },
+        )
+        is_root, manifests = _discover_manifests_in_clone(clone)
+        assert is_root is True
+        assert len(manifests) == 1
+        assert manifests[0][1]["name"] == "the-root-one"
+
+    def test_empty_repo_returns_no_manifests(self, tmp_path):
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        is_root, manifests = _discover_manifests_in_clone(clone)
+        assert is_root is False
+        assert manifests == []
+
+    def test_dedup_when_same_dir_appears_via_both_scan_roots(self, tmp_path):
+        # A plugin only in plugins/<name>/ should not also appear when scanning root.
+        clone = _make_clone(tmp_path, {"plugins/only-here": {"name": "only-here"}})
+        is_root, manifests = _discover_manifests_in_clone(clone)
+        assert is_root is False
+        assert len(manifests) == 1
+        assert manifests[0][1]["name"] == "only-here"
+
+
+class TestPromptSubsetSelection:
+    """`_prompt_subset_selection` covers the three interactive paths + the TTY-less default."""
+
+    def _mk_manifests(self, n=3):
+        return [(Path(f"/tmp/p{i}"), {"name": f"plug{i}"}) for i in range(n)]
+
+    def test_non_interactive_selects_all(self):
+        manifests = self._mk_manifests()
+        console = MagicMock()
+        with patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout:
+            stdin.isatty.return_value = False
+            stdout.isatty.return_value = True
+            assert _prompt_subset_selection(manifests, console) == [0, 1, 2]
+
+    def test_install_all_on_yes(self):
+        manifests = self._mk_manifests()
+        console = MagicMock()
+        with patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout, \
+             patch("builtins.input", return_value="y"):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            assert _prompt_subset_selection(manifests, console) == [0, 1, 2]
+
+    def test_install_all_on_empty_input(self):
+        manifests = self._mk_manifests()
+        console = MagicMock()
+        with patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout, \
+             patch("builtins.input", return_value=""):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            assert _prompt_subset_selection(manifests, console) == [0, 1, 2]
+
+    def test_select_subset_on_no(self):
+        manifests = self._mk_manifests()
+        console = MagicMock()
+        inputs = iter(["n", "1, 3"])
+        with patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout, \
+             patch("builtins.input", side_effect=lambda *_: next(inputs)):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            assert _prompt_subset_selection(manifests, console) == [0, 2]
+
+    def test_out_of_range_re_prompts(self):
+        manifests = self._mk_manifests(2)
+        console = MagicMock()
+        inputs = iter(["n", "5", "1"])
+        with patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout, \
+             patch("builtins.input", side_effect=lambda *_: next(inputs)):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            assert _prompt_subset_selection(manifests, console) == [0]
+
+    def test_ctrl_c_returns_empty(self):
+        manifests = self._mk_manifests(2)
+        console = MagicMock()
+        with patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout, \
+             patch("builtins.input", side_effect=KeyboardInterrupt):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            assert _prompt_subset_selection(manifests, console) == []
+
+
+class TestFilterManifestsByNames:
+    """`_filter_manifests_by_names` filters and rejects unknown names."""
+
+    def test_filters_to_subset(self):
+        manifests = [
+            (Path("/a"), {"name": "a"}),
+            (Path("/b"), {"name": "b"}),
+            (Path("/c"), {"name": "c"}),
+        ]
+        result = _filter_manifests_by_names(manifests, ["a", "c"])
+        assert [m["name"] for _, m in result] == ["a", "c"]
+
+    def test_unknown_name_raises(self):
+        manifests = [(Path("/a"), {"name": "a"})]
+        with pytest.raises(PluginOperationError, match="not found in repo"):
+            _filter_manifests_by_names(manifests, ["nope"])
+
+
+class TestSourceSidecar:
+    """`_write_source_sidecar` and `_read_source_sidecar` round-trip provenance."""
+
+    def test_roundtrip(self, tmp_path):
+        _write_source_sidecar(tmp_path, "https://example.com/r.git", "plugins/foo")
+        data = _read_source_sidecar(tmp_path)
+        assert data["source_repo"] == "https://example.com/r.git"
+        assert data["sub_path"] == "plugins/foo"
+        assert "installed_at" in data
+
+    def test_missing_sidecar_returns_none(self, tmp_path):
+        assert _read_source_sidecar(tmp_path) is None
+
+    def test_malformed_sidecar_returns_none(self, tmp_path, caplog):
+        (tmp_path / _SOURCE_SIDECAR_NAME).write_text("{ not json", encoding="utf-8")
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins_cmd"):
+            assert _read_source_sidecar(tmp_path) is None
+
+
+class TestInstallSubpluginDir:
+    """`_install_subplugin_dir` moves a sub-plugin out + writes the sidecar."""
+
+    def test_moves_subdir_and_writes_sidecar(self, tmp_path):
+        clone = _make_clone(
+            tmp_path,
+            {"plugins/foo": {"name": "foo", "version": "1.0"}},
+        )
+        plugins_dir = tmp_path / "user-plugins"
+        plugins_dir.mkdir()
+
+        src_subdir = clone / "plugins" / "foo"
+        target, manifest, name = _install_subplugin_dir(
+            src_subdir,
+            {"name": "foo", "version": "1.0"},
+            plugins_dir,
+            force=False,
+            source_repo="https://example.com/r.git",
+            sub_path="plugins/foo",
+        )
+
+        assert target == plugins_dir / "foo"
+        assert target.is_dir()
+        assert (target / "plugin.yaml").exists()
+        assert (target / _SOURCE_SIDECAR_NAME).exists()
+        sidecar = _read_source_sidecar(target)
+        assert sidecar["source_repo"] == "https://example.com/r.git"
+        assert sidecar["sub_path"] == "plugins/foo"
+        assert manifest["name"] == "foo"
+        assert name == "foo"
+        # Source subdir was moved out of the clone.
+        assert not src_subdir.exists()
+
+    def test_exists_without_force_raises(self, tmp_path):
+        clone = _make_clone(tmp_path, {"plugins/foo": {"name": "foo"}})
+        plugins_dir = tmp_path / "user-plugins"
+        (plugins_dir / "foo").mkdir(parents=True)
+
+        with pytest.raises(PluginOperationError, match="already exists"):
+            _install_subplugin_dir(
+                clone / "plugins" / "foo",
+                {"name": "foo"},
+                plugins_dir,
+                force=False,
+                source_repo="x",
+                sub_path="plugins/foo",
+            )
+
+    def test_exists_with_force_replaces(self, tmp_path):
+        clone = _make_clone(tmp_path, {"plugins/foo": {"name": "foo", "version": "2.0"}})
+        plugins_dir = tmp_path / "user-plugins"
+        (plugins_dir / "foo").mkdir(parents=True)
+        (plugins_dir / "foo" / "stale.txt").write_text("old", encoding="utf-8")
+
+        target, _, _ = _install_subplugin_dir(
+            clone / "plugins" / "foo",
+            {"name": "foo", "version": "2.0"},
+            plugins_dir,
+            force=True,
+            source_repo="x",
+            sub_path="plugins/foo",
+        )
+        assert not (target / "stale.txt").exists()
+        assert (target / "plugin.yaml").exists()
+
+    def test_unsupported_manifest_version_raises(self, tmp_path):
+        clone = _make_clone(
+            tmp_path,
+            {"plugins/foo": {"name": "foo", "manifest_version": 999}},
+        )
+        plugins_dir = tmp_path / "user-plugins"
+        plugins_dir.mkdir()
+
+        with pytest.raises(PluginOperationError, match="manifest_version 999"):
+            _install_subplugin_dir(
+                clone / "plugins" / "foo",
+                {"name": "foo", "manifest_version": 999},
+                plugins_dir,
+                force=False,
+                source_repo="x",
+                sub_path="plugins/foo",
+            )
+
+
+class TestCmdInstallMultiPlugin:
+    """End-to-end install of a multi-plugin repo using a `file://` clone source."""
+
+    def _setup_source_repo(self, tmp_path: Path, layout: dict[str, dict]) -> str:
+        """Create a real local git repo with the given layout and return file:// URL."""
+        import subprocess as sp
+        src = tmp_path / "src"
+        src.mkdir()
+        # Build the layout in src/
+        for rel, manifest in layout.items():
+            plugin_dir = src if rel == "." else src / rel
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            (plugin_dir / "plugin.yaml").write_text(
+                yaml.dump(manifest), encoding="utf-8"
+            )
+            (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+        # git init / commit — required so `git clone --depth 1 file://...` works.
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        sp.run(["git", "init", "-q", "-b", "main"], cwd=src, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=src, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "init"], cwd=src, check=True, env=env)
+        return "file:///" + str(src).replace("\\", "/").lstrip("/")
+
+    def _patch_plugins_dir(self, plugins_dir: Path):
+        return patch("hermes_cli.plugins_cmd._plugins_dir", return_value=plugins_dir)
+
+    def _patch_enable_state(self):
+        # Don't actually touch ~/.hermes/config.yaml during tests.
+        return (
+            patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()),
+            patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()),
+            patch("hermes_cli.plugins_cmd._save_enabled_set"),
+            patch("hermes_cli.plugins_cmd._save_disabled_set"),
+        )
+
+    def test_installs_all_sub_plugins_non_interactive(self, tmp_path):
+        if not _resolve_git_executable():
+            pytest.skip("git not available")
+        url = self._setup_source_repo(
+            tmp_path,
+            {
+                "plugins/alpha": {"name": "alpha", "version": "1.0"},
+                "plugins/beta": {"name": "beta", "version": "1.0"},
+                "<root-extra-after-install>": {},  # placeholder, won't be touched
+            } if False else {
+                "plugins/alpha": {"name": "alpha", "version": "1.0"},
+                "plugins/beta": {"name": "beta", "version": "1.0"},
+            },
+        )
+        plugins_dir = tmp_path / "user-plugins"
+        plugins_dir.mkdir()
+
+        from hermes_cli.plugins_cmd import cmd_install
+
+        enabled_set: set = set()
+        disabled_set: set = set()
+
+        with self._patch_plugins_dir(plugins_dir), \
+             patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=enabled_set), \
+             patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=disabled_set), \
+             patch("hermes_cli.plugins_cmd._save_enabled_set") as save_en, \
+             patch("hermes_cli.plugins_cmd._save_disabled_set"), \
+             patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout, \
+             patch("hermes_cli.plugins_cmd._prompt_plugin_env_vars"):
+            stdin.isatty.return_value = False
+            stdout.isatty.return_value = False
+            cmd_install(url, force=False, enable=True)
+
+        assert (plugins_dir / "alpha" / "plugin.yaml").exists()
+        assert (plugins_dir / "beta" / "plugin.yaml").exists()
+        assert (plugins_dir / "alpha" / _SOURCE_SIDECAR_NAME).exists()
+        assert (plugins_dir / "beta" / _SOURCE_SIDECAR_NAME).exists()
+        sa = _read_source_sidecar(plugins_dir / "alpha")
+        assert sa["sub_path"] == "plugins/alpha"
+        save_en.assert_called_once()
+        saved = save_en.call_args[0][0]
+        assert {"alpha", "beta"}.issubset(saved)
+
+    def test_select_filters_sub_plugins(self, tmp_path):
+        if not _resolve_git_executable():
+            pytest.skip("git not available")
+        url = self._setup_source_repo(
+            tmp_path,
+            {
+                "plugins/alpha": {"name": "alpha"},
+                "plugins/beta": {"name": "beta"},
+            },
+        )
+        plugins_dir = tmp_path / "user-plugins"
+        plugins_dir.mkdir()
+        from hermes_cli.plugins_cmd import cmd_install
+
+        with self._patch_plugins_dir(plugins_dir), \
+             patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), \
+             patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()), \
+             patch("hermes_cli.plugins_cmd._save_enabled_set"), \
+             patch("hermes_cli.plugins_cmd._save_disabled_set"), \
+             patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout, \
+             patch("hermes_cli.plugins_cmd._prompt_plugin_env_vars"):
+            stdin.isatty.return_value = False
+            stdout.isatty.return_value = False
+            cmd_install(url, enable=False, select=["alpha"])
+
+        assert (plugins_dir / "alpha" / "plugin.yaml").exists()
+        assert not (plugins_dir / "beta").exists()
+
+    def test_select_unknown_plugin_errors(self, tmp_path):
+        if not _resolve_git_executable():
+            pytest.skip("git not available")
+        url = self._setup_source_repo(
+            tmp_path, {"plugins/alpha": {"name": "alpha"}}
+        )
+        plugins_dir = tmp_path / "user-plugins"
+        plugins_dir.mkdir()
+        from hermes_cli.plugins_cmd import cmd_install
+
+        with self._patch_plugins_dir(plugins_dir), \
+             patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), \
+             patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()), \
+             patch("hermes_cli.plugins_cmd._save_enabled_set"), \
+             patch("hermes_cli.plugins_cmd._save_disabled_set"), \
+             patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout, \
+             patch("hermes_cli.plugins_cmd._prompt_plugin_env_vars"):
+            stdin.isatty.return_value = False
+            stdout.isatty.return_value = False
+            with pytest.raises(SystemExit) as exc:
+                cmd_install(url, enable=False, select=["does-not-exist"])
+        assert exc.value.code == 1
+
+    def test_no_manifests_errors(self, tmp_path):
+        if not _resolve_git_executable():
+            pytest.skip("git not available")
+        # Empty repo (no plugin.yaml anywhere)
+        import subprocess as sp
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "README.md").write_text("hi", encoding="utf-8")
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        sp.run(["git", "init", "-q", "-b", "main"], cwd=src, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=src, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "init"], cwd=src, check=True, env=env)
+        url = "file:///" + str(src).replace("\\", "/").lstrip("/")
+        plugins_dir = tmp_path / "user-plugins"
+        plugins_dir.mkdir()
+        from hermes_cli.plugins_cmd import cmd_install
+
+        with self._patch_plugins_dir(plugins_dir), \
+             patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout:
+            stdin.isatty.return_value = False
+            stdout.isatty.return_value = False
+            with pytest.raises(SystemExit) as exc:
+                cmd_install(url, enable=False)
+        assert exc.value.code == 1
+
+
+class TestCmdInstallSingleRegression:
+    """Single-plugin (root manifest) repos behave exactly as before — no sidecar, single after-install."""
+
+    def _setup_source_repo(self, tmp_path: Path, manifest: dict, extras: dict | None = None) -> str:
+        import subprocess as sp
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
+        (src / "__init__.py").write_text("", encoding="utf-8")
+        for n, c in (extras or {}).items():
+            (src / n).write_text(c, encoding="utf-8")
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        sp.run(["git", "init", "-q", "-b", "main"], cwd=src, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=src, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "init"], cwd=src, check=True, env=env)
+        return "file:///" + str(src).replace("\\", "/").lstrip("/")
+
+    def test_single_plugin_unchanged_layout(self, tmp_path):
+        if not _resolve_git_executable():
+            pytest.skip("git not available")
+        url = self._setup_source_repo(tmp_path, {"name": "solo", "version": "1.0"})
+        plugins_dir = tmp_path / "user-plugins"
+        plugins_dir.mkdir()
+        from hermes_cli.plugins_cmd import cmd_install
+
+        with patch("hermes_cli.plugins_cmd._plugins_dir", return_value=plugins_dir), \
+             patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), \
+             patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()), \
+             patch("hermes_cli.plugins_cmd._save_enabled_set"), \
+             patch("hermes_cli.plugins_cmd._save_disabled_set"), \
+             patch("hermes_cli.plugins_cmd.sys.stdin") as stdin, \
+             patch("hermes_cli.plugins_cmd.sys.stdout") as stdout, \
+             patch("hermes_cli.plugins_cmd._prompt_plugin_env_vars"):
+            stdin.isatty.return_value = False
+            stdout.isatty.return_value = False
+            cmd_install(url, enable=False)
+
+        target = plugins_dir / "solo"
+        assert (target / "plugin.yaml").exists()
+        # Single-plugin repos must NOT get a sidecar — back-compat.
+        assert not (target / _SOURCE_SIDECAR_NAME).exists()
+        # The whole clone (including .git) was moved in — cmd_update can still git pull.
+        assert (target / ".git").is_dir()
+
+
+class TestDashboardInstallMultiPlugin:
+    """`dashboard_install_plugin` returns the new multi-plugin shape; single shape is unchanged."""
+
+    def _setup_repo(self, tmp_path: Path, layout: dict[str, dict]) -> str:
+        import subprocess as sp
+        src = tmp_path / "src"
+        src.mkdir()
+        for rel, manifest in layout.items():
+            plugin_dir = src if rel == "." else src / rel
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
+            (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        sp.run(["git", "init", "-q", "-b", "main"], cwd=src, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=src, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "init"], cwd=src, check=True, env=env)
+        return "file:///" + str(src).replace("\\", "/").lstrip("/")
+
+    def test_multi_plugin_response_shape(self, tmp_path):
+        if not _resolve_git_executable():
+            pytest.skip("git not available")
+        url = self._setup_repo(
+            tmp_path,
+            {
+                "plugins/alpha": {
+                    "name": "alpha",
+                    "requires_env": ["ALPHA_TOKEN"],
+                },
+                "plugins/beta": {"name": "beta"},
+            },
+        )
+        plugins_dir = tmp_path / "user-plugins"
+        plugins_dir.mkdir()
+        from hermes_cli.plugins_cmd import dashboard_install_plugin
+
+        with patch("hermes_cli.plugins_cmd._plugins_dir", return_value=plugins_dir), \
+             patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), \
+             patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()), \
+             patch("hermes_cli.plugins_cmd._save_enabled_set"), \
+             patch("hermes_cli.plugins_cmd._save_disabled_set"), \
+             patch("hermes_cli.config.get_env_value", return_value=None):
+            result = dashboard_install_plugin(url, force=False, enable=False)
+
+        assert result["ok"] is True
+        assert result["multi"] is True
+        names = sorted(p["name"] for p in result["plugins"])
+        assert names == ["alpha", "beta"]
+        alpha = next(p for p in result["plugins"] if p["name"] == "alpha")
+        assert alpha["missing_env"] == ["ALPHA_TOKEN"]
+        beta = next(p for p in result["plugins"] if p["name"] == "beta")
+        assert beta["missing_env"] == []
+
+    def test_single_plugin_response_shape_unchanged(self, tmp_path):
+        if not _resolve_git_executable():
+            pytest.skip("git not available")
+        url = self._setup_repo(
+            tmp_path, {".": {"name": "solo", "requires_env": ["SOLO_KEY"]}},
+        )
+        plugins_dir = tmp_path / "user-plugins"
+        plugins_dir.mkdir()
+        from hermes_cli.plugins_cmd import dashboard_install_plugin
+
+        with patch("hermes_cli.plugins_cmd._plugins_dir", return_value=plugins_dir), \
+             patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), \
+             patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()), \
+             patch("hermes_cli.plugins_cmd._save_enabled_set"), \
+             patch("hermes_cli.plugins_cmd._save_disabled_set"), \
+             patch("hermes_cli.config.get_env_value", return_value=None):
+            result = dashboard_install_plugin(url, force=False, enable=True)
+
+        assert result["ok"] is True
+        assert "multi" not in result
+        assert result["plugin_name"] == "solo"
+        assert result["missing_env"] == ["SOLO_KEY"]
+        assert result["enabled"] is True
+
+
 # ── cmd_update tests ─────────────────────────────────────────────────────────
 
 
@@ -323,6 +892,48 @@ class TestCmdUpdate:
             cmd_update("nonexistent-plugin")
 
         assert exc_info.value.code == 1
+
+    def test_update_sub_plugin_re_clones_source(self, tmp_path):
+        """When .hermes_source.json is present, cmd_update re-clones the source repo
+        and refreshes the sub-plugin subtree (instead of git-pull)."""
+        if not _resolve_git_executable():
+            pytest.skip("git not available")
+        import subprocess as sp
+        from hermes_cli.plugins_cmd import cmd_update
+
+        # ── Set up an upstream multi-plugin repo with one sub-plugin ────
+        src = tmp_path / "src"
+        (src / "plugins" / "foo").mkdir(parents=True)
+        (src / "plugins" / "foo" / "plugin.yaml").write_text(
+            yaml.dump({"name": "foo", "version": "2.0"}), encoding="utf-8"
+        )
+        (src / "plugins" / "foo" / "marker.txt").write_text("v2", encoding="utf-8")
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        sp.run(["git", "init", "-q", "-b", "main"], cwd=src, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=src, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "v2"], cwd=src, check=True, env=env)
+        url = "file:///" + str(src).replace("\\", "/").lstrip("/")
+
+        # ── Set up a pretend-already-installed sub-plugin with a stale marker ──
+        plugins_dir = tmp_path / "user-plugins"
+        target = plugins_dir / "foo"
+        target.mkdir(parents=True)
+        (target / "plugin.yaml").write_text(
+            yaml.dump({"name": "foo", "version": "1.0"}), encoding="utf-8"
+        )
+        (target / "marker.txt").write_text("v1-stale", encoding="utf-8")
+        _write_source_sidecar(target, url, "plugins/foo")
+
+        with patch("hermes_cli.plugins_cmd._plugins_dir", return_value=plugins_dir):
+            cmd_update("foo")
+
+        assert (target / "marker.txt").read_text(encoding="utf-8") == "v2"
+        # Sidecar preserved across refresh.
+        sidecar = _read_source_sidecar(target)
+        assert sidecar is not None
+        assert sidecar["source_repo"] == url
+        assert sidecar["sub_path"] == "plugins/foo"
 
 
 # ── cmd_remove tests ─────────────────────────────────────────────────────────

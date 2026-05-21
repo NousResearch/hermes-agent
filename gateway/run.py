@@ -447,6 +447,109 @@ def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[st
     return entry
 
 
+_TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
+_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
+_CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
+
+
+def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
+    """Return True for Telegram group turns that may include observed chatter.
+
+    Telegram's observe-unmentioned mode persists skipped group chatter so a
+    later @mention can see it. Those rows must not replay as ordinary user
+    turns: a weak wake word like ``@bot cambio`` should not make the model treat
+    old unmentioned chatter as pending work. The Telegram adapter marks these
+    turns with a channel prompt; this helper keeps the run-path check explicit
+    and unit-testable.
+    """
+
+    return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+
+
+def _build_gateway_agent_history(
+    history: List[Dict[str, Any]],
+    *,
+    channel_prompt: Optional[str] = None,
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """Convert stored gateway transcript rows into agent replay messages.
+
+    Observed Telegram group rows are returned as API-only context for the
+    current addressed message instead of being replayed as normal prior user
+    turns.  Keeping that context out of ``conversation_history`` avoids
+    consecutive-user repair merging it with the live user turn and then hiding
+    the current message behind ``history_offset`` during persistence.
+    """
+
+    agent_history: List[Dict[str, Any]] = []
+    observed_group_context: List[str] = []
+    separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
+
+    for msg in history or []:
+        role = msg.get("role")
+        if not role:
+            continue
+
+        # Skip metadata entries (tool definitions, session info) -- these are
+        # for transcript logging, not for the LLM.
+        if role in {"session_meta",}:
+            continue
+
+        # Skip system messages -- the agent rebuilds its own system prompt.
+        if role == "system":
+            continue
+
+        content = msg.get("content")
+        if separate_observed_context and msg.get("observed") and role == "user" and content:
+            observed_group_context.append(str(content).strip())
+            continue
+
+        # Rich agent messages (tool_calls, tool results) must be passed through
+        # intact so the API sees valid assistant→tool sequences.
+        has_tool_calls = "tool_calls" in msg
+        has_tool_call_id = "tool_call_id" in msg
+        is_tool_message = role == "tool"
+
+        if has_tool_calls or has_tool_call_id or is_tool_message:
+            clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
+            agent_history.append(clean_msg)
+        elif content:
+            # Simple text message - just need role and content.
+            if msg.get("mirror"):
+                mirror_src = msg.get("mirror_source", "another session")
+                content = f"[Delivered from {mirror_src}] {content}"
+            entry = _build_replay_entry(role, content, msg)
+            agent_history.append(entry)
+
+    observed_context = "\n".join(observed_group_context).strip() or None
+    return agent_history, observed_context
+
+
+def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
+    """Prepend observed Telegram context to the API-only current user turn."""
+
+    if not observed_context:
+        return message
+
+    prefix = (
+        f"{_OBSERVED_GROUP_CONTEXT_HEADER}\n"
+        f"{observed_context}\n\n"
+        f"{_CURRENT_ADDRESSED_MESSAGE_HEADER}\n"
+    )
+
+    if isinstance(message, str):
+        return f"{prefix}{message}"
+
+    if isinstance(message, list):
+        wrapped = [dict(part) if isinstance(part, dict) else part for part in message]
+        for part in wrapped:
+            if isinstance(part, dict) and part.get("type") == "text":
+                part["text"] = f"{prefix}{part.get('text', '')}"
+                return wrapped
+        return [{"type": "text", "text": prefix.rstrip()}] + wrapped
+
+    return message
+
+
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     """Return the ``timestamp`` of the last usable transcript row, if any.
 
@@ -16467,45 +16570,16 @@ class GatewayRunner:
             #      that may include tool_calls, tool_call_id, reasoning, etc.
             #      - These must be passed through intact so the API sees valid
             #        assistant→tool sequences (dropping tool_calls causes 500 errors)
-            agent_history = []
-            for msg in history:
-                role = msg.get("role")
-                if not role:
-                    continue
-                
-                # Skip metadata entries (tool definitions, session info)
-                # -- these are for transcript logging, not for the LLM
-                if role in {"session_meta",}:
-                    continue
-                
-                # Skip system messages -- the agent rebuilds its own system prompt
-                if role == "system":
-                    continue
-                
-                # Rich agent messages (tool_calls, tool results) must be passed
-                # through intact so the API sees valid assistant→tool sequences
-                has_tool_calls = "tool_calls" in msg
-                has_tool_call_id = "tool_call_id" in msg
-                is_tool_message = role == "tool"
-                
-                if has_tool_calls or has_tool_call_id or is_tool_message:
-                    clean_msg = {k: v for k, v in msg.items() if k != "timestamp"}
-                    agent_history.append(clean_msg)
-                else:
-                    # Simple text message - just need role and content
-                    content = msg.get("content")
-                    if content:
-                        # Tag cross-platform mirror messages so the agent knows their origin
-                        if msg.get("mirror"):
-                            mirror_src = msg.get("mirror_source", "another session")
-                            content = f"[Delivered from {mirror_src}] {content}"
-                        # Preserve assistant reasoning + Codex replay fields so
-                        # multi-turn reasoning context, prefix-cache hits, and
-                        # provider-specific echo requirements survive session
-                        # reload.  See ``_ASSISTANT_REPLAY_FIELDS`` for the full
-                        # whitelist and rationale.
-                        entry = _build_replay_entry(role, content, msg)
-                        agent_history.append(entry)
+            #
+            # Telegram observed group context is handled structurally here:
+            # observed=True transcript rows are withheld from replayable
+            # history and attached to the current addressed message as
+            # API-only context, so persisted history stores only the real
+            # addressed user turn.
+            agent_history, observed_group_context = _build_gateway_agent_history(
+                history,
+                channel_prompt=channel_prompt,
+            )
             
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
@@ -16738,7 +16812,17 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
-                result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+                _api_run_message = _wrap_current_message_with_observed_context(
+                    _run_message,
+                    observed_group_context,
+                )
+                _conversation_kwargs = {
+                    "conversation_history": agent_history,
+                    "task_id": session_id,
+                }
+                if observed_group_context:
+                    _conversation_kwargs["persist_user_message"] = message
+                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent

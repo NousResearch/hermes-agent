@@ -246,6 +246,16 @@ TAVILY_API_KEY=tvly-your-key-here
 
 Get a key at [app.tavily.com](https://app.tavily.com/home). The free tier includes 1 000 searches/month.
 
+**Multi-key pool:** stack several free-tier keys (or mix free + paid) into a [credential pool](/docs/user-guide/features/credential-pools) for round-robin and automatic rotation:
+
+```bash
+hermes auth add tavily --api-key tvly-key-1
+hermes auth add tavily --api-key tvly-key-2
+hermes auth list tavily
+```
+
+When a pool is present it takes precedence over `TAVILY_API_KEY`. On HTTP 401/403/429 the provider marks the active key exhausted, rotates to the next entry, and retries the request once; env-var credentials skip the retry. `is_available` returns true if *either* the env var or a non-empty pool is set, so `hermes setup` will detect Tavily as soon as you've added at least one pool entry.
+
 ---
 
 ### Exa
@@ -258,6 +268,16 @@ EXA_API_KEY=your-exa-key-here
 ```
 
 Get a key at [exa.ai](https://exa.ai). The free tier includes 1 000 searches/month.
+
+**Multi-key pool:** same rotation model as Tavily — enroll multiple keys via [credential pools](/docs/user-guide/features/credential-pools) for round-robin and automatic rotation on auth failures:
+
+```bash
+hermes auth add exa --api-key exa-key-1
+hermes auth add exa --api-key exa-key-2
+hermes auth list exa
+```
+
+A non-empty pool wins over `EXA_API_KEY`. On 401/403/429 from the Exa SDK the provider rotates to the next pool entry, rebuilds the cached SDK client with the new key, and retries once before propagating the error. Status codes are extracted best-effort from SDK exception attributes (`status_code`, `status`, `http_status`, `code`, `response.status_code`) or, as a fallback, regex-matched in the exception message.
 
 ---
 

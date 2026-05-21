@@ -834,7 +834,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     instead, bypassing MarkdownV2 conversion.
     """
     try:
-        from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+        from telegram import Bot
         from telegram.constants import ParseMode
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
@@ -911,6 +911,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
         if buttons:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
             rows = []
             for row in buttons:
                 if not isinstance(row, list):

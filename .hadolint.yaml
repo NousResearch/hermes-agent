@@ -1,0 +1,37 @@
+# hadolint configuration for the Hermes Agent Dockerfile.
+# See https://github.com/hadolint/hadolint#configure for rules.
+#
+# We want hadolint to surface NEW Dockerfile lint regressions, but we
+# don't want to rewrite the existing image to silence rules that are
+# either intentional or pragmatic tradeoffs for this project. Each
+# ignore below has a one-line justification.
+failure-threshold: warning
+
+ignored:
+  # Pin versions in apt get install. We intentionally don't pin common
+  # tools (curl, git, openssh-client, etc.) — security updates flow in
+  # via the periodic base-image rebuild, and pinning would lock us to
+  # superseded patch releases. Same rationale as nearly every distro-
+  # base official image (python, node, debian).
+  - DL3008
+  # Use WORKDIR to switch to a directory. The image uses `(cd web && …)`
+  # / `(cd ../ui-tui && …)` inline subshells for one-off build steps
+  # because they don't affect later RUN commands; promoting them to
+  # full WORKDIR switches with restores would obscure intent.
+  - DL3003
+  # Multiple consecutive RUN instructions. The `touch README.md` + `uv
+  # sync` split is intentional — `touch` is cheap, `uv sync` is the
+  # expensive layer-cached step we want isolated, and merging them
+  # would invalidate the cache for trivial changes.
+  - DL3059
+  # Last USER should not be root. The entrypoint is responsible for
+  # gosu-dropping to the hermes user; running as root is required so
+  # usermod/groupmod can remap UIDs per HERMES_UID at runtime. Phase 2
+  # of the s6-overlay migration preserves this contract — /init runs
+  # as root, individual services drop via s6-setuidgid.
+  - DL3002
+
+# Require explicit base-image pins (SHA256) — we already do this.
+trustedRegistries:
+  - docker.io
+  - ghcr.io

@@ -23,6 +23,7 @@ import {
   Hash,
   X,
   Play,
+  Wrench,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -31,7 +32,7 @@ import type {
   SessionSearchResult,
   StatusResponse,
 } from "@/lib/api";
-import { timeAgo } from "@/lib/utils";
+import { isoTimeAgo, timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@/components/Toast";
@@ -408,6 +409,117 @@ function SessionRow({
   );
 }
 
+function serviceTone(state: string): "success" | "warning" | "destructive" | "outline" | "secondary" {
+  const normalized = state.toLowerCase();
+  if (["running", "active", "ok"].includes(normalized)) return "success";
+  if (["starting", "idle", "degraded"].includes(normalized)) return "warning";
+  if (["stopped", "startup_failed", "fatal", "disconnected", "error"].includes(normalized)) {
+    return "destructive";
+  }
+  return "outline";
+}
+
+function DashboardHealthCard({
+  status,
+  busy,
+  pending,
+  onRepair,
+}: {
+  status: StatusResponse;
+  busy: boolean;
+  pending: boolean;
+  onRepair: () => void;
+}) {
+  const services = status.dashboard_health?.services ?? [];
+  if (services.length === 0) return null;
+
+  const degraded = status.dashboard_health?.overall === "degraded";
+  const platformEntries = Object.entries(status.gateway_platforms ?? {});
+  const connectedPlatforms = platformEntries.filter(
+    ([, info]) => info.state === "connected",
+  ).length;
+  const platformTotal = platformEntries.length;
+  const gatewayUpdated = status.gateway_updated_at
+    ? isoTimeAgo(status.gateway_updated_at)
+    : "unknown";
+
+  return (
+    <Card className="min-w-0 max-w-full overflow-hidden">
+      <CardHeader className="min-w-0">
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            {degraded ? (
+              <AlertTriangle className="h-5 w-5 shrink-0 text-warning" />
+            ) : (
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
+            )}
+            <CardTitle className="min-w-0 truncate text-base">
+              Hermes stack health
+            </CardTitle>
+          </div>
+          <Badge tone={degraded ? "warning" : "success"} className="shrink-0 text-[10px]">
+            {degraded ? "Degraded" : "Healthy"}
+          </Badge>
+        </div>
+        <div className="grid gap-2 pt-3 text-xs text-muted-foreground sm:grid-cols-3">
+          <div className="min-w-0 border border-border/70 px-2 py-1.5">
+            <span className="block font-mondwest tracking-[0.12em] text-foreground">
+              {status.active_sessions}
+            </span>
+            <span>active sessions</span>
+          </div>
+          <div className="min-w-0 border border-border/70 px-2 py-1.5">
+            <span className="block font-mondwest tracking-[0.12em] text-foreground">
+              {connectedPlatforms}/{platformTotal}
+            </span>
+            <span>platforms connected</span>
+          </div>
+          <div className="min-w-0 border border-border/70 px-2 py-1.5">
+            <span className="block truncate font-mondwest tracking-[0.12em] text-foreground">
+              {gatewayUpdated}
+            </span>
+            <span>gateway status update</span>
+          </div>
+        </div>
+      </CardHeader>
+
+      <CardContent className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        {services.map((service) => (
+          <div key={service.id} className="min-w-0 border border-border p-3">
+            <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-sm font-medium">
+                {service.label}
+              </span>
+              <Badge tone={serviceTone(service.state)} className="shrink-0 text-[10px]">
+                {service.state.replace(/_/g, " ")}
+              </Badge>
+            </div>
+            <p className="min-h-8 text-xs leading-snug text-muted-foreground">
+              {service.detail}
+            </p>
+            {service.repair_action === "repair-stack" && (
+              <Button
+                outlined
+                size="xs"
+                disabled={busy}
+                onClick={onRepair}
+                className="mt-3 w-full justify-center"
+              >
+                {pending ? (
+                  <Spinner className="mr-1 text-[0.75rem]" />
+                ) : (
+                  <Wrench className="mr-1 h-3 w-3" />
+                )}
+                Repair stack
+              </Button>
+            )}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
@@ -427,7 +539,7 @@ export default function SessionsPage() {
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
-  const { activeAction, actionStatus, dismissLog } = useSystemActions();
+  const { activeAction, actionStatus, dismissLog, isBusy, pendingAction, runAction } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
 
   useLayoutEffect(() => {
@@ -662,6 +774,15 @@ export default function SessionsPage() {
         </div>
       )}
 
+      {status && (
+        <DashboardHealthCard
+          status={status}
+          busy={isBusy}
+          pending={pendingAction === "repair"}
+          onRepair={() => void runAction("repair")}
+        />
+      )}
+
       {activeAction && (
         <div className="border border-border bg-background-base/50">
           <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
@@ -679,7 +800,9 @@ export default function SessionsPage() {
               <span className="text-xs font-mondwest tracking-[0.12em] truncate">
                 {activeAction === "restart"
                   ? t.status.restartGateway
-                  : t.status.updateHermes}
+                  : activeAction === "repair"
+                    ? "Repair Hermes stack"
+                    : t.status.updateHermes}
               </span>
 
               <Badge

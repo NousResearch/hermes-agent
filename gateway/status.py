@@ -14,6 +14,7 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -34,6 +35,16 @@ _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
+_RUNTIME_STATUS_SECRET_PATTERNS = (
+    re.compile(r"(?i)token\s+`[^`]+`"),
+    re.compile(r"\b\d{6,}:[A-Za-z0-9_\-:]{20,}\b"),  # Telegram bot tokens
+    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"),
+    re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
+)
 _gateway_lock_handle = None
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
@@ -501,6 +512,16 @@ def write_pid_file() -> None:
         raise
 
 
+def _redact_runtime_status_text(text: Any) -> Any:
+    """Best-effort secret redaction for persisted dashboard/gateway status."""
+    if not isinstance(text, str):
+        return text
+    redacted = text
+    for pattern in _RUNTIME_STATUS_SECRET_PATTERNS:
+        redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
+    return redacted
+
+
 def write_runtime_status(
     *,
     gateway_state: Any = _UNSET,
@@ -539,7 +560,7 @@ def write_runtime_status(
         if error_code is not _UNSET:
             platform_payload["error_code"] = error_code
         if error_message is not _UNSET:
-            platform_payload["error_message"] = error_message
+            platform_payload["error_message"] = _redact_runtime_status_text(error_message)
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 

@@ -10279,8 +10279,68 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def _run_dashboard_repair_stack() -> int:
+    """Best-effort local dashboard stack repair for the web UI action panel."""
+    print("Hermes dashboard repair-stack: starting")
+    exit_code = 0
+
+    def run_step(label: str, cmd: list[str], *, timeout: int = 120) -> None:
+        nonlocal exit_code
+        print(f"\n== {label} ==")
+        print("$ " + " ".join(cmd))
+        try:
+            result = subprocess.run(cmd, cwd=PROJECT_ROOT, text=True, timeout=timeout)
+        except FileNotFoundError as exc:
+            exit_code = 1
+            print(f"missing command: {exc}")
+            return
+        except subprocess.TimeoutExpired:
+            exit_code = 1
+            print(f"timed out after {timeout}s")
+            return
+        if result.returncode != 0:
+            exit_code = result.returncode or 1
+            print(f"exit {result.returncode}")
+
+    run_step("Gateway/API restart", [sys.executable, "-m", "hermes_cli.main", "gateway", "restart"])
+
+    if sys.platform == "darwin":
+        uid = str(os.getuid()) if hasattr(os, "getuid") else ""
+        launchd_steps = [
+            ("Open WebUI service", ["launchctl", "kickstart", "-k", f"gui/{uid}/ai.openwebui.hermes"]),
+            ("Hermes Dashboard service", ["launchctl", "kickstart", "-k", f"gui/{uid}/ai.hermes.dashboard"]),
+        ]
+        for label, cmd in launchd_steps:
+            run_step(label, cmd, timeout=30)
+    else:
+        print("\n== Launch services ==")
+        print("No launchd repair steps on this platform.")
+
+    print("\n== Health probes ==")
+    probes = {
+        "dashboard": "http://127.0.0.1:9119/api/status",
+        "open_webui": "http://127.0.0.1:8080/",
+        "hermes_api": "http://127.0.0.1:8642/health",
+    }
+    import urllib.request
+
+    for name, url in probes.items():
+        try:
+            with urllib.request.urlopen(url, timeout=8) as resp:
+                print(f"{name}: HTTP {resp.status}")
+        except Exception as exc:
+            exit_code = exit_code or 1
+            print(f"{name}: ERROR {type(exc).__name__}: {exc}")
+
+    print("\nHermes dashboard repair-stack: finished")
+    return exit_code
+
+
 def cmd_dashboard(args):
-    """Start the web UI server, or (with --stop/--status) manage running ones."""
+    """Start the web UI server, or (with lifecycle flags) manage running ones."""
+    if getattr(args, "repair_stack", False) or getattr(args, "dashboard_action", None) == "repair-stack":
+        sys.exit(_run_dashboard_repair_stack())
+
     # --status: report running dashboards and exit, no deps needed.
     if getattr(args, "status", False):
         count = _report_dashboard_status()
@@ -13170,6 +13230,12 @@ Examples:
             "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
             "where npm may not be available. Pre-build with: cd web && npm run build"
         ),
+    )
+    dashboard_parser.add_argument(
+        "dashboard_action",
+        nargs="?",
+        choices=("repair-stack",),
+        help=argparse.SUPPRESS,
     )
     # Lifecycle flags — mutually exclusive with each other and with the
     # start-a-server flags above (if both are passed, --stop / --status win

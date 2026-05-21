@@ -269,6 +269,8 @@ export const api = {
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  repairStack: () =>
+    fetchJSON<ActionResponse>("/api/dashboard/repair-stack", { method: "POST" }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   getActionStatus: (name: string, lines = 200) =>
@@ -364,6 +366,20 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+export interface DashboardHealthService {
+  detail: string;
+  id: string;
+  label: string;
+  repair_action: string | null;
+  state: string;
+}
+
+export interface DashboardHealthSummary {
+  overall: "ok" | "degraded" | string;
+  platform_counts: Record<string, number>;
+  services: DashboardHealthService[];
+}
+
 export interface StatusResponse {
   active_sessions: number;
   config_path: string;
@@ -377,6 +393,7 @@ export interface StatusResponse {
   gateway_state: string | null;
   gateway_updated_at: string | null;
   hermes_home: string;
+  dashboard_health?: DashboardHealthSummary;
   latest_config_version: number;
   release_date: string;
   version: string;

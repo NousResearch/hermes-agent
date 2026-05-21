@@ -5,7 +5,7 @@ export const SystemActionsContext = createContext<SystemActionsState | null>(
   null,
 );
 
-export type SystemAction = "restart" | "update";
+export type SystemAction = "restart" | "repair" | "update";
 
 export interface SystemActionsState {
   actionStatus: ActionStatusResponse | null;

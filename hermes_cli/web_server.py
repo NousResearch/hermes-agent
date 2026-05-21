@@ -47,7 +47,11 @@ from hermes_cli.config import (
     check_config_version,
     redact_key,
 )
-from gateway.status import get_running_pid, read_runtime_status
+from gateway.status import (
+    _redact_runtime_status_text,
+    get_running_pid,
+    read_runtime_status,
+)
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -580,7 +584,7 @@ async def get_status():
 
     if runtime:
         gateway_state = runtime.get("gateway_state")
-        gateway_platforms = runtime.get("platforms") or {}
+        gateway_platforms = _sanitize_gateway_platforms(runtime.get("platforms") or {})
         if configured_gateway_platforms is not None:
             gateway_platforms = {
                 key: value
@@ -621,6 +625,13 @@ async def get_status():
     except Exception:
         pass
 
+    dashboard_health = _build_dashboard_health_summary(
+        gateway_running=gateway_running,
+        gateway_state=gateway_state,
+        gateway_platforms=gateway_platforms,
+        active_sessions=active_sessions,
+    )
+
     return {
         "version": __version__,
         "release_date": __release_date__,
@@ -637,6 +648,7 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+        "dashboard_health": dashboard_health,
     }
 
 
@@ -656,6 +668,7 @@ _ACTION_LOG_DIR: Path = get_hermes_home() / "logs"
 _ACTION_LOG_FILES: Dict[str, str] = {
     "gateway-restart": "gateway-restart.log",
     "hermes-update": "hermes-update.log",
+    "repair-stack": "repair-stack.log",
 }
 
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
@@ -713,6 +726,97 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     return lines[-n:] if n > 0 else lines
 
 
+def _sanitize_gateway_platforms(platforms: Any) -> dict[str, Any]:
+    """Return dashboard-safe gateway platform status.
+
+    The gateway writer redacts before persisting runtime status, but the
+    dashboard can also display remote ``/health/detailed`` payloads. This is a
+    second defense layer for platform diagnostics such as Telegram token
+    errors.
+    """
+    if not isinstance(platforms, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for name, raw_info in platforms.items():
+        if not isinstance(raw_info, dict):
+            continue
+        info = dict(raw_info)
+        if "error_message" in info:
+            info["error_message"] = _redact_runtime_status_text(info.get("error_message"))
+        sanitized[str(name)] = info
+    return sanitized
+
+
+def _build_dashboard_health_summary(
+    *,
+    gateway_running: bool,
+    gateway_state: str | None,
+    gateway_platforms: dict[str, Any],
+    active_sessions: int,
+) -> dict[str, Any]:
+    """Build a compact local-stack summary for the dashboard shell."""
+    effective_gateway_state = gateway_state or ("running" if gateway_running else "stopped")
+    degraded_states = {"stopped", "startup_failed", "fatal", "disconnected"}
+    platform_counts: dict[str, int] = {}
+    for info in gateway_platforms.values():
+        if not isinstance(info, dict):
+            continue
+        state = str(info.get("state") or "unknown")
+        platform_counts[state] = platform_counts.get(state, 0) + 1
+
+    services: list[dict[str, Any]] = [
+        {
+            "id": "dashboard",
+            "label": "Hermes Dashboard",
+            "state": "running",
+            "detail": "This web UI is responding.",
+            "repair_action": None,
+        },
+        {
+            "id": "gateway",
+            "label": "Gateway / API",
+            "state": effective_gateway_state,
+            "detail": "Messaging gateway and OpenAI-compatible API server.",
+            "repair_action": None if gateway_running else "repair-stack",
+        },
+        {
+            "id": "sessions",
+            "label": "Session store",
+            "state": "active" if active_sessions else "idle",
+            "detail": f"{active_sessions} active session(s).",
+            "repair_action": None,
+        },
+    ]
+    if gateway_platforms:
+        worst_platform_state = "running"
+        if any(state in degraded_states for state in platform_counts):
+            worst_platform_state = "degraded"
+        services.append(
+            {
+                "id": "platforms",
+                "label": "Connected platforms",
+                "state": worst_platform_state,
+                "detail": ", ".join(
+                    f"{count} {state}" for state, count in sorted(platform_counts.items())
+                ),
+                "repair_action": "repair-stack" if worst_platform_state == "degraded" else None,
+            }
+        )
+
+    overall = "ok"
+    if not gateway_running or effective_gateway_state in {"startup_failed", "stopped"}:
+        overall = "degraded"
+    elif any(state in degraded_states for state in platform_counts):
+        overall = "degraded"
+
+    return {"overall": overall, "services": services, "platform_counts": platform_counts}
+
+
+def _start_repair_stack_action() -> dict[str, Any]:
+    proc = _spawn_hermes_action(["dashboard", "repair-stack"], "repair-stack")
+    return {"ok": True, "pid": proc.pid, "name": "repair-stack"}
+
+
 @app.post("/api/gateway/restart")
 async def restart_gateway():
     """Kick off a ``hermes gateway restart`` in the background."""
@@ -726,6 +830,16 @@ async def restart_gateway():
         "pid": proc.pid,
         "name": "gateway-restart",
     }
+
+
+@app.post("/api/dashboard/repair-stack")
+async def repair_stack():
+    """Kick off a safe local-stack repair pass in the background."""
+    try:
+        return _start_repair_stack_action()
+    except Exception as exc:
+        _log.exception("Failed to spawn dashboard repair")
+        raise HTTPException(status_code=500, detail=f"Failed to repair stack: {exc}")
 
 
 @app.post("/api/hermes/update")

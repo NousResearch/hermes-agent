@@ -10,6 +10,7 @@ import {
 
 const ACTION_NAMES: Record<SystemAction, string> = {
   restart: "gateway-restart",
+  repair: "repair-stack",
   update: "hermes-update",
 };
 
@@ -71,6 +72,8 @@ export function SystemActionsProvider({
       try {
         if (action === "restart") {
           await api.restartGateway();
+        } else if (action === "repair") {
+          await api.repairStack();
         } else {
           await api.updateHermes();
         }

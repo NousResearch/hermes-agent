@@ -10,6 +10,41 @@ import pytest
 from hermes_cli.models import get_copilot_model_context
 
 
+# ── Catalog with max_context_window_tokens (preferred field) ──────────────────
+_SAMPLE_CATALOG_WITH_CONTEXT_WINDOW = [
+    {
+        # Issue #29146: max_context_window_tokens should be preferred over max_prompt_tokens
+        "id": "gpt-5.5",
+        "capabilities": {
+            "type": "chat",
+            "limits": {
+                "max_context_window_tokens": 400000,
+                "max_prompt_tokens": 272000,
+                "max_output_tokens": 128000,
+            },
+        },
+    },
+    {
+        # max_context_window_tokens only (no max_prompt_tokens)
+        "id": "claude-3.7-sonnet",
+        "capabilities": {
+            "type": "chat",
+            "limits": {
+                "max_context_window_tokens": 200000,
+                "max_output_tokens": 64000,
+            },
+        },
+    },
+    {
+        # max_prompt_tokens only (legacy format — should still work)
+        "id": "claude-opus-4.6-1m",
+        "capabilities": {
+            "type": "chat",
+            "limits": {"max_prompt_tokens": 1000000, "max_output_tokens": 64000},
+        },
+    },
+]
+
 # Sample catalog items mimicking the Copilot /models API response
 _SAMPLE_CATALOG = [
     {
@@ -105,6 +140,34 @@ class TestGetCopilotModelContext:
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=[])
     def test_returns_none_for_empty_catalog(self, mock_fetch):
         assert get_copilot_model_context("gpt-4.1") is None
+
+    # ── max_context_window_tokens tests (issue #29146) ─────────────────────────
+
+    @patch(
+        "hermes_cli.models.fetch_github_model_catalog",
+        return_value=_SAMPLE_CATALOG_WITH_CONTEXT_WINDOW,
+    )
+    def test_prefers_max_context_window_over_max_prompt_tokens(self, mock_fetch):
+        # gpt-5.5 has both fields — context_window must win
+        assert get_copilot_model_context("gpt-5.5") == 400_000
+
+    @patch(
+        "hermes_cli.models.fetch_github_model_catalog",
+        return_value=_SAMPLE_CATALOG_WITH_CONTEXT_WINDOW,
+    )
+    def test_max_context_window_tokens_alone_is_used(self, mock_fetch):
+        # claude-3.7-sonnet has only max_context_window_tokens — must be used
+        assert get_copilot_model_context("claude-3.7-sonnet") == 200_000
+
+    @patch(
+        "hermes_cli.models.fetch_github_model_catalog",
+        return_value=_SAMPLE_CATALOG_WITH_CONTEXT_WINDOW,
+    )
+    def test_max_prompt_tokens_still_works_when_no_context_window(
+        self, mock_fetch
+    ):
+        # claude-opus-4.6-1m has only max_prompt_tokens — fallback still works
+        assert get_copilot_model_context("claude-opus-4.6-1m") == 1_000_000
 
 
 class TestModelMetadataCopilotIntegration:

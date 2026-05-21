@@ -1,6 +1,6 @@
-"""Tests for agent/skill_utils.py — extract_skill_conditions metadata handling."""
+"""Tests for agent/skill_utils.py."""
 
-from agent.skill_utils import extract_skill_conditions
+from agent.skill_utils import extract_skill_conditions, iter_skill_index_files
 
 
 def test_metadata_as_dict_with_hermes():
@@ -56,3 +56,41 @@ def test_metadata_missing_entirely():
         "fallback_for_tools": [],
         "requires_tools": [],
     }
+
+
+def test_iter_skill_index_files_prunes_dependency_dirs(tmp_path):
+    real = tmp_path / "real-skill"
+    real.mkdir()
+    (real / "SKILL.md").write_text("---\nname: real-skill\n---\n", encoding="utf-8")
+
+    nested = (
+        tmp_path
+        / "bring"
+        / "scripts"
+        / ".venv"
+        / "lib"
+        / "python3.13"
+        / "site-packages"
+        / "typer"
+        / ".agents"
+        / "skills"
+        / "typer"
+    )
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text("---\nname: typer\n---\n", encoding="utf-8")
+
+    node_module = (
+        tmp_path
+        / "web-skill"
+        / "node_modules"
+        / "dep"
+        / ".agents"
+        / "skills"
+        / "dep"
+    )
+    node_module.mkdir(parents=True)
+    (node_module / "SKILL.md").write_text("---\nname: dep\n---\n", encoding="utf-8")
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    assert found == [real / "SKILL.md"]

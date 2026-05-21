@@ -14140,17 +14140,25 @@ class GatewayRunner:
         Returns a list of reset tokens; pass them to ``_clear_session_env``
         in a ``finally`` block.
         """
+        from inspect import signature
+
         from gateway.session_context import set_session_vars
-        return set_session_vars(
-            platform=context.source.platform.value,
-            chat_id=context.source.chat_id,
-            chat_name=context.source.chat_name or "",
-            thread_id=str(context.source.thread_id) if context.source.thread_id else "",
-            user_id=str(context.source.user_id) if context.source.user_id else "",
-            user_name=str(context.source.user_name) if context.source.user_name else "",
-            session_key=context.session_key,
-            message_id=str(context.source.message_id) if context.source.message_id else "",
-        )
+
+        kwargs = {
+            "platform": context.source.platform.value,
+            "chat_id": context.source.chat_id,
+            "chat_name": context.source.chat_name or "",
+            "thread_id": str(context.source.thread_id) if context.source.thread_id else "",
+            "user_id": str(context.source.user_id) if context.source.user_id else "",
+            "user_name": str(context.source.user_name) if context.source.user_name else "",
+            "session_key": context.session_key,
+        }
+        # Older installed gateway.session_context modules did not accept
+        # message_id.  Keep gateway/run.py forward-compatible with those
+        # partially-updated installs instead of crashing every Discord turn.
+        if "message_id" in signature(set_session_vars).parameters:
+            kwargs["message_id"] = str(context.source.message_id) if context.source.message_id else ""
+        return set_session_vars(**kwargs)
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

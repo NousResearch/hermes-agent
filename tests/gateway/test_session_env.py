@@ -41,6 +41,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
         user_id="123456",
         user_name="alice",
         thread_id="17585",
+        message_id="999888777",
     )
     context = SessionContext(source=source, connected_platforms=[], home_channels={})
 
@@ -50,6 +51,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_MESSAGE_ID", raising=False)
 
     tokens = runner._set_session_env(context)
 
@@ -60,6 +62,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
+    assert get_session_env("HERMES_SESSION_MESSAGE_ID") == "999888777"
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
@@ -67,6 +70,74 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Clean up
     runner._clear_session_env(tokens)
+
+
+def test_set_session_env_omits_message_id_for_legacy_helper(monkeypatch):
+    """_set_session_env should not crash if set_session_vars lacks message_id.
+
+    This protects partially-updated gateway installs where gateway/run.py was
+    refreshed before gateway/session_context.py.
+    """
+    import gateway.session_context as session_context_module
+
+    calls = []
+
+    def legacy_set_session_vars(
+        platform="",
+        chat_id="",
+        chat_name="",
+        thread_id="",
+        user_id="",
+        user_name="",
+        session_key="",
+    ):
+        calls.append(
+            {
+                "platform": platform,
+                "chat_id": chat_id,
+                "chat_name": chat_name,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "user_name": user_name,
+                "session_key": session_key,
+            }
+        )
+        return ["legacy-token"]
+
+    monkeypatch.setattr(session_context_module, "set_session_vars", legacy_set_session_vars)
+
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="1506701337025581340",
+        chat_name="Hermes Palette",
+        chat_type="thread",
+        user_id="42",
+        user_name="merlin",
+        thread_id="1506701337025581340",
+        message_id="1507019797173371041",
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+        session_key="discord:1506701337025581340",
+    )
+
+    tokens = runner._set_session_env(context)
+
+    assert tokens == ["legacy-token"]
+    assert calls == [
+        {
+            "platform": "discord",
+            "chat_id": "1506701337025581340",
+            "chat_name": "Hermes Palette",
+            "thread_id": "1506701337025581340",
+            "user_id": "42",
+            "user_name": "merlin",
+            "session_key": "discord:1506701337025581340",
+        }
+    ]
 
 
 def test_clear_session_env_restores_previous_state(monkeypatch):

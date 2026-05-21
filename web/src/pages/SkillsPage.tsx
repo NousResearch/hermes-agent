@@ -28,6 +28,7 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n";
+import { formatRussianCount } from "@/i18n/ruPlural";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -102,7 +103,7 @@ export default function SkillsPage() {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
   useEffect(() => {
@@ -113,7 +114,7 @@ export default function SkillsPage() {
       })
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [showToast, t.common.loading]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
@@ -166,6 +167,24 @@ export default function SkillsPage() {
       )
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [skills, activeCategory, isSearching]);
+
+  const skillCountLabel =
+    locale === "ru"
+      ? formatRussianCount(activeSkills.length, "навык", "навыка", "навыков")
+      : t.skills.skillCount
+          .replace("{count}", String(activeSkills.length))
+          .replace("{s}", activeSkills.length !== 1 ? "s" : "");
+  const resultCountLabel =
+    locale === "ru"
+      ? formatRussianCount(
+          searchMatchedSkills.length,
+          "результат",
+          "результата",
+          "результатов",
+        )
+      : t.skills.resultCount
+          .replace("{count}", String(searchMatchedSkills.length))
+          .replace("{s}", searchMatchedSkills.length !== 1 ? "s" : "");
 
   const allCategories = useMemo(() => {
     const cats = new Map<string, number>();
@@ -336,12 +355,7 @@ export default function SkillsPage() {
                     {t.skills.title}
                   </CardTitle>
                   <Badge tone="secondary" className="text-[10px]">
-                    {t.skills.resultCount
-                      .replace("{count}", String(searchMatchedSkills.length))
-                      .replace(
-                        "{s}",
-                        searchMatchedSkills.length !== 1 ? "s" : "",
-                      )}
+                    {resultCountLabel}
                   </Badge>
                 </div>
               </CardHeader>
@@ -380,9 +394,7 @@ export default function SkillsPage() {
                       : t.skills.all}
                   </CardTitle>
                   <Badge tone="secondary" className="text-[10px]">
-                    {t.skills.skillCount
-                      .replace("{count}", String(activeSkills.length))
-                      .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                    {skillCountLabel}
                   </Badge>
                 </div>
               </CardHeader>

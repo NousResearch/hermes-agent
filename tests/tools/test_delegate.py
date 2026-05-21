@@ -142,6 +142,13 @@ class TestChildSystemPrompt(unittest.TestCase):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
 
+    def test_includes_verification_discipline(self):
+        # Child agents must be told to prove success, not just claim it.
+        prompt = _build_child_system_prompt("Ship the feature")
+        self.assertIn("Verification discipline", prompt)
+        self.assertIn("quote its output", prompt)
+        self.assertIn("UNKNOWN", prompt)
+
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):

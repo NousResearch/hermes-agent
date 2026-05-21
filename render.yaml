@@ -8,6 +8,11 @@ services:
     plan: starter
     region: frankfurt
     healthCheckPath: /health
+    envVars:
+      - key: VOICE_CALL_REALTIME_MODEL
+        value: gpt-realtime-2
+      - key: VOICE_CALL_ASSISTANT_VOICE
+        value: marin
     disk:
       name: giga-hermes-data
       mountPath: /opt/data

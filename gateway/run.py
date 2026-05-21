@@ -3452,22 +3452,84 @@ class GatewayRunner:
             )
             return
 
-        cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
-        shell_cmd = (
-            f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
-        )
+        # Unix path: spawn a tiny Python watcher (same pattern as the
+        # Windows branch above and as
+        # ``hermes_cli.gateway.launch_detached_profile_gateway_restart``).
+        #
+        # Background (#29603): the previous implementation used
+        # ``setsid bash -lc 'while kill -0 OLD; do sleep 0.2; done;
+        # hermes gateway restart'``. That makes ``bash`` the session
+        # leader; when the wait loop ends and bash exits after the
+        # restart subcommand returns, bash's controlling session is
+        # torn down and SIGHUP is delivered to every process still in
+        # it — including the freshly spawned gateway daemon on platforms
+        # (Termux / Android) where the daemon hasn't fully re-detached
+        # by the time bash unwinds. systemd masks the symptom by
+        # respawning the unit, but on bare-POSIX environments it
+        # deterministically kills the new gateway.
+        #
+        # The Python watcher avoids the issue by re-detaching the new
+        # gateway into its own session via ``start_new_session=True``,
+        # so the watcher exiting (and any SIGHUP it triggers) only
+        # tears down the watcher's session — not the new gateway's.
+        import textwrap
+
+        watcher_script = textwrap.dedent(
+            """
+            import os
+            import subprocess
+            import sys
+            import time
+
+            pid = int(sys.argv[1])
+            cmd = sys.argv[2:]
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                except PermissionError:
+                    # PID exists but we can't signal it — still "alive"
+                    # from our perspective; keep waiting for it to exit.
+                    pass
+                except OSError:
+                    break
+                time.sleep(0.2)
+
+            # Re-detach the respawn into its own session so this watcher
+            # exiting can't SIGHUP the new gateway (#29603).
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+            """
+        ).strip()
+
+        watcher_argv = [
+            sys.executable,
+            "-c",
+            watcher_script,
+            str(current_pid),
+            *hermes_cmd,
+            "gateway",
+            "restart",
+        ]
+
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
             subprocess.Popen(
-                [setsid_bin, "bash", "-lc", shell_cmd],
+                [setsid_bin, "--", *watcher_argv],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
         else:
             subprocess.Popen(
-                ["bash", "-lc", shell_cmd],
+                watcher_argv,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,

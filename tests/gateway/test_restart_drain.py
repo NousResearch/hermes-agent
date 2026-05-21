@@ -161,6 +161,12 @@ async def test_request_restart_is_idempotent():
 
 @pytest.mark.asyncio
 async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
+    """The Unix restart path spawns the watcher under setsid (when
+    available), with the watcher exec'd via ``sys.executable -c …``
+    rather than ``bash -lc`` (#29603 — bash-as-session-leader SIGHUPs
+    the new gateway on non-systemd POSIX environments)."""
+    import sys
+
     runner, _adapter = make_restart_runner()
     popen_calls = []
 
@@ -178,9 +184,20 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
 
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
-    assert cmd[:2] == ["/usr/bin/setsid", "bash"]
-    assert "gateway restart" in cmd[-1]
-    assert "kill -0 321" in cmd[-1]
+    # setsid wraps a Python watcher (no shell, no bash -lc).
+    assert cmd[:3] == ["/usr/bin/setsid", "--", sys.executable]
+    assert cmd[3] == "-c"
+    watcher_script = cmd[4]
+    # Watcher is the Python source, not a shell snippet.
+    assert "import subprocess" in watcher_script
+    assert "start_new_session=True" in watcher_script
+    # No bash anywhere in the argv — the old shell-based command was the bug.
+    assert not any(part == "bash" or part == "-lc" for part in cmd)
+    # Old PID + restart subcommand are passed as argv to the watcher,
+    # not interpolated into a shell string.
+    assert "321" in cmd[5:]
+    assert "gateway" in cmd[5:]
+    assert "restart" in cmd[5:]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL

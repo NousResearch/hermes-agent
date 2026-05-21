@@ -3194,6 +3194,27 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     else:
         auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "openai-codex")
+    source = "hermes-auth-store"
+    if not state:
+        pool_entries = read_credential_pool("openai-codex")
+        if isinstance(pool_entries, list):
+            for entry in sorted(
+                (e for e in pool_entries if isinstance(e, dict)),
+                key=lambda e: int(e.get("priority") or 0),
+            ):
+                access_token = str(entry.get("access_token") or entry.get("api_key") or "").strip()
+                refresh_token = str(entry.get("refresh_token") or "").strip()
+                if access_token and refresh_token:
+                    state = {
+                        "tokens": {
+                            "access_token": access_token,
+                            "refresh_token": refresh_token,
+                        },
+                        "last_refresh": entry.get("last_refresh"),
+                        "auth_mode": entry.get("auth_mode") or "chatgpt",
+                    }
+                    source = f"pool:{entry.get('label') or entry.get('id') or 'openai-codex'}"
+                    break
     if not state:
         raise AuthError(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",
@@ -3228,6 +3249,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     return {
         "tokens": tokens,
         "last_refresh": state.get("last_refresh"),
+        "source": source,
     }
 
 
@@ -3443,7 +3465,7 @@ def resolve_codex_runtime_credentials(
         "provider": "openai-codex",
         "base_url": base_url,
         "api_key": access_token,
-        "source": "hermes-auth-store",
+        "source": data.get("source") or "hermes-auth-store",
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }

@@ -76,11 +76,19 @@ def test_openai_realtime_defaults_to_gpt_realtime_2(monkeypatch):
     assert _voice_realtime_model("openai") == "gpt-realtime-2"
     assert _voice_realtime_voice("openai") == "marin"
 
-    monkeypatch.setenv("VOICE_CALL_REALTIME_MODEL", "gpt-realtime-1.5")
+    monkeypatch.setenv("VOICE_CALL_REALTIME_MODEL", "gpt-realtime-mini")
     monkeypatch.setenv("VOICE_CALL_ASSISTANT_VOICE", "cedar")
 
-    assert _voice_realtime_model("openai") == "gpt-realtime-1.5"
+    assert _voice_realtime_model("openai") == "gpt-realtime-mini"
     assert _voice_realtime_voice("openai") == "cedar"
+
+
+def test_openai_realtime_upgrades_legacy_env_model(monkeypatch):
+    monkeypatch.setenv("VOICE_CALL_REALTIME_MODEL", "gpt-realtime-1.5")
+    assert _voice_realtime_model("openai") == "gpt-realtime-2"
+
+    monkeypatch.setenv("VOICE_CALL_REALTIME_MODEL", "gpt-realtime")
+    assert _voice_realtime_model("openai") == "gpt-realtime-2"
 
 
 def test_openai_realtime_session_uses_ga_audio_schema(monkeypatch):

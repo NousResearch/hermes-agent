@@ -151,6 +151,7 @@ async def auth_callback(
     state: str = "",
     error: str = "",
     error_description: str = "",
+    next: str = "",
 ):
     pkce_raw = read_pkce_cookie(request)
     if not pkce_raw:
@@ -241,7 +242,12 @@ async def auth_callback(
     )
 
     expires_in = max(60, session.expires_at - int(time.time()))
-    resp = RedirectResponse(url="/", status_code=302)
+    # Honour the ``next=`` query param the gate's _unauth_response set in
+    # the redirect URL. Validated against the same same-origin rules as
+    # the gate's _safe_next_target — any absolute URL / protocol-relative
+    # path / loop back to /login is dropped in favour of ``/``.
+    landing = _validate_post_login_target(next) or "/"
+    resp = RedirectResponse(url=landing, status_code=302)
     set_session_cookies(
         resp,
         access_token=session.access_token,
@@ -251,6 +257,31 @@ async def auth_callback(
     )
     clear_pkce_cookie(resp)
     return resp
+
+
+def _validate_post_login_target(raw: str) -> str:
+    """Return ``raw`` if it's a safe same-origin path, else empty string.
+
+    The ``next`` query param survives a full OAuth round trip — the gate
+    encodes it into the /login redirect, the login page emits it back into
+    /auth/login, and the IDP preserves it across /authorize/callback. We
+    have to re-validate here because the value came back in via the
+    URL (an attacker could craft a /auth/callback URL with their own
+    ``next=https://evil.example``).
+    """
+    if not raw:
+        return ""
+    from urllib.parse import unquote
+    decoded = unquote(raw)
+    if not decoded.startswith("/") or decoded.startswith("//"):
+        return ""
+    # Don't loop back to login pages or auth flow.
+    if any(
+        decoded == p or decoded.startswith(p)
+        for p in ("/login", "/auth/", "/api/auth/")
+    ):
+        return ""
+    return decoded
 
 
 @router.post("/auth/logout", name="auth_logout")

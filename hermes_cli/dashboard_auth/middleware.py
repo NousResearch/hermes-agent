@@ -58,14 +58,73 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
-def _unauth_response(path: str, *, reason: str) -> Response:
-    """API routes → 401 JSON; HTML routes → 302 → /login."""
+def _unauth_response(request: Request, *, reason: str) -> Response:
+    """API routes → 401 JSON with ``login_url``; HTML routes → 302 → /login.
+
+    The JSON envelope carries a ``login_url`` field with a ``next=`` query
+    string so the SPA's global 401 handler can drop the user back where
+    they were after re-auth. The contract is intentionally simple so any
+    fetch-wrapper can implement the redirect without parsing details:
+
+        if response.status === 401 && body.error in ("unauthenticated",
+                                                       "session_expired"):
+            window.location.assign(body.login_url);
+
+    HTML redirects also carry the ``next=`` query string so direct
+    navigation to ``/sessions`` (etc.) without a cookie comes back to
+    ``/sessions`` after login.
+    """
+    path = request.url.path
+    next_param = _safe_next_target(request)
+    login_url = f"/login?next={next_param}" if next_param else "/login"
+
     if path.startswith("/api/"):
+        # API routes never get redirects: the browser fetch() API would
+        # follow a 302 into the cross-origin OAuth dance opaquely. Return
+        # 401 with a structured envelope so the SPA can full-page-navigate
+        # to login_url.
+        error_code = (
+            "session_expired"
+            if reason == "invalid_or_expired_session"
+            else "unauthenticated"
+        )
         return JSONResponse(
-            {"detail": "Unauthorized", "reason": reason},
+            {
+                "error": error_code,
+                "detail": "Unauthorized",
+                "reason": reason,
+                "login_url": login_url,
+            },
             status_code=401,
         )
-    return RedirectResponse(url="/login", status_code=302)
+    return RedirectResponse(url=login_url, status_code=302)
+
+
+def _safe_next_target(request: Request) -> str:
+    """Build the URL-encoded ``next`` query value, or empty string.
+
+    Only same-origin relative paths are accepted; absolute URLs or
+    ``//evil.com`` open-redirect attempts are silently dropped. The empty
+    string return means the caller produces a bare ``/login`` URL — fine,
+    user lands at the dashboard root after re-auth.
+    """
+    path = request.url.path
+    # Reject anything that doesn't start with "/" or starts with "//"
+    # (protocol-relative URL — would open-redirect to an attacker host).
+    if not path or not path.startswith("/") or path.startswith("//"):
+        return ""
+    # Don't redirect back to the auth routes themselves — that loops.
+    if any(
+        path == p or path.startswith(p)
+        for p in ("/login", "/auth/", "/api/auth/")
+    ):
+        return ""
+    # Preserve query string if present (e.g. /sessions?page=2).
+    query = request.url.query
+    target = f"{path}?{query}" if query else path
+    # urlencode the whole thing as a single value.
+    from urllib.parse import quote
+    return quote(target, safe="")
 
 
 async def gated_auth_middleware(
@@ -86,7 +145,7 @@ async def gated_auth_middleware(
 
     at, _rt = read_session_cookies(request)
     if not at:
-        return _unauth_response(path, reason="no_cookie")
+        return _unauth_response(request, reason="no_cookie")
 
     # Try every registered provider's verify_session in turn. Providers
     # MUST return None for tokens they don't recognise (not raise). This
@@ -120,7 +179,14 @@ async def gated_auth_middleware(
             reason="no_provider_recognises",
             ip=_client_ip(request),
         )
-        return _unauth_response(path, reason="invalid_or_expired_session")
+        response = _unauth_response(request, reason="invalid_or_expired_session")
+        # Clear the dead cookie so the browser doesn't keep sending it.
+        # Contract v1: no refresh token to retry with, so the only correct
+        # next step is full re-auth via /login. Importing locally avoids a
+        # cycle with cookies → middleware at module load.
+        from hermes_cli.dashboard_auth.cookies import clear_session_cookies
+        clear_session_cookies(response)
+        return response
 
     request.state.session = session
     return await call_next(request)

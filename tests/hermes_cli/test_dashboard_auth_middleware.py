@@ -15,6 +15,13 @@ without any external IDP.  Exercises:
 from __future__ import annotations
 
 import pytest
+
+# Phase 5 / Phase 6: these tests mutate ``web_server.app.state.auth_required``
+# at module level. Run them in the same xdist worker so they don't race
+# against each other (and against any other file that also touches
+# ``app.state``) — the marker name is shared across all dashboard-auth test
+# files that gate the app.
+pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
@@ -58,7 +65,8 @@ def test_gated_status_now_requires_auth(gated_app):
 def test_gated_html_redirects_to_login(gated_app):
     r = gated_app.get("/", follow_redirects=False)
     assert r.status_code == 302
-    assert r.headers["location"] == "/login"
+    # Phase 6: gate carries a ``next=`` so post-login bounces back to /.
+    assert r.headers["location"] in ("/login", "/login?next=%2F")
 
 
 def test_gated_auth_providers_is_public(gated_app):
@@ -177,7 +185,8 @@ def test_invalid_cookie_redirects_on_html(gated_app):
     gated_app.cookies.set(SESSION_AT_COOKIE, "garbage")
     r = gated_app.get("/", follow_redirects=False)
     assert r.status_code == 302
-    assert r.headers["location"] == "/login"
+    # Phase 6: gate carries a ``next=`` so post-login bounces back to /.
+    assert r.headers["location"] in ("/login", "/login?next=%2F")
 
 
 def test_logout_clears_cookies_and_redirects_to_login(gated_app):

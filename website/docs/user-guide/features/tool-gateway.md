@@ -91,10 +91,10 @@ Image generation defaults to FLUX 2 Klein 9B for speed. Override per-call by pas
 | Model | ID | Best for |
 |---|---|---|
 | FLUX 2 Klein 9B | `fal-ai/flux-2/klein/9b` | Fast, good default |
-| FLUX 2 Pro | `fal-ai/flux-2/pro` | Higher fidelity FLUX |
+| FLUX 2 Pro | `fal-ai/flux-2-pro` | Higher fidelity FLUX |
 | Z-Image Turbo | `fal-ai/z-image/turbo` | Stylized, fast |
 | Nano Banana Pro | `fal-ai/gemini-3-pro-image` | Google Gemini 3 Pro Image |
-| GPT Image 1.5 | `fal-ai/gpt-image-1/5` | OpenAI image gen, text+image |
+| GPT Image 1.5 | `fal-ai/gpt-image-1.5` | OpenAI image gen, text+image |
 | GPT Image 2 | `fal-ai/gpt-image-2` | OpenAI latest |
 | Ideogram V3 | `fal-ai/ideogram/v3` | Strong prompt adherence + typography |
 | Recraft V4 Pro | `fal-ai/recraft/v4/pro` | Vector-style, graphic design |

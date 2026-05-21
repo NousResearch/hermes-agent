@@ -18,7 +18,7 @@ Tool Gateway 包含在付费 Nous Portal 订阅中。**[管理订阅 →](https:
 | 工具 | 作用 | 若不用网关，可改用 |
 |------|------|---------------------|
 | **网页搜索与抓取** | 通过 Firecrawl 搜索并抽取页面内容 | `FIRECRAWL_API_KEY`、`EXA_API_KEY`、`PARALLEL_API_KEY`、`TAVILY_API_KEY` |
-| **文生图** | 通过 FAL 生成图像（8 个模型：FLUX 2 Klein/Pro、GPT-Image、Nano Banana Pro、Ideogram、Recraft V4 Pro、Qwen、Z-Image） | `FAL_KEY` |
+| **文生图** | 通过 FAL 生成图像（9 个模型：FLUX 2 Klein/Pro、GPT Image 1.5/2、Nano Banana Pro、Ideogram、Recraft V4 Pro、Qwen、Z-Image） | `FAL_KEY` |
 | **语音合成** | 通过 OpenAI TTS 将文字转为语音 | `VOICE_TOOLS_OPENAI_KEY`、`ELEVENLABS_API_KEY` |
 | **浏览器自动化** | 通过 Browser Use 控制云端浏览器 | `BROWSER_USE_API_KEY`、`BROWSERBASE_API_KEY` |
 

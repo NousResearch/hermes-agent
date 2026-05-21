@@ -1091,6 +1091,11 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Per-turn time injection — when True, injects the current wall-clock
+    # time (minute-precision) before each LLM call.  Lives outside the
+    # cached system prompt so prefix cache stays warm.
+    agent.time_injection = bool(_agent_section.get("time_injection", False))
+
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
     try:

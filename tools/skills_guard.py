@@ -27,7 +27,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 
 
@@ -37,6 +37,29 @@ from typing import List, Tuple
 # ---------------------------------------------------------------------------
 
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills"}
+
+TEXT_HASH_EXTENSIONS = {
+    ".cfg",
+    ".css",
+    ".csv",
+    ".html",
+    ".ini",
+    ".js",
+    ".json",
+    ".jsx",
+    ".md",
+    ".py",
+    ".rst",
+    ".sh",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+TEXT_HASH_FILENAMES = {"Dockerfile", "Makefile", "SKILL.md"}
 
 INSTALL_POLICY = {
     #                  safe      caution    dangerous
@@ -720,15 +743,33 @@ def content_hash(skill_path: Path) -> str:
     """Compute a SHA-256 hash of all files in a skill directory for integrity tracking."""
     h = hashlib.sha256()
     if skill_path.is_dir():
-        for f in sorted(skill_path.rglob("*")):
-            if f.is_file():
-                try:
-                    h.update(f.read_bytes())
-                except OSError:
-                    continue
+        files = sorted(
+            (f for f in skill_path.rglob("*") if f.is_file()),
+            key=lambda f: f.relative_to(skill_path).as_posix(),
+        )
+        for f in files:
+            try:
+                rel_path = f.relative_to(skill_path).as_posix()
+                h.update(canonical_content_bytes(rel_path, f.read_bytes()))
+            except OSError:
+                continue
     elif skill_path.is_file():
-        h.update(skill_path.read_bytes())
+        h.update(canonical_content_bytes(skill_path, skill_path.read_bytes()))
     return f"sha256:{h.hexdigest()[:16]}"
+
+
+def canonical_content_bytes(path: Union[Path, str], data: bytes) -> bytes:
+    """Return bytes for content hashing with stable text newlines across OSes."""
+    path_obj = Path(str(path))
+    if path_obj.name not in TEXT_HASH_FILENAMES and path_obj.suffix.lower() not in TEXT_HASH_EXTENSIONS:
+        return data
+
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
 
 
 # ---------------------------------------------------------------------------

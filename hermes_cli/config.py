@@ -1748,6 +1748,7 @@ DEFAULT_CONFIG = {
         "auto_start": True,
         "host": "127.0.0.1",
         "port": 18794,
+        "script_path": "",
     },
 
     # Config schema version - bump this when adding new required fields

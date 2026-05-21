@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -71,6 +72,27 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
         skip_context_files=True,
         skip_memory=True,
     )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    return agent
+
+
+def _build_custom_codex_agent(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        provider="custom",
+        api_mode="chat_completions",
+        base_url="https://right.codes/codex/v1",
+        api_key="proxy-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.session_id = "custom-codex-session"
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
@@ -309,6 +331,31 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "timeout" not in kwargs
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
+
+
+def test_build_api_kwargs_custom_codex_proxy_injects_codex_transport_headers(monkeypatch):
+    agent = _build_custom_codex_agent(monkeypatch)
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["prompt_cache_key"] == "custom-codex-session"
+    headers = kwargs["extra_headers"]
+    assert headers["session_id"] == "custom-codex-session"
+    assert headers["x-client-request-id"] == "custom-codex-session"
+    assert headers["x-codex-window-id"] == "custom-codex-session:0"
+    assert headers["originator"] == "codex_exec"
+    assert "codex_exec/0.120.0" in headers["User-Agent"]
+
+    turn_metadata = json.loads(headers["x-codex-turn-metadata"])
+    assert turn_metadata["session_id"] == "custom-codex-session"
+    assert turn_metadata["sandbox"] == "none"
+    assert isinstance(turn_metadata.get("turn_id"), str)
+    assert turn_metadata["turn_id"]
 
 
 def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):

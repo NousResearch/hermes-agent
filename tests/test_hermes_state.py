@@ -85,6 +85,22 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["system_prompt"] == "You are a helpful assistant."
 
+    def test_update_and_get_prompt_cache_state(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        assert db.get_prompt_cache_state("s1") is None
+        assert db.update_prompt_cache_state(
+            "s1",
+            prompt_cache_key="custom-codex-session",
+            prompt_cache_supported=True,
+        ) is True
+
+        cache_state = db.get_prompt_cache_state("s1")
+        assert cache_state == {
+            "prompt_cache_key": "custom-codex-session",
+            "prompt_cache_supported": True,
+        }
+
     def test_update_token_counts(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_token_counts("s1", input_tokens=200, output_tokens=100)

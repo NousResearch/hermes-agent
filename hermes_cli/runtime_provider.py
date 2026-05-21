@@ -93,11 +93,33 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "codex_responses"
     if hostname == "api.openai.com":
         return "codex_responses"
+    if "/codex" in normalized:
+        return "codex_responses"
     if normalized.endswith("/anthropic"):
         return "anthropic_messages"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
     return None
+
+
+def _custom_api_mode_for_url(
+    base_url: str,
+    configured_mode: Optional[str] = None,
+) -> str:
+    """Resolve api_mode for custom endpoints, preferring /codex when present.
+
+    Custom Codex-compatible proxies rely on Responses semantics and
+    transport-compatible cache headers even when an older config still says
+    ``chat_completions``. Treat a ``/codex`` URL path as authoritative so
+    stale config does not silently route GPT-5 Codex traffic through the
+    wrong adapter.
+    """
+    normalized = (base_url or "").strip().lower().rstrip("/")
+    if "/codex" in normalized:
+        return "codex_responses"
+    if configured_mode:
+        return configured_mode
+    return _detect_api_mode_for_url(base_url) or "chat_completions"
 
 
 def _host_derived_api_key(base_url: str) -> str:
@@ -464,7 +486,7 @@ def _try_resolve_from_custom_pool(
             return None
         return {
             "provider": provider_label,
-            "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
+            "api_mode": _custom_api_mode_for_url(base_url, api_mode_override),
             "base_url": base_url,
             "api_key": pool_api_key,
             "source": f"pool:{pool_key}",
@@ -673,7 +695,7 @@ def _resolve_named_custom_runtime(
         ) or "no-key-required"
         return {
             "provider": "custom",
-            "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
+            "api_mode": _custom_api_mode_for_url(base_url),
             "base_url": base_url,
             "api_key": api_key,
             "source": "direct-alias",
@@ -725,9 +747,10 @@ def _resolve_named_custom_runtime(
 
     result = {
         "provider": "custom",
-        "api_mode": custom_provider.get("api_mode")
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": _custom_api_mode_for_url(
+            base_url,
+            _parse_api_mode(custom_provider.get("api_mode")),
+        ),
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
@@ -873,9 +896,10 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": effective_provider,
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": _custom_api_mode_for_url(
+            base_url,
+            _parse_api_mode(model_cfg.get("api_mode")),
+        ),
         "base_url": base_url,
         "api_key": api_key,
         "source": source,

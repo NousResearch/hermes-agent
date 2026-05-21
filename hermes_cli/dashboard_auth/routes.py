@@ -302,3 +302,39 @@ async def api_auth_me(request: Request):
         "provider": sess.provider,
         "expires_at": sess.expires_at,
     }
+
+
+# ---------------------------------------------------------------------------
+# Auth-required: WS upgrade ticket (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/auth/ws-ticket", name="auth_ws_ticket")
+async def api_auth_ws_ticket(request: Request):
+    """Mint a short-lived single-use ticket for the authenticated session.
+
+    Browsers cannot set ``Authorization`` on a WebSocket upgrade, so in
+    gated mode the SPA POSTs this endpoint to get a ``?ticket=`` value to
+    append to ``/api/pty``, ``/api/ws``, ``/api/pub``, or ``/api/events``.
+
+    The ticket has a 30-second TTL and is single-use. Calling this endpoint
+    multiple times in quick succession (e.g. one ticket per WS) is the
+    expected pattern.
+    """
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        # Middleware should already have rejected, but check defensively.
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Import here so the routes module stays usable in test contexts that
+    # don't load the ticket store.
+    from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
+
+    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)
+    audit_log(
+        AuditEvent.WS_TICKET_MINTED,
+        provider=sess.provider,
+        user_id=sess.user_id,
+        ip=_client_ip(request),
+    )
+    return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}

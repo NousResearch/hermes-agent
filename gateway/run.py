@@ -853,6 +853,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
+        model_for_runtime_provider,
     )
     from hermes_cli.auth import AuthError
 
@@ -871,7 +872,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    return {
+    resolved = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
@@ -880,6 +881,18 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+    # When the runtime auto-resolves a provider that differs from the
+    # configured model.provider (e.g. Codex auth is stale so auto-detect
+    # falls through to xai-oauth), the configured model.default belongs to
+    # the WRONG provider. resolve_runtime_provider() returns credentials but
+    # no model, so the caller pairs the resolved provider with the stale
+    # config model — every primary call then 404s ("model gpt-5.5 does not
+    # exist" on api.x.ai) before falling back. Attach a model the resolved
+    # provider actually serves so the primary call is consistent.
+    corrected_model = model_for_runtime_provider(runtime.get("provider"))
+    if corrected_model:
+        resolved["model"] = corrected_model
+    return resolved
 
 
 def _try_resolve_fallback_provider() -> dict | None:

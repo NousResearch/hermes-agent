@@ -1473,6 +1473,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
             format_runtime_provider_error,
+            model_for_runtime_provider,
         )
         from hermes_cli.auth import AuthError
         try:
@@ -1512,6 +1513,21 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
+
+        # Correct the model when the resolved provider differs from the
+        # configured model.provider. resolve_runtime_provider() returns
+        # credentials but no model, and `model` above is config model.default
+        # — when stale Codex auth makes auto-detect fall through to xai-oauth,
+        # pairing gpt-5.5 with xai-oauth 404s on every primary call before
+        # falling back. See model_for_runtime_provider() for the rationale.
+        _corrected_model = model_for_runtime_provider(runtime.get("provider"), config=_cfg)
+        if _corrected_model and _corrected_model != model:
+            logger.info(
+                "Job '%s': resolved provider '%s' does not match configured "
+                "model '%s' — using '%s' for that provider",
+                job_id, runtime.get("provider"), model, _corrected_model,
+            )
+            model = _corrected_model
 
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None

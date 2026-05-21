@@ -1666,3 +1666,63 @@ def format_runtime_provider_error(error: Exception) -> str:
     if isinstance(error, AuthError):
         return format_auth_error(error)
     return str(error)
+
+
+def model_for_runtime_provider(
+    resolved_provider: Optional[str],
+    *,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Return the model to use when the runtime resolved ``resolved_provider``.
+
+    ``resolve_runtime_provider()`` returns credentials but never a model — the
+    caller supplies one, normally config ``model.default``. That default is
+    only correct when the resolved provider matches ``model.provider``. When
+    auto-detection picks a different provider (e.g. stale Codex auth falls
+    through to xai-oauth), the configured model belongs to the wrong backend
+    and every API call 404s ("model gpt-5.5 does not exist" on api.x.ai)
+    before falling back to the chain.
+
+    Returns a model the resolved provider actually serves — preferring a
+    matching ``fallback_providers`` entry, else the provider's catalog
+    default. Returns ``None`` when the resolved provider matches the config
+    provider (``model.default`` is then correct) or when config declares no
+    concrete provider (a mismatch cannot be proven).
+    """
+    provider = (resolved_provider or "").strip().lower()
+    if not provider:
+        return None
+    try:
+        cfg = config if config is not None else load_config()
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, str):
+        model_cfg = {"default": model_cfg}
+    elif not isinstance(model_cfg, dict):
+        model_cfg = {}
+    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+    # Only act when config declares a concrete provider that differs from the
+    # resolved one. Empty/"auto" config providers can't prove a mismatch.
+    if not cfg_provider or cfg_provider in {"auto", provider}:
+        return None
+    fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or []
+    if isinstance(fb, dict):
+        fb = [fb]
+    for entry in fb:
+        if (
+            isinstance(entry, dict)
+            and str(entry.get("provider") or "").strip().lower() == provider
+            and entry.get("model")
+        ):
+            return str(entry["model"]).strip()
+    try:
+        from hermes_cli.models import get_default_model_for_provider
+        catalog_model = get_default_model_for_provider(provider)
+        if catalog_model:
+            return str(catalog_model).strip()
+    except Exception:
+        pass
+    return None

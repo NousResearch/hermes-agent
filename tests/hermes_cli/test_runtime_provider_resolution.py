@@ -2701,3 +2701,96 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+class TestModelForRuntimeProvider:
+    """``model_for_runtime_provider()`` — pick a model the *resolved* provider
+    actually serves, instead of blindly reusing config ``model.default``.
+
+    Regression guard for the misroute bug: config declares ``gpt-5.5`` on
+    ``openai-codex``, but stale Codex auth makes the runtime resolve to
+    ``xai-oauth``; pairing ``gpt-5.5`` with api.x.ai 404s every first call.
+    """
+
+    _CFG = {
+        "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+        "fallback_providers": [
+            {"provider": "xai-oauth", "model": "grok-4.3"},
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        ],
+    }
+
+    def test_returns_none_when_resolved_provider_matches_config(self):
+        # model.default is already correct — nothing to correct.
+        assert rp.model_for_runtime_provider("openai-codex", config=self._CFG) is None
+
+    def test_provider_match_is_case_insensitive(self):
+        assert rp.model_for_runtime_provider("OpenAI-Codex", config=self._CFG) is None
+
+    def test_returns_none_for_empty_resolved_provider(self):
+        assert rp.model_for_runtime_provider(None, config=self._CFG) is None
+        assert rp.model_for_runtime_provider("", config=self._CFG) is None
+        assert rp.model_for_runtime_provider("   ", config=self._CFG) is None
+
+    def test_returns_none_when_config_provider_unset_or_auto(self):
+        # Without a concrete config provider a mismatch cannot be proven.
+        for prov in ("", "auto", None):
+            cfg = {"model": {"provider": prov, "default": "gpt-5.5"}}
+            assert rp.model_for_runtime_provider("xai-oauth", config=cfg) is None
+
+    def test_corrects_to_matching_fallback_providers_entry(self):
+        # The core fix: resolved xai-oauth → use its fallback_providers model,
+        # not the openai-codex model.default.
+        assert (
+            rp.model_for_runtime_provider("xai-oauth", config=self._CFG)
+            == "grok-4.3"
+        )
+        assert (
+            rp.model_for_runtime_provider("openrouter", config=self._CFG)
+            == "anthropic/claude-sonnet-4.6"
+        )
+
+    def test_fallback_match_is_case_insensitive(self):
+        assert (
+            rp.model_for_runtime_provider("XAI-OAuth", config=self._CFG)
+            == "grok-4.3"
+        )
+
+    def test_falls_back_to_catalog_default_when_no_fallback_entry(self, monkeypatch):
+        # Resolved provider has no fallback_providers entry → catalog default.
+        import hermes_cli.models as _models
+
+        monkeypatch.setattr(
+            _models,
+            "get_default_model_for_provider",
+            lambda provider: "grok-4.3" if provider == "xai-oauth" else None,
+        )
+        cfg = {"model": {"provider": "openai-codex", "default": "gpt-5.5"}}
+        assert (
+            rp.model_for_runtime_provider("xai-oauth", config=cfg) == "grok-4.3"
+        )
+
+    def test_returns_none_when_no_fallback_and_no_catalog_default(self, monkeypatch):
+        import hermes_cli.models as _models
+
+        monkeypatch.setattr(
+            _models, "get_default_model_for_provider", lambda provider: None
+        )
+        cfg = {"model": {"provider": "openai-codex", "default": "gpt-5.5"}}
+        assert rp.model_for_runtime_provider("xai-oauth", config=cfg) is None
+
+    def test_accepts_string_model_config(self):
+        # model declared as a bare string (no provider) → cannot prove mismatch.
+        cfg = {"model": "gpt-5.5"}
+        assert rp.model_for_runtime_provider("xai-oauth", config=cfg) is None
+
+    def test_loads_config_when_not_supplied(self, monkeypatch):
+        monkeypatch.setattr(rp, "load_config", lambda: self._CFG)
+        assert rp.model_for_runtime_provider("xai-oauth") == "grok-4.3"
+
+    def test_returns_none_when_config_load_raises(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("config unavailable")
+
+        monkeypatch.setattr(rp, "load_config", _boom)
+        assert rp.model_for_runtime_provider("xai-oauth") is None

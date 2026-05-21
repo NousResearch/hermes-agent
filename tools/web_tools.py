@@ -194,11 +194,25 @@ def _get_capability_backend(capability: str) -> str:
 
     Reads ``web.{capability}_backend`` from config; if set and available,
     uses it. Otherwise falls through to the shared ``_get_backend()``.
+
+    Emits a WARNING when ``web.{capability}_backend`` is explicitly set to a
+    non-empty value but its required API key or service is not configured.
+    The fallback is silent only when the per-capability key is empty
+    (the installer default), meaning the user intentionally relies on
+    ``web.backend`` for both search and extract.
     """
     cfg = _load_web_config()
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
-    if specific and _is_backend_available(specific):
-        return specific
+    if specific:
+        if _is_backend_available(specific):
+            return specific
+        logger.warning(
+            "web.%s_backend is set to %r but its API key / service is not "
+            "configured — falling back to web.backend. "
+            "Set the required credentials or clear web.%s_backend to silence "
+            "this warning.",
+            capability, specific, capability,
+        )
     return _get_backend()
 
 

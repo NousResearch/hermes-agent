@@ -197,6 +197,68 @@ class TestPerCapabilityBackendSelection:
         # Should fall back to firecrawl since exa isn't configured
         assert web_tools._get_search_backend() == "firecrawl"
 
+    def test_warns_when_explicit_search_backend_unavailable(self, monkeypatch, caplog):
+        """Explicit web.search_backend set but API key missing → warning emitted."""
+        import logging
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "firecrawl",
+            "search_backend": "tavily",  # explicitly set, but key absent
+        })
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
+
+        with caplog.at_level(logging.WARNING, logger="tools.web_tools"):
+            result = web_tools._get_search_backend()
+
+        assert result == "firecrawl"
+        assert any(
+            "web.search_backend" in r.message and "tavily" in r.message
+            for r in caplog.records
+        ), "Expected a warning mentioning web.search_backend and the configured backend"
+
+    def test_no_warn_when_search_backend_empty(self, monkeypatch, caplog):
+        """Empty web.search_backend (installer default) falls back silently."""
+        import logging
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "tavily",
+            "search_backend": "",  # installer default — intentional fallback
+        })
+        monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+
+        with caplog.at_level(logging.WARNING, logger="tools.web_tools"):
+            result = web_tools._get_search_backend()
+
+        assert result == "tavily"
+        assert not any(
+            "web.search_backend" in r.message
+            for r in caplog.records
+        ), "Empty search_backend should not trigger any warning"
+
+    def test_warns_when_explicit_extract_backend_unavailable(self, monkeypatch, caplog):
+        """Explicit web.extract_backend set but API key missing → warning emitted."""
+        import logging
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "tavily",
+            "extract_backend": "exa",  # explicitly set, but key absent
+        })
+        monkeypatch.delenv("EXA_API_KEY", raising=False)
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-key")
+
+        with caplog.at_level(logging.WARNING, logger="tools.web_tools"):
+            result = web_tools._get_extract_backend()
+
+        assert result == "tavily"
+        assert any(
+            "web.extract_backend" in r.message and "exa" in r.message
+            for r in caplog.records
+        ), "Expected a warning mentioning web.extract_backend and the configured backend"
+
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
         from tools import web_tools
 

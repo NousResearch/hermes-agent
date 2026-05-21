@@ -1346,24 +1346,25 @@ class InkboxAdapter(BasePlatformAdapter):
             assistant status (e.g. "Let me check on that…"), False to
             suppress these updates entirely for this chat.
 
-        Tool-progress bubbles get one batched edit per turn on SMS (see
-        ``supports_progress_updates``), but natural-language assistant
-        chatter is a different path: every status_callback or interim
-        commentary line lands as a fresh ``adapter.send`` — one new SMS
-        or one new email per mid-turn musing.  That is unsendable UX on
-        either channel.  Allow it only for live voice calls, where the
-        text is streamed as TTS through ``edit_message``.
+        Voice calls stream interim status as TTS deltas — essentially
+        free.  SMS users benefit from periodic "I'm still working on
+        it" pings (it's a slow channel and silence is worse than an
+        extra short text).  Email is the opt-out: one mid-turn email
+        per ``status_callback`` is unsendable UX, and the user gets
+        the final answer in their inbox at turn end anyway.
         """
         # Active voice call → interim status is streamed as TTS deltas.
         if chat_id in self._active_call_ws:
             return True
         modality = self._last_inbound_modality.get(str(chat_id), "")
-        if modality in ("email", "sms"):
+        if modality == "email":
             return False
-        # Unknown modality — fall back to send()'s E.164-or-email heuristic
-        # and suppress in both cases.  The only place we'd ever want this
-        # on is the active-call path handled above.
-        return False
+        if modality == "sms":
+            return True
+        # Unknown modality — mirror send()'s E.164-or-email heuristic
+        # (matches ``supports_progress_updates``): E.164-shaped chat_id
+        # → treat as SMS and allow, anything else → email and suppress.
+        return str(chat_id).startswith("+")
 
     async def edit_message(
         self,

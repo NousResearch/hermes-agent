@@ -1374,8 +1374,10 @@ class TestAdminNoticeFilter:
 
 class TestInterimMessageCapability:
     """``supports_interim_messages`` mirrors the existing
-    ``supports_progress_updates`` knob: voice-call chats stream interim
-    status as TTS; SMS and email get one final reply, nothing mid-turn.
+    ``supports_progress_updates`` knob: voice calls stream interim status
+    as TTS, SMS keeps the periodic mid-turn pings (silence on a slow
+    channel is worse than an extra short text), and email opts out
+    entirely (one mid-turn email per status_callback is unsendable UX).
     """
 
     def test_returns_true_for_active_voice_call(self, monkeypatch):
@@ -1383,21 +1385,23 @@ class TestInterimMessageCapability:
         adapter._active_call_ws["contact-uuid-voice"] = MagicMock()
         assert adapter.supports_interim_messages("contact-uuid-voice") is True
 
-    def test_returns_false_for_sms_modality(self, monkeypatch):
+    def test_returns_true_for_sms_modality(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         adapter._last_inbound_modality["+15555550101"] = "sms"
-        assert adapter.supports_interim_messages("+15555550101") is False
+        assert adapter.supports_interim_messages("+15555550101") is True
 
     def test_returns_false_for_email_modality(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         adapter._last_inbound_modality["contact-uuid-mail"] = "email"
         assert adapter.supports_interim_messages("contact-uuid-mail") is False
 
-    def test_unknown_modality_defaults_to_suppression(self, monkeypatch):
-        """Unlike ``supports_progress_updates`` (which keeps SMS hopeful),
-        interim messages stay off for unknown chats — the only "yes" case
-        is an active voice call, which we already handle above.
+    def test_unknown_modality_mirrors_progress_heuristic(self, monkeypatch):
+        """Unknown chats fall back to the E.164-or-email heuristic shared
+        with ``supports_progress_updates``: phone-shaped chat_id → SMS,
+        anything else → email and suppress.
         """
         adapter = _make_adapter(monkeypatch)
+        # E.164 → SMS — interim allowed.
+        assert adapter.supports_interim_messages("+15555550199") is True
+        # Contact UUID → email — suppressed.
         assert adapter.supports_interim_messages("contact-uuid-unknown") is False
-        assert adapter.supports_interim_messages("+15555550199") is False

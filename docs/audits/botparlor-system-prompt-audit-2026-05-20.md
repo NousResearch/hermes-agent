@@ -579,3 +579,53 @@ Verification:
 - Active visible skills after prune: `35`, exactly the assistant keep list.
 - Smoke prompt `Canary smoke test only. Reply exactly: assistant baseline ready`
   completed in one model call with `6,750` input tokens and `4` output tokens.
+
+## Assistant Baseline Rollout
+
+Rolled the Viper assistant baseline to Hanna, Raven, and Sarah after Alex's
+live Viper test looked good.
+
+Assistant floor on all assistant bots:
+
+```text
+HERMES_TUI_TOOLSETS=botparlor,memory,session_search,tool_loader
+HERMES_TUI_VISIBLE_TOOLS=mcp_botparlor_set_mood,memory,session_search,load_tool_pack
+HERMES_TUI_SKIP_CONTEXT_FILES=1
+```
+
+Rollout notes:
+
+| Bot | Host / path | Branch | Commit | Host-local changes |
+| --- | --- | --- | --- | --- |
+| Hanna | `hanna.st-el.com` | `assistant/lazy-tool-standard` | `2cefd860e` | Untracked backup files and standalone `tui-ws-bridge.py`. |
+| Raven | `raven.st-el.com` | `assistant/lazy-tool-standard` | `2cefd860e` | Untracked backup file and standalone `tui-ws-bridge.py`. |
+| Sarah | local `officedt`, `/home/alex/.hermes/hermes-agent` | `assistant/lazy-tool-standard` | `2cefd860e` | Preserved host-local `tools/approval.py` fan-out patch. |
+
+Skill pruning:
+
+| Bot | Active skills after cleanup | Initial removed | Reseeded removed |
+| --- | ---: | ---: | ---: |
+| Hanna | 27 | 118 | 4 |
+| Raven | 25 | 105 | 4 |
+| Sarah | 26 | 80 | 8 |
+
+All three used the same assistant keep-list policy as Viper. Missing keep-list
+skills were not newly installed; each host now exposes the intersection of its
+installed skills and the assistant keep list.
+
+Verification:
+
+| Bot | Startup tools | MCP status | Project context | Smoke input tokens | Calls |
+| --- | --- | --- | --- | ---: | ---: |
+| Hanna | `load_tool_pack`, `mcp_botparlor_set_mood`, `memory`, `session_search` | connected, 12 tools | skipped | 10,498 | 2 |
+| Raven | `load_tool_pack`, `mcp_botparlor_set_mood`, `memory`, `session_search` | connected, 12 tools | skipped | 5,035 | 1 |
+| Sarah | `load_tool_pack`, `mcp_botparlor_set_mood`, `memory`, `session_search` | connected, 12 tools | skipped | 5,801 | 1 |
+
+Smoke prompt for each bot:
+
+```text
+Canary smoke test only. Reply exactly: assistant baseline ready
+```
+
+All three returned `assistant baseline ready`. Production BotParlor reported
+Hanna, Raven, Sarah, and Viper connected after the rollout.

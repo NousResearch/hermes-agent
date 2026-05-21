@@ -10425,7 +10425,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "chat",
+        "version", "webhook", "whatsapp", "chat", "secrets",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -10671,6 +10671,42 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # secrets command — external secret managers (currently: Bitwarden)
+    # =========================================================================
+    secrets_parser = subparsers.add_parser(
+        "secrets",
+        help="Manage external secret sources (Bitwarden Secrets Manager)",
+        description=(
+            "Pull API keys from an external secret manager at process startup "
+            "instead of storing them in ~/.hermes/.env.  Currently supports "
+            "Bitwarden Secrets Manager.  See: "
+            "https://hermes-agent.nousresearch.com/docs/user-guide/secrets/bitwarden"
+        ),
+    )
+    secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command")
+
+    secrets_bw = secrets_subparsers.add_parser(
+        "bitwarden",
+        aliases=["bw"],
+        help="Bitwarden Secrets Manager integration",
+    )
+
+    # Lazy import — only pays for itself when this subcommand is actually used.
+    from hermes_cli import secrets_cli as _secrets_cli
+
+    _secrets_cli.register_cli(secrets_bw)
+
+    def _dispatch_secrets(args):  # noqa: ANN001
+        sub = getattr(args, "secrets_command", None)
+        bw_sub = getattr(args, "secrets_bw_command", None)
+        if sub in ("bitwarden", "bw") and bw_sub is not None:
+            return args.func(args)
+        secrets_parser.print_help()
+        return 0
+
+    secrets_parser.set_defaults(func=_dispatch_secrets)
 
     # =========================================================================
     # migrate command

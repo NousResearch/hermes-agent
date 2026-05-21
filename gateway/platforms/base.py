@@ -3064,8 +3064,9 @@ class BasePlatformAdapter(ABC):
             # clarify-intercept can resolve it and unblock the agent.
             #
             # Without this bypass: the message gets queued in
-            # _pending_messages AND triggers an interrupt, killing the
-            # agent run mid-clarify and discarding the user's answer.
+            # _pending_messages as a follow-up turn instead of reaching the
+            # clarify resolver, leaving the agent blocked and discarding the
+            # user's answer.
             # Same shape as the /approve deadlock fix (PR #4926) — both
             # cases are "agent thread blocked on Event.wait, message must
             # reach the resolver before being treated as a new turn."
@@ -3124,27 +3125,38 @@ class BasePlatformAdapter(ABC):
                 merge_pending_message_event(self._pending_messages, session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
-            # Default behavior for non-photo follow-ups: interrupt the running agent.
+            # Text follow-ups are queued silently, matching the photo path
+            # above. Users often send multi-part instructions while Hermes is
+            # still thinking; those follow-ups should accumulate for the next
+            # turn instead of aborting the in-flight run and emitting an
+            # "Interrupting current task..." ack.
             #
             # Use merge_text=True so rapid TEXT follow-ups (#4469) accumulate
             # into the single pending slot instead of clobbering each other.
             # Without merging, three rapid messages "A", "B", "C" land like:
-            #   _pending_messages[k] = A  (interrupts)
+            #   _pending_messages[k] = A  (queued)
             #   _pending_messages[k] = B  (replaces A before consumer reads)
             #   _pending_messages[k] = C  (replaces B)
             # ...and only "C" reaches the next turn.  merge_pending_message_event
             # already does the right thing for photo/media bursts; the
             # ``merge_text=True`` flag extends that to plain TEXT events.
-            # Same shape as the Telegram bursty-grace path in gateway/run.py.
-            logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
+            #
+            # Intentionally do NOT set self._active_sessions[session_key].
+            # The current turn should finish normally; the in-band drain and
+            # late-arrival drain in _process_message_background will cascade
+            # the merged pending message after the response is delivered.
+            logger.debug(
+                "[%s] New message while session %s is active — queuing follow-up "
+                "(no interrupt, will cascade after current turn)",
+                self.name,
+                session_key,
+            )
             merge_pending_message_event(
                 self._pending_messages,
                 session_key,
                 event,
                 merge_text=True,
             )
-            # Signal the interrupt (the processing task checks this)
-            self._active_sessions[session_key].set()
             return  # Don't process now - will be handled after current task finishes
         
         # Mark session as active BEFORE spawning background task to close
@@ -3501,7 +3513,7 @@ class BasePlatformAdapter(ABC):
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
-                logger.debug("[%s] Processing queued message from interrupt", self.name)
+                logger.debug("[%s] Processing queued follow-up message", self.name)
                 # Keep the _active_sessions entry live across the turn chain
                 # and only CLEAR the interrupt Event — do NOT delete the entry.
                 # If we deleted here, a concurrent inbound message arriving
@@ -3510,7 +3522,7 @@ class BasePlatformAdapter(ABC):
                 # with the recursive drain below.  Two agents on one
                 # session_key = duplicate responses, duplicate tool calls.
                 # Clearing the Event keeps the guard live so follow-ups take
-                # the busy-handler path (queue + interrupt) as intended.
+                # the busy-handler path as intended.
                 _active = self._active_sessions.get(session_key)
                 if _active is not None:
                     _active.clear()

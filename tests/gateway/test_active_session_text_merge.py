@@ -130,8 +130,9 @@ async def test_rapid_text_followups_accumulate_instead_of_replacing():
     assert pending.text == "part two\npart three", (
         f"expected accumulated text, got {pending.text!r}"
     )
-    # Interrupt event must be signalled exactly like before.
-    assert adapter._active_sessions[session_key].is_set()
+    # Text follow-ups now queue like photos: preserve all parts, but do not
+    # signal an interrupt or stop the in-flight turn.
+    assert not adapter._active_sessions[session_key].is_set()
 
 
 @pytest.mark.asyncio
@@ -149,4 +150,4 @@ async def test_single_followup_is_stored_as_is():
     pending = adapter._pending_messages[session_key]
     assert pending is first
     assert pending.text == "only one"
-    assert adapter._active_sessions[session_key].is_set()
+    assert not adapter._active_sessions[session_key].is_set()

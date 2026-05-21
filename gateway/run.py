@@ -840,6 +840,8 @@ if _config_path.exists():
         if _display_cfg and isinstance(_display_cfg, dict):
             if "busy_input_mode" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
+            if "busy_text_mode" in _display_cfg:
+                os.environ["HERMES_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
             if "busy_ack_enabled" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
@@ -1551,6 +1553,7 @@ class GatewayRunner:
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
+    _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1577,6 +1580,7 @@ class GatewayRunner:
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
+        self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -2824,6 +2828,31 @@ class GatewayRunner:
         return "interrupt"
 
     @staticmethod
+    def _load_busy_text_mode() -> str:
+        """Load busy text follow-up behavior from config/env.
+
+        ``busy_input_mode`` remains the broad legacy knob, including ``steer``.
+        ``busy_text_mode`` is narrower: normal TEXT follow-ups default to
+        silent queueing so rapid multi-message instructions behave like photo
+        bursts. Set ``display.busy_text_mode: interrupt`` to restore the old
+        immediate-interrupt behavior for text.
+        """
+        mode = os.getenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "").strip().lower()
+        if not mode:
+            try:
+                import yaml as _y
+                cfg_path = _hermes_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    mode = str(cfg_get(cfg, "display", "busy_text_mode", default="") or "").strip().lower()
+            except Exception:
+                pass
+        if mode == "interrupt":
+            return "interrupt"
+        return "queue"
+
+    @staticmethod
     def _load_restart_drain_timeout() -> float:
         """Load graceful gateway restart/stop drain timeout in seconds."""
         raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
@@ -2970,11 +2999,46 @@ class GatewayRunner:
 
         running_agent = self._running_agents.get(session_key)
 
+        if event.message_type == MessageType.PHOTO:
+            logger.debug(
+                "Photo message while session %s is active — queuing follow-up "
+                "(no interrupt, will cascade after current turn)",
+                session_key,
+            )
+            merge_pending_message_event(adapter._pending_messages, session_key, event)
+            return True
+
+        effective_mode = self._busy_input_mode
+        busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
+
+        # Normal text follow-ups default to the same silent-queue behavior as
+        # photos. This matches Paulo's rapid multi-message workflow: finish the
+        # current turn, then let the adapter's pending-message drain cascade the
+        # merged follow-up as the next turn. Preserve explicit steer mode, and
+        # preserve legacy interrupt behavior when display.busy_text_mode is
+        # configured as "interrupt".
+        if (
+            event.message_type == MessageType.TEXT
+            and busy_text_mode == "queue"
+            and effective_mode != "steer"
+        ):
+            logger.debug(
+                "Text message while session %s is active — queuing follow-up "
+                "(no interrupt, will cascade after current turn)",
+                session_key,
+            )
+            merge_pending_message_event(
+                adapter._pending_messages,
+                session_key,
+                event,
+                merge_text=True,
+            )
+            return True
+
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
-        effective_mode = self._busy_input_mode
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -2999,7 +3063,12 @@ class GatewayRunner:
         # successful steer — the text already landed inside the run and
         # must NOT also be replayed as a next-turn user message.
         if not steered:
-            merge_pending_message_event(adapter._pending_messages, session_key, event)
+            merge_pending_message_event(
+                adapter._pending_messages,
+                session_key,
+                event,
+                merge_text=event.message_type == MessageType.TEXT,
+            )
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -17068,12 +17137,12 @@ class GatewayRunner:
         
         tracking_task = asyncio.create_task(track_agent())
         
-        # Monitor for interrupts from the adapter (new messages arriving).
-        # This is the PRIMARY interrupt path for regular text messages —
-        # Level 1 (base.py) catches them before _handle_message() is reached,
-        # so the Level 2 running_agent.interrupt() path never fires.
-        # The inactivity poll loop below has a BACKUP check in case this
-        # task dies (no error handling = silent death = lost interrupts).
+        # Monitor for interrupts from the adapter. Normal busy TEXT follow-ups
+        # now queue silently and leave the adapter Event clear; explicit
+        # interrupt flows (/stop, legacy busy_text_mode=interrupt, gateway
+        # shutdown) still set or call interrupt through their dedicated paths.
+        # The inactivity poll loop below has a BACKUP check in case this task
+        # dies (no error handling = silent death = lost interrupts).
         _interrupt_detected = asyncio.Event()  # shared with backup check
 
         async def monitor_for_interrupt():

@@ -8805,8 +8805,23 @@ class HermesCLI:
             return
 
         new_mcp = new_cfg.get("mcp_servers") or {}
-        if new_mcp == self._config_mcp_servers:
+        current_mcp = self._config_mcp_servers
+        if new_mcp == current_mcp:
             return  # mcp_servers unchanged (some other section was edited)
+
+        def _is_stdio_server(server_cfg: object) -> bool:
+            return isinstance(server_cfg, dict) and bool(server_cfg.get("command"))
+
+        changed_server_names = set(current_mcp) | set(new_mcp)
+        for server_name in changed_server_names:
+            old_server = current_mcp.get(server_name)
+            new_server = new_mcp.get(server_name)
+            if old_server == new_server:
+                continue
+            if _is_stdio_server(old_server) or _is_stdio_server(new_server):
+                print()
+                print("⚠️  MCP stdio server config changed — run /reload-mcp to apply executable changes.")
+                return
 
         self._config_mcp_servers = new_mcp
         # Notify user and reload.  Run in a separate thread with a hard

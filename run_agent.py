@@ -83,6 +83,16 @@ def _load_openai_cls() -> type:
     return _OPENAI_CLS_CACHE
 
 
+
+def _safe_session_path_component(session_id: str) -> str:
+    """Return a filesystem-safe component for session-scoped log filenames."""
+    raw = str(session_id or "")
+    if re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", raw):
+        return raw
+    digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"unsafe-{digest}"
+
+
 class _OpenAIProxy:
     """Module-level proxy that looks like ``openai.OpenAI`` but imports lazily."""
 
@@ -1855,7 +1865,7 @@ class AIAgent:
         hermes_home = get_hermes_home()
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+        self.session_log_file = self.logs_dir / f"session_{_safe_session_path_component(self.session_id)}.json"
         
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
@@ -5080,7 +5090,7 @@ class AIAgent:
                 dump_payload["error"] = error_info
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            dump_file = self.logs_dir / f"request_dump_{self.session_id}_{timestamp}.json"
+            dump_file = self.logs_dir / f"request_dump_{_safe_session_path_component(self.session_id)}_{timestamp}.json"
             dump_file.write_text(
                 json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str),
                 encoding="utf-8",
@@ -10268,7 +10278,7 @@ class AIAgent:
                 except Exception:
                     pass
                 # Update session_log_file to point to the new session's JSON file
-                self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+                self.session_log_file = self.logs_dir / f"session_{_safe_session_path_component(self.session_id)}.json"
                 self._session_db_created = False
                 self._session_db.create_session(
                     session_id=self.session_id,

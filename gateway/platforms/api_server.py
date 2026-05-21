@@ -527,9 +527,15 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
+    if extra:
+        subset["__headers__"] = extra
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
@@ -730,6 +736,56 @@ class APIServerAdapter(BasePlatformAdapter):
             hashlib.sha256,
         ).hexdigest()
         return f"{self._API_SESSION_KEY_PREFIX}-{scope_digest}"
+
+
+    _API_SESSION_ID_RE = re.compile(r"^(?:api-[0-9a-f]{16}|[0-9]{8}_[0-9]{6}_[0-9a-f]{6})$")
+
+    def _load_api_session_history(
+        self, provided_session_id: str
+    ) -> tuple[Optional[str], List[Dict[str, Any]], Optional["web.Response"]]:
+        """Validate an API session header and load only API-owned history."""
+        if not self._api_key:
+            logger.warning(
+                "Session continuation via X-Hermes-Session-Id rejected: "
+                "no API key configured. Set API_SERVER_KEY to enable session continuity."
+            )
+            return None, [], web.json_response(
+                _openai_error(
+                    "Session continuation requires API key authentication. "
+                    "Configure API_SERVER_KEY to enable this feature."
+                ),
+                status=403,
+            )
+
+        if (
+            len(provided_session_id) > self._MAX_SESSION_HEADER_LEN
+            or not self._API_SESSION_ID_RE.fullmatch(provided_session_id)
+        ):
+            return None, [], web.json_response(
+                {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        try:
+            db = self._ensure_session_db()
+            if db is None:
+                return provided_session_id, [], None
+
+            session_row = db.get_session(provided_session_id)
+            if not session_row or session_row.get("source") != "api_server":
+                return None, [], web.json_response(
+                    {"error": {"message": "Unknown session ID", "type": "invalid_request_error"}},
+                    status=404,
+                )
+
+            return (
+                provided_session_id,
+                db.get_messages_as_conversation(provided_session_id, source="api_server"),
+                None,
+            )
+        except Exception as e:
+            logger.warning("Failed to load API session history for %s: %s", provided_session_id, e)
+            return provided_session_id, [], None
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -1072,42 +1128,15 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
-        # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
-        # When provided, history is loaded from state.db instead of from the request body.
-        #
-        # Security: session continuation exposes conversation history, so it is
-        # only allowed when the API key is configured and the request is
-        # authenticated.  Without this gate, any unauthenticated client could
-        # read arbitrary session history by guessing/enumerating session IDs.
+        # Allow callers to continue an API-server transcript only by echoing
+        # a server-issued X-Hermes-Session-Id. Never treat this header as a
+        # global SessionDB key: cross-platform sessions may contain private
+        # chats and tool output from CLI or messaging gateways.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
         if provided_session_id:
-            if not self._api_key:
-                logger.warning(
-                    "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity."
-                )
-                return web.json_response(
-                    _openai_error(
-                        "Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature."
-                    ),
-                    status=403,
-                )
-            # Sanitize: reject control characters that could enable header injection.
-            if re.search(r'[\r\n\x00]', provided_session_id):
-                return web.json_response(
-                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
-                    status=400,
-                )
-            session_id = provided_session_id
-            try:
-                db = self._ensure_session_db()
-                if db is not None:
-                    history = db.get_messages_as_conversation(session_id)
-            except Exception as e:
-                logger.warning("Failed to load session history for %s: %s", session_id, e)
-                history = []
+            session_id, history, session_err = self._load_api_session_history(provided_session_id)
+            if session_err is not None:
+                return session_err
         else:
             # Derive a stable session ID from the conversation fingerprint so
             # that consecutive messages from the same Open WebUI (or similar)
@@ -1231,7 +1260,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=["model", "messages", "tools", "tool_choice", "stream"],
+                extra={"X-Hermes-Session-Id": session_id},
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:

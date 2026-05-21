@@ -435,6 +435,7 @@ const isPasteResultPromise = (
 ): value is Promise<PasteResult> => !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
 
 export function TextInput({
+  color,
   columns = 80,
   value,
   onChange,
@@ -1254,7 +1255,7 @@ export function TextInput({
       ref={boxRef}
       width={columns}
     >
-      <Text wrap="wrap">{rendered}</Text>
+      <Text color={color} wrap="wrap">{rendered}</Text>
     </Box>
   )
 }
@@ -1275,6 +1276,7 @@ export interface PasteEvent {
 }
 
 interface TextInputProps {
+  color?: string
   columns?: number
   focus?: boolean
   mask?: string

@@ -32,6 +32,7 @@ const applySkin = (s: GatewaySkin) =>
       s.branding ?? {},
       s.banner_logo ?? '',
       s.banner_hero ?? '',
+      s.banner_hero_small ?? '',
       s.tool_prefix ?? '',
       s.help_header ?? ''
     )

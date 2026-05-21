@@ -4,6 +4,7 @@
  * Uses the termio tokenizer for escape sequence boundary detection,
  * then interprets sequences as keypresses.
  */
+import { readFileSync } from 'node:fs'
 import { Buffer } from 'buffer'
 
 import { PASTE_END, PASTE_START } from './termio/csi.js'
@@ -744,6 +745,31 @@ function parseTextWithSgrMouseFragments(text: string): ParsedInput[] | null {
   return parsed
 }
 
+/**
+ * Detect environments where bare LF (\\n, Ctrl+J) means Ctrl+Enter rather
+ * than plain Enter. On these platforms, plain Enter arrives as CR (\\r) in
+ * raw mode, and Ctrl+Enter/Ctrl+J arrive as LF — so LF is the user's
+ * multi-line newline keystroke and must not submit.
+ *
+ * Mirrors the Python CLI's _preserve_ctrl_enter_newline() in cli.py.
+ */
+function isCtrlEnterAsLF(): boolean {
+  // Native Windows
+  if (process.platform === 'win32') return true
+  // Windows Terminal (covers WSL-in-WT)
+  if (process.env.WT_SESSION) return true
+  // SSH sessions
+  if (process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY) return true
+  // WSL — env var may be absent under sudo
+  if (process.env.WSL_DISTRO_NAME) return true
+  // WSL fallback: peek at /proc/version
+  try {
+    const version = readFileSync('/proc/version', 'utf8')
+    if (version.toLowerCase().includes('microsoft')) return true
+  } catch {}
+  return false
+}
+
 function parseKeypress(s: string = ''): ParsedKey {
   let parts
 
@@ -855,6 +881,21 @@ function parseKeypress(s: string = ''): ParsedKey {
   if (s === '\r' || s === '\n') {
     key.raw = undefined
     key.name = 'return'
+    // On Windows, WSL, SSH, and Windows Terminal, bare LF means
+    // Ctrl+Enter — the user's multi-line newline keystroke.
+    // Plain Enter arrives as CR on those platforms. Set the ctrl
+    // flag so downstream handlers insert a newline, not submit.
+    if (s === '\n' && isCtrlEnterAsLF()) {
+      key.ctrl = true
+    }
+  } else if (s === '\x1b\r' || s === '\x1b\n') {
+    // ESC+CR / ESC+LF: Shift+Enter fallback encoding used by
+    // terminals that don't support kitty keyboard protocol or
+    // xterm modifyOtherKeys. Treat as return with shift flag
+    // so the textInput handler inserts a newline.
+    key.raw = undefined
+    key.name = 'return'
+    key.shift = true
   } else if (s === '\t') {
     key.name = 'tab'
   } else if (s === '\b' || s === '\x1b\b') {

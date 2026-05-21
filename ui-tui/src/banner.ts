@@ -88,6 +88,11 @@ export const logo = (c: ThemeColors, customLogo?: string): Line[] =>
 export const caduceus = (c: ThemeColors, customHero?: string): Line[] =>
   customHero ? parseRichMarkup(customHero) : colorize(CADUCEUS_ART, CADUC_GRADIENT, c)
 
-export const artWidth = (lines: Line[]) => lines.reduce((m, [, t]) => Math.max(m, t.length), 0)
+const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]/g
+
+const stripAnsi = (s: string) => s.replace(ANSI_RE, '')
+
+export const artWidth = (lines: Line[]) =>
+  lines.reduce((m, [, t]) => Math.max(m, stripAnsi(t).length), 0)
 
 type Line = [string, string]

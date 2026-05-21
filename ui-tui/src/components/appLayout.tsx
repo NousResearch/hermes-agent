@@ -297,15 +297,16 @@ const ComposerPane = memo(function ComposerPane({
                 {sh ? (
                   <PromptPrefix color={ui.theme.color.shellDollar} promptText={promptText} width={promptWidth} />
                 ) : composer.inputBuf.length ? (
-                  <Text color={ui.theme.color.prompt}>{promptBlank}</Text>
+                  <Text color={ui.theme.color.accent}>{promptBlank}</Text>
                 ) : (
-                  <PromptPrefix bold color={ui.theme.color.prompt} promptText={promptText} width={promptWidth} />
+                  <PromptPrefix bold color={ui.theme.color.accent} promptText={promptText} width={promptWidth} />
                 )}
               </Box>
 
               <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
+                  color={ui.theme.color.prompt}
                   columns={inputColumns}
                   mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}

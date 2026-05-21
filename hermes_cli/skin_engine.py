@@ -138,6 +138,8 @@ class SkinConfig:
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
+    banner_image: str = ""   # Path to image; chafa-rendered ANSI -> banner_hero
+    banner_hero_small: str = ""  # Smaller chafa version for narrow panes
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -685,6 +687,32 @@ def _mapping_or_empty(value: Any, *, section: str, skin_name: str) -> Dict[str, 
     )
     return {}
 
+def _chafa_render(image_path: str, size: str = "60x11") -> str:
+    """Run chafa on an image, returning ANSI output with trailing whitespace stripped."""
+    import shutil
+    import subprocess
+    import os
+
+    chafa = shutil.which("chafa")
+    if not chafa:
+        return ""
+
+    expanded = os.path.expanduser(image_path)
+    if not os.path.isfile(expanded):
+        return ""
+
+    try:
+        result = subprocess.run(
+            [chafa, "--size", size, "--colors", "full", expanded],
+            capture_output=True, text=True, timeout=10
+        )
+        lines = [line.rstrip() for line in result.stdout.split("\n")]
+        # Filter out cursor-hide sequences
+        lines = [l for l in lines if l.strip() and '\x1b[?25' not in l]
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
 
 def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     """Build a SkinConfig from a raw dict (built-in or loaded from YAML)."""
@@ -712,7 +740,10 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
         tool_emojis=emoji_overrides,
         banner_logo=data.get("banner_logo", ""),
-        banner_hero=data.get("banner_hero", ""),
+        banner_hero=data.get("banner_hero", "")
+        or (_chafa_render(data["banner_image"]) if data.get("banner_image") else ""),
+        banner_hero_small=_chafa_render(data["banner_image"], "35x7") if data.get("banner_image") else "",
+        banner_image=data.get("banner_image", ""),
     )
 
 

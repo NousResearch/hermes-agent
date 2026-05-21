@@ -2,6 +2,7 @@ import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.
 
 export interface GatewaySkin {
   banner_hero?: string
+  banner_hero_small?: string
   banner_logo?: string
   branding?: Record<string, string>
   colors?: Record<string, string>

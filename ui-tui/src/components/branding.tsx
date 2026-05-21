@@ -1,4 +1,4 @@
-import { Box, Text, useStdout } from '@hermes/ink'
+import { Ansi, Box, Text, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
@@ -29,13 +29,17 @@ function InlineLoader({ label, t }: { label: string; t: Theme }) {
 
 export function ArtLines({ lines }: { lines: [string, string][] }) {
   return (
-    <Box flexDirection="column" height={lines.length} opaque width={artWidth(lines)}>
-      {lines.map(([c, text], i) => (
-        <Text color={c} key={i} wrap="truncate-end">
-          {text}
-        </Text>
-      ))}
-    </Box>
+    <>
+      {lines.map(([c, text], i) =>
+        text.includes('\x1b[') ? (
+          <Ansi key={i}>{text}</Ansi>
+        ) : (
+          <Text color={c} key={i}>
+            {text}
+          </Text>
+        )
+      )}
+    </>
   )
 }
 
@@ -161,8 +165,25 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
-  const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
-  const wide = cols >= 90 && leftW + 40 < cols
+  const narrowHeroLines = caduceus(t.color, t.bannerHeroSmall || undefined)
+  const artW = artWidth(heroLines) || CADUCEUS_WIDTH
+  const leftW = Math.min(artW + 4, Math.floor(cols * 0.4))
+  // Center ANSI art within artW
+  const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]/g
+  const centeredLines = heroLines.map(([c, text]) => {
+    if (!text.includes('\x1b[')) return [c, text] as [string, string]
+    const visible = text.replace(ANSI_RE, '')
+    const pad = Math.floor((artW - visible.length) / 2)
+    return [c, ' '.repeat(Math.max(0, pad)) + text] as [string, string]
+  })
+  const narrowArtW = artWidth(narrowHeroLines) || CADUCEUS_WIDTH
+  const narrowCenteredLines = narrowHeroLines.map(([c, text]) => {
+    if (!text.includes('\x1b[')) return [c, text] as [string, string]
+    const visible = text.replace(ANSI_RE, '')
+    const pad = Math.floor((narrowArtW - visible.length) / 2)
+    return [c, ' '.repeat(Math.max(0, pad)) + text] as [string, string]
+  })
+  const wide = cols >= 70 && leftW + 40 < cols
   const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
   const lineBudget = Math.max(12, w - 2)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
@@ -281,7 +302,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
     <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
       {wide && (
         <Box flexDirection="column" marginRight={2} width={leftW}>
-          <ArtLines lines={heroLines} />
+          <ArtLines lines={centeredLines} />
           <Text />
 
           <Text color={t.color.accent}>
@@ -315,6 +336,17 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           // Narrow layout hides the hero column; surface model/cwd/session
           // here so they aren't lost.
           <Box flexDirection="column" marginBottom={1}>
+            {t.bannerHeroSmall && (
+              <Box flexDirection="column" marginBottom={1}>
+                {narrowCenteredLines.map(([c, text], i) =>
+                  text.includes('\x1b[') ? (
+                    <Box key={i}><Ansi>{text}</Ansi></Box>
+                  ) : (
+                    <Text color={c} key={i}>{text}</Text>
+                  )
+                )}
+              </Box>
+            )}
             <Text color={t.color.accent} wrap="truncate-end">
               {info.model.split('/').pop()}
               <Text color={t.color.muted}> · Nous Research</Text>

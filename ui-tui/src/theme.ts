@@ -32,6 +32,8 @@ export interface ThemeColors {
   diffRemovedWord: string
 
   shellDollar: string
+
+  assistantText: string
 }
 
 export interface ThemeBrand {
@@ -49,6 +51,7 @@ export interface Theme {
   brand: ThemeBrand
   bannerLogo: string
   bannerHero: string
+  bannerHeroSmall: string
 }
 
 // ── Color math ───────────────────────────────────────────────────────
@@ -295,13 +298,15 @@ export const DARK_THEME: Theme = {
     diffRemoved: 'rgb(255,220,220)',
     diffAddedWord: 'rgb(36,138,61)',
     diffRemovedWord: 'rgb(207,34,46)',
-    shellDollar: '#4dabf7'
+    shellDollar: '#4dabf7',
+    assistantText: '#6366f1'
   },
 
   brand: BRAND,
 
   bannerLogo: '',
-  bannerHero: ''
+  bannerHero: '',
+  bannerHeroSmall: ''
 }
 
 // Light-terminal palette: darker golds/ambers that stay legible on white
@@ -340,13 +345,15 @@ export const LIGHT_THEME: Theme = {
     diffRemoved: 'rgb(240,200,200)',
     diffAddedWord: 'rgb(27,94,32)',
     diffRemovedWord: 'rgb(183,28,28)',
-    shellDollar: '#1565C0'
+    shellDollar: '#1565C0',
+    assistantText: '#4f46e5'
   },
 
   brand: BRAND,
 
   bannerLogo: '',
-  bannerHero: ''
+  bannerHero: '',
+  bannerHeroSmall: ''
 }
 
 const TRUE_RE = /^(?:1|true|yes|on)$/
@@ -518,6 +525,7 @@ export function fromSkin(
   branding: Record<string, string>,
   bannerLogo = '',
   bannerHero = '',
+  bannerHeroSmall = '',
   toolPrefix = '',
   helpHeader = ''
 ): Theme {
@@ -566,11 +574,12 @@ export function fromSkin(
       statusCritical: d.color.statusCritical,
       selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
 
-      diffAdded: d.color.diffAdded,
-      diffRemoved: d.color.diffRemoved,
-      diffAddedWord: d.color.diffAddedWord,
-      diffRemovedWord: d.color.diffRemovedWord,
-      shellDollar: c('shell_dollar') ?? d.color.shellDollar
+      diffAdded: c('diff_added') ?? d.color.diffAdded,
+      diffRemoved: c('diff_removed') ?? d.color.diffRemoved,
+      diffAddedWord: c('diff_added_word') ?? d.color.diffAddedWord,
+      diffRemovedWord: c('diff_removed_word') ?? d.color.diffRemovedWord,
+      shellDollar: c('shell_dollar') ?? d.color.shellDollar,
+      assistantText: c('assistant_text') ?? d.color.assistantText
     },
 
     brand: {
@@ -584,6 +593,7 @@ export function fromSkin(
     },
 
     bannerLogo,
-    bannerHero
+    bannerHero,
+    bannerHeroSmall
   }, process.env, DEFAULT_LIGHT_MODE)
 }

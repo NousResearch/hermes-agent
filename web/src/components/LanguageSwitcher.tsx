@@ -11,16 +11,15 @@ import type { Locale } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 /**
- * Language picker — shows the current language's endonym, opens a dropdown
- * of all supported locales when clicked.  Persists choice to localStorage via
- * the I18n context.
+ * Language picker — shows the current language's flag + endonym, opens a
+ * dropdown of all supported locales when clicked.  Persists choice to
+ * localStorage via the I18n context.
  *
  * Replaces the older two-state EN↔ZH toggle now that we ship 16 locales
  * (en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu).
  *
- * No country flags by design — languages aren't countries, and flag pairings
- * inevitably create political mismappings (e.g. Mandarin variants ≠ any single
- * jurisdiction, English ≠ GB, Portuguese ≠ PT). Endonyms are unambiguous.
+ * Locale markers use lipis/flag-icons (SVG sprites) instead of emoji so flags
+ * render consistently across platforms.
  *
  * When placed at the bottom of the sidebar (next to ThemeSwitcher), pass
  * `dropUp` so the list opens above the trigger and avoids clipping below the
@@ -77,6 +76,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
         )}
       >
         <span className="inline-flex items-center gap-1.5">
+          <LocaleFlagIcon countryCode={current.flagCountryCode} />
           <Typography
             mondwest
             className="hidden sm:inline text-display tracking-wide text-xs"
@@ -163,6 +163,8 @@ function LanguageSwitcherOptions({
             role="option"
             type="button"
           >
+            <LocaleFlagIcon countryCode={meta.flagCountryCode} />
+
             <span className="truncate">{meta.name}</span>
 
             {selected && <Check className="ml-auto h-3 w-3 shrink-0 text-midground" />}
@@ -170,6 +172,15 @@ function LanguageSwitcherOptions({
         );
       })}
     </>
+  );
+}
+
+function LocaleFlagIcon({ countryCode }: LocaleFlagIconProps) {
+  return (
+    <span
+      aria-hidden
+      className={cn("fi fis shrink-0 text-base leading-none", `fi-${countryCode}`)}
+    />
   );
 }
 
@@ -183,4 +194,8 @@ interface LanguageSwitcherOptionsProps {
 interface LanguageSwitcherProps {
   collapsed?: boolean;
   dropUp?: boolean;
+}
+
+interface LocaleFlagIconProps {
+  countryCode: string;
 }

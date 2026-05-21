@@ -71,7 +71,7 @@ def check_synapses():
     
     try:
         import json
-        with open(synapse_file, "r") as f:
+        with open(synapse_file, "r", encoding="utf-8") as f:
             nodes = json.load(f)
             count = len(nodes)
             logger.info(f"Synapse Hub: {count} remote shards discovered in the manifold.")

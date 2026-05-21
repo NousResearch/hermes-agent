@@ -79,12 +79,14 @@ def terminate_process_on_user_interrupt(proc: subprocess.Popen, *, wait_timeout:
         if is_windows():
             proc.terminate()
         else:
+            killpg = getattr(os, "killpg")
+            sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
             pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGTERM)
+            killpg(pgid, signal.SIGTERM)
             try:
                 proc.wait(timeout=wait_timeout)
             except subprocess.TimeoutExpired:
-                os.killpg(pgid, signal.SIGKILL)
+                killpg(pgid, sigkill)
     except (ProcessLookupError, PermissionError):
         proc.kill()
 
@@ -95,6 +97,7 @@ def terminate_process_on_timeout(proc: subprocess.Popen) -> None:
         if is_windows():
             proc.terminate()
         else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            killpg = getattr(os, "killpg")
+            killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         proc.kill()

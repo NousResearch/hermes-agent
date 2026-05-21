@@ -73,7 +73,7 @@ class SoulActuator:
     def _get_log_density(self, log_file):
         try:
             if not os.path.exists(log_file): return 0
-            with open(log_file, "r") as f:
+            with open(log_file, "r", encoding="utf-8") as f:
                 return len(f.readlines())
         except Exception:
             return 0

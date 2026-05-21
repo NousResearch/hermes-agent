@@ -1,0 +1,9 @@
+[submodule "vendor/openclaw-mirror/AI-Scientist"]
+	path = vendor/openclaw-mirror/AI-Scientist
+	url = https://github.com/SakanaAI/AI-Scientist.git
+[submodule "vendor/openclaw-mirror/ATLAS"]
+	path = vendor/openclaw-mirror/ATLAS
+	url = https://github.com/zapabob/ATLAS.git
+[submodule "vendor/openclaw-mirror/ShinkaEvolve"]
+	path = vendor/openclaw-mirror/ShinkaEvolve
+	url = https://github.com/SakanaAI/ShinkaEvolve.git

@@ -144,7 +144,7 @@ class MemoryStore:
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = open(lock_path, "a+")
+        fd = open(lock_path, "a+", encoding="utf-8")
         try:
             if fcntl is not None:
                 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -163,8 +163,8 @@ class MemoryStore:
                 try:
                     fd.seek(0)
                     msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except Exception:
-                pass
+                except Exception:
+                    pass
             fd.close()
 
     @staticmethod

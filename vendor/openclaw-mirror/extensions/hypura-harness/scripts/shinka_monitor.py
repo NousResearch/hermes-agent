@@ -109,7 +109,7 @@ class ShinkaMonitor:
     def _analyze_log_density(self, log_file):
         try:
             if not os.path.exists(log_file): return
-            with open(log_file, "r") as f:
+            with open(log_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
                 density = len(lines)
                 logger.info(f"Intelligence Density ({log_file}): {density} pulses recorded.")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import psutil
 import subprocess
 import sys
 import time
@@ -86,19 +87,7 @@ def _start_background(command: list[str], cwd: Path) -> int:
 def _is_pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
-    try:
-        if os.name == "nt":
-            subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            return True
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
+    return psutil.pid_exists(pid)
 
 
 def _write_pid(pid: int, command: list[str]) -> None:

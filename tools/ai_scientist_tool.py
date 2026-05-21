@@ -11,10 +11,11 @@ logger = logging.getLogger(__name__)
 # Base directory for AI-Scientist (assumed relative to hermes-agent root)
 HERMES_ROOT = Path(__file__).parent.parent
 AI_SCIENTIST_DIR = HERMES_ROOT / "vendor" / "openclaw-mirror" / "AI-Scientist"
+AI_SCIENTIST_ENTRYPOINT = AI_SCIENTIST_DIR / "launch_scientist.py"
 
 def check_ai_scientist_available() -> bool:
     """Check if AI-Scientist submodule is present."""
-    return AI_SCIENTIST_DIR.exists()
+    return AI_SCIENTIST_ENTRYPOINT.is_file()
 
 def ai_scientist_research(
     experiment: str = "nc_kan", 

@@ -72,6 +72,26 @@ from pathlib import Path
 from typing import Optional
 
 
+_MIN_PYTHON = (3, 11)
+
+
+def _ensure_runtime_python() -> None:
+    """Fail fast on unsupported interpreters."""
+    if sys.version_info >= _MIN_PYTHON:
+        return
+    need = f"{_MIN_PYTHON[0]}.{_MIN_PYTHON[1]}"
+    found = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    print(
+        f"Error: Hermes requires Python {need}+ (this interpreter is {found}).\n"
+        "Use a newer Python or activate a 3.11+ venv, then retry.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+_ensure_runtime_python()
+
+
 def _add_accept_hooks_flag(parser) -> None:
     """Attach the ``--accept-hooks`` flag.  Shared across every agent
     subparser so the flag works regardless of CLI position."""
@@ -10547,8 +10567,6 @@ def _try_termux_fast_tui_launch() -> bool:
 
 def main():
     """Main entry point for hermes CLI."""
-    _ensure_runtime_python()
-
     # Sweep stale ``hermes.exe.old.*`` quarantine files left by previous
     # ``hermes update`` runs on Windows. Silent no-op on non-Windows or when
     # there's nothing to clean. See ``_quarantine_running_hermes_exe``.

@@ -1409,6 +1409,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    subscribe: Optional[dict] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
@@ -1436,6 +1437,13 @@ def create_task(
     ``kanban-worker``. Use this to pin a task to a specialist skill
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``subscribe`` optionally creates a notification subscription in the
+    same write transaction as the task row. Expected keys: ``platform``
+    and ``chat_id`` (required), plus optional ``thread_id`` and
+    ``user_id``. When ``subscribe`` is omitted, the gateway-provided
+    ``HERMES_NOTIFY_PLATFORM`` / ``HERMES_NOTIFY_CHAT_ID`` env vars are
+    used as a best-effort fallback.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -1526,6 +1534,33 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    resolved_subscribe: Optional[dict[str, str]] = None
+    if not subscribe:
+        sub_platform = os.environ.get("HERMES_NOTIFY_PLATFORM")
+        sub_chat_id = os.environ.get("HERMES_NOTIFY_CHAT_ID")
+        if sub_platform and sub_chat_id:
+            subscribe = {
+                "platform": sub_platform,
+                "chat_id": sub_chat_id,
+            }
+            sub_thread = os.environ.get("HERMES_NOTIFY_THREAD_ID")
+            if sub_thread:
+                subscribe["thread_id"] = sub_thread
+    if isinstance(subscribe, dict):
+        platform = str(subscribe.get("platform") or "").strip()
+        chat_id = str(subscribe.get("chat_id") or "").strip()
+        if platform and chat_id:
+            resolved_subscribe = {
+                "platform": platform,
+                "chat_id": chat_id,
+            }
+            thread_id = str(subscribe.get("thread_id") or "").strip()
+            if thread_id:
+                resolved_subscribe["thread_id"] = thread_id
+            user_id = str(subscribe.get("user_id") or "").strip()
+            if user_id:
+                resolved_subscribe["user_id"] = user_id
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
@@ -1610,6 +1645,15 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
+                if resolved_subscribe:
+                    add_notify_sub(
+                        conn,
+                        task_id=task_id,
+                        platform=resolved_subscribe["platform"],
+                        chat_id=resolved_subscribe["chat_id"],
+                        thread_id=resolved_subscribe.get("thread_id"),
+                        user_id=resolved_subscribe.get("user_id"),
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3135,6 +3179,126 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         _append_event(
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
+        )
+        return True
+
+
+def _parent_counts_as_done_for_rerun(
+    conn: sqlite3.Connection,
+    parent_id: str,
+) -> bool:
+    """Return True when ``parent_id`` should satisfy rerun parent gates."""
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?",
+        (parent_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    status = row["status"]
+    if status in ("done", "archived"):
+        return True
+    if status != "blocked":
+        return False
+    event = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "ORDER BY id DESC LIMIT 1",
+        (parent_id,),
+    ).fetchone()
+    if not event or event["kind"] != "blocked" or not event["payload"]:
+        return False
+    try:
+        payload = json.loads(event["payload"])
+    except Exception:
+        payload = None
+    reason = payload.get("reason") if isinstance(payload, dict) else None
+    return isinstance(reason, str) and reason.startswith("review-required")
+
+
+def rerun_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    new_assignee: Optional[str] = None,
+) -> bool:
+    """Reset a completed/blocked task to ready for another attempt.
+
+    Clears claim state, the active run pointer, and the failure counter.
+    Parent gates are re-evaluated: undone parents send the task to
+    ``todo``; ``review-required`` blocked parents count as satisfied for
+    this rerun decision.
+
+    Returns True when the task was reset, False when the task is not in
+    a rerunnable state.
+    """
+    with write_txn(conn):
+        task = get_task(conn, task_id)
+        if not task:
+            return False
+        if task.status not in ("done", "blocked", "archived", "gave_up"):
+            return False
+
+        parent_rows = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+            (task_id,),
+        ).fetchall()
+        new_status = "ready"
+        for row in parent_rows:
+            if not _parent_counts_as_done_for_rerun(conn, row["parent_id"]):
+                new_status = "todo"
+                break
+
+        # Defensive invariant recovery: terminal tasks should not carry
+        # an open run pointer, but clear it safely if some external path
+        # leaked one.
+        if task.current_run_id is not None:
+            _end_run(
+                conn,
+                task_id,
+                outcome="reclaimed",
+                status="reclaimed",
+                summary="invariant recovery on rerun",
+            )
+
+        assignee = _canonical_assignee(new_assignee) if new_assignee is not None else task.assignee
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET assignee             = ?,
+                   status               = ?,
+                   started_at           = NULL,
+                   completed_at         = NULL,
+                   claim_lock           = NULL,
+                   claim_expires        = NULL,
+                   worker_pid           = NULL,
+                   last_heartbeat_at    = NULL,
+                   consecutive_failures = 0,
+                   last_failure_error   = NULL,
+                   current_run_id       = NULL
+             WHERE id = ?
+            """,
+            (assignee, new_status, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "rerun",
+            {
+                "reason": reason,
+                "status": new_status,
+                "assignee": assignee,
+            },
+        )
+        max_event_id = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS max_id FROM task_events WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()["max_id"]
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? WHERE task_id = ?",
+            (int(max_event_id), task_id),
         )
         return True
 
@@ -5634,6 +5798,12 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                     body_lines.append(f"_metadata_: `{_cap(meta_str)}`")
                 except Exception:
                     pass
+            if pt.workspace_path:
+                try:
+                    if Path(pt.workspace_path).is_dir():
+                        body_lines.append(f"_Workspace_: `{pt.workspace_path}`")
+                except Exception:
+                    pass
             lines.extend(body_lines)
             lines.append("")
 
@@ -5798,8 +5968,8 @@ def add_notify_sub(
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
-    now = int(time.time())
-    with write_txn(conn):
+    def _write() -> None:
+        now = int(time.time())
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
@@ -5820,6 +5990,12 @@ def add_notify_sub(
                 """,
                 (notifier_profile, task_id, platform, chat_id, thread_id or ""),
             )
+
+    if conn.in_transaction:
+        _write()
+        return
+    with write_txn(conn):
+        _write()
 
 
 def list_notify_subs(

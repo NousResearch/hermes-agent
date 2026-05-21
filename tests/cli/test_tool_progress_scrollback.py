@@ -14,9 +14,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # Module-level reference to the cli module (set by _make_cli on first call)
 _cli_mod = None
+_UNSET = object()
 
 
-def _make_cli(tool_progress="all"):
+def _make_cli(tool_progress="all", verbose=_UNSET):
     """Create a HermesCLI instance with minimal mocking."""
     global _cli_mod
     _clean_config = {
@@ -54,7 +55,9 @@ def _make_cli(tool_progress="all"):
         _cli_mod = mod
         with patch.object(mod, "get_tool_definitions", return_value=[]), \
              patch.dict(mod.__dict__, {"CLI_CONFIG": _clean_config}):
-            return mod.HermesCLI()
+            if verbose is _UNSET:
+                return mod.HermesCLI()
+            return mod.HermesCLI(verbose=verbose)
 
 
 class TestToolProgressScrollback:
@@ -167,6 +170,20 @@ class TestToolProgressScrollback:
             cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.5, is_error=False)
 
         mock_print.assert_not_called()
+
+    def test_verbose_mode_config_enables_cli_verbose_by_default(self):
+        """Config-only display.tool_progress=verbose should enable verbose output."""
+        cli = _make_cli(tool_progress="verbose")
+
+        assert cli.tool_progress_mode == "verbose"
+        assert cli.verbose is True
+
+    def test_explicit_non_verbose_argument_still_overrides_verbose_config(self):
+        """An explicit non-verbose value should keep overriding the config fallback."""
+        cli = _make_cli(tool_progress="verbose", verbose=False)
+
+        assert cli.tool_progress_mode == "verbose"
+        assert cli.verbose is False
 
     def test_pending_info_stores_on_started(self):
         """tool.started stores args for later use by tool.completed."""

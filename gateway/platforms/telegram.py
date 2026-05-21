@@ -4573,10 +4573,10 @@ class TelegramAdapter(BasePlatformAdapter):
         return (
             "You are handling a Telegram group chat message.\n"
             f"- Your identity: user_id={bot_id}, @-mention name in this group=@{username}\n"
-            "- Lines in history prefixed with `[nickname|user_id]` are observed Telegram group context "
-            "and are not necessarily addressed to you.\n"
+            "- observed Telegram group context may be provided in a separate context-only block "
+            "before the current message; it is not necessarily addressed to you.\n"
             "- Treat only the current new message as a request explicitly directed at you, "
-            "and answer it directly."
+            "and use observed context only when the current message asks for it."
         )
 
     def _apply_telegram_group_observe_attribution(self, event: MessageEvent) -> MessageEvent:

@@ -264,6 +264,7 @@ def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    mcp_excludes: Dict[str, set] = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -274,6 +275,11 @@ def get_tool_definitions(
         enabled_toolsets: Only include tools from these toolsets.
         disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
         quiet_mode: Suppress status prints.
+        mcp_excludes: Optional ``{server_name: {tool_name_or_"*"}}`` map of
+            MCP tools to exclude. Applied after toolset resolution so heavy
+            MCP servers can be scoped out per-platform (e.g. dropped from cron
+            jobs while staying available for cli). Resolve via
+            ``hermes_cli.tools_config.resolve_mcp_excludes(config, platform)``.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -294,11 +300,20 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        # MCP excludes are a dict-of-sets — flatten to a hashable, order-stable
+        # form so the same exclusion config always hits the same cache entry.
+        if mcp_excludes:
+            mcp_excludes_key = frozenset(
+                (srv, frozenset(tools)) for srv, tools in mcp_excludes.items()
+            )
+        else:
+            mcp_excludes_key = None
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
+            mcp_excludes_key,
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -310,7 +325,7 @@ def get_tool_definitions(
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
+    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode, mcp_excludes)
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -328,6 +343,7 @@ def _compute_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    mcp_excludes: Dict[str, set] = None,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -371,6 +387,40 @@ def _compute_tool_definitions(
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
+
+    # Apply per-platform MCP tool exclusions. Toolset resolution above works
+    # at the server level (the ``mcp-<server>`` alias resolves to ALL of a
+    # server's tools), so individual-tool and wildcard exclusions can't be
+    # expressed as toolset names — they must be subtracted here, by mapping
+    # each candidate MCP tool back to its (server, raw_tool_name) origin.
+    # The global ``mcp_servers.<name>.tools.exclude`` list is already honored
+    # at MCP registration time; this step layers the platform-scoped excludes
+    # (``platform_mcp_excludes``) on top so e.g. cron jobs can drop a heavy
+    # server that cli keeps. ``"*"`` in a server's set excludes every tool.
+    if mcp_excludes:
+        try:
+            from tools.mcp_tool import get_mcp_tool_origin
+        except Exception:
+            get_mcp_tool_origin = None
+        if get_mcp_tool_origin is not None:
+            excluded_mcp_tools = set()
+            for tool_name in tools_to_include:
+                origin = get_mcp_tool_origin(tool_name)
+                if origin is None:
+                    continue
+                server_name, raw_tool_name = origin
+                server_excludes = mcp_excludes.get(server_name)
+                if not server_excludes:
+                    continue
+                if "*" in server_excludes or raw_tool_name in server_excludes:
+                    excluded_mcp_tools.add(tool_name)
+            if excluded_mcp_tools:
+                tools_to_include.difference_update(excluded_mcp_tools)
+                if not quiet_mode:
+                    print(
+                        f"🚫 Excluded {len(excluded_mcp_tools)} MCP tool(s) "
+                        f"by platform scope: {', '.join(sorted(excluded_mcp_tools))}"
+                    )
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()

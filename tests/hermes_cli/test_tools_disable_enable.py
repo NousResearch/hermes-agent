@@ -2,7 +2,7 @@
 from argparse import Namespace
 from unittest.mock import patch
 
-from hermes_cli.tools_config import tools_disable_enable_command
+from hermes_cli.tools_config import resolve_mcp_excludes, tools_disable_enable_command
 
 
 # ── Built-in toolset disable ────────────────────────────────────────────────
@@ -113,6 +113,109 @@ class TestToolsEnableMcp:
         assert "delete_branch" in saved["mcp_servers"]["github"]["tools"]["exclude"]
 
 
+# ── Platform-scoped MCP tool disable (--platform <non-cli>) ──────────────────
+
+
+class TestToolsDisableMcpPlatformScoped:
+    """Bug 1: `hermes tools disable --platform cron openbb:*` must write a
+    platform-scoped exclusion, NOT a global one."""
+
+    def test_disable_with_platform_writes_scoped_not_global(self):
+        config = {"mcp_servers": {"openbb": {"command": "uvx"}}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="disable", names=["openbb:get_quote"], platform="cron")
+            )
+        saved = mock_save.call_args[0][0]
+        # Scoped exclusion written under platform_mcp_excludes.
+        assert saved["platform_mcp_excludes"]["cron"]["openbb"] == ["get_quote"]
+        # Global exclude list NOT touched.
+        assert "tools" not in saved["mcp_servers"]["openbb"] or \
+               not saved["mcp_servers"]["openbb"].get("tools", {}).get("exclude")
+
+    def test_disable_wildcard_with_platform_scoped(self):
+        config = {"mcp_servers": {"openbb": {"command": "uvx"}}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="disable", names=["openbb:*"], platform="cron")
+            )
+        saved = mock_save.call_args[0][0]
+        assert saved["platform_mcp_excludes"]["cron"]["openbb"] == ["*"]
+
+    def test_disable_default_platform_still_writes_global(self):
+        """Backward compat: no --platform (default cli) writes the GLOBAL list."""
+        config = {"mcp_servers": {"openbb": {"command": "uvx"}}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="disable", names=["openbb:get_quote"], platform="cli")
+            )
+        saved = mock_save.call_args[0][0]
+        assert "get_quote" in saved["mcp_servers"]["openbb"]["tools"]["exclude"]
+        assert "platform_mcp_excludes" not in saved
+
+    def test_disable_scoped_unknown_server_prints_error(self, capsys):
+        config = {"mcp_servers": {}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config"):
+            tools_disable_enable_command(
+                Namespace(tools_action="disable", names=["ghost:tool"], platform="cron")
+            )
+        out = capsys.readouterr().out
+        assert "MCP server 'ghost' not found in config" in out
+
+
+class TestToolsEnableMcpPlatformScoped:
+    """Inverse path: `hermes tools enable --platform cron` must remove a
+    platform-scoped exclusion."""
+
+    def test_enable_removes_scoped_exclusion(self):
+        config = {
+            "mcp_servers": {"openbb": {"command": "uvx"}},
+            "platform_mcp_excludes": {"cron": {"openbb": ["get_quote", "get_news"]}},
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["openbb:get_quote"], platform="cron")
+            )
+        saved = mock_save.call_args[0][0]
+        assert saved["platform_mcp_excludes"]["cron"]["openbb"] == ["get_news"]
+
+    def test_enable_last_scoped_exclusion_prunes_empty_containers(self):
+        config = {
+            "mcp_servers": {"openbb": {"command": "uvx"}},
+            "platform_mcp_excludes": {"cron": {"openbb": ["get_quote"]}},
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["openbb:get_quote"], platform="cron")
+            )
+        saved = mock_save.call_args[0][0]
+        # Empty leaves are pruned so the config fully reverts.
+        assert "platform_mcp_excludes" not in saved
+
+    def test_enable_scoped_leaves_other_platforms_untouched(self):
+        config = {
+            "mcp_servers": {"openbb": {"command": "uvx"}},
+            "platform_mcp_excludes": {
+                "cron": {"openbb": ["get_quote"]},
+                "telegram": {"openbb": ["get_quote"]},
+            },
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["openbb:get_quote"], platform="cron")
+            )
+        saved = mock_save.call_args[0][0]
+        assert "cron" not in saved["platform_mcp_excludes"]
+        assert saved["platform_mcp_excludes"]["telegram"]["openbb"] == ["get_quote"]
+
+
 # ── Mixed targets ────────────────────────────────────────────────────────────
 
 
@@ -174,6 +277,70 @@ class TestToolsList:
         out = capsys.readouterr().out
         assert "github" in out
         assert "create_issue" in out
+
+    def test_list_shows_platform_scoped_mcp_excludes(self, capsys):
+        """Bug 3: `hermes tools list --platform cron` must reflect the
+        platform-scoped exclusion, not just the global config."""
+        config = {
+            "mcp_servers": {"openbb": {"command": "uvx"}},
+            "platform_mcp_excludes": {"cron": {"openbb": ["get_quote"]}},
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config):
+            tools_disable_enable_command(Namespace(tools_action="list", platform="cron"))
+        out = capsys.readouterr().out
+        assert "openbb" in out
+        assert "cron-only excluded" in out
+        assert "get_quote" in out
+
+    def test_list_cli_does_not_show_other_platform_scoped_excludes(self, capsys):
+        config = {
+            "mcp_servers": {"openbb": {"command": "uvx"}},
+            "platform_mcp_excludes": {"cron": {"openbb": ["get_quote"]}},
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config):
+            tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
+        out = capsys.readouterr().out
+        assert "cron-only excluded" not in out
+
+
+# ── resolve_mcp_excludes (runtime resolver helper) ──────────────────────────
+
+
+class TestResolveMcpExcludes:
+
+    def test_global_exclude_applies_to_all_platforms(self):
+        config = {"mcp_servers": {"openbb": {"tools": {"exclude": ["get_quote"]}}}}
+        for platform in ("cli", "cron", "telegram"):
+            resolved = resolve_mcp_excludes(config, platform)
+            assert resolved == {"openbb": {"get_quote"}}
+
+    def test_scoped_exclude_applies_only_to_named_platform(self):
+        config = {
+            "mcp_servers": {"openbb": {"command": "uvx"}},
+            "platform_mcp_excludes": {"cron": {"openbb": ["get_quote"]}},
+        }
+        assert resolve_mcp_excludes(config, "cron") == {"openbb": {"get_quote"}}
+        assert resolve_mcp_excludes(config, "cli") == {}
+
+    def test_global_and_scoped_are_unioned(self):
+        config = {
+            "mcp_servers": {"openbb": {"tools": {"exclude": ["get_news"]}}},
+            "platform_mcp_excludes": {"cron": {"openbb": ["get_quote"]}},
+        }
+        assert resolve_mcp_excludes(config, "cron") == {"openbb": {"get_news", "get_quote"}}
+        # cli still sees only the global exclude.
+        assert resolve_mcp_excludes(config, "cli") == {"openbb": {"get_news"}}
+
+    def test_wildcard_preserved(self):
+        config = {"platform_mcp_excludes": {"cron": {"openbb": ["*"]}}}
+        assert resolve_mcp_excludes(config, "cron") == {"openbb": {"*"}}
+
+    def test_empty_config_returns_empty(self):
+        assert resolve_mcp_excludes({}, "cron") == {}
+
+    def test_string_exclude_value_normalized_to_set(self):
+        config = {"mcp_servers": {"openbb": {"tools": {"exclude": "get_quote"}}}}
+        assert resolve_mcp_excludes(config, "cli") == {"openbb": {"get_quote"}}
 
 
 # ── Validation ───────────────────────────────────────────────────────────────

@@ -2076,6 +2076,12 @@ _parallel_safe_servers: set = set()
 # guessing.
 _mcp_tool_server_names: Dict[str, str] = {}
 
+# Parallel map: prefixed tool name → (raw_server_name, raw_tool_name) as they
+# appear in config. Sanitization for the prefixed name is lossy, so platform-
+# scoped exclusion matching (``server:tool``) needs the un-sanitized strings
+# captured at registration time.
+_mcp_tool_origins: Dict[str, tuple] = {}
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
@@ -2964,17 +2970,33 @@ _UTILITY_CAPABILITY_ATTRS = {
 }
 
 
-def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
-    """Remember the exact MCP server that registered *tool_name*."""
+def _track_mcp_tool_server(tool_name: str, server_name: str, raw_tool_name: str = "") -> None:
+    """Remember the exact MCP server that registered *tool_name*.
+
+    ``raw_tool_name`` is the un-sanitized tool name from the server (used for
+    platform-scoped ``server:tool`` exclusion matching). Defaults to empty for
+    callers that don't carry it (e.g. utility tools, whose names are stable).
+    """
     safe_server_name = sanitize_mcp_name_component(server_name)
     with _lock:
         _mcp_tool_server_names[tool_name] = safe_server_name
+        _mcp_tool_origins[tool_name] = (server_name, raw_tool_name)
 
 
 def _forget_mcp_tool_server(tool_name: str) -> None:
     """Forget MCP server provenance for a deregistered tool."""
     with _lock:
         _mcp_tool_server_names.pop(tool_name, None)
+        _mcp_tool_origins.pop(tool_name, None)
+
+
+def get_mcp_tool_origin(tool_name: str) -> Optional[tuple]:
+    """Return ``(raw_server_name, raw_tool_name)`` for a registered MCP tool.
+
+    Returns None for non-MCP tools or tools whose provenance was not tracked.
+    """
+    with _lock:
+        return _mcp_tool_origins.get(tool_name)
 
 
 def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dict) -> List[dict]:
@@ -3078,6 +3100,10 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         if include_set:
             return tool_name in include_set
         if exclude_set:
+            # ``*`` is a wildcard meaning "exclude every tool from this
+            # server" — used by ``hermes tools disable <server>:*``.
+            if "*" in exclude_set:
+                return False
             return tool_name not in exclude_set
         return True
 
@@ -3111,7 +3137,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             is_async=False,
             description=schema["description"],
         )
-        _track_mcp_tool_server(tool_name_prefixed, name)
+        _track_mcp_tool_server(tool_name_prefixed, name, raw_tool_name=mcp_tool.name)
         registered_names.append(tool_name_prefixed)
 
     # Register MCP Resources & Prompts utility tools, filtered by config and

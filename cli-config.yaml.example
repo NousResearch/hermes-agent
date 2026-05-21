@@ -666,6 +666,30 @@ platform_toolsets:
   teams: [hermes-teams]
   google_chat: [hermes-google_chat]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-platform MCP tool exclusions
+#
+# Exclude specific MCP server tools from a single platform without disabling
+# them everywhere. Useful for keeping heavy MCP servers (OpenBB, Alpaca, etc.)
+# available for interactive use while excluding them from cron jobs whose tool
+# schema would otherwise overflow the model's context window.
+#
+# Keyed by platform, then by MCP server name; the value is a list of tool
+# names (or ['*'] to exclude every tool from that server).
+#
+# A tool is excluded for a platform if EITHER this map OR the global
+# mcp_servers.<name>.tools.exclude list matches it.
+#
+# Manage interactively with:
+#   hermes tools disable --platform cron openbb:*
+#   hermes tools enable  --platform cron openbb:*
+#
+# platform_mcp_excludes:
+#   cron:
+#     openbb: ['*']             # exclude all OpenBB tools from cron jobs
+#     alpaca: [place_order]     # exclude one Alpaca tool from cron jobs
+# ─────────────────────────────────────────────────────────────────────────────
+
 # =============================================================================
 # Gateway Platform Settings
 # =============================================================================

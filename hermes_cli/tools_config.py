@@ -1281,6 +1281,54 @@ def _get_platform_tools(
     return enabled_toolsets
 
 
+# Sentinel platform meaning "every platform". When ``hermes tools disable`` is
+# invoked without ``--platform`` (or with the default ``cli``), MCP exclusions
+# are written globally under ``mcp_servers.<name>.tools.exclude`` so they apply
+# everywhere — that GLOBAL behavior predates per-platform scoping and is kept.
+_MCP_EXCLUDE_GLOBAL_PLATFORM = "cli"
+
+
+def resolve_mcp_excludes(config: dict, platform: str) -> Dict[str, Set[str]]:
+    """Resolve the effective MCP tool exclusions for *platform*.
+
+    Merges two sources, both of which exclude a tool when they match:
+
+      * GLOBAL — ``mcp_servers.<server>.tools.exclude`` (applies to every
+        platform; this is the long-standing behavior).
+      * PLATFORM-SCOPED — ``platform_mcp_excludes.<platform>.<server>``
+        (applies only to the named platform).
+
+    Returns ``{server_name: {tool_name, ...}}``. A ``"*"`` entry in a server's
+    set means every tool from that server is excluded.
+    """
+    merged: Dict[str, Set[str]] = {}
+
+    # Global server-level excludes — apply to all platforms.
+    mcp_servers = config.get("mcp_servers") or {}
+    for server_name, server_cfg in mcp_servers.items():
+        if not isinstance(server_cfg, dict):
+            continue
+        tools_cfg = server_cfg.get("tools") or {}
+        exclude = tools_cfg.get("exclude") or []
+        if isinstance(exclude, str):
+            exclude = [exclude]
+        if exclude:
+            merged.setdefault(str(server_name), set()).update(str(t) for t in exclude)
+
+    # Platform-scoped excludes — apply only to this platform.
+    platform_excludes = config.get("platform_mcp_excludes") or {}
+    scoped = platform_excludes.get(platform) or {}
+    if isinstance(scoped, dict):
+        for server_name, tool_list in scoped.items():
+            if isinstance(tool_list, str):
+                tool_list = [tool_list]
+            if not tool_list:
+                continue
+            merged.setdefault(str(server_name), set()).update(str(t) for t in tool_list)
+
+    return merged
+
+
 def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
     """Save the selected toolset keys for a platform to config.
 
@@ -3074,32 +3122,67 @@ def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str],
     _save_platform_tools(config, platform, updated)
 
 
-def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]:
-    """Add or remove specific MCP tools from a server's exclude list.
+def _apply_mcp_change(
+    config: dict, targets: List[str], action: str, platform: str = _MCP_EXCLUDE_GLOBAL_PLATFORM
+) -> Set[str]:
+    """Add or remove specific MCP tools from an exclude list.
 
     Returns the set of server names that were not found in config.
+
+    When *platform* is the global default (``cli``), changes are written to the
+    GLOBAL ``mcp_servers.<server>.tools.exclude`` list, which applies to every
+    platform — preserving the long-standing behavior. When *platform* is any
+    other platform, changes are written to the PLATFORM-SCOPED
+    ``platform_mcp_excludes.<platform>.<server>`` list, so a heavy MCP server
+    can be excluded from (say) cron jobs while staying available for ``cli``.
     """
     failed_servers: Set[str] = set()
     mcp_servers = config.get("mcp_servers") or {}
+    is_global = platform == _MCP_EXCLUDE_GLOBAL_PLATFORM
 
     for target in targets:
         server_name, tool_name = target.split(":", 1)
         if server_name not in mcp_servers:
             failed_servers.add(server_name)
             continue
-        tools_cfg = mcp_servers[server_name].setdefault("tools", {})
-        exclude = list(tools_cfg.get("exclude") or [])
-        if action == "disable":
-            if tool_name not in exclude:
-                exclude.append(tool_name)
+        if is_global:
+            tools_cfg = mcp_servers[server_name].setdefault("tools", {})
+            exclude = list(tools_cfg.get("exclude") or [])
+            if action == "disable":
+                if tool_name not in exclude:
+                    exclude.append(tool_name)
+            else:
+                exclude = [t for t in exclude if t != tool_name]
+            tools_cfg["exclude"] = exclude
         else:
-            exclude = [t for t in exclude if t != tool_name]
-        tools_cfg["exclude"] = exclude
+            platform_excludes = config.setdefault("platform_mcp_excludes", {})
+            scoped = platform_excludes.setdefault(platform, {})
+            exclude = list(scoped.get(server_name) or [])
+            if action == "disable":
+                if tool_name not in exclude:
+                    exclude.append(tool_name)
+            else:
+                exclude = [t for t in exclude if t != tool_name]
+            if exclude:
+                scoped[server_name] = exclude
+            else:
+                # Drop empty leaves so ``hermes tools enable`` fully reverts
+                # the config rather than leaving dangling empty containers.
+                scoped.pop(server_name, None)
+                if not scoped:
+                    platform_excludes.pop(platform, None)
+                if not platform_excludes:
+                    config.pop("platform_mcp_excludes", None)
 
     return failed_servers
 
 
-def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
+def _print_tools_list(
+    enabled_toolsets: set,
+    mcp_servers: dict,
+    platform: str = "cli",
+    config: Optional[dict] = None,
+):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
     effective_all = _get_effective_configurable_toolsets()
     effective = [
@@ -3127,18 +3210,38 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
             print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
 
     if mcp_servers:
+        # Platform-scoped MCP excludes (separate from the global server-level
+        # exclude list). Shown alongside so `hermes tools list --platform cron`
+        # accurately reflects what cron sees, not just the global config.
+        scoped_excludes: Dict[str, List[str]] = {}
+        if config:
+            platform_excludes = config.get("platform_mcp_excludes") or {}
+            raw_scoped = platform_excludes.get(platform) or {}
+            if isinstance(raw_scoped, dict):
+                for srv, tool_list in raw_scoped.items():
+                    if isinstance(tool_list, str):
+                        tool_list = [tool_list]
+                    if tool_list:
+                        scoped_excludes[str(srv)] = [str(t) for t in tool_list]
+
         print()
         print("MCP servers:")
         for srv_name, srv_cfg in mcp_servers.items():
             tools_cfg = srv_cfg.get("tools") or {}
             exclude = tools_cfg.get("exclude") or []
             include = tools_cfg.get("include") or []
+            scoped = scoped_excludes.get(str(srv_name)) or []
             if include:
                 _print_info(f"{srv_name}  [include only: {', '.join(include)}]")
             elif exclude:
                 _print_info(f"{srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]")
             else:
                 _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
+            if scoped:
+                _print_info(
+                    f"  └ {platform}-only excluded: "
+                    f"{color(', '.join(scoped), Colors.YELLOW)}"
+                )
 
 
 def tools_disable_enable_command(args):
@@ -3157,7 +3260,7 @@ def tools_disable_enable_command(args):
 
     if action == "list":
         _print_tools_list(_get_platform_tools(config, platform, include_default_mcp_servers=False),
-                          config.get("mcp_servers") or {}, platform)
+                          config.get("mcp_servers") or {}, platform, config)
         return
 
     targets: List[str] = args.names
@@ -3190,7 +3293,7 @@ def tools_disable_enable_command(args):
 
     failed_servers: Set[str] = set()
     if mcp_targets:
-        failed_servers = _apply_mcp_change(config, mcp_targets, action)
+        failed_servers = _apply_mcp_change(config, mcp_targets, action, platform)
         for srv in failed_servers:
             _print_error(f"MCP server '{srv}' not found in config")
 

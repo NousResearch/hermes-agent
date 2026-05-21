@@ -3279,6 +3279,23 @@ class TestMCPSelectiveToolLoading:
             "mcp_ink_exclude_list_services",
         ]
 
+    def test_exclude_wildcard_registers_no_tools(self):
+        """Bug 2: a global ``exclude: ['*']`` must drop EVERY tool from the
+        server — previously the literal-match filter only excluded a tool
+        actually named ``*``, so all tools survived."""
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"exclude": ["*"]},
+        }
+        registered, mock_registry = self._run_discover(
+            "ink_wild",
+            ["create_service", "delete_service", "list_services"],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == []
+        assert mock_registry.get_all_tool_names() == []
+
     def test_include_filter_skips_utility_tools_without_capabilities(self):
         config = {
             "url": "https://mcp.example.com",

@@ -47,11 +47,18 @@ hermes tools
 
 # Configure tools per platform (interactive)
 hermes tools
+
+# Disable / enable toolsets or MCP tools for a specific platform
+hermes tools disable --platform cron openbb:*
+hermes tools enable  --platform cron openbb:*
+hermes tools list    --platform cron
 ```
 
 Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, `safe`, and `rl`.
 
 See [Toolsets Reference](/docs/reference/toolsets-reference) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
+
+`hermes tools disable --platform <platform> <server>:<tool>` scopes an MCP tool exclusion to one platform — for example, dropping a heavy MCP server from cron jobs while keeping it for interactive use. See [MCP → Per-platform tool exclusions](mcp.md#per-platform-tool-exclusions).
 
 ## Terminal Backends
 

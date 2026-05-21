@@ -207,7 +207,54 @@ mcp_servers:
       exclude: [delete_customer]
 ```
 
-All server tools are registered except the excluded ones.
+All server tools are registered except the excluded ones. Use `exclude: ['*']`
+to exclude **every** tool from a server while keeping it connected.
+
+This `exclude` list is **global** — it applies to every platform (cli,
+telegram, cron, etc.). To exclude a server's tools from only some platforms,
+see [Per-platform tool exclusions](#per-platform-tool-exclusions) below.
+
+### Per-platform tool exclusions
+
+Heavy MCP servers (e.g. OpenBB's ~189 tools, Alpaca's ~66) can balloon the
+tool schema sent on every LLM call. That's usually fine for interactive use,
+but it can overflow the context window of scheduled **cron** jobs that don't
+need those tools — failing the run before it starts.
+
+Use `hermes tools disable --platform <platform>` to exclude MCP tools for a
+specific platform only:
+
+```bash
+# Drop ALL OpenBB tools from cron jobs — but keep them for cli/telegram
+hermes tools disable --platform cron openbb:*
+
+# Drop a single tool from cron
+hermes tools disable --platform cron alpaca:place_order
+
+# Re-enable (removes the platform-scoped exclusion)
+hermes tools enable --platform cron openbb:*
+```
+
+Platform-scoped exclusions are stored under `platform_mcp_excludes` in
+`~/.hermes/config.yaml`, keyed by platform then by server:
+
+```yaml
+platform_mcp_excludes:
+  cron:
+    openbb: ['*']            # exclude every OpenBB tool from cron
+    alpaca: [place_order]    # exclude one Alpaca tool from cron
+```
+
+Without `--platform` (or with the default `--platform cli`), `hermes tools
+disable <server>:<tool>` writes to the **global** `mcp_servers.<name>.tools.exclude`
+list instead — applying to every platform, as before.
+
+**Precedence:** a tool is excluded for a platform if **either** the global
+`exclude` list **or** that platform's `platform_mcp_excludes` entry matches it.
+The `*` wildcard works in both.
+
+`hermes tools list --platform cron` shows both the global and the
+cron-specific exclusions so you can see exactly what each platform receives.
 
 ### Precedence rule
 

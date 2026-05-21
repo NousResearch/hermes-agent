@@ -798,11 +798,26 @@ def init_agent(
             print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
+    # Resolve per-platform MCP tool exclusions. ``platform`` is threaded into
+    # every agent-construction path (cli, gateway background tasks, cron), so
+    # this is the single chokepoint where the runtime platform is known and
+    # config is available. Excludes the heavy MCP servers an operator has
+    # scoped out of this platform (e.g. OpenBB dropped from cron jobs that
+    # don't need it, while cli keeps it) — see hermes_cli/tools_config.py.
+    _mcp_excludes = None
+    try:
+        from hermes_cli.config import load_config as _load_mcp_excl_cfg
+        from hermes_cli.tools_config import resolve_mcp_excludes as _resolve_mcp_excludes
+        _mcp_excludes = _resolve_mcp_excludes(_load_mcp_excl_cfg(), platform or "cli")
+    except Exception as _mcp_excl_err:
+        _ra().logger.debug("MCP exclude resolution skipped: %s", _mcp_excl_err)
+
     # Get available tools with filtering
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        mcp_excludes=_mcp_excludes,
     )
     
     # Show tool configuration and store valid tool names for validation

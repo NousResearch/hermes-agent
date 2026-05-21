@@ -650,6 +650,10 @@ export default class Ink {
         // clear screen (now alt if fullscreen)
         '\x1b[H' +
         // cursor home
+        // DISABLE first so external editors/tmux that left DEC 1003 hover
+        // on can't survive the handoff back — same pattern as
+        // setAltScreenMouseTracking / reenterAltScreen.
+        DISABLE_MOUSE_TRACKING +
         enableMouseTrackingFor(this.altScreenMouseTracking) +
         (this.altScreenActive ? '' : '\x1b[?1049l') +
         // exit alt (non-fullscreen only)

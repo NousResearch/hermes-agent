@@ -91,23 +91,55 @@ def interruptible_api_call(agent, api_kwargs: dict):
     provider fallback.
     """
     result = {"response": None, "error": None}
-    request_client_holder = {"client": None}
+    request_client_holder = {"client": None, "owner_tid": None}
     request_client_lock = threading.Lock()
 
     def _set_request_client(client):
         with request_client_lock:
             request_client_holder["client"] = client
+            # #29507: stamp the owning thread so a stranger-thread interrupt
+            # only shuts the connection down rather than racing the worker
+            # for FD ownership during ``client.close()``.
+            request_client_holder["owner_tid"] = threading.get_ident()
         return client
 
     def _take_request_client():
         with request_client_lock:
             client = request_client_holder.get("client")
             request_client_holder["client"] = None
+            request_client_holder["owner_tid"] = None
             return client
 
     def _close_request_client_once(reason: str) -> None:
-        request_client = _take_request_client()
-        if request_client is not None:
+        # #29507: dispatch on the calling thread.
+        #
+        # When ``_call`` (the worker) reaches its ``finally`` it owns the
+        # close and we pop + fully close as before. When a *stranger* thread
+        # (the interrupt-check loop, the stale-call detector) drives the
+        # close, only shut the sockets down so the worker's blocked
+        # ``recv``/``send`` unwinds with an ``EPIPE`` / EOF — and let the
+        # worker close ``client`` from its own thread on its way out. That
+        # avoids the FD-recycling race where the kernel reassigned a
+        # just-closed TLS socket FD to ``kanban.db``, and the still-live SSL
+        # BIO on the worker thread then wrote a 24-byte TLS application-data
+        # record into the SQLite header (#29507).
+        with request_client_lock:
+            request_client = request_client_holder.get("client")
+            owner_tid = request_client_holder.get("owner_tid")
+            stranger_thread = (
+                request_client is not None
+                and owner_tid is not None
+                and owner_tid != threading.get_ident()
+            )
+            if not stranger_thread:
+                # Owning thread (or no recorded owner) → pop and fully close.
+                request_client_holder["client"] = None
+                request_client_holder["owner_tid"] = None
+        if request_client is None:
+            return
+        if stranger_thread:
+            agent._abort_request_openai_client(request_client, reason=reason)
+        else:
             agent._close_request_openai_client(request_client, reason=reason)
 
     def _call():
@@ -1274,23 +1306,44 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         return result["response"]
 
     result = {"response": None, "error": None, "partial_tool_names": []}
-    request_client_holder = {"client": None, "diag": None}
+    request_client_holder = {"client": None, "diag": None, "owner_tid": None}
     request_client_lock = threading.Lock()
 
     def _set_request_client(client):
         with request_client_lock:
             request_client_holder["client"] = client
+            # See #29507 explanation in the non-streaming variant above.
+            request_client_holder["owner_tid"] = threading.get_ident()
         return client
 
     def _take_request_client():
         with request_client_lock:
             client = request_client_holder.get("client")
             request_client_holder["client"] = None
+            request_client_holder["owner_tid"] = None
             return client
 
     def _close_request_client_once(reason: str) -> None:
-        request_client = _take_request_client()
-        if request_client is not None:
+        # See #29507 explanation in the non-streaming variant above. A
+        # stranger thread (the interrupt-check / stale-stream detector loop)
+        # only aborts sockets — never pops, never calls ``client.close()`` —
+        # so the worker thread retains ownership of the FD release.
+        with request_client_lock:
+            request_client = request_client_holder.get("client")
+            owner_tid = request_client_holder.get("owner_tid")
+            stranger_thread = (
+                request_client is not None
+                and owner_tid is not None
+                and owner_tid != threading.get_ident()
+            )
+            if not stranger_thread:
+                request_client_holder["client"] = None
+                request_client_holder["owner_tid"] = None
+        if request_client is None:
+            return
+        if stranger_thread:
+            agent._abort_request_openai_client(request_client, reason=reason)
+        else:
             agent._close_request_openai_client(request_client, reason=reason)
 
     first_delta_fired = {"done": False}

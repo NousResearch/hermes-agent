@@ -8,7 +8,10 @@ preserve unstable capability fields in metadata.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, cast
 
 __all__ = [
@@ -16,8 +19,11 @@ __all__ = [
     "build_clarify_requested_schema",
     "create_form_elicitation",
     "extract_clarify_answer",
+    "make_elicitation_clarify_callback",
     "supports_form_elicitation",
 ]
+
+logger = logging.getLogger(__name__)
 
 OTHER_LABEL = "Other (type your answer)"
 
@@ -148,6 +154,55 @@ def extract_clarify_answer(response: object) -> str:
     if str(answer).strip() == OTHER_LABEL and str(other).strip():
         return str(other).strip()
     return str(answer or "").strip()
+
+
+def _format_timeout_sentinel(timeout: float) -> str:
+    seconds = max(1, int(timeout))
+    if seconds < 60:
+        return f"[user did not respond within {seconds}s]"
+    minutes = max(1, int(seconds / 60))
+    return f"[user did not respond within {minutes}m]"
+
+
+def make_elicitation_clarify_callback(
+    conn: object,
+    loop: asyncio.AbstractEventLoop,
+    session_id: str,
+    *,
+    timeout: float = 120.0,
+) -> Callable[[str, list[str] | None], str]:
+    """Create a blocking Hermes clarify callback backed by ACP elicitation."""
+
+    def _callback(question: str, choices: list[str] | None = None) -> str:
+        from agent.async_utils import safe_schedule_threadsafe
+
+        future = safe_schedule_threadsafe(
+            create_form_elicitation(
+                conn,
+                session_id=session_id,
+                question=question,
+                choices=choices,
+            ),
+            loop,
+            logger=logger,
+            log_message="ACP elicitation: failed to schedule on loop",
+        )
+        if future is None:
+            return "[clarify prompt could not be delivered]"
+
+        try:
+            response = future.result(timeout=timeout)
+        except FutureTimeout:
+            future.cancel()
+            logger.warning("ACP elicitation timed out")
+            return _format_timeout_sentinel(timeout)
+        except Exception as exc:
+            future.cancel()
+            logger.warning("ACP elicitation failed: %s", exc)
+            return "[clarify prompt could not be delivered]"
+        return extract_clarify_answer(response)
+
+    return _callback
 
 
 def supports_form_elicitation(client_capabilities: object) -> bool:

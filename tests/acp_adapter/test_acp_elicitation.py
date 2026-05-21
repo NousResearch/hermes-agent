@@ -1,3 +1,5 @@
+import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -6,6 +8,7 @@ from acp_adapter.elicitation import (
     build_clarify_requested_schema,
     create_form_elicitation,
     extract_clarify_answer,
+    make_elicitation_clarify_callback,
     supports_form_elicitation,
 )
 
@@ -128,3 +131,26 @@ async def test_create_form_elicitation_uses_raw_json_rpc_fallback():
     assert params["mode"] == "form"
     assert params["message"] == "Q?"
     assert params["requestedSchema"]["required"] == ["answer"]
+
+
+def test_elicitation_clarify_callback_schedules_on_loop():
+    conn = RawConn()
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+
+    def run_loop():
+        asyncio.set_event_loop(loop)
+        ready.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=run_loop, daemon=True)
+    thread.start()
+    ready.wait(timeout=2)
+
+    try:
+        callback = make_elicitation_clarify_callback(conn, loop, "s1", timeout=2)
+        assert callback("Q?", ["A", "B"]) == "raw"
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()

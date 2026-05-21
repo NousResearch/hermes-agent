@@ -33,7 +33,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 
-from hermes_cli.timeouts import get_provider_request_timeout
+from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
@@ -92,17 +92,36 @@ def interruptible_api_call(agent, api_kwargs: dict):
     """
     result = {"response": None, "error": None}
     request_client_holder = {"client": None}
+    request_client_lock = threading.Lock()
+
+    def _set_request_client(client):
+        with request_client_lock:
+            request_client_holder["client"] = client
+        return client
+
+    def _take_request_client():
+        with request_client_lock:
+            client = request_client_holder.get("client")
+            request_client_holder["client"] = None
+            return client
+
+    def _close_request_client_once(reason: str) -> None:
+        request_client = _take_request_client()
+        if request_client is not None:
+            agent._close_request_openai_client(request_client, reason=reason)
 
     def _call():
         try:
             if agent.api_mode == "codex_responses":
-                request_client_holder["client"] = agent._create_request_openai_client(
-                    reason="codex_stream_request",
-                    api_kwargs=api_kwargs,
+                request_client = _set_request_client(
+                    agent._create_request_openai_client(
+                        reason="codex_stream_request",
+                        api_kwargs=api_kwargs,
+                    )
                 )
                 result["response"] = agent._run_codex_stream(
                     api_kwargs,
-                    client=request_client_holder["client"],
+                    client=request_client,
                     on_first_delta=getattr(agent, "_codex_on_first_delta", None),
                 )
             elif agent.api_mode == "anthropic_messages":
@@ -131,17 +150,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     raise
                 result["response"] = normalize_converse_response(raw_response)
             else:
-                request_client_holder["client"] = agent._create_request_openai_client(
-                    reason="chat_completion_request",
-                    api_kwargs=api_kwargs,
+                request_client = _set_request_client(
+                    agent._create_request_openai_client(
+                        reason="chat_completion_request",
+                        api_kwargs=api_kwargs,
+                    )
                 )
-                result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
+                result["response"] = request_client.chat.completions.create(**api_kwargs)
         except Exception as e:
             result["error"] = e
         finally:
-            request_client = request_client_holder.get("client")
-            if request_client is not None:
-                agent._close_request_openai_client(request_client, reason="request_complete")
+            _close_request_client_once("request_complete")
 
     # ── Stale-call timeout (mirrors streaming stale detector) ────────
     # Non-streaming calls return nothing until the full response is
@@ -192,9 +211,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     agent._anthropic_client.close()
                     agent._rebuild_anthropic_client()
                 else:
-                    rc = request_client_holder.get("client")
-                    if rc is not None:
-                        agent._close_request_openai_client(rc, reason="stale_call_kill")
+                    _close_request_client_once("stale_call_kill")
             except Exception:
                 pass
             agent._touch_activity(
@@ -218,9 +235,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     agent._anthropic_client.close()
                     agent._rebuild_anthropic_client()
                 else:
-                    request_client = request_client_holder.get("client")
-                    if request_client is not None:
-                        agent._close_request_openai_client(request_client, reason="interrupt_abort")
+                    _close_request_client_once("interrupt_abort")
             except Exception:
                 pass
             raise InterruptedError("Agent interrupted during API call")
@@ -286,6 +301,28 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         )
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
+
+        # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
+        # in tool schemas (HTTP 400 "Invalid arguments passed to the model").
+        # Most commonly hit when MCP-derived tools carry JSON Schema validation
+        # keywords through. Strip them before building kwargs. See #27197.
+        # It also rejects ``enum`` values containing ``/`` (HuggingFace IDs
+        # like ``Qwen/Qwen3.5-0.8B`` shipped by MCP servers) — same 400 with
+        # the same opaque message; strip those enums too.
+        if is_xai_responses:
+            try:
+                from tools.schema_sanitizer import (
+                    strip_pattern_and_format,
+                    strip_slash_enum,
+                )
+                tools_for_api, _ = strip_pattern_and_format(tools_for_api)
+                tools_for_api, _ = strip_slash_enum(tools_for_api)
+            except Exception as exc:
+                logger.warning(
+                    "%s⚠️ Failed to sanitize tool schemas for xAI: %s",
+                    getattr(agent, "log_prefix", ""), exc,
+                )
+
         return _ct.build_kwargs(
             model=agent.model,
             messages=_msgs_for_codex,
@@ -851,9 +888,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # the fallback activation drops to 128K even when config says 204800.
         if hasattr(agent, 'context_compressor') and agent.context_compressor:
             from agent.model_metadata import get_model_context_length
+            # ``agent.api_key`` may be callable (Entra ID); the
+            # context-length resolver expects a string for live
+            # probes. Foundry typically resolves via config/static
+            # catalogs anyway, so coerce defensively.
+            _fb_ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
             fb_context_length = get_model_context_length(
                 agent.model, base_url=agent.base_url,
-                api_key=agent.api_key, provider=agent.provider,
+                api_key=_fb_ctx_api_key, provider=agent.provider,
                 config_context_length=getattr(agent, "_config_context_length", None),
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
@@ -861,7 +903,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 model=agent.model,
                 context_length=fb_context_length,
                 base_url=agent.base_url,
-                api_key=getattr(agent, "api_key", ""),
+                api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
                 provider=agent.provider,
             )
 
@@ -1230,6 +1272,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     result = {"response": None, "error": None, "partial_tool_names": []}
     request_client_holder = {"client": None, "diag": None}
+    request_client_lock = threading.Lock()
+
+    def _set_request_client(client):
+        with request_client_lock:
+            request_client_holder["client"] = client
+        return client
+
+    def _take_request_client():
+        with request_client_lock:
+            client = request_client_holder.get("client")
+            request_client_holder["client"] = None
+            return client
+
+    def _close_request_client_once(reason: str) -> None:
+        request_client = _take_request_client()
+        if request_client is not None:
+            agent._close_request_openai_client(request_client, reason=reason)
+
     first_delta_fired = {"done": False}
     deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
     # Wall-clock timestamp of the last real streaming chunk.  The outer
@@ -1272,20 +1332,25 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "Local provider detected (%s) — stream read timeout raised to %.0fs",
                     agent.base_url, _stream_read_timeout,
                 )
+        # Cap connect/pool at 60s even when provider timeout is higher.
+        # connect/pool cover TCP handshake, not model inference.
+        _conn_cap = min(_base_timeout, 60.0) if _provider_timeout_cfg is not None else 30.0
         stream_kwargs = {
             **api_kwargs,
             "stream": True,
             "stream_options": {"include_usage": True},
             "timeout": _httpx.Timeout(
-                connect=30.0,
+                connect=_conn_cap,
                 read=_stream_read_timeout,
                 write=_base_timeout,
-                pool=30.0,
+                pool=_conn_cap,
             ),
         }
-        request_client_holder["client"] = agent._create_request_openai_client(
-            reason="chat_completion_stream_request",
-            api_kwargs=stream_kwargs,
+        request_client = _set_request_client(
+            agent._create_request_openai_client(
+                reason="chat_completion_stream_request",
+                api_kwargs=stream_kwargs,
+            )
         )
         # Reset stale-stream timer so the detector measures from this
         # attempt's start, not a previous attempt's last chunk.
@@ -1296,7 +1361,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # ``request_client_holder["diag"]`` for closure access.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
-        stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
+        stream = request_client.chat.completions.create(**stream_kwargs)
 
         # Capture rate limit headers from the initial HTTP response.
         # The OpenAI SDK Stream object exposes the underlying httpx
@@ -1735,12 +1800,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             mid_tool_call=True,
                             diag=request_client_holder.get("diag"),
                         )
-                        stale = request_client_holder.get("client")
-                        if stale is not None:
-                            agent._close_request_openai_client(
-                                stale, reason="stream_mid_tool_retry_cleanup"
-                            )
-                            request_client_holder["client"] = None
+                        _close_request_client_once("stream_mid_tool_retry_cleanup")
                         try:
                             agent._replace_primary_openai_client(
                                 reason="stream_mid_tool_retry_pool_cleanup"
@@ -1791,12 +1851,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 diag=request_client_holder.get("diag"),
                             )
                             # Close the stale request client before retry
-                            stale = request_client_holder.get("client")
-                            if stale is not None:
-                                agent._close_request_openai_client(
-                                    stale, reason="stream_retry_cleanup"
-                                )
-                                request_client_holder["client"] = None
+                            _close_request_client_once("stream_retry_cleanup")
                             # Also rebuild the primary client to purge
                             # any dead connections from the pool.
                             try:
@@ -1864,11 +1919,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             result["error"] = e
             return
         finally:
-            request_client = request_client_holder.get("client")
-            if request_client is not None:
-                agent._close_request_openai_client(request_client, reason="stream_request_complete")
+            _close_request_client_once("stream_request_complete")
 
-    _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
+    # Provider-configured stale timeout takes priority over env default.
+    _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
+    if _cfg_stale is not None:
+        _stream_stale_timeout_base = _cfg_stale
+    else:
+        _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
     # for prefill on large contexts.  Disable the stale detector unless
     # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
@@ -1931,9 +1989,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 f"Reconnecting..."
             )
             try:
-                rc = request_client_holder.get("client")
-                if rc is not None:
-                    agent._close_request_openai_client(rc, reason="stale_stream_kill")
+                _close_request_client_once("stale_stream_kill")
             except Exception:
                 pass
             # Rebuild the primary client too — its connection pool
@@ -1955,9 +2011,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     agent._anthropic_client.close()
                     agent._rebuild_anthropic_client()
                 else:
-                    request_client = request_client_holder.get("client")
-                    if request_client is not None:
-                        agent._close_request_openai_client(request_client, reason="stream_interrupt_abort")
+                    _close_request_client_once("stream_interrupt_abort")
             except Exception:
                 pass
             raise InterruptedError("Agent interrupted during streaming API call")

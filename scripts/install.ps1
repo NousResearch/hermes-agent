@@ -1,11 +1,11 @@
-﻿# ============================================================================
+# ============================================================================
 # Hermes Agent Installer for Windows
 # ============================================================================
 # Installation script for Windows (PowerShell).
 # Uses uv for fast Python provisioning and package management.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+#   iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
 #
 # Or download and run with options:
 #   .\install.ps1 -NoVenv -SkipSetup
@@ -16,6 +16,13 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [string]$Branch = "main",
+    # -Commit and -Tag are higher-precedence variants of -Branch for users
+    # who need reproducible installs (desktop installer pinning, CI, release
+    # bundles).  When set, the repository stage clones $Branch (faster than
+    # cloning the full default-branch history) and then `git checkout`s the
+    # exact ref.  Precedence: Commit > Tag > Branch.
+    [string]$Commit = "",
+    [string]$Tag = "",
     [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
     [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent",
 
@@ -28,7 +35,11 @@ param(
     [string]$Stage,
     [switch]$ProtocolVersion,
     [switch]$NonInteractive,
-    [switch]$Json
+    [switch]$Json,
+
+    # --- Ensure mode (dep_ensure.py entry point) ---
+    [string]$Ensure = "",
+    [switch]$PostInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -106,6 +117,105 @@ function Write-Warn {
 function Write-Err {
     param([string]$Message)
     Write-Host "[X] $Message" -ForegroundColor Red
+}
+
+# --- Ensure-mode helpers ---
+
+function Resolve-NpmCmd {
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npmCmd) { return $null }
+    $npmExe = $npmCmd.Source
+    if ($npmExe -like "*.ps1") {
+        $npmCmdSibling = Join-Path (Split-Path $npmExe -Parent) "npm.cmd"
+        if (Test-Path $npmCmdSibling) { return $npmCmdSibling }
+    }
+    return $npmExe
+}
+
+function Find-SystemBrowser {
+    $candidates = @(
+        "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+        "${env:LOCALAPPDATA}\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles}\Microsoft\Edge\Application\msedge.exe",
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+        "${env:ProgramFiles}\Chromium\Application\chrome.exe",
+        "${env:LOCALAPPDATA}\Chromium\Application\chrome.exe"
+    )
+    foreach ($p in $candidates) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+function Write-BrowserEnv {
+    param([string]$BrowserPath)
+    if (-not (Test-Path $HermesHome)) {
+        New-Item -ItemType Directory -Force -Path $HermesHome | Out-Null
+    }
+    $envFile = Join-Path $HermesHome ".env"
+    if (-not (Test-Path $envFile)) {
+        Set-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
+        return
+    }
+    $content = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
+    if ($content -and $content -match "AGENT_BROWSER_EXECUTABLE_PATH=") { return }
+    Add-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" -Encoding UTF8
+}
+
+function Install-AgentBrowser {
+    param([switch]$SkipChromium)
+    $npm = Resolve-NpmCmd
+    if (-not $npm) {
+        Write-Err "npm not found -- install Node.js first"
+        throw "npm not found"
+    }
+
+    Write-Info "Installing agent-browser via npm -g --prefix..."
+    $prefixDir = Join-Path $HermesHome "node"
+    if (-not (Test-Path $prefixDir)) {
+        New-Item -ItemType Directory -Path $prefixDir -Force | Out-Null
+    }
+    $npmLog = [System.IO.Path]::GetTempFileName()
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "agent-browser@^0.26.0" "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
+    $npmExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($npmExit -ne 0) {
+        $npmDetail = Get-Content $npmLog -Raw -ErrorAction SilentlyContinue
+        Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
+        Write-Err "npm install -g failed (exit $npmExit): $npmDetail"
+        throw "npm install failed"
+    }
+    Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
+
+    if (-not $SkipChromium) {
+        $sysBrowser = Find-SystemBrowser
+        if ($sysBrowser) {
+            Write-BrowserEnv -BrowserPath $sysBrowser
+            Write-Info "System browser detected -- skipping Chromium download"
+        } else {
+            $abExe = Join-Path $prefixDir "agent-browser.cmd"
+            if (Test-Path $abExe) {
+                Write-Info "Installing Chromium via agent-browser install..."
+                $abLog = [System.IO.Path]::GetTempFileName()
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                & $abExe install 2>&1 | Tee-Object -FilePath $abLog | Out-Null
+                $abExit = $LASTEXITCODE
+                $ErrorActionPreference = $prevEAP
+                if ($abExit -ne 0) {
+                    $abDetail = Get-Content $abLog -Raw -ErrorAction SilentlyContinue
+                    Write-Warn "Chromium install failed (exit $abExit): $abDetail"
+                }
+                Remove-Item $abLog -Force -ErrorAction SilentlyContinue
+            } else {
+                Write-Warn "agent-browser.cmd not found at $abExe"
+            }
+        }
+    }
+    Write-Success "Agent-browser ready"
 }
 
 # ============================================================================
@@ -428,33 +538,35 @@ function Install-Git {
             "32-bit-mingit"
         }
 
-        $releaseApi = "https://api.github.com/repos/git-for-windows/git/releases/latest"
-        $release = Invoke-RestMethod -Uri $releaseApi -UseBasicParsing -Headers @{ "User-Agent" = "hermes-installer" }
+        # Pinned git-for-windows release. We deliberately do NOT hit
+        # api.github.com/repos/.../releases/latest here: that endpoint
+        # is rate-limited to 60 requests/hour/IP for unauthenticated
+        # callers, and users behind CGNAT / corporate NAT / dorm WiFi
+        # routinely hit the limit, breaking the installer.
+        # Static github.com/.../releases/download/<tag>/<asset> URLs
+        # are not subject to the API rate limit.
+        $gitTag    = "v2.54.0.windows.1"
+        $gitVer    = "2.54.0"
+        $gitVerTag = "$gitVer.windows.1"
 
         if ($arch -eq "32-bit-mingit") {
             Write-Warn "32-bit Windows detected -- PortableGit is 64-bit only.  Installing MinGit 32-bit as a last resort; bash-dependent Hermes features (terminal tool, agent-browser) will not work on this machine."
-            $assetPattern = "MinGit-*-32-bit.zip"
+            $assetName    = "MinGit-$gitVer-32-bit.zip"
             $downloadIsZip = $true
         } elseif ($arch -eq "arm64") {
-            $assetPattern = "PortableGit-*-arm64.7z.exe"
+            $assetName    = "PortableGit-$gitVer-arm64.7z.exe"
             $downloadIsZip = $false
         } else {
-            $assetPattern = "PortableGit-*-64-bit.7z.exe"
+            $assetName    = "PortableGit-$gitVer-64-bit.7z.exe"
             $downloadIsZip = $false
         }
 
-        $asset = $release.assets | Where-Object { $_.name -like $assetPattern } | Select-Object -First 1
-
-        if (-not $asset) {
-            throw "Could not find $assetPattern in latest git-for-windows release"
-        }
-
-        $downloadUrl = $asset.browser_download_url
+        $downloadUrl = "https://github.com/git-for-windows/git/releases/download/$gitTag/$assetName"
         $downloadExt = if ($downloadIsZip) { "zip" } else { "7z.exe" }
-        $tmpFile = "$env:TEMP\$($asset.name)"
+        $tmpFile = "$env:TEMP\$assetName"
         $gitDir = "$HermesHome\git"
 
-        Write-Info "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB, 1)) MB)..."
+        Write-Info "Downloading $assetName (Git for Windows $gitVerTag)..."
         Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpFile -UseBasicParsing
 
         if (Test-Path $gitDir) {
@@ -852,14 +964,36 @@ function Install-Repository {
         if ($repoValid) {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
+            # Wrap the entire fetch+checkout block in EAP=Continue so git's
+            # routine stderr output (e.g. 'From <url>' info lines emitted by
+            # `git fetch`) doesn't terminate the script under the global
+            # EAP=Stop.  We rely on $LASTEXITCODE for actual failures.
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             try {
                 git -c windows.appendAtomically=false fetch origin
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
-                git -c windows.appendAtomically=false checkout $Branch
-                if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                git -c windows.appendAtomically=false pull origin $Branch
-                if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+                # Precedence: Commit > Tag > Branch.  Commit and Tag check
+                # out as detached HEAD intentionally -- they're meant to be
+                # reproducible pins, not branches the user pulls into.
+                if ($Commit) {
+                    # Make sure we have the commit locally (a tag-less commit
+                    # SHA isn't always reachable from any one branch fetch).
+                    git -c windows.appendAtomically=false fetch origin $Commit
+                    git -c windows.appendAtomically=false checkout --detach $Commit
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+                } elseif ($Tag) {
+                    git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
+                    git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout tag $Tag failed (exit $LASTEXITCODE)" }
+                } else {
+                    git -c windows.appendAtomically=false checkout $Branch
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
+                    git -c windows.appendAtomically=false pull origin $Branch
+                    if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+                }
             } finally {
+                $ErrorActionPreference = $prevEAP
                 Pop-Location
             }
             $didUpdate = $true
@@ -917,8 +1051,20 @@ function Install-Repository {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Warn "Git clone failed -- downloading ZIP archive instead..."
             try {
-                $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
-                $zipPath = "$env:TEMP\hermes-agent-$Branch.zip"
+                # Pick the ZIP URL for the most-specific ref the caller asked
+                # for.  GitHub supports archive URLs for commits, tags, and
+                # branches; we honour Commit > Tag > Branch.
+                if ($Commit) {
+                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/$Commit.zip"
+                    $zipLabel = $Commit
+                } elseif ($Tag) {
+                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$Tag.zip"
+                    $zipLabel = $Tag
+                } else {
+                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
+                    $zipLabel = $Branch
+                }
+                $zipPath = "$env:TEMP\hermes-agent-$zipLabel.zip"
                 $extractPath = "$env:TEMP\hermes-agent-extract"
 
                 Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
@@ -959,6 +1105,37 @@ function Install-Repository {
     # Set per-repo config (harmless if it fails)
     Push-Location $InstallDir
     git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+
+    # Post-clone pin: when a clone (or ZIP-fallback init) just landed us on
+    # $Branch's tip, honour the higher-precedence $Commit / $Tag by checking
+    # the exact ref out as a detached HEAD.  Skipped for the in-place update
+    # path (above) since that already routed via the same precedence.
+    if (-not $didUpdate) {
+        # Same EAP=Continue wrap as the update path -- git fetch's 'From <url>'
+        # info line goes to stderr and would terminate the script under the
+        # global EAP=Stop otherwise.  We check $LASTEXITCODE for real errors.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            if ($Commit) {
+                Write-Info "Pinning to commit $Commit..."
+                git -c windows.appendAtomically=false fetch origin $Commit
+                git -c windows.appendAtomically=false checkout --detach $Commit
+                if ($LASTEXITCODE -ne 0) {
+                    throw "git checkout $Commit failed (exit $LASTEXITCODE)"
+                }
+            } elseif ($Tag) {
+                Write-Info "Pinning to tag $Tag..."
+                git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
+                git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
+                if ($LASTEXITCODE -ne 0) {
+                    throw "git checkout tag $Tag failed (exit $LASTEXITCODE)"
+                }
+            }
+        } finally {
+            $ErrorActionPreference = $prevEAP
+        }
+    }
 
     # Ensure submodules are initialized and updated
     Write-Info "Initializing submodules..."
@@ -2043,6 +2220,48 @@ function Invoke-AllStages {
     }
 }
 
+function Invoke-EnsureMode {
+    param([string]$Deps)
+    $depList = $Deps -split ","
+    foreach ($dep in $depList) {
+        $dep = $dep.Trim()
+        switch ($dep) {
+            "node" {
+                [void](Test-Node)
+                if (-not $script:HasNode) {
+                    Write-Err "Node.js could not be installed"
+                    exit 1
+                }
+            }
+            "browser" {
+                [void](Test-Node)
+                if ($script:HasNode) {
+                    Install-AgentBrowser
+                } else {
+                    Write-Err "Node.js is required for browser tools but could not be installed"
+                    exit 1
+                }
+            }
+            "ripgrep" {
+                Write-Info "ripgrep: install manually on Windows (scoop install ripgrep)"
+            }
+            "ffmpeg" {
+                Write-Info "ffmpeg: install manually on Windows (scoop install ffmpeg)"
+            }
+            default {
+                Write-Err "Unknown dependency: $dep"
+                exit 1
+            }
+        }
+    }
+}
+
+function Invoke-PostInstallMode {
+    Write-Info "Running post-install setup..."
+    Invoke-EnsureMode -Deps "node,browser"
+    Write-Info "Post-install complete"
+}
+
 function Main {
     Write-Banner
     Invoke-AllStages
@@ -2062,6 +2281,19 @@ function Main {
 # structured JSON error frame instead of a bare exception.
 
 try {
+    if ($Ensure -ne "") {
+        if ($PSBoundParameters.ContainsKey("Stage")) {
+            Write-Err "Cannot use -Ensure and -Stage simultaneously"
+            exit 1
+        }
+        Invoke-EnsureMode -Deps $Ensure
+        exit 0
+    }
+    if ($PostInstall) {
+        Invoke-PostInstallMode
+        exit 0
+    }
+
     if ($ProtocolVersion) {
         Write-Output $InstallStageProtocolVersion
         exit 0

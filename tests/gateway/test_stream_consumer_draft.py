@@ -80,6 +80,11 @@ def _make_draft_capable_adapter(
 class TestDraftTransportSelection:
     """Verify _resolve_draft_streaming picks the right transport."""
 
+    def test_default_transport_stays_on_edit(self):
+        adapter = _make_draft_capable_adapter()
+        consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig(chat_type="dm"))
+        assert consumer._resolve_draft_streaming() is False
+
     def test_auto_dm_with_draft_capable_adapter_picks_draft(self):
         adapter = _make_draft_capable_adapter()
         cfg = StreamConsumerConfig(transport="auto", chat_type="dm")

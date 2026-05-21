@@ -436,3 +436,290 @@ def test_x_search_registered_in_registry_with_check_fn():
     assert entry.check_fn.__name__ == "check_x_search_requirements"
     assert "XAI_API_KEY" in entry.requires_env
     assert entry.emoji == "🐦"
+
+
+# ---------------------------------------------------------------------------
+# Date validation — fail fast before burning an API call on a window that
+# cannot possibly return X posts. xAI itself happily 200s with a fluff
+# answer when the range is malformed or pure-future, which is hard for
+# callers to distinguish from a real result.
+# ---------------------------------------------------------------------------
+
+def _no_post_allowed(monkeypatch):
+    """Guard: any test that should fail before HTTP can hit this fence."""
+    def _fail(*_, **__):
+        raise AssertionError("requests.post must not be called — validation should reject first")
+
+    monkeypatch.setattr("requests.post", _fail)
+
+
+def test_x_search_rejects_malformed_from_date(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    _no_post_allowed(monkeypatch)
+
+    result = json.loads(x_search_tool(query="anything", from_date="not-a-date"))
+
+    assert "from_date must be YYYY-MM-DD" in result["error"]
+
+
+def test_x_search_rejects_malformed_to_date(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    _no_post_allowed(monkeypatch)
+
+    result = json.loads(x_search_tool(query="anything", to_date="2026/05/01"))
+
+    assert "to_date must be YYYY-MM-DD" in result["error"]
+
+
+def test_x_search_rejects_inverted_date_range(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    _no_post_allowed(monkeypatch)
+
+    result = json.loads(
+        x_search_tool(
+            query="anything",
+            from_date="2026-05-10",
+            to_date="2026-05-01",
+        )
+    )
+
+    assert "from_date (2026-05-10) must be on or before to_date (2026-05-01)" in result["error"]
+
+
+def test_x_search_rejects_future_from_date(monkeypatch):
+    """``from_date`` in the future can never match any post → reject."""
+    import datetime as _dt
+
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    _no_post_allowed(monkeypatch)
+
+    class _FrozenDateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _dt.datetime(2026, 5, 21, 12, 0, 0, tzinfo=tz or _dt.timezone.utc)
+
+    monkeypatch.setattr("tools.x_search_tool.datetime", _FrozenDateTime)
+
+    result = json.loads(x_search_tool(query="anything", from_date="2030-01-01"))
+
+    assert "from_date (2030-01-01) is in the future" in result["error"]
+
+
+def test_x_search_allows_future_to_date(monkeypatch):
+    """``to_date`` in the future is fine — caller may want posts as they arrive."""
+    import datetime as _dt
+
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+    class _FrozenDateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _dt.datetime(2026, 5, 21, 12, 0, 0, tzinfo=tz or _dt.timezone.utc)
+
+    monkeypatch.setattr("tools.x_search_tool.datetime", _FrozenDateTime)
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse(
+            {"output_text": "future to_date is allowed", "citations": []}
+        )
+
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(
+        x_search_tool(
+            query="anything",
+            from_date="2026-05-20",
+            to_date="2030-01-01",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["answer"] == "future to_date is allowed"
+
+
+def test_x_search_accepts_today_as_from_date(monkeypatch):
+    """``from_date == today UTC`` is a valid edge case (today is past + present)."""
+    import datetime as _dt
+
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+    class _FrozenDateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _dt.datetime(2026, 5, 21, 12, 0, 0, tzinfo=tz or _dt.timezone.utc)
+
+    monkeypatch.setattr("tools.x_search_tool.datetime", _FrozenDateTime)
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *a, **k: _FakeResponse({"output_text": "ok", "citations": []}),
+    )
+
+    result = json.loads(x_search_tool(query="anything", from_date="2026-05-21"))
+
+    assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Degraded-result flag — distinguish citation-backed answers from
+# unsourced fluff when narrowing filters returned nothing.
+# ---------------------------------------------------------------------------
+
+def test_x_search_marks_degraded_when_handle_filter_returns_no_citations(monkeypatch):
+    """allowed_x_handles set + zero citations → degraded=True."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *a, **k: _FakeResponse(
+            {"output_text": "Generic encyclopedic answer with no citations.", "citations": []}
+        ),
+    )
+
+    result = json.loads(
+        x_search_tool(query="what has @ghostuser posted", allowed_x_handles=["ghostuser"])
+    )
+
+    assert result["success"] is True
+    assert result["degraded"] is True
+    assert "allowed_x_handles" in result["degraded_reason"]
+
+
+def test_x_search_marks_degraded_when_excluded_handles_and_no_citations(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *a, **k: _FakeResponse({"output_text": "fluff", "citations": []}),
+    )
+
+    result = json.loads(
+        x_search_tool(query="anything", excluded_x_handles=["someuser"])
+    )
+
+    assert result["degraded"] is True
+    assert "excluded_x_handles" in result["degraded_reason"]
+
+
+def test_x_search_marks_degraded_when_date_range_and_no_citations(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *a, **k: _FakeResponse({"output_text": "fluff", "citations": []}),
+    )
+
+    result = json.loads(
+        x_search_tool(
+            query="anything",
+            from_date="2026-04-01",
+            to_date="2026-04-02",
+        )
+    )
+
+    assert result["degraded"] is True
+    assert "from_date" in result["degraded_reason"]
+    assert "to_date" in result["degraded_reason"]
+
+
+def test_x_search_not_degraded_when_filter_returns_inline_citations(monkeypatch):
+    """A real citation from the inline annotations clears the degraded flag."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *a, **k: _FakeResponse(
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "Real post from xai.",
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "url": "https://x.com/xai/status/1",
+                                        "title": "xAI post",
+                                        "start_index": 0,
+                                        "end_index": 4,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+    )
+
+    result = json.loads(
+        x_search_tool(query="latest xAI post", allowed_x_handles=["xai"])
+    )
+
+    assert result["success"] is True
+    assert result["degraded"] is False
+    assert result["degraded_reason"] is None
+    assert len(result["inline_citations"]) == 1
+
+
+def test_x_search_not_degraded_when_filter_returns_top_level_citations(monkeypatch):
+    """A real citation from xAI's top-level ``citations`` array also clears the flag."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *a, **k: _FakeResponse(
+            {
+                "output_text": "Found discussion.",
+                "citations": [{"url": "https://x.com/example/status/1", "title": "Example"}],
+            }
+        ),
+    )
+
+    result = json.loads(
+        x_search_tool(query="anything", allowed_x_handles=["xai"])
+    )
+
+    assert result["degraded"] is False
+    assert result["degraded_reason"] is None
+
+
+def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
+    """A broad query that returns no citations isn't necessarily degraded.
+
+    Without any narrowing filter, an empty-citations response is a generic
+    unsourced answer, not a "filter miss". The caller can already tell from
+    ``inline_citations == []`` if they care.
+    """
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *a, **k: _FakeResponse({"output_text": "broad answer", "citations": []}),
+    )
+
+    result = json.loads(x_search_tool(query="anything"))
+
+    assert result["success"] is True
+    assert result["degraded"] is False
+    assert result["degraded_reason"] is None
+

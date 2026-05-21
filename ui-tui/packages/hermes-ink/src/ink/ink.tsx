@@ -1473,16 +1473,9 @@ export default class Ink {
         if (success) {
           return text
         }
-
-        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
-          console.error(
-            '[clipboard] no path reached the clipboard (headless + no tmux?) — set HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
-          )
-        }
-      } catch (err) {
-        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
-          console.error('[clipboard] error:', err)
-        }
+      } catch {
+        // Clipboard failed across every path — caller sees the empty
+        // return below and surfaces a hint via the slash command.
       }
     }
 

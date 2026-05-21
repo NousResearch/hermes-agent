@@ -60,7 +60,7 @@ def test_autopilot_control_actions_persist_desired_state_without_execution(tmp_p
     assert result.ok is True
     assert result.fail_closed is False
     assert result.decision["desired_mode"] == "on"
-    assert result.decision["effective_mode"] == "blocked"
+    assert result.decision["effective_mode"] == "default_policy_loop"
     assert result.decision["state_file_enabled_is_execution_proof"] is False
     assert result.decision["mutations_attempted"] == []
     state = json.loads((tmp_path / "gateway_autopilot_state.json").read_text(encoding="utf-8"))
@@ -1026,7 +1026,7 @@ def test_autopilot_on_with_parent_scope_dispatches_one_bounded_candidate(tmp_pat
 
     assert result.ok is True
     assert result.decision["status"] == "BOUNDED_DISPATCHED"
-    assert result.decision["scope"] == {"parent_public_id": "BO-114", "tenant": None}
+    assert result.decision["scope"] == {"mode": "parent", "parent_public_id": "BO-114", "tenant": None}
     assert result.decision["dispatched_count"] == 1
     assert result.decision["dry_run_side_effects"] == {"claimed": 0, "spawned": 1, "mutated": 0, "dispatched": 1}
     assert dispatched == ["BO-122"]
@@ -1087,26 +1087,104 @@ def test_autopilot_continuous_tick_uses_persisted_parent_focus_and_dispatches_on
     result = kanban_autopilot.autopilot_continuous_tick(actor="gateway-loop")
 
     assert result["status"] == "BOUNDED_DISPATCHED"
-    assert result["scope"] == {"parent_public_id": "BO-114", "tenant": None}
+    assert result["scope"] == {"mode": "parent", "parent_public_id": "BO-114", "tenant": None}
     assert result["caps"] == {"max_active_flights": 1, "max_dispatches_per_tick": 1}
     assert result["dispatched_count"] == 1
     assert loaded == [{"parent_public_id": "BO-114", "tenant": None, "limit": 50}]
     assert dispatched == ["BO-201"]
 
 
-def test_autopilot_continuous_tick_without_parent_scope_stays_blocked(tmp_path, monkeypatch):
+def test_autopilot_continuous_tick_without_parent_scope_uses_default_policy_loop(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from gateway import kanban_autopilot
 
     def forbidden(*_args, **_kwargs):
-        raise AssertionError("continuous autopilot must not dispatch without parent focus")
+        raise AssertionError("default-policy loop must not dispatch without an eligible ready-gate candidate")
 
     monkeypatch.setattr(kanban_autopilot, "dispatch_selected_once", forbidden, raising=False)
     kanban_autopilot.handle_autopilot_command("on", actor="tester")
 
     result = kanban_autopilot.autopilot_continuous_tick(actor="gateway-loop")
 
-    assert result["status"] == "BLOCKED"
-    assert result["reason"] == "missing_parent_scope"
+    assert result["status"] == "BOUNDED_BLOCKED"
+    assert result["effective_mode"] == "default_policy_loop"
+    assert result["scope"] == {"mode": "default_policy", "parent_public_id": None, "tenant": None}
     assert result["dispatched_count"] == 0
+
+
+def test_autopilot_on_without_parent_enters_default_policy_loop(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from gateway.kanban_autopilot import handle_autopilot_command
+
+    result = handle_autopilot_command("on", actor="tester")
+    status = handle_autopilot_command("status", actor="tester")
+
+    assert result.ok is True
+    assert result.decision["desired_mode"] == "on"
+    assert result.decision["effective_mode"] == "default_policy_loop"
+    assert result.decision["focus"] is None
+    assert result.decision["scope_mode"] == "default_policy"
+    assert result.decision["dispatch_blocked"] is False
+    assert status.decision["effective_mode"] == "default_policy_loop"
+    assert "default/global policy" in status.message
+
+
+def test_autopilot_unscoped_continuous_tick_dispatches_one_default_policy_candidate(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from gateway import kanban_autopilot
+
+    dispatched = []
+
+    def fake_dispatch(candidate):
+        dispatched.append(candidate["public_id"])
+        return {"dispatched": True, "spawned": [{"pid": 123}], "task_ids": [candidate["task_id"]]}
+
+    monkeypatch.setattr(kanban_autopilot, "dispatch_selected_once", fake_dispatch)
+    kanban_autopilot.handle_autopilot_command("on", actor="tester")
+
+    result = kanban_autopilot.autopilot_continuous_tick(
+        actor="loop",
+        candidates=[
+            {"id": "t_raw", "public_id": "BO-999", "status": "ready", "body": "raw", "routing_verdict": {"verdict": "Hermes direct"}},
+            _ready_candidate("BO-133"),
+        ],
+    )
+
+    assert result["effective_mode"] == "default_policy_loop"
+    assert result["scope"] == {"mode": "default_policy", "parent_public_id": None, "tenant": None}
+    assert result["status"] == "BOUNDED_DISPATCHED"
+    assert result["dispatched_count"] == 1
+    assert dispatched == ["BO-133"]
+    assert result["single_flight"]["selected"]["public_id"] == "BO-133"
+    assert [item["public_id"] for item in result["single_flight"].get("skipped") or []] == ["BO-999"]
+
+
+def test_autopilot_parent_scope_still_limits_continuous_tick(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from gateway import kanban_autopilot
+
+    captured = []
+
+    def fake_dispatch(candidate):
+        captured.append(candidate["public_id"])
+        return {"dispatched": True, "spawned": [], "task_ids": [candidate["task_id"]]}
+
+    monkeypatch.setattr(kanban_autopilot, "dispatch_selected_once", fake_dispatch)
+    kanban_autopilot.handle_autopilot_command("on BO-114", actor="tester", candidates=[])
+
+    result = kanban_autopilot.autopilot_continuous_tick(
+        actor="loop",
+        candidates=[
+            {**_ready_candidate("BO-133"), "parent_public_id": "BO-090"},
+            {**_ready_candidate("BO-134"), "parent_public_id": "BO-114"},
+        ],
+    )
+
+    assert result["effective_mode"] == "parent_scoped"
+    assert result["scope"]["parent_public_id"] == "BO-114"
+    assert captured == ["BO-134"]
+    assert result["single_flight"]["selected"]["public_id"] == "BO-134"

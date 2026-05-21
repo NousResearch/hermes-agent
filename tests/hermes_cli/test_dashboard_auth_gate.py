@@ -91,3 +91,64 @@ def test_loopback_host_header_validation_still_enforced(client_loopback):
 def test_should_require_auth_truth_table(host, allow_public, expected):
     from hermes_cli.web_server import should_require_auth
     assert should_require_auth(host, allow_public) is expected
+
+
+# ---------------------------------------------------------------------------
+# start_server stashes auth_required on app.state (Task 0.3)
+# ---------------------------------------------------------------------------
+
+
+def _stub_uvicorn_run(monkeypatch):
+    """Replace uvicorn.run with a no-op recorder so start_server returns
+    immediately (rather than blocking on the event loop).  Returns the dict
+    that will capture the keyword args."""
+    import uvicorn
+    captured: dict = {}
+
+    def _fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(uvicorn, "run", _fake_run)
+    return captured
+
+
+def test_start_server_loopback_sets_auth_required_false(monkeypatch):
+    """Loopback bind: app.state.auth_required is False after start_server."""
+    _stub_uvicorn_run(monkeypatch)
+    # Force a fresh state to detect that start_server actually set it.
+    web_server.app.state.auth_required = None
+    web_server.start_server(
+        host="127.0.0.1", port=9119,
+        open_browser=False, allow_public=False,
+    )
+    assert web_server.app.state.auth_required is False
+
+
+def test_start_server_insecure_public_sets_auth_required_false(monkeypatch):
+    """``--insecure`` (allow_public=True) on a public host: gate stays OFF."""
+    _stub_uvicorn_run(monkeypatch)
+    web_server.app.state.auth_required = None
+    web_server.start_server(
+        host="0.0.0.0", port=9119,
+        open_browser=False, allow_public=True,
+    )
+    assert web_server.app.state.auth_required is False
+
+
+def test_start_server_public_without_insecure_records_auth_required(monkeypatch):
+    """Public bind without --insecure: the gate is meant to engage.
+
+    Until Phase 3 lands, start_server still raises SystemExit on this path
+    (the legacy "refusing to bind" guard).  We must still observe the
+    auth_required flag being set on app.state BEFORE the exit happens, so
+    the rest of the system can branch on it consistently.
+    """
+    _stub_uvicorn_run(monkeypatch)
+    web_server.app.state.auth_required = None
+    with pytest.raises(SystemExit):
+        web_server.start_server(
+            host="0.0.0.0", port=9119,
+            open_browser=False, allow_public=False,
+        )
+    assert web_server.app.state.auth_required is True

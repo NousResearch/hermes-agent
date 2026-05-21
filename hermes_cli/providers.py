@@ -191,6 +191,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.gmi-serving.com/v1",
         base_url_env_var="GMI_BASE_URL",
     ),
+    "ambient": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_override="https://api.ambient.xyz/v1",
+        base_url_env_var="AMBIENT_BASE_URL",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://ollama.com/v1",

@@ -2385,7 +2385,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         )
         if model_list:
             print(f"  Found {len(model_list)} model(s) from Ollama Cloud")
-    elif provider_id == "novita":
+    elif provider_id in ("novita", "ambient"):
         from hermes_cli.models import fetch_api_models
 
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")

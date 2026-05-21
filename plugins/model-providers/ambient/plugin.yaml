@@ -1,0 +1,5 @@
+name: ambient-provider
+kind: model-provider
+version: 1.0.0
+description: Ambient verified AI inference platform
+author: Nous Research

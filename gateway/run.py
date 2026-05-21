@@ -4519,6 +4519,11 @@ class GatewayRunner:
             return
 
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        # Important, Founder-facing events can carry a structured ``feed_card``
+        # payload. Those route to a native image Feed (photo + caption + CTA)
+        # instead of the routine lightweight Kanban text receipt.
+        FEED_KINDS = ("milestone", "evidence", "review", "closeout")
+        WATCH_KINDS = TERMINAL_KINDS + FEED_KINDS
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -4626,7 +4631,7 @@ class GatewayRunner:
                                     platform=sub["platform"],
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
+                                    kinds=WATCH_KINDS,
                                 )
                                 if not events:
                                     continue
@@ -4684,6 +4689,57 @@ class GatewayRunner:
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
+                        metadata: dict[str, Any] = {}
+                        if sub.get("thread_id"):
+                            metadata["thread_id"] = sub["thread_id"]
+                        sub_key = (
+                            sub["task_id"], sub["platform"],
+                            sub["chat_id"], sub.get("thread_id") or "",
+                        )
+                        feed_card = None
+                        if isinstance(getattr(ev, "payload", None), dict):
+                            raw_feed_card = ev.payload.get("feed_card")
+                            if isinstance(raw_feed_card, dict):
+                                feed_card = raw_feed_card
+
+                        if feed_card:
+                            msg = None
+                            try:
+                                result = await self._deliver_kanban_feed_card(
+                                    adapter=adapter,
+                                    chat_id=sub["chat_id"],
+                                    metadata=metadata,
+                                    feed_card=feed_card,
+                                )
+                                if getattr(result, "message_id", None):
+                                    logger.info(
+                                        "kanban notifier: delivered feed card for %s message_id=%s",
+                                        sub["task_id"], result.message_id,
+                                    )
+                            except Exception as exc:
+                                fails = sub_fail_counts.get(sub_key, 0) + 1
+                                sub_fail_counts[sub_key] = fails
+                                logger.warning(
+                                    "kanban notifier: feed card send failed for %s on %s "
+                                    "(attempt %d/%d): %s",
+                                    sub["task_id"], platform_str, fails,
+                                    MAX_SEND_FAILURES, exc,
+                                )
+                                if fails >= MAX_SEND_FAILURES:
+                                    await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                    sub_fail_counts.pop(sub_key, None)
+                                else:
+                                    await asyncio.to_thread(
+                                        self._kanban_rewind,
+                                        sub,
+                                        d["cursor"],
+                                        d.get("old_cursor", 0),
+                                        board_slug,
+                                    )
+                                break
+                            sub_fail_counts.pop(sub_key, None)
+                            continue
+
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
                             # intentional human-facing handoff, carried
@@ -4732,13 +4788,6 @@ class GatewayRunner:
                             )
                         else:
                             continue
-                        metadata: dict[str, Any] = {}
-                        if sub.get("thread_id"):
-                            metadata["thread_id"] = sub["thread_id"]
-                        sub_key = (
-                            sub["task_id"], sub["platform"],
-                            sub["chat_id"], sub.get("thread_id") or "",
-                        )
                         try:
                             await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
@@ -4886,6 +4935,65 @@ class GatewayRunner:
             )
         finally:
             conn.close()
+
+
+    async def _deliver_kanban_feed_card(
+        self,
+        *,
+        adapter,
+        chat_id: str,
+        metadata: dict,
+        feed_card: dict,
+    ):
+        """Deliver or update a native image Feed card from a Kanban event.
+
+        ``feed_card`` is intentionally opt-in so routine Kanban lifecycle
+        receipts stay lightweight text. Expected shape::
+
+            {
+              "image_path": "/abs/card.png",
+              "caption": "short visible caption",
+              "buttons": [{"text": "Open issue", "url": "https://..."}],
+              "message_id": "123"  # optional: edit existing card caption/CTA
+            }
+
+        Adapters that support a native card can implement ``send_feed_card``
+        and ``edit_feed_card``. Older adapters fall back to ``send_image_file``
+        with a caption, preserving visibility without claiming edit-in-place.
+        """
+        image_path = str(feed_card.get("image_path") or feed_card.get("photo") or "").strip()
+        caption = str(feed_card.get("caption") or "").strip()
+        buttons = feed_card.get("buttons") or feed_card.get("reply_markup") or []
+        message_id = str(feed_card.get("message_id") or "").strip()
+        if not image_path:
+            raise ValueError("feed_card.image_path is required")
+        if not os.path.isfile(os.path.expanduser(image_path)):
+            raise FileNotFoundError(image_path)
+
+        if message_id and hasattr(adapter, "edit_feed_card"):
+            return await adapter.edit_feed_card(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=caption,
+                buttons=buttons,
+                metadata=metadata,
+            )
+        if hasattr(adapter, "send_feed_card"):
+            return await adapter.send_feed_card(
+                chat_id=chat_id,
+                image_path=image_path,
+                caption=caption,
+                buttons=buttons,
+                metadata=metadata,
+            )
+        if hasattr(adapter, "send_image_file"):
+            return await adapter.send_image_file(
+                chat_id=chat_id,
+                image_path=image_path,
+                caption=caption,
+                metadata=metadata,
+            )
+        raise RuntimeError("adapter does not support image Feed card delivery")
 
     async def _deliver_kanban_artifacts(
         self,

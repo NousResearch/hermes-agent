@@ -3596,6 +3596,114 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception:
                         pass
 
+
+    def _feed_card_reply_markup(self, buttons: Any) -> Optional[Any]:
+        """Build an InlineKeyboardMarkup from a simple button list."""
+        if not buttons:
+            return None
+        if isinstance(buttons, InlineKeyboardMarkup):
+            return buttons
+        rows = []
+        raw_rows = buttons if isinstance(buttons, list) else []
+        # Accept either [{text,url}, ...] or [[{text,url}, ...], ...].
+        if raw_rows and all(isinstance(item, dict) for item in raw_rows):
+            raw_rows = [raw_rows]
+        for row in raw_rows:
+            if not isinstance(row, list):
+                continue
+            out_row = []
+            for item in row:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or "").strip()
+                url = str(item.get("url") or "").strip()
+                if text and url:
+                    out_row.append(InlineKeyboardButton(text=text[:64], url=url))
+            if out_row:
+                rows.append(out_row)
+        return InlineKeyboardMarkup(rows) if rows else None
+
+    async def send_feed_card(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: str = "",
+        buttons: Optional[list] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Telegram-native Feed card: photo + caption + inline CTA."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not os.path.exists(image_path):
+            return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
+
+        _thread = self._metadata_thread_id(metadata)
+        reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+        thread_kwargs = self._thread_kwargs_for_send(
+            chat_id, _thread, metadata,
+            reply_to_message_id=reply_to_id,
+            reply_to_mode=self._reply_to_mode,
+        )
+        keyboard = self._feed_card_reply_markup(buttons)
+        with open(image_path, "rb") as image_file:
+            msg = await self._send_with_dm_topic_reply_anchor_retry(
+                self._bot.send_photo,
+                {
+                    "chat_id": int(chat_id),
+                    "photo": image_file,
+                    "caption": caption[:1024] if caption else None,
+                    "reply_markup": keyboard,
+                    "reply_to_message_id": reply_to_id,
+                    **thread_kwargs,
+                    **self._notification_kwargs(metadata),
+                },
+                metadata,
+                reply_to_id,
+                "feed card photo",
+                reset_media=lambda: image_file.seek(0),
+            )
+        return SendResult(
+            success=True,
+            message_id=str(msg.message_id),
+            raw_response={
+                "send_method": "sendPhoto",
+                "has_caption": bool(caption),
+                "has_reply_markup": keyboard is not None,
+            },
+        )
+
+    async def edit_feed_card(
+        self,
+        chat_id: str,
+        message_id: str,
+        caption: str = "",
+        buttons: Optional[list] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Edit an existing Telegram Feed card caption/CTA in place."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        keyboard = self._feed_card_reply_markup(buttons)
+        try:
+            await self._bot.edit_message_caption(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                caption=caption[:1024] if caption else None,
+                reply_markup=keyboard,
+            )
+        except Exception as exc:
+            if "not modified" not in str(exc).lower():
+                raise
+        return SendResult(
+            success=True,
+            message_id=str(message_id),
+            raw_response={
+                "send_method": "editMessageCaption",
+                "has_caption": bool(caption),
+                "has_reply_markup": keyboard is not None,
+            },
+        )
+
     async def send_image_file(
         self,
         chat_id: str,

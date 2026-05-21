@@ -11,9 +11,35 @@ from hermes_cli import kanban_db as kb
 class RecordingAdapter:
     def __init__(self):
         self.sent = []
+        self.feed_cards = []
+        self.edited_feed_cards = []
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def send_feed_card(self, chat_id, image_path, caption="", buttons=None, metadata=None):
+        self.feed_cards.append({
+            "chat_id": chat_id,
+            "image_path": image_path,
+            "caption": caption,
+            "buttons": buttons or [],
+            "metadata": metadata or {},
+        })
+        class Result:
+            message_id = "feed-123"
+        return Result()
+
+    async def edit_feed_card(self, chat_id, message_id, caption="", buttons=None, metadata=None):
+        self.edited_feed_cards.append({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "caption": caption,
+            "buttons": buttons or [],
+            "metadata": metadata or {},
+        })
+        class Result:
+            message_id = message_id
+        return Result()
 
 
 class DisconnectedAdapters(dict):
@@ -234,3 +260,70 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+def test_kanban_notifier_sends_important_feed_card_without_text_receipt(tmp_path, monkeypatch):
+    db_path = tmp_path / "feed-card.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    image_path = tmp_path / "card.png"
+    image_path.write_bytes(b"fake-png")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="important milestone", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="3367")
+        kb._append_event(conn, tid, kind="milestone", payload={
+            "feed_card": {
+                "image_path": str(image_path),
+                "caption": "M15 milestone ready",
+                "buttons": [{"text": "Open issue", "url": "https://github.com/AZ80066/kopa-os/issues/265"}],
+            }
+        })
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+    assert len(adapter.feed_cards) == 1
+    card = adapter.feed_cards[0]
+    assert card["chat_id"] == "chat-1"
+    assert card["image_path"] == str(image_path)
+    assert card["caption"] == "M15 milestone ready"
+    assert card["metadata"]["thread_id"] == "3367"
+
+
+def test_kanban_notifier_edits_existing_feed_card_when_message_id_present(tmp_path, monkeypatch):
+    db_path = tmp_path / "feed-card-edit.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    image_path = tmp_path / "card.png"
+    image_path.write_bytes(b"fake-png")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="closeout update", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(conn, tid, kind="closeout", payload={
+            "feed_card": {
+                "image_path": str(image_path),
+                "message_id": "777",
+                "caption": "M15 closeout updated",
+                "buttons": [[{"text": "Packet", "url": "https://github.com/AZ80066/kopa-os/issues/265"}]],
+            }
+        })
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.feed_cards == []
+    assert len(adapter.edited_feed_cards) == 1
+    edit = adapter.edited_feed_cards[0]
+    assert edit["message_id"] == "777"
+    assert edit["caption"] == "M15 closeout updated"

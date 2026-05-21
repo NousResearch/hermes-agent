@@ -250,9 +250,29 @@ async def host_header_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+# ---------------------------------------------------------------------------
+# Dashboard OAuth auth gate — engaged only when start_server flags the
+# bind as non-loopback-without-insecure.  No-op pass-through in loopback
+# mode so the legacy auth_middleware (below) handles those binds via
+# the injected ``_SESSION_TOKEN``.  Registered between host_header and
+# auth_middleware so the order is: host check → cookie auth → token auth.
+# ---------------------------------------------------------------------------
+
+
+@app.middleware("http")
+async def _dashboard_auth_gate(request: Request, call_next):
+    from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+    return await gated_auth_middleware(request, call_next)
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
+    # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
+    # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
+    # and is skipped here so the gate's session attachment isn't overridden.
+    if getattr(request.app.state, "auth_required", False):
+        return await call_next(request)
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
@@ -4698,6 +4718,13 @@ def _mount_plugin_api_routes():
 
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
+
+# Mount the dashboard auth routes (/login, /auth/*, /api/auth/*) before the
+# SPA catch-all so /{full_path:path} doesn't swallow them.  These are
+# always mounted — the gate middleware decides whether to enforce auth,
+# not whether the routes exist.
+from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
+app.include_router(_dashboard_auth_router)
 
 mount_spa(app)
 

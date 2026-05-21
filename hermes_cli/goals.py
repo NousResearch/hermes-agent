@@ -279,6 +279,55 @@ def clear_goal(session_id: str) -> None:
     save_goal(session_id, state)
 
 
+def create_kanban_task_from_goal(
+    goal: str,
+    *,
+    session_id: Optional[str] = None,
+    assignee: Optional[str] = None,
+    tenant: Optional[str] = None,
+    priority: int = 0,
+    board: Optional[str] = None,
+    created_by: str = "goal",
+    idempotency_key: Optional[str] = None,
+) -> str:
+    """Create or return the Kanban top-level task for a standing goal.
+
+    This is a bridge point for future `/goal create "..." -> Kanban`
+    orchestration. It deliberately does not alter the existing session-level
+    `/goal` semantics; callers opt in by invoking this helper.
+    """
+    clean_goal = (goal or "").strip()
+    if not clean_goal:
+        raise ValueError("goal text is empty")
+    if idempotency_key is None and session_id:
+        idempotency_key = f"goal:{session_id}:{clean_goal}"
+
+    from hermes_cli import kanban_db as kb
+
+    body = (
+        "Goal created from a Hermes standing goal.\n\n"
+        "## Goal\n"
+        f"{clean_goal}\n\n"
+        "## Orchestration\n"
+        "This top-level task is intended for a future orchestrator to "
+        "decompose into child tasks assigned to Kanban worker lanes."
+    )
+    with kb.connect(board=board) as conn:
+        return kb.create_task(
+            conn,
+            title=f"Goal: {clean_goal[:120]}",
+            body=body,
+            assignee=assignee,
+            created_by=created_by,
+            tenant=tenant,
+            priority=priority,
+            triage=True,
+            idempotency_key=idempotency_key,
+            session_id=session_id,
+            board=board,
+        )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Judge
 # ──────────────────────────────────────────────────────────────────────
@@ -758,5 +807,6 @@ __all__ = [
     "load_goal",
     "save_goal",
     "clear_goal",
+    "create_kanban_task_from_goal",
     "judge_goal",
 ]

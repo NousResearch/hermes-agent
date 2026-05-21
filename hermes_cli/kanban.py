@@ -91,6 +91,21 @@ def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
     return {"state_type": st, "state_name": sn}
 
 
+def _snapshot_to_dict(snapshot: kb.TaskProgressSnapshot) -> dict[str, Any]:
+    return snapshot.to_dict()
+
+
+def _render_progress_items(items: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        status = str(item.get("status") or "").strip() or "unknown"
+        text = str(item.get("text") or "").strip()
+        index = item.get("index")
+        prefix = f"{index}. " if index is not None else "- "
+        lines.append(f"{prefix}[{status}] {text}")
+    return lines
+
+
 def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
     """Parse ``--workspace`` into ``(kind, path|None)``.
 
@@ -419,6 +434,21 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         metavar="VALUE",
         help="With --state-type: keep runs whose column equals this value",
+    )
+
+    # --- progress ---
+    p_progress = sub.add_parser(
+        "progress",
+        help="Read a task progress/evidence snapshot without interrupting its worker",
+    )
+    p_progress.add_argument("task_id")
+    p_progress.add_argument("--json", action="store_true")
+    p_progress.add_argument(
+        "--log-tail",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="Include the last N bytes of the worker log in the snapshot",
     )
 
     # --- assign ---
@@ -885,6 +915,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
+        "progress": _cmd_progress,
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
@@ -1574,6 +1605,63 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 print(f"        → {r.summary.splitlines()[0][:160]}")
             if r.error:
                 print(f"        ! {r.error.splitlines()[0][:160]}")
+    return 0
+
+
+def _cmd_progress(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        snapshot = kb.task_progress_snapshot(
+            conn,
+            args.task_id,
+            log_tail_bytes=getattr(args, "log_tail", None),
+        )
+    if snapshot is None:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    payload = _snapshot_to_dict(snapshot)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    task = payload["task"]
+    run = payload.get("run") or {}
+    print(f"Task {task['id']}: {task['title']}")
+    print(f"  status:    {task['status']}")
+    print(f"  assignee:  {task.get('assignee') or '-'}")
+    print(f"  run:       {run.get('id') or '-'} ({run.get('outcome') or run.get('status') or 'no run'})")
+    if task.get("worker_pid"):
+        print(f"  worker:    pid={task['worker_pid']}")
+    if payload.get("last_heartbeat_event"):
+        hb = payload["last_heartbeat_event"]
+        print(f"  heartbeat: {_fmt_ts(hb['created_at'])}")
+    progress = payload.get("worker_progress") or {}
+    items = progress.get("items") if isinstance(progress, dict) else None
+    if items:
+        print("\nProgress:")
+        for line in _render_progress_items(items):
+            print(f"  {line}")
+    if payload.get("review_required"):
+        print("\nReview: required")
+    verification = payload.get("verification") or {}
+    commands = verification.get("commands") if isinstance(verification, dict) else None
+    if commands:
+        print("\nVerification:")
+        for cmd in commands:
+            print(f"  - {cmd}")
+    worker_lane = payload.get("worker_lane") or {}
+    if worker_lane:
+        lane = worker_lane.get("name") or worker_lane.get("worker_lane")
+        exit_code = worker_lane.get("exit_code")
+        timed_out = worker_lane.get("timed_out")
+        print(f"\nWorker lane: {lane or '-'} exit_code={exit_code} timed_out={timed_out}")
+    last_event = payload.get("last_event")
+    if last_event:
+        print(f"Last event: {last_event['kind']} at {_fmt_ts(last_event['created_at'])}")
+    if payload.get("worker_log_tail"):
+        print("\nWorker log tail:")
+        sys.stdout.write(payload["worker_log_tail"])
+        if not payload["worker_log_tail"].endswith("\n"):
+            sys.stdout.write("\n")
     return 0
 
 

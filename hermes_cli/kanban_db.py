@@ -801,6 +801,85 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass
+class TaskProgressSnapshot:
+    """Read-only task progress view for controllers and dashboards."""
+
+    task: Task
+    run: Optional[Run]
+    worker_progress: Optional[dict]
+    heartbeat_event: Optional[Event]
+    last_event: Optional[Event]
+    review_required: bool
+    evidence: Optional[dict]
+    worker_log_tail: Optional[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        worker_lane = None
+        worker_instance = None
+        verification = None
+        git = None
+        if self.evidence:
+            worker_lane = self.evidence.get("worker_lane")
+            worker_instance = self.evidence.get("worker_instance")
+            verification = self.evidence.get("verification")
+            git = self.evidence.get("git")
+        return {
+            "task": {
+                "id": self.task.id,
+                "title": self.task.title,
+                "assignee": self.task.assignee,
+                "status": self.task.status,
+                "workspace_kind": self.task.workspace_kind,
+                "workspace_path": self.task.workspace_path,
+                "worker_pid": self.task.worker_pid,
+                "current_run_id": self.task.current_run_id,
+                "last_heartbeat_at": self.task.last_heartbeat_at,
+                "session_id": self.task.session_id,
+            },
+            "run": (
+                {
+                    "id": self.run.id,
+                    "status": self.run.status,
+                    "outcome": self.run.outcome,
+                    "summary": self.run.summary,
+                    "error": self.run.error,
+                    "worker_pid": self.run.worker_pid,
+                    "started_at": self.run.started_at,
+                    "ended_at": self.run.ended_at,
+                }
+                if self.run else None
+            ),
+            "worker_progress": self.worker_progress,
+            "last_heartbeat_event": (
+                {
+                    "id": self.heartbeat_event.id,
+                    "created_at": self.heartbeat_event.created_at,
+                    "payload": self.heartbeat_event.payload,
+                    "run_id": self.heartbeat_event.run_id,
+                }
+                if self.heartbeat_event else None
+            ),
+            "last_event": (
+                {
+                    "id": self.last_event.id,
+                    "kind": self.last_event.kind,
+                    "created_at": self.last_event.created_at,
+                    "payload": self.last_event.payload,
+                    "run_id": self.last_event.run_id,
+                }
+                if self.last_event else None
+            ),
+            "review_required": self.review_required,
+            "worker_lane": worker_lane,
+            "worker_instance": worker_instance,
+            "git": git,
+            "verification": verification,
+            "evidence": self.evidence,
+            "worker_log_tail": self.worker_log_tail,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1910,6 +1989,81 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
             )
         )
     return out
+
+
+def _latest_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    kind: Optional[str] = None,
+) -> Optional[Event]:
+    where = "task_id = ?"
+    params: list[Any] = [task_id]
+    if kind is not None:
+        where += " AND kind = ?"
+        params.append(kind)
+    row = conn.execute(
+        f"SELECT * FROM task_events WHERE {where} ORDER BY created_at DESC, id DESC LIMIT 1",
+        tuple(params),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row["payload"]) if row["payload"] else None
+    except Exception:
+        payload = None
+    return Event(
+        id=row["id"],
+        task_id=row["task_id"],
+        kind=row["kind"],
+        payload=payload,
+        created_at=row["created_at"],
+        run_id=(int(row["run_id"]) if "run_id" in row.keys() and row["run_id"] is not None else None),
+    )
+
+
+def task_progress_snapshot(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    log_tail_bytes: Optional[int] = None,
+    board: Optional[str] = None,
+) -> Optional[TaskProgressSnapshot]:
+    """Return a read-only progress/evidence snapshot for ``task_id``.
+
+    This intentionally does not claim, reclaim, heartbeat, or interrupt a
+    worker.  Main agents and dashboards can call it while external workers
+    continue running.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        return None
+    run = latest_run(conn, task_id)
+    progress_event = _latest_event(conn, task_id, kind="worker_progress")
+    heartbeat_event = _latest_event(conn, task_id, kind="heartbeat")
+    last_event = _latest_event(conn, task_id)
+    evidence = run.metadata if run and isinstance(run.metadata, dict) else None
+    review_required = bool(
+        evidence
+        and isinstance(evidence.get("review"), dict)
+        and evidence["review"].get("required")
+    )
+    return TaskProgressSnapshot(
+        task=task,
+        run=run,
+        worker_progress=(
+            progress_event.payload if progress_event and progress_event.payload else None
+        ),
+        heartbeat_event=heartbeat_event,
+        last_event=last_event,
+        review_required=review_required,
+        evidence=evidence,
+        worker_log_tail=read_worker_log(
+            task_id,
+            tail_bytes=log_tail_bytes,
+            board=board,
+        ) if log_tail_bytes else None,
+    )
 
 
 def _append_event(

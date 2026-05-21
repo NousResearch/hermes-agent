@@ -395,6 +395,50 @@ def test_run_slash_reassign_with_reclaim_flag(kanban_home):
     assert "newbie" in out2
 
 
+def test_run_slash_progress_json_is_read_only(kanban_home):
+    import re
+    import time
+    import secrets
+
+    out1 = kc.run_slash("create 'external progress' --assignee codex-deep")
+    m = re.search(r"(t_[a-f0-9]+)", out1)
+    tid = m.group(1)
+
+    with kb.connect() as conn:
+        lock = secrets.token_hex(4)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=?, current_run_id=NULL WHERE id=?",
+            (lock, now + 3600, 4242, tid),
+        )
+        cur = conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, claim_lock, "
+            "claim_expires, worker_pid, started_at) VALUES (?, ?, 'running', ?, ?, ?, ?)",
+            (tid, "codex-deep", lock, now + 3600, 4242, now),
+        )
+        run_id = cur.lastrowid
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, tid))
+        kb.record_task_event(
+            conn,
+            tid,
+            "worker_progress",
+            {"lane": "codex-deep", "items": [{"index": 1, "status": "done", "text": "mock"}]},
+            run_id=run_id,
+        )
+        before = kb.get_task(conn, tid)
+
+    payload = json.loads(kc.run_slash(f"progress {tid} --json"))
+
+    with kb.connect() as conn:
+        after = kb.get_task(conn, tid)
+    assert payload["task"]["status"] == "running"
+    assert payload["task"]["worker_pid"] == 4242
+    assert payload["worker_progress"]["items"][0]["text"] == "mock"
+    assert after.status == "running"
+    assert after.claim_lock == before.claim_lock
+
+
 # ---------------------------------------------------------------------------
 # /kanban specify — slash surface (same entry point CLI + gateway use)
 # ---------------------------------------------------------------------------

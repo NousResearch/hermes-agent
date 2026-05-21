@@ -48,6 +48,88 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_task_progress_snapshot_reads_worker_state_without_claiming(
+    kanban_home, tmp_path,
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="progress me",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:test")
+        assert task is not None
+        run_id = task.current_run_id
+        kb.record_task_event(
+            conn,
+            tid,
+            "worker_progress",
+            {
+                "lane": "codex-deep",
+                "items": [
+                    {"index": 1, "status": "done", "text": "analyze"},
+                    {"index": 2, "status": "running", "text": "edit"},
+                ],
+            },
+            run_id=run_id,
+        )
+        kb.heartbeat_worker(conn, tid, note="still working", expected_run_id=run_id)
+        before = kb.get_task(conn, tid)
+        snapshot = kb.task_progress_snapshot(conn, tid)
+        after = kb.get_task(conn, tid)
+
+    assert snapshot is not None
+    assert snapshot.task.id == tid
+    assert snapshot.task.status == "running"
+    assert snapshot.run is not None
+    assert snapshot.run.id == run_id
+    assert snapshot.worker_progress["items"][1]["text"] == "edit"
+    assert snapshot.heartbeat_event is not None
+    assert snapshot.last_event is not None
+    assert before.claim_lock == after.claim_lock
+    assert after.status == "running"
+
+
+def test_task_progress_snapshot_surfaces_review_evidence(kanban_home, tmp_path):
+    metadata = {
+        "worker_lane": {
+            "name": "codex-deep",
+            "kind": "codex_cli",
+            "exit_code": 0,
+            "timed_out": False,
+        },
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="review me",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:test")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        snapshot = kb.task_progress_snapshot(conn, tid)
+
+    assert snapshot is not None
+    assert snapshot.task.status == "blocked"
+    assert snapshot.review_required is True
+    payload = snapshot.to_dict()
+    assert payload["worker_lane"]["name"] == "codex-deep"
+    assert payload["verification"]["commands"] == ["pytest -q"]
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"

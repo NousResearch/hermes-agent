@@ -358,6 +358,36 @@ def test_goal_command_dispatches_in_cli_registry_helpers():
     assert "/goal" in session_cmds
 
 
+def test_create_kanban_task_from_goal_bridge_is_opt_in_and_idempotent(hermes_home):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.goals import create_kanban_task_from_goal
+
+    tid1 = create_kanban_task_from_goal(
+        "refactor worker lanes",
+        session_id="goal-session-1",
+        assignee="orchestrator",
+        tenant="dev",
+        priority=7,
+    )
+    tid2 = create_kanban_task_from_goal(
+        "refactor worker lanes",
+        session_id="goal-session-1",
+        assignee="orchestrator",
+        tenant="dev",
+        priority=7,
+    )
+
+    assert tid2 == tid1
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid1)
+    assert task.status == "triage"
+    assert task.assignee == "orchestrator"
+    assert task.session_id == "goal-session-1"
+    assert task.tenant == "dev"
+    assert task.priority == 7
+    assert "refactor worker lanes" in task.body
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Auto-pause on consecutive judge parse failures
 # ──────────────────────────────────────────────────────────────────────

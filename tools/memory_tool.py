@@ -128,7 +128,15 @@ class MemoryStore:
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
-        self.context_id = context_id
+        # Sanitize context_id: treat empty/falsy as None; replace path separators
+        # and parent-ref sequences so chat IDs from any platform can't escape
+        # the contexts/ directory via path traversal.
+        if context_id:
+            safe_id = str(context_id).replace("/", "_").replace("\\", "_").replace("..", "_")
+            self.context_id: Optional[str] = safe_id
+        else:
+            self.context_id = None
+        self._global_entry_count: int = 0  # tracks how many entries came from global files
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -173,6 +181,16 @@ class MemoryStore:
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
+
+        # Track how many of the merged memory entries came from global files.
+        # Used by replace/remove to reject mutations targeting global entries
+        # when operating from a scoped context.
+        if self.context_id is not None:
+            global_raw = self._read_file(self._global_path_for("memory"))
+            global_set = set(global_raw)
+            self._global_entry_count = sum(1 for e in self.memory_entries if e in global_set)
+        else:
+            self._global_entry_count = 0
 
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
@@ -291,7 +309,9 @@ class MemoryStore:
         flushing would discard the un-roundtrippable content.
         Returns None on clean reload.
 
-        When context_id is set, merges global + scoped entries.
+        When context_id is set, merges global + scoped entries and updates
+        _global_entry_count for the memory target (used by replace/remove
+        to block mutations on global entries from a scoped context).
         """
         path = self._path_for(target)
         bak = self._detect_external_drift(target)
@@ -300,9 +320,14 @@ class MemoryStore:
             global_entries = self._read_file(self._global_path_for(target))
             scoped_entries = self._read_file(path)
             fresh = global_entries + scoped_entries
+            fresh = list(dict.fromkeys(fresh))  # deduplicate
+            if target == "memory":
+                # Recount global entries after dedup
+                global_set = set(global_entries)
+                self._global_entry_count = sum(1 for e in fresh if e in global_set)
         else:
             fresh = self._read_file(path)
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
+            fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
         return bak
 
@@ -422,6 +447,20 @@ class MemoryStore:
                 # All identical -- safe to replace just the first
 
             idx = matches[0][0]
+
+            # Guard: refuse to mutate a global entry from a scoped context.
+            # Global entries occupy the first _global_entry_count positions in
+            # the merged list. Saving goes to the scoped file only, so any
+            # modification would be lost on the next reload.
+            if self.context_id is not None and idx < self._global_entry_count:
+                return {
+                    "success": False,
+                    "error": (
+                        "Cannot modify a global entry from a scoped context. "
+                        "Use scope='global' to modify global entries."
+                    ),
+                }
+
             limit = self._char_limit(target)
 
             # Check that replacement doesn't blow the budget
@@ -474,6 +513,17 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
+
+            # Guard: refuse to remove a global entry from a scoped context.
+            if self.context_id is not None and idx < self._global_entry_count:
+                return {
+                    "success": False,
+                    "error": (
+                        "Cannot modify a global entry from a scoped context. "
+                        "Use scope='global' to modify global entries."
+                    ),
+                }
+
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)

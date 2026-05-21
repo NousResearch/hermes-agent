@@ -204,6 +204,50 @@ class TestSystemPromptSnapshot:
         assert "scoped info" in snapshot
 
 
+class TestPathTraversalAndEdgeCases:
+    """Security and edge-case tests for context_id handling."""
+
+    def test_context_id_path_traversal_sanitized(self, mem_dir):
+        """Path traversal in context_id is sanitized."""
+        store = MemoryStore(context_id="../../etc/passwd")
+        store.load_from_disk()
+        store.add("memory", "test entry")
+
+        # Should NOT escape the contexts directory
+        assert not (mem_dir.parent.parent / "etc" / "passwd" / "MEMORY.md").exists()
+        # Should be sanitized to a safe path under contexts/
+        contexts_dir = mem_dir / "contexts"
+        assert contexts_dir.exists()
+
+    def test_empty_context_id_treated_as_none(self, mem_dir):
+        """Empty string context_id behaves like None (global)."""
+        store = MemoryStore(context_id="")
+        assert store.context_id is None
+
+    def test_replace_global_entry_from_scoped_context_fails(self, mem_dir):
+        """Replacing a global entry from a scoped context returns error."""
+        # Write a global entry directly
+        (mem_dir / "MEMORY.md").write_text("The sky is blue")
+
+        store = MemoryStore(context_id="group-123")
+        store.load_from_disk()
+        # Try to replace a global entry
+        result = store.replace("memory", "sky is blue", "sky is green")
+        assert result["success"] is False
+        assert "global" in result["error"].lower()
+
+    def test_remove_global_entry_from_scoped_context_fails(self, mem_dir):
+        """Removing a global entry from a scoped context returns error."""
+        # Write a global entry directly
+        (mem_dir / "MEMORY.md").write_text("The sky is blue")
+
+        store = MemoryStore(context_id="group-123")
+        store.load_from_disk()
+        result = store.remove("memory", "sky is blue")
+        assert result["success"] is False
+        assert "global" in result["error"].lower()
+
+
 class TestConcurrentContextWrites:
     """Different contexts use different lock files, so they don't block each other."""
 

@@ -11442,6 +11442,8 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     session_db=self._session_db,
+                    skip_context_files=os.environ.get("HERMES_IGNORE_RULES") == "1",
+                    skip_memory=os.environ.get("HERMES_IGNORE_RULES") == "1",
                     fallback_model=self._fallback_model,
                 )
                 try:
@@ -11894,6 +11896,7 @@ class GatewayRunner:
                 max_iterations=4,
                 quiet_mode=True,
                 skip_memory=True,
+                skip_context_files=os.environ.get("HERMES_IGNORE_RULES") == "1",
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
             )
@@ -16309,6 +16312,8 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
                     session_db=self._session_db,
+                    skip_context_files=os.environ.get("HERMES_IGNORE_RULES") == "1",
+                    skip_memory=os.environ.get("HERMES_IGNORE_RULES") == "1",
                     fallback_model=self._fallback_model,
                 )
                 if _cache_lock and _cache is not None:

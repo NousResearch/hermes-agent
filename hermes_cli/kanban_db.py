@@ -5491,9 +5491,13 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
     #
     # Exception: if the task's most recent ``blocked`` event carried a
-    # ``review-required:`` reason, the PR URL in comments is the HANDOFF
-    # signal to the reviewer, not a duplicate-PR risk. Skip the active_pr
-    # guard in that case so review-drain workflows can spawn normally.
+    # review-drain-cycle reason (``review-required:``, ``review-approved:``,
+    # or ``review-rejected:``), the PR URL in comments is the HANDOFF
+    # signal for the next leg of the review cycle (reviewer-spawn on
+    # ``review-required:``; original-assignee-spawn to merge/fix on
+    # ``review-approved:`` / ``review-rejected:``), not a duplicate-PR
+    # risk. Skip the active_pr guard in that case so review-drain
+    # workflows can spawn normally.
     # See ``_review_required_handoff_active`` for the discriminator.
     if not _review_required_handoff_active(conn, task_id):
         pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
@@ -5511,29 +5515,40 @@ def _review_required_handoff_active(
     conn: sqlite3.Connection, task_id: str
 ) -> bool:
     """Return True iff the task's most recent ``blocked`` event carried a
-    ``review-required:`` reason.
+    review-drain-cycle reason (``review-required:``, ``review-approved:``,
+    or ``review-rejected:``).
 
     Used by ``check_respawn_guard`` to disable the ``active_pr`` guard for
-    review-drain workflows: when an author blocks with
-    ``review-required: ...`` and a reviewer is routed in (via
-    ``reassign`` + ``unblock``), the PR URL in the handoff comment is the
-    signal the reviewer needs to find the PR — not evidence that a
-    duplicate PR is about to be opened.
+    every leg of a review-drain workflow. The cycle has two spawn-needing
+    legs that BOTH happen with a PR URL already in the comment history:
+
+    1. Reviewer-spawn leg: author blocks with ``review-required: ...``,
+       reviewer is routed in via ``reassign`` + ``unblock``. The PR URL
+       in the handoff comment is the signal the reviewer needs to find
+       the PR — not evidence of a duplicate-PR risk.
+
+    2. Terminal-complete leg: reviewer drains with ``review-approved:``
+       (or ``review-rejected:``) and reassigns back to the original
+       assignee. The original assignee must be spawned to squash-merge +
+       ``kanban_complete`` (on approve) or fix + reblock (on reject).
+       Same PR URL is still in comments — same handoff signal, same
+       false-positive risk.
 
     Reads the latest ``blocked`` event's ``reason`` payload field (a
     JSON-encoded payload column on ``task_events``). Returns False when:
 
     - the task has no ``blocked`` event in its history
     - the latest ``blocked`` event has no parseable reason
-    - the reason does not start with ``review-required:``
+    - the reason does not start with one of the review-drain prefixes
     - a more recent ``completed`` event exists (the review has already
-      drained; we're now in a fresh work cycle)
+      drained AND the original assignee has completed; we're now in a
+      fresh work cycle)
 
     The check is intentionally narrow: it looks at the SINGLE most-recent
     block event, not a substring scan of all history. This keeps the
-    exception scoped to the active review-drain — once the reviewer
-    drains and the author completes the task, subsequent re-spawns
-    revert to the normal active_pr behavior.
+    exception scoped to the active review-drain — once the original
+    assignee completes the task post-review, subsequent re-spawns revert
+    to the normal active_pr behavior.
     """
     row = conn.execute(
         "SELECT kind, payload FROM task_events "
@@ -5565,7 +5580,12 @@ def _review_required_handoff_active(
     reason = payload.get("reason") if isinstance(payload, dict) else None
     if not isinstance(reason, str):
         return False
-    return reason.lstrip().startswith("review-required:")
+    stripped = reason.lstrip()
+    return (
+        stripped.startswith("review-required:")
+        or stripped.startswith("review-approved:")
+        or stripped.startswith("review-rejected:")
+    )
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:

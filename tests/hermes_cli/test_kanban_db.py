@@ -1533,6 +1533,157 @@ def test_review_required_handoff_active_tolerates_leading_whitespace(
         assert kb._review_required_handoff_active(conn, t) is True
 
 
+def test_respawn_guard_review_approved_block_suppresses_active_pr(kanban_home):
+    """A ``review-approved:`` block reason suppresses the active_pr guard.
+
+    Terminal-complete leg of review-drain: reviewer drains with
+    ``review-approved:`` and reassigns back to the original assignee.
+    The original assignee needs to be spawned to squash-merge +
+    ``kanban_complete``. The PR URL still sits in comment history (it
+    was the handoff signal); the guard must not misfire here.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="approved-needs-merge", assignee="alice")
+        kb.add_comment(
+            conn, t, "alice",
+            "review-required handoff: PR at "
+            "https://github.com/totemx-AI/subsidysmart/pull/50",
+        )
+        kb.claim_task(conn, t)
+        # Reviewer-spawn leg ran already: review-required block + drain.
+        kb.block_task(
+            conn, t,
+            reason="review-required: PR #50 ready for engineering-shape review",
+        )
+        kb.unblock_task(conn, t)
+        # Reviewer claims, approves, blocks with review-approved:, unblocks,
+        # reassigns back to original assignee.
+        kb.block_task(
+            conn, t,
+            reason="review-approved: PR #50 — all ACs verified, ready to merge",
+        )
+        kb.unblock_task(conn, t)
+        conn.execute(
+            "UPDATE tasks SET assignee = 'alice' WHERE id = ?", (t,),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None  # Guard suppressed; merge-leg spawn proceeds.
+
+
+def test_respawn_guard_review_rejected_block_suppresses_active_pr(kanban_home):
+    """A ``review-rejected:`` block reason suppresses the active_pr guard.
+
+    Symmetric to the review-approved case: reviewer drained with
+    ``review-rejected:`` and reassigned back to the original assignee
+    for fixes. The original assignee needs to spawn to address feedback;
+    same PR URL sits in comments.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="rejected-needs-fix", assignee="alice")
+        kb.add_comment(
+            conn, t, "alice",
+            "review-required handoff: PR at "
+            "https://github.com/totemx-AI/subsidysmart/pull/51",
+        )
+        kb.claim_task(conn, t)
+        kb.block_task(
+            conn, t,
+            reason="review-rejected: PR #51 — three redlines, see PR comments",
+        )
+        kb.unblock_task(conn, t)
+        conn.execute(
+            "UPDATE tasks SET assignee = 'alice' WHERE id = ?", (t,),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_review_required_handoff_active_matches_review_approved_prefix(
+    kanban_home,
+):
+    """The predicate's prefix check matches ``review-approved:``."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="approved-prefix", assignee="alice")
+        kb.claim_task(conn, t)
+        kb.block_task(
+            conn, t,
+            reason="review-approved: PR #99 ready to merge",
+        )
+        assert kb._review_required_handoff_active(conn, t) is True
+
+
+def test_review_required_handoff_active_matches_review_rejected_prefix(
+    kanban_home,
+):
+    """The predicate's prefix check matches ``review-rejected:``."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="rejected-prefix", assignee="alice")
+        kb.claim_task(conn, t)
+        kb.block_task(
+            conn, t,
+            reason="review-rejected: PR #99 needs fixes",
+        )
+        assert kb._review_required_handoff_active(conn, t) is True
+
+
+def test_review_required_handoff_active_rejects_unrelated_review_prefix(
+    kanban_home,
+):
+    """Block reasons that merely START with ``review-`` but aren't one of
+    the three canonical drain-cycle prefixes do NOT trigger the exception.
+
+    Defends against a future contributor reading the predicate as ``any
+    review-* prefix`` and accidentally laundering generic block reasons
+    through the active_pr exception.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-misc", assignee="alice")
+        kb.claim_task(conn, t)
+        kb.block_task(
+            conn, t,
+            reason="review-pending-input: waiting on legal sign-off",
+        )
+        assert kb._review_required_handoff_active(conn, t) is False
+
+
+def test_respawn_guard_review_approved_exception_does_not_leak_past_completion(
+    kanban_home,
+):
+    """After a ``completed`` event lands AFTER a ``review-approved:`` block,
+    the exception no longer applies.
+
+    Once the original assignee completes the merge, subsequent re-spawns
+    (e.g. dispatcher re-opens for follow-up work) must see the active_pr
+    guard fire — the old ``review-approved:`` block is no longer the
+    most recent status event.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="post-merge-followup", assignee="alice")
+        kb.add_comment(
+            conn, t, "alice",
+            "PR at https://github.com/totemx-AI/subsidysmart/pull/52",
+        )
+        kb.claim_task(conn, t)
+        kb.block_task(
+            conn, t,
+            reason="review-approved: PR #52 ready to merge",
+        )
+        kb.unblock_task(conn, t)
+        latest_blocked_ts = conn.execute(
+            "SELECT created_at FROM task_events "
+            "WHERE task_id = ? AND kind = 'blocked' "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (t,),
+        ).fetchone()["created_at"]
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'completed', '{}', ?)",
+            (t, latest_blocked_ts + 10),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "active_pr"
+
+
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):

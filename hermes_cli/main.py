@@ -10353,6 +10353,9 @@ def cmd_dashboard(args):
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         embedded_chat=embedded_chat,
+        tls_cert=getattr(args, "tls_cert", None),
+        tls_key=getattr(args, "tls_key", None),
+        allowed_hosts=getattr(args, "allowed_host", None),
     )
 
 
@@ -13165,6 +13168,24 @@ Examples:
         "--insecure",
         action="store_true",
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
+    )
+    dashboard_parser.add_argument(
+        "--tls-cert",
+        dest="tls_cert",
+        help="Path to TLS certificate PEM file for serving the dashboard over HTTPS",
+    )
+    dashboard_parser.add_argument(
+        "--tls-key",
+        dest="tls_key",
+        help="Path to TLS private key PEM file for serving the dashboard over HTTPS",
+    )
+    dashboard_parser.add_argument(
+        "--allowed-host",
+        action="append",
+        help=(
+            "Additional allowed Host header value(s), comma-separated or repeatable. "
+            "Useful with --host 0.0.0.0 to restrict LAN dashboard access to named hosts."
+        ),
     )
     dashboard_parser.add_argument(
         "--tui",

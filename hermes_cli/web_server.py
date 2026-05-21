@@ -23,7 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
@@ -159,17 +159,10 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
-
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
-    """
+def _strip_host_port(host_header: str) -> str:
+    """Return a normalized hostname from a Host header value."""
     if not host_header:
-        return False
+        return ""
     # Strip port suffix. IPv6 addresses use bracket notation:
     #   [::1]         — no port
     #   [::1]:9119    — with port
@@ -178,7 +171,6 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     #   127.0.0.1:9119
     h = host_header.strip()
     if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
         close = h.find("]")
         if close != -1:
             host_only = h[1:close]  # strip brackets
@@ -186,13 +178,60 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
             host_only = h.strip("[]")
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    return host_only.lower()
+
+
+def _normalize_allowed_hosts(allowed_hosts: Optional[Iterable[str] | str]) -> Optional[frozenset[str]]:
+    """Normalize dashboard Host allowlist values.
+
+    ``allowed_hosts`` may come from a comma-separated CLI flag or a caller-provided
+    iterable. Values may include ports; comparisons always use lowercase hostnames
+    only, matching Host header semantics.
+    """
+    if allowed_hosts is None:
+        return None
+    if isinstance(allowed_hosts, str):
+        raw_hosts = allowed_hosts.split(",")
+    else:
+        raw_hosts = []
+        for item in allowed_hosts:
+            raw_hosts.extend(str(item).split(","))
+    normalized = frozenset(
+        host
+        for host in (_strip_host_port(str(item)) for item in raw_hosts)
+        if host
+    )
+    return normalized or None
+
+
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    *,
+    allowed_hosts: Optional[Iterable[str] | str] = None,
+) -> bool:
+    """True if the Host header targets an accepted dashboard hostname.
+
+    Accepts:
+    - Explicit allowed hosts when an allowlist is configured
+    - Exact bound host (with or without port suffix)
+    - Loopback aliases when bound to loopback
+    - Any host when bound to 0.0.0.0 and no allowlist is configured
+    """
+    host_only = _strip_host_port(host_header)
+    if not host_only:
+        return False
+
+    normalized_allowed_hosts = _normalize_allowed_hosts(allowed_hosts)
+    if normalized_allowed_hosts is not None and host_only in normalized_allowed_hosts:
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
-    # (requires --insecure per web_server.start_server). No Host-layer
-    # defence can protect that mode; rely on operator network controls.
+    # (requires --insecure per web_server.start_server). Without an explicit
+    # allowed-host list, preserve the historical accept-any Host behavior. With
+    # an allowlist, fail closed for unlisted Host values.
     if bound_host in {"0.0.0.0", "::"}:
-        return True
+        return normalized_allowed_hosts is None
 
     # Loopback bind: accept the loopback names
     bound_lc = bound_host.lower()
@@ -220,7 +259,8 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        allowed_hosts = getattr(app.state, "allowed_hosts", None)
+        if not _is_accepted_host(host_header, bound_host, allowed_hosts=allowed_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -3365,7 +3405,7 @@ def _resolve_chat_argv(
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
-    """ws:// URL the PTY child should publish events to, or None when unbound."""
+    """WebSocket URL the PTY child should publish events to, or None when unbound."""
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
 
@@ -3374,8 +3414,9 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
     qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
+    scheme = "wss" if getattr(app.state, "dashboard_tls_enabled", False) else "ws"
 
-    return f"ws://{netloc}/api/pub?{qs}"
+    return f"{scheme}://{netloc}/api/pub?{qs}"
 
 
 async def _broadcast_event(channel: str, payload: str) -> None:
@@ -4518,6 +4559,9 @@ def start_server(
     allow_public: bool = False,
     *,
     embedded_chat: bool = False,
+    tls_cert: Optional[str] = None,
+    tls_key: Optional[str] = None,
+    allowed_hosts: Optional[Iterable[str] | str] = None,
 ):
     """Start the web UI server."""
     import uvicorn
@@ -4526,6 +4570,18 @@ def start_server(
     _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
     _LOCALHOST = ("127.0.0.1", "localhost", "::1")
+    if bool(tls_cert) != bool(tls_key):
+        raise SystemExit("Dashboard TLS requires both --tls-cert and --tls-key.")
+
+    ssl_certfile = str(Path(tls_cert).expanduser()) if tls_cert else None
+    ssl_keyfile = str(Path(tls_key).expanduser()) if tls_key else None
+    if ssl_certfile and not Path(ssl_certfile).is_file():
+        raise SystemExit(f"Dashboard TLS certificate not found: {ssl_certfile}")
+    if ssl_keyfile and not Path(ssl_keyfile).is_file():
+        raise SystemExit(f"Dashboard TLS key not found: {ssl_keyfile}")
+
+    normalized_allowed_hosts = _normalize_allowed_hosts(allowed_hosts)
+
     if host not in _LOCALHOST and not allow_public:
         raise SystemExit(
             f"Refusing to bind to {host} — the dashboard exposes API keys "
@@ -4544,6 +4600,9 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.allowed_hosts = normalized_allowed_hosts
+    app.state.dashboard_tls_enabled = bool(ssl_certfile and ssl_keyfile)
+    scheme = "https" if app.state.dashboard_tls_enabled else "http"
 
     if open_browser:
         import webbrowser
@@ -4565,7 +4624,7 @@ def start_server(
             def _open():
                 try:
                     time.sleep(1.0)
-                    webbrowser.open(f"http://{host}:{port}")
+                    webbrowser.open(f"{scheme}://{host}:{port}")
                 except Exception:
                     pass
 
@@ -4576,8 +4635,16 @@ def start_server(
                 "(headless Linux). Pass --no-open to suppress this detection."
             )
 
-    print(f"  Hermes Web UI → http://{host}:{port}")
+    print(f"  Hermes Web UI → {scheme}://{host}:{port}")
     # proxy_headers=False so _ws_client_is_allowed sees the real connection peer
     # rather than X-Forwarded-For's rewritten value (which would defeat the
     # loopback gate when behind a reverse proxy).
-    uvicorn.run(app, host=host, port=port, log_level="warning", proxy_headers=False)
+    run_kwargs = {
+        "host": host,
+        "port": port,
+        "log_level": "warning",
+        "proxy_headers": False,
+    }
+    if ssl_certfile and ssl_keyfile:
+        run_kwargs.update({"ssl_certfile": ssl_certfile, "ssl_keyfile": ssl_keyfile})
+    uvicorn.run(app, **run_kwargs)

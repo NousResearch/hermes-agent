@@ -1154,6 +1154,9 @@ Launch the web dashboard — a browser-based UI for managing configuration, API 
 | `--no-open` | — | Don't auto-open the browser |
 | `--tui` | off | Enable the in-browser Chat tab by running `hermes --tui` behind a PTY/WebSocket bridge. Requires `pip install 'hermes-agent[web,pty]'` and a POSIX PTY environment such as Linux, macOS, or WSL2. |
 | `--insecure` | off | Allow binding to non-localhost hosts. Exposes dashboard credentials on the network; use only behind trusted network controls. |
+| `--tls-cert` | — | Path to TLS certificate PEM file for serving the dashboard over HTTPS; requires `--tls-key`. |
+| `--tls-key` | — | Path to TLS private key PEM file for serving the dashboard over HTTPS; requires `--tls-cert`. |
+| `--allowed-host` | — | Additional accepted Host header value. Repeat the flag or pass comma-separated values; useful with `--host 0.0.0.0` to fail closed for unlisted LAN hostnames. |
 | `--stop` | — | Stop running `hermes dashboard` processes and exit. |
 | `--status` | — | List running `hermes dashboard` processes and exit. |
 
@@ -1163,6 +1166,13 @@ hermes dashboard
 
 # Custom port, no browser
 hermes dashboard --port 8080 --no-open
+
+# Serve HTTPS directly on a trusted LAN hostname
+hermes dashboard \
+  --host 0.0.0.0 --insecure \
+  --tls-cert /path/to/dashboard.crt \
+  --tls-key /path/to/dashboard.key \
+  --allowed-host hermes-dashboard.example.lan
 
 # Enable the browser Chat tab
 hermes dashboard --tui

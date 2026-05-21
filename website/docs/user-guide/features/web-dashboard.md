@@ -24,6 +24,9 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
+| `--tls-cert` | — | Path to TLS certificate PEM file for serving the dashboard over HTTPS; requires `--tls-key` |
+| `--tls-key` | — | Path to TLS private key PEM file for serving the dashboard over HTTPS; requires `--tls-cert` |
+| `--allowed-host` | — | Additional accepted Host header value. Repeat the flag or pass comma-separated values; useful with `--host 0.0.0.0` to fail closed for unlisted LAN hostnames. |
 | `--tui` | off | Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). Alternatively set `HERMES_DASHBOARD_TUI=1`. |
 
 ```bash
@@ -31,7 +34,14 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 hermes dashboard --port 8080
 
 # Bind to all interfaces (use with caution on shared networks)
-hermes dashboard --host 0.0.0.0
+hermes dashboard --host 0.0.0.0 --insecure
+
+# Serve HTTPS directly and restrict accepted LAN hostnames
+hermes dashboard \
+  --host 0.0.0.0 --insecure \
+  --tls-cert /path/to/dashboard.crt \
+  --tls-key /path/to/dashboard.key \
+  --allowed-host hermes-dashboard.example.lan
 
 # Start without opening browser
 hermes dashboard --no-open

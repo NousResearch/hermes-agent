@@ -54,15 +54,51 @@ class TestHostHeaderValidator:
                     f"bound={bound} must reject attacker host={attacker!r}"
                 )
 
-    def test_zero_zero_bind_accepts_anything(self):
-        """0.0.0.0 means operator explicitly opted into all-interfaces
-        (requires --insecure). No Host-layer defence is possible — rely
-        on operator network controls."""
+    def test_zero_zero_bind_accepts_anything_without_allowlist(self):
+        """0.0.0.0 without an allowlist preserves the historical explicit
+        all-interfaces opt-in behavior for operators who pass --insecure."""
         from hermes_cli.web_server import _is_accepted_host
 
         for host in ("10.0.0.5", "evil.example", "my-server.corp.net"):
             assert _is_accepted_host(host, "0.0.0.0")
             assert _is_accepted_host(host + ":9119", "0.0.0.0")
+
+    def test_zero_zero_bind_can_be_restricted_by_allowed_hosts(self):
+        """LAN binds can still protect the app layer when operators provide
+        explicit allowed Host values."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed_hosts = {
+            "hermes-dashboard.transformers.lan",
+            "10.0.0.196",
+            "localhost",
+        }
+
+        assert _is_accepted_host(
+            "hermes-dashboard.transformers.lan:9443",
+            "0.0.0.0",
+            allowed_hosts=allowed_hosts,
+        )
+        assert _is_accepted_host(
+            "10.0.0.196:9443",
+            "0.0.0.0",
+            allowed_hosts=allowed_hosts,
+        )
+        assert not _is_accepted_host(
+            "evil.example:9443",
+            "0.0.0.0",
+            allowed_hosts=allowed_hosts,
+        )
+        assert _is_accepted_host(
+            "localhost:9119",
+            "127.0.0.1",
+            allowed_hosts={"hermes-dashboard.transformers.lan"},
+        )
+        assert _is_accepted_host(
+            "hermes-dashboard.transformers.lan:9443",
+            "127.0.0.1",
+            allowed_hosts={"hermes-dashboard.transformers.lan"},
+        )
 
     def test_explicit_non_loopback_bind_requires_exact_match(self):
         """If the operator bound to a specific non-loopback hostname,
@@ -146,3 +182,73 @@ class TestHostHeaderMiddleware:
         resp = client.get("/api/status")
         # Should get through to the status endpoint, not a 400
         assert resp.status_code != 400
+
+
+class TestDashboardServerStartup:
+    def test_start_server_passes_tls_files_to_uvicorn(self, tmp_path, monkeypatch):
+        import uvicorn
+        from hermes_cli.web_server import app, start_server
+
+        cert = tmp_path / "dashboard.crt"
+        key = tmp_path / "dashboard.key"
+        cert.write_text("test cert")
+        key.write_text("test key")
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append((args, kwargs))
+
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+
+        start_server(
+            host="0.0.0.0",
+            port=9443,
+            open_browser=False,
+            allow_public=True,
+            tls_cert=str(cert),
+            tls_key=str(key),
+            allowed_hosts={"hermes-dashboard.transformers.lan", "10.0.0.196"},
+        )
+
+        assert calls == [
+            (
+                (app,),
+                {
+                    "host": "0.0.0.0",
+                    "port": 9443,
+                    "log_level": "warning",
+                    "proxy_headers": False,
+                    "ssl_certfile": str(cert),
+                    "ssl_keyfile": str(key),
+                },
+            )
+        ]
+        assert app.state.allowed_hosts == {
+            "hermes-dashboard.transformers.lan",
+            "10.0.0.196",
+        }
+
+    def test_start_server_rejects_partial_tls_configuration(self, tmp_path):
+        from hermes_cli.web_server import start_server
+
+        cert = tmp_path / "dashboard.crt"
+        cert.write_text("test cert")
+
+        with pytest.raises(SystemExit, match="both --tls-cert and --tls-key"):
+            start_server(
+                host="127.0.0.1",
+                port=9443,
+                open_browser=False,
+                tls_cert=str(cert),
+            )
+
+    def test_tls_dashboard_uses_wss_sidecar_url(self, monkeypatch):
+        from hermes_cli.web_server import _build_sidecar_url, app
+
+        monkeypatch.setattr(app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(app.state, "bound_port", 9443, raising=False)
+        monkeypatch.setattr(app.state, "dashboard_tls_enabled", True, raising=False)
+
+        url = _build_sidecar_url("abc-123")
+        assert url is not None
+        assert url.startswith("wss://127.0.0.1:9443/api/pub?")

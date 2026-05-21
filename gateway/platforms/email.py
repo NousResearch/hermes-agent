@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import smtplib
+import socket
 import ssl
 import uuid
 from email.header import decode_header
@@ -424,6 +425,8 @@ class EmailAdapter(BasePlatformAdapter):
                     imap.logout()
                 except Exception:
                     pass
+        except (TimeoutError, socket.timeout, imaplib.IMAP4.abort) as e:
+            logger.warning("[Email] IMAP transient timeout/abort during poll: %s", e)
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
         return results

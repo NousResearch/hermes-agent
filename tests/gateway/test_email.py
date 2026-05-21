@@ -871,6 +871,19 @@ class TestFetchNewMessages(unittest.TestCase):
 
         self.assertEqual(results, [])
 
+    def test_fetch_handles_timeout_as_transient_warning(self):
+        """Read timeouts are transient poll noise, not hard adapter errors."""
+        import socket
+        adapter = self._make_adapter()
+
+        with patch("imaplib.IMAP4_SSL", side_effect=socket.timeout("The read operation timed out")), \
+             self.assertLogs("gateway.platforms.email", level="WARNING") as logs:
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        self.assertTrue(any("transient timeout" in line for line in logs.output))
+        self.assertFalse(any("IMAP fetch error" in line for line in logs.output))
+
     def test_fetch_extracts_sender_name(self):
         """Sender name should be extracted from 'Name <addr>' format."""
         adapter = self._make_adapter()

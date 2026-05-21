@@ -131,6 +131,20 @@ class TestStoreInit:
         assert _init_store(store, str(work_dir)) is None
         assert _init_store(store, str(work_dir)) is None
 
+    def test_init_repairs_store_missing_refs_directory(self, work_dir, checkpoint_base, monkeypatch):
+        """A partially-created bare store is repaired instead of left non-git."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        (store / "refs").rename(store / "refs.missing")
+
+        assert _init_store(store, str(work_dir)) is None
+
+        assert (store / "refs" / "heads").exists()
+        ok, stdout, stderr = _run_git(["rev-parse", "--git-dir"], store, str(work_dir))
+        assert ok
+        assert stdout == str(store)
+
     def test_bc_init_shadow_repo_shim(self, work_dir, checkpoint_base, monkeypatch):
         """Backward-compatible helper still works for old callers/tests."""
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)

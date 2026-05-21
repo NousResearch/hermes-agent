@@ -402,7 +402,42 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         _migrate_legacy_store(base)
 
     if (store / "HEAD").exists():
-        return None
+        for rel in (
+            _INDEXES_DIRNAME,
+            _PROJECTS_DIRNAME,
+            "refs",
+            "refs/heads",
+            "refs/tags",
+            _REFS_PREFIX,
+            "objects/info",
+            "objects/pack",
+            "info",
+        ):
+            try:
+                (store / rel).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                return f"Could not repair checkpoint store {store / rel}: {exc}"
+        exclude_path = store / "info" / "exclude"
+        if not exclude_path.exists():
+            try:
+                exclude_path.write_text(
+                    "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
+                )
+            except OSError as exc:
+                return f"Could not repair checkpoint exclude file: {exc}"
+        ok, _stdout, stderr = _run_git(
+            ["rev-parse", "--git-dir"], store, working_dir, allowed_returncodes={128}
+        )
+        if ok:
+            return None
+        logger.warning("Repairing invalid checkpoint store at %s: %s", store, stderr)
+        try:
+            for rel in ("HEAD", "config", "description"):
+                path = store / rel
+                if path.exists():
+                    path.unlink()
+        except OSError as exc:
+            return f"Could not reset invalid checkpoint store: {exc}"
 
     store.mkdir(parents=True, exist_ok=True)
     (store / _INDEXES_DIRNAME).mkdir(exist_ok=True)

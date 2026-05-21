@@ -55,9 +55,9 @@ Cwd rules:
 
 1. An explicit configured `terminal.cwd` wins.
 2. Placeholder or missing cwd first falls back to an existing non-placeholder `TERMINAL_CWD`.
-3. If no safe existing `TERMINAL_CWD` exists, use `MESSAGING_CWD`.
-4. If neither env value is usable, fall back to `Path.home()`.
-5. Placeholders are `.`, `auto`, and `cwd`.
+3. If no existing non-placeholder `TERMINAL_CWD` exists, gateway uses `MESSAGING_CWD` as provided.
+4. If `MESSAGING_CWD` is absent, gateway falls back to `Path.home()`.
+5. Placeholders are `.`, `auto`, and `cwd`. Existing `TERMINAL_CWD` placeholders are ignored, but `MESSAGING_CWD` is not placeholder-filtered by current code.
 
 Gateway and CLI cwd behavior intentionally differ: gateway prioritizes stable service/runtime cwd, while direct CLI prioritizes the user's invocation cwd for local work.
 

@@ -3,8 +3,11 @@
 Covers any endpoint registered as provider="custom", including local
 Ollama instances. Key quirks:
   - ollama_num_ctx → extra_body.options.num_ctx (local context window)
-  - reasoning_config disabled → extra_body.think = False
+  - reasoning disabled → reasoning_effort="none" on /v1/chat/completions
+                         + think=False on /api/chat (for proxies/older Ollama)
 """
+
+from __future__ import annotations
 
 from typing import Any
 
@@ -13,7 +16,7 @@ from providers.base import ProviderProfile
 
 
 class CustomProfile(ProviderProfile):
-    """Custom/Ollama local provider — think=false and num_ctx support."""
+    """Custom/Ollama local provider — think control and num_ctx support."""
 
     def build_api_kwargs_extras(
         self,
@@ -23,6 +26,7 @@ class CustomProfile(ProviderProfile):
         **ctx: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
+        top_level: dict[str, Any] = {}
 
         # Ollama context window
         if ollama_num_ctx:
@@ -30,14 +34,17 @@ class CustomProfile(ProviderProfile):
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
-        # Disable thinking when reasoning is turned off
+        # Disable thinking when reasoning is turned off.
+        # Ollama's /v1/chat/completions honours reasoning_effort="none" (#14820).
+        # The native /api/chat field think=False is also emitted for proxies.
         if reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
-                extra_body["think"] = False
+                top_level["reasoning_effort"] = "none"  # /v1/chat/completions
+                extra_body["think"] = False             # /api/chat + proxies
 
-        return extra_body, {}
+        return extra_body, top_level
 
     def fetch_models(
         self,

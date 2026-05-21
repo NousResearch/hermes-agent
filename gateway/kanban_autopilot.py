@@ -267,6 +267,22 @@ def simulate_closed_loop_ticks(candidates: list[dict[str, Any]], *, max_ticks: O
         "mutations_attempted": list(_MUTATIONS_ATTEMPTED),
     }
 
+def _candidate_active_flight(candidate: dict[str, Any]) -> Optional[dict[str, Any]]:
+    status = str(candidate.get("status") or "").lower()
+    claim_lock = candidate.get("claim_lock")
+    worker_pid = candidate.get("worker_pid")
+    current_run_id = candidate.get("current_run_id")
+    if status not in {"running", "claimed", "in_progress"} and not any([claim_lock, worker_pid, current_run_id]):
+        return None
+    return {
+        "public_id": candidate.get("public_id"),
+        "task_id": candidate.get("task_id") or candidate.get("id"),
+        "current_run_id": current_run_id,
+        "claim_lock": claim_lock,
+        "worker_pid": worker_pid,
+    }
+
+
 def activate_single_flight(
     candidates: list[dict[str, Any]],
     *,
@@ -278,6 +294,33 @@ def activate_single_flight(
     supplied check-only handoff probe, and returns explicit non-completion
     evidence. It never directly dispatches, claims, spawns, or mutates Kanban.
     """
+
+    active_flights = [flight for candidate in candidates if (flight := _candidate_active_flight(candidate))]
+    if active_flights:
+        skipped = [
+            {
+                "public_id": candidate.get("public_id"),
+                "task_id": candidate.get("task_id") or candidate.get("id"),
+                "status": "skipped",
+                "reason_codes": ["active_flight_already_present"],
+                "human_reason": "single-flight activation blocked because the scoped Kanban set already has an active worker flight",
+            }
+            for candidate in candidates
+            if not _candidate_active_flight(candidate)
+        ]
+        return {
+            "status": "active_flight_blocked",
+            "selected": None,
+            "skipped": skipped,
+            "handoff": None,
+            "check": {"allowed": False, "reason": "active_flight_already_present"},
+            "active_flights": active_flights,
+            "next_state": "needs_human",
+            "handoff_success_is_worker_completion": False,
+            "worker_done_observed": False,
+            "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+            "mutations_attempted": list(_MUTATIONS_ATTEMPTED),
+        }
 
     simulation = simulate_closed_loop_ticks(candidates, max_ticks=1)
     selected = (simulation.get("would_select") or [])[:1]
@@ -491,6 +534,152 @@ def generate_autopilot_run_report(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_autopilot_review_package(
+    evidence: dict[str, Any],
+    *,
+    run_report: Optional[dict[str, Any]] = None,
+    expected_repo_full_name: str = "chriskim12/hermes-agent",
+) -> dict[str, Any]:
+    """Build a review-ready package proof without granting live authority.
+
+    BO-118 packages worker evidence, PR/check truth, and operator run facts in
+    one machine-readable shape.  It may prove review readiness, but it never
+    grants merge, release, deploy, gateway restart/reload, or worker-completion
+    authority from handoff alone.
+    """
+
+    closeout = evaluate_autopilot_closeout_progress(evidence)
+    review_contract = evaluate_review_ready_contract(evidence, expected_repo_full_name=expected_repo_full_name)
+    report = generate_autopilot_run_report(run_report or {})
+    reason_codes: list[str] = []
+    for code in closeout.get("reason_codes") or []:
+        if code not in reason_codes:
+            reason_codes.append(code)
+    for code in review_contract.get("reason_codes") or []:
+        if code not in reason_codes:
+            reason_codes.append(code)
+    review_ready = bool(closeout.get("may_continue") and review_contract.get("review_ready"))
+    pr_url = str(evidence.get("pr_url") or "").strip()
+    text_lines = [
+        "Autopilot review-ready PR package" if review_ready else "Autopilot review package blocked",
+        f"work_id={evidence.get('work_id') or 'unknown'}",
+        f"commit={evidence.get('commit') or evidence.get('head_sha') or 'missing'}",
+        f"branch={evidence.get('task_branch') or evidence.get('branch') or 'missing'}",
+        f"pr={pr_url or 'missing'}",
+        f"run_next_state={report['summary']['next_state']}",
+        "merge/release/deploy remains forbidden without current-turn approval.",
+        "handoff_success_is_worker_completion=False",
+    ]
+    return {
+        "status": "review_package_ready" if review_ready else "review_package_blocked",
+        "review_ready": review_ready,
+        "reason_codes": reason_codes,
+        "work_id": evidence.get("work_id"),
+        "commit": evidence.get("commit") or evidence.get("head_sha"),
+        "task_branch": evidence.get("task_branch") or evidence.get("branch"),
+        "pr": {
+            "url": pr_url,
+            "base": evidence.get("pr_base"),
+            "head": evidence.get("pr_head"),
+            "checks_passed": evidence.get("checks_passed") is True,
+        },
+        "run_report": report,
+        "closeout_progress": closeout,
+        "review_contract": review_contract,
+        "authority": {
+            "ceiling": "review_ready_pr",
+            "merge_allowed": False,
+            "release_allowed": False,
+            "deploy_allowed": False,
+            "gateway_restart_reload_allowed": False,
+            "prod_customer_visible_allowed": False,
+            "config_env_secret_mutation_allowed": False,
+        },
+        "worker_done_observed": evidence.get("kanban_worker_done") is True,
+        "handoff_success_is_worker_completion": False,
+        "next_state": "review_ready" if review_ready else "needs_human",
+        "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+        "text": "\n".join(text_lines),
+    }
+
+
+def evaluate_autopilot_promotion_policy(proof: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate whether first live pickup proof may promote to bounded check-only mode.
+
+    BO-119 intentionally promotes only the *policy state* to a narrow,
+    parent-scoped, check-only bounded mode. It does not grant live dispatch,
+    worker claim/spawn, PR/push, merge, gateway restart/reload, or config/env
+    mutation authority. Those remain current-turn approval gates.
+    """
+
+    reason_codes: list[str] = []
+    parent_public_id = str(proof.get("parent_public_id") or "").strip()
+    if not parent_public_id:
+        reason_codes.append("missing_parent_scope")
+    if proof.get("live_pickup_smoke_passed") is not True:
+        reason_codes.append("live_pickup_smoke_missing")
+    if proof.get("single_flight_guard_passed") is not True:
+        reason_codes.append("single_flight_guard_missing")
+    if proof.get("review_package_ready") is not True:
+        reason_codes.append("review_package_not_ready")
+    worker_done_children = list(proof.get("kanban_worker_done_children") or [])
+    if len(worker_done_children) < 3:
+        reason_codes.append("insufficient_worker_done_child_proofs")
+    if int(proof.get("active_flights") or 0) > 0:
+        reason_codes.append("active_flight_present")
+    max_open = int(proof.get("max_open_autopilot_prs") or _DEFAULT_CLOSED_LOOP_CAPS["max_open_autopilot_prs"])
+    if int(proof.get("open_autopilot_prs") or 0) >= max_open:
+        reason_codes.append("pr_backlog_cap_reached")
+    requested_mode = str(proof.get("requested_mode") or "bounded_multi_tick")
+    allowed_requested_modes = {"bounded_multi_tick", "parent_scoped"}
+    if requested_mode not in allowed_requested_modes:
+        reason_codes.append("requested_mode_not_allowed")
+    if proof.get("request_live_dispatch") is True:
+        reason_codes.append("live_dispatch_requires_current_turn_approval")
+    if proof.get("request_gateway_restart_reload") is True:
+        reason_codes.append("gateway_restart_reload_requires_current_turn_approval")
+    if proof.get("request_config_env_secret_mutation") is True:
+        reason_codes.append("config_env_secret_mutation_requires_current_turn_approval")
+    promotion_allowed = not reason_codes
+    authority = {
+        "ceiling": "review_ready_pr",
+        "worker_dispatch_claim_spawn_allowed": False,
+        "push_pr_allowed": False,
+        "merge_allowed": False,
+        "release_allowed": False,
+        "deploy_allowed": False,
+        "gateway_restart_reload_allowed": False,
+        "prod_customer_visible_allowed": False,
+        "config_env_secret_mutation_allowed": False,
+    }
+    caps = {
+        "max_tasks_per_run": _DEFAULT_CLOSED_LOOP_CAPS["max_tasks_per_run_early_bounded_multi_tick"],
+        "max_active_flights": _DEFAULT_CLOSED_LOOP_CAPS["max_active_flights"],
+        "max_dispatches_per_tick": _DEFAULT_CLOSED_LOOP_CAPS["max_dispatches_per_tick"],
+        "max_new_prs_per_run": _DEFAULT_CLOSED_LOOP_CAPS["max_new_prs_per_run"],
+        "max_consecutive_failures": _DEFAULT_CLOSED_LOOP_CAPS["max_consecutive_failures"],
+        "require_review_ready_contract_before_next_task": True,
+    }
+    return {
+        "promotion_allowed": promotion_allowed,
+        "promoted_mode": "bounded_multi_tick_check_only" if promotion_allowed else "blocked",
+        "reason_codes": reason_codes,
+        "scope": {
+            "parent_public_id": parent_public_id or None,
+            "scope_can_silently_widen": False,
+        },
+        "caps": caps,
+        "authority": authority,
+        "requires_current_turn_approval_for_live_dispatch": True,
+        "requires_current_turn_approval_for_push_pr": True,
+        "requires_current_turn_approval_for_gateway_restart_reload": True,
+        "handoff_success_is_worker_completion": False,
+        "worker_done_truth_source": "kanban_dispatcher_worker_done_evidence",
+        "next_state": "promote_check_only" if promotion_allowed else "needs_human",
+        "dry_run_side_effects": {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0},
+    }
+
+
 def harden_autopilot_policy(contract: dict[str, Any]) -> dict[str, Any]:
     """Fail-closed policy hardening gate for closed-loop Autopilot."""
 
@@ -620,6 +809,130 @@ def _write_state(state: dict[str, Any], path: Optional[Path] = None) -> dict[str
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return _read_state(state_path)
+
+
+def _json_object_maybe(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {"raw": value}
+    return parsed if isinstance(parsed, dict) else {"raw": parsed}
+
+
+def _task_row_to_candidate(row: Any, *, parent_public_id: Optional[str] = None, relation_type: Optional[str] = None) -> dict[str, Any]:
+    routing = _json_object_maybe(row["routing_verdict"] if "routing_verdict" in row.keys() else None)
+    admission = _json_object_maybe(row["admission_snapshot"] if "admission_snapshot" in row.keys() else None)
+    closeout = _json_object_maybe(row["closeout_evidence"] if "closeout_evidence" in row.keys() else None)
+    skills: list[str] = []
+    if "skills" in row.keys() and row["skills"]:
+        try:
+            parsed_skills = json.loads(row["skills"])
+            if isinstance(parsed_skills, list):
+                skills = [str(skill) for skill in parsed_skills if skill]
+        except json.JSONDecodeError:
+            skills = []
+    candidate = {
+        "id": row["id"],
+        "task_id": row["id"],
+        "public_id": row["public_id"] if "public_id" in row.keys() else None,
+        "title": row["title"],
+        "body": row["body"],
+        "status": row["status"],
+        "assignee": row["assignee"],
+        "tenant": row["tenant"] if "tenant" in row.keys() else None,
+        "priority": row["priority"],
+        "routing_verdict": routing,
+        "admission_snapshot": admission,
+        "closeout_evidence": closeout,
+        "parent_public_id": parent_public_id,
+        "relation_type": relation_type,
+        "skills": skills,
+        "claim_lock": row["claim_lock"],
+        "worker_pid": row["worker_pid"] if "worker_pid" in row.keys() else None,
+        "current_run_id": row["current_run_id"] if "current_run_id" in row.keys() else None,
+    }
+    repo = admission.get("repo_full_name") or (admission.get("repo_intent") or {}).get("repo_full_name")
+    if repo:
+        candidate["repo_full_name"] = repo
+    return candidate
+
+
+def load_live_kanban_candidates(
+    *,
+    parent_public_id: Optional[str] = None,
+    tenant: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Read live Kanban candidates for Autopilot without mutating the board.
+
+    If a parent/focus public id is supplied, only hierarchy children of that
+    parent are returned.  Without an explicit parent this deliberately returns
+    only ``ready`` tasks, keeping the read side narrow and side-effect free.
+    """
+
+    try:
+        from hermes_cli import kanban_db as kb
+    except Exception:
+        return []
+    with kb.connect() as conn:
+        if parent_public_id:
+            parent = conn.execute(
+                "SELECT id, public_id FROM tasks WHERE public_id = ? OR id = ? LIMIT 1",
+                (parent_public_id, parent_public_id),
+            ).fetchone()
+            if not parent:
+                return []
+            params: list[Any] = [parent["id"]]
+            query = """
+                SELECT c.*, l.relation_type AS relation_type, p.public_id AS parent_public_id
+                FROM task_links l
+                JOIN tasks p ON p.id = l.parent_id
+                JOIN tasks c ON c.id = l.child_id
+                WHERE l.parent_id = ? AND l.relation_type = 'hierarchy' AND c.status != 'archived'
+            """
+            if tenant:
+                query += " AND c.tenant = ?"
+                params.append(tenant)
+            query += " ORDER BY c.priority DESC, c.created_at ASC LIMIT ?"
+            params.append(max(1, int(limit)))
+            rows = conn.execute(query, params).fetchall()
+            return [
+                _task_row_to_candidate(row, parent_public_id=parent["public_id"] or parent_public_id, relation_type=row["relation_type"])
+                for row in rows
+            ]
+        params = []
+        query = "SELECT * FROM tasks WHERE status = 'ready'"
+        if tenant:
+            query += " AND tenant = ?"
+            params.append(tenant)
+        query += " ORDER BY priority DESC, created_at ASC LIMIT ?"
+        params.append(max(1, int(limit)))
+        rows = conn.execute(query, params).fetchall()
+        return [_task_row_to_candidate(row) for row in rows]
+
+
+def _candidate_scope_for(command: AutopilotCommand) -> dict[str, Any]:
+    state = _read_state()
+    raw_scope = str(command.value or state.get("focus") or "").strip()
+    scope: dict[str, Any] = {"parent_public_id": None, "tenant": None}
+    if raw_scope:
+        scope["parent_public_id"] = raw_scope.upper()
+    return scope
+
+
+def _resolve_candidates(command: AutopilotCommand, candidates: Optional[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    if candidates is not None:
+        return candidates
+    scope = _candidate_scope_for(command)
+    return load_live_kanban_candidates(
+        parent_public_id=scope.get("parent_public_id"),
+        tenant=scope.get("tenant"),
+        limit=50,
+    )
 
 
 def parse_autopilot_args(raw_args: str) -> AutopilotCommand:
@@ -1049,11 +1362,11 @@ def handle_autopilot_command(
         )
 
     if command.action == "queue":
-        decision = _queue_decision(command, actor=actor, candidates=candidates)
+        decision = _queue_decision(command, actor=actor, candidates=_resolve_candidates(command, candidates))
         return AutopilotResult(True, command, _format_queue_message(decision), decision, False)
 
     if command.action == "dry-run":
-        decision = _closed_loop_dry_run_decision(command, actor=actor, candidates=candidates)
+        decision = _closed_loop_dry_run_decision(command, actor=actor, candidates=_resolve_candidates(command, candidates))
         return AutopilotResult(True, command, _format_closed_loop_dry_run_message(decision), decision, False)
 
     if command.action in {"status"}:
@@ -1061,7 +1374,7 @@ def handle_autopilot_command(
         return AutopilotResult(True, command, _format_status_message(decision), decision, False)
 
     if command.action == "once":
-        decision = _once_decision(command, actor=actor, candidates=candidates)
+        decision = _once_decision(command, actor=actor, candidates=_resolve_candidates(command, candidates))
         return AutopilotResult(True, command, _format_once_message(decision), decision, False)
 
     if command.action in _CONTROL_ACTIONS:

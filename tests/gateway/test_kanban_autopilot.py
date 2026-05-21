@@ -519,6 +519,30 @@ def test_single_flight_activation_runs_one_check_only_handoff_and_no_dispatch(tm
     assert forbidden_calls == []
 
 
+def test_single_flight_activation_blocks_when_scope_already_has_active_flight(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from gateway.kanban_autopilot import activate_single_flight, handle_autopilot_command
+
+    handle_autopilot_command("on", actor="tester")
+    active = _ready_candidate("BO-116")
+    active.update({"id": "t_active", "task_id": "t_active", "status": "running", "current_run_id": 42})
+    ready = _ready_candidate("BO-117")
+
+    result = activate_single_flight([active, ready])
+
+    assert result["status"] == "active_flight_blocked"
+    assert result["selected"] is None
+    assert result["handoff"] is None
+    assert result["next_state"] == "needs_human"
+    assert result["handoff_success_is_worker_completion"] is False
+    assert result["worker_done_observed"] is False
+    assert result["dry_run_side_effects"] == {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0}
+    assert result["active_flights"] == [{"public_id": "BO-116", "task_id": "t_active", "current_run_id": 42, "claim_lock": None, "worker_pid": None}]
+    assert result["skipped"][0]["public_id"] == "BO-117"
+    assert result["skipped"][0]["reason_codes"] == ["active_flight_already_present"]
+
+
 def test_single_flight_activation_blocks_on_failed_check_without_completion(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -676,6 +700,117 @@ def test_operator_report_explains_zero_work():
     assert "no_progress" in report["text"]
 
 
+def test_review_package_proof_summarizes_pr_readiness_without_live_authority():
+    from gateway.kanban_autopilot import build_autopilot_review_package
+
+    evidence = {
+        "work_id": "BO-118",
+        "repo_full_name": "chriskim12/hermes-agent",
+        "commit": "91d572c971956e705cbfccc19990bf1ed128c239",
+        "task_branch": "bo-118-autopilot-review-package",
+        "pr_url": "https://github.com/chriskim12/hermes-agent/pull/118",
+        "pr_base": "main",
+        "pr_head": "bo-118-autopilot-review-package",
+        "checks_passed": True,
+        "worktree_clean": True,
+        "kanban_worker_done": True,
+        "boundaries_confirmed": True,
+    }
+    run_report = {
+        "executed": [{"public_id": "BO-116"}, {"public_id": "BO-117"}],
+        "skipped": [{"public_id": "BO-119", "reason_codes": ["not_in_scope_yet"]}],
+        "would_pause": [],
+        "next_state": "continue",
+    }
+
+    package = build_autopilot_review_package(evidence, run_report=run_report)
+
+    assert package["review_ready"] is True
+    assert package["status"] == "review_package_ready"
+    assert package["work_id"] == "BO-118"
+    assert package["pr"]["url"] == "https://github.com/chriskim12/hermes-agent/pull/118"
+    assert package["run_report"]["summary"]["executed_count"] == 2
+    assert package["authority"]["ceiling"] == "review_ready_pr"
+    assert package["authority"]["merge_allowed"] is False
+    assert package["authority"]["release_allowed"] is False
+    assert package["authority"]["gateway_restart_reload_allowed"] is False
+    assert package["authority"]["prod_customer_visible_allowed"] is False
+    assert package["worker_done_observed"] is True
+    assert package["handoff_success_is_worker_completion"] is False
+    assert package["dry_run_side_effects"] == {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0}
+    assert "review-ready PR package" in package["text"]
+    assert "merge/release/deploy remains forbidden" in package["text"]
+
+
+def test_review_package_proof_blocks_missing_pr_or_worker_evidence():
+    from gateway.kanban_autopilot import build_autopilot_review_package
+
+    package = build_autopilot_review_package({"work_id": "BO-118", "commit": "91d572c971956e705cbfccc19990bf1ed128c239"})
+
+    assert package["review_ready"] is False
+    assert package["status"] == "review_package_blocked"
+    assert "worker_done_not_observed" in package["reason_codes"]
+    assert "missing_review_ready_contract" in package["reason_codes"]
+    assert package["authority"]["merge_allowed"] is False
+    assert package["next_state"] == "needs_human"
+
+
+def test_promotion_policy_allows_only_bounded_parent_scoped_check_only_after_proofs():
+    from gateway.kanban_autopilot import evaluate_autopilot_promotion_policy
+
+    result = evaluate_autopilot_promotion_policy({
+        "parent_public_id": "BO-114",
+        "live_pickup_smoke_passed": True,
+        "single_flight_guard_passed": True,
+        "review_package_ready": True,
+        "kanban_worker_done_children": ["BO-116", "BO-117", "BO-118"],
+        "active_flights": 0,
+        "open_autopilot_prs": 0,
+        "requested_mode": "bounded_multi_tick",
+    })
+
+    assert result["promotion_allowed"] is True
+    assert result["promoted_mode"] == "bounded_multi_tick_check_only"
+    assert result["scope"]["parent_public_id"] == "BO-114"
+    assert result["caps"]["max_tasks_per_run"] == 2
+    assert result["caps"]["max_active_flights"] == 1
+    assert result["authority"]["worker_dispatch_claim_spawn_allowed"] is False
+    assert result["authority"]["merge_allowed"] is False
+    assert result["authority"]["gateway_restart_reload_allowed"] is False
+    assert result["authority"]["config_env_secret_mutation_allowed"] is False
+    assert result["requires_current_turn_approval_for_live_dispatch"] is True
+    assert result["dry_run_side_effects"] == {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0}
+    assert result["next_state"] == "promote_check_only"
+
+
+def test_promotion_policy_blocks_missing_proofs_or_authority_expansion():
+    from gateway.kanban_autopilot import evaluate_autopilot_promotion_policy
+
+    result = evaluate_autopilot_promotion_policy({
+        "parent_public_id": "BO-114",
+        "live_pickup_smoke_passed": True,
+        "single_flight_guard_passed": False,
+        "review_package_ready": False,
+        "active_flights": 1,
+        "open_autopilot_prs": 3,
+        "requested_mode": "global_queue_draining",
+        "request_live_dispatch": True,
+        "request_gateway_restart_reload": True,
+    })
+
+    assert result["promotion_allowed"] is False
+    assert result["promoted_mode"] == "blocked"
+    assert "single_flight_guard_missing" in result["reason_codes"]
+    assert "review_package_not_ready" in result["reason_codes"]
+    assert "active_flight_present" in result["reason_codes"]
+    assert "pr_backlog_cap_reached" in result["reason_codes"]
+    assert "requested_mode_not_allowed" in result["reason_codes"]
+    assert "live_dispatch_requires_current_turn_approval" in result["reason_codes"]
+    assert "gateway_restart_reload_requires_current_turn_approval" in result["reason_codes"]
+    assert result["next_state"] == "needs_human"
+    assert result["authority"]["worker_dispatch_claim_spawn_allowed"] is False
+
+
 def test_policy_hardening_rejects_forbidden_authority_expansion():
     from gateway.kanban_autopilot import get_closed_loop_operating_contract, harden_autopilot_policy
 
@@ -733,6 +868,52 @@ def test_autopilot_dry_run_command_uses_closed_loop_simulator(tmp_path, monkeypa
     assert result.decision["closed_loop"]["would_select"][0]["public_id"] == "BO-090"
     assert result.decision["dry_run_side_effects"] == {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0}
     assert "would_select=1" in result.message
+
+
+def test_autopilot_dry_run_loads_live_kanban_candidates_when_not_injected(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from gateway import kanban_autopilot
+
+    calls: list[dict] = []
+
+    def fake_loader(*, parent_public_id=None, tenant=None, limit=50):
+        calls.append({"parent_public_id": parent_public_id, "tenant": tenant, "limit": limit})
+        return [_ready_candidate("BO-115")]
+
+    monkeypatch.setattr(kanban_autopilot, "load_live_kanban_candidates", fake_loader, raising=False)
+    kanban_autopilot.handle_autopilot_command("on", actor="tester")
+
+    result = kanban_autopilot.handle_autopilot_command("dry-run BO-114", actor="tester")
+
+    assert result.ok is True
+    assert calls == [{"parent_public_id": "BO-114", "tenant": None, "limit": 50}]
+    assert result.decision["closed_loop"]["would_select"][0]["public_id"] == "BO-115"
+    assert result.decision["dry_run_side_effects"] == {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0}
+
+
+def test_autopilot_once_loads_live_kanban_candidates_for_check_only_handoff(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from gateway import kanban_autopilot
+
+    calls: list[dict] = []
+
+    def fake_loader(*, parent_public_id=None, tenant=None, limit=50):
+        calls.append({"parent_public_id": parent_public_id, "tenant": tenant, "limit": limit})
+        return [_ready_candidate("BO-115")]
+
+    monkeypatch.setattr(kanban_autopilot, "load_live_kanban_candidates", fake_loader, raising=False)
+    kanban_autopilot.handle_autopilot_command("on", actor="tester")
+
+    result = kanban_autopilot.handle_autopilot_command("once BO-114", actor="tester")
+
+    assert result.ok is True
+    assert calls == [{"parent_public_id": "BO-114", "tenant": None, "limit": 50}]
+    assert result.decision["status"] == "CHECK_ONLY_HANDOFF_READY"
+    assert result.decision["single_flight"]["selected"]["public_id"] == "BO-115"
+    assert result.decision["single_flight"]["handoff"]["check_only"] is True
+    assert result.decision["single_flight"]["handoff"]["would_dispatch"] is False
 
 
 def test_autopilot_once_command_uses_single_flight_check_only_not_completion(tmp_path, monkeypatch):

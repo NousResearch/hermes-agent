@@ -152,6 +152,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "cursor_agent": {
+        "description": (
+            "Cursor SDK agent bridge for running Composer 2.5 or other Cursor "
+            "models as a specialist coding/design agent. Opt-in and gated on "
+            "CURSOR_API_KEY plus Node.js."
+        ),
+        "tools": ["cursor_agent"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],

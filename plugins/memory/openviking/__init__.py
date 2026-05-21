@@ -403,6 +403,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
+        # Monotonic counter incremented on every session switch. Prefetch
+        # workers capture the value when spawned and refuse to write their
+        # result if the generation has advanced — otherwise a slow worker
+        # from session N can repopulate session N+1 with stale recall.
+        self._prefetch_generation = 0
 
     @property
     def name(self) -> str:
@@ -515,6 +520,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not self._client or not query:
             return
 
+        # Snapshot the generation at spawn time. If on_session_switch bumps it
+        # before this worker finishes, the worker drops its result instead of
+        # repopulating the new session with stale recall from the old one.
+        gen = self._prefetch_generation
+
         def _run():
             try:
                 client = _VikingClient(
@@ -537,6 +547,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                             parts.append(f"- [{score:.2f}] {abstract} ({uri})")
                 if parts:
                     with self._prefetch_lock:
+                        if gen != self._prefetch_generation:
+                            return
                         self._prefetch_result = "\n".join(parts)
             except Exception as e:
                 logger.debug("OpenViking prefetch failed: %s", e)
@@ -604,6 +616,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # the count hasn't been incremented yet.
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
+            if self._sync_thread.is_alive():
+                # Worker outlived the bounded join — each POST has _TIMEOUT=30s
+                # and there are two of them per turn. Committing now would
+                # orphan the worker's late writes past the commit boundary
+                # (they'd land in an already-committed session and never be
+                # extracted). Skip the commit; leave _turn_count untouched so
+                # the session stays marked dirty for any retry path.
+                logger.warning(
+                    "OpenViking sync worker still alive after 10s join — "
+                    "skipping commit on session %s to avoid orphaning late writes",
+                    self._session_id,
+                )
+                return
 
         if self._turn_count == 0:
             return
@@ -649,16 +674,29 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # below always target the session whose writes we want to flush.
         old_session_id = self._session_id
         old_turn_count = self._turn_count
+        sync_worker_drained = True
 
         # 1. Wait for any in-flight sync_turn to finish writing under the
         # OLD session id — otherwise it races the commit below.
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
+            if self._sync_thread.is_alive():
+                # Same hazard as on_session_end: worker outlived the bounded
+                # join. Skip the commit so its late writes aren't orphaned
+                # past a commit boundary they can't recover from.
+                sync_worker_drained = False
+                logger.warning(
+                    "OpenViking sync worker still alive after 10s join — "
+                    "skipping commit-on-switch for session %s; late writes "
+                    "will remain in the uncommitted old session",
+                    old_session_id,
+                )
 
         # 2. Commit the old session if it accumulated turns — same
         # extraction semantics as on_session_end. Skip if empty (nothing
-        # to extract) or if the provider was never initialized.
-        if old_session_id and old_turn_count > 0:
+        # to extract), if the provider was never initialized, or if the
+        # sync worker is still mid-flight.
+        if sync_worker_drained and old_session_id and old_turn_count > 0:
             try:
                 self._client.post(f"/api/v1/sessions/{old_session_id}/commit")
                 logger.info(
@@ -671,8 +709,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     old_session_id, e,
                 )
 
-        # 3. Drain in-flight prefetch from the old session and drop its
-        # cached result so the new session doesn't see stale recall.
+        # 3. Bump the prefetch generation so any in-flight prefetch worker
+        # finishing AFTER this point drops its result. Then drain the
+        # current worker and clear the cached result so the new session
+        # doesn't see stale recall from the old one.
+        self._prefetch_generation += 1
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
@@ -691,6 +732,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not self._client or action != "add" or not content:
             return
 
+        # Snapshot the target session id at call time — see sync_turn() for
+        # the rationale. A delayed worker that reads self._session_id after
+        # on_session_switch has rotated it would land the memory note in the
+        # NEW session.
+        sid = str(self._session_id or "").strip()
+        if not sid:
+            return
+
         def _write():
             try:
                 client = _VikingClient(
@@ -699,7 +748,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 )
                 # Add as a user message with memory context so the commit
                 # picks it up as an explicit memory during extraction
-                client.post(f"/api/v1/sessions/{self._session_id}/messages", {
+                client.post(f"/api/v1/sessions/{sid}/messages", {
                     "role": "user",
                     "parts": [
                         {"type": "text", "text": f"[Memory note — {target}] {content}"},

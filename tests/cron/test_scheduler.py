@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, CRON_STATUS_ERROR_MARKER, _build_job_prompt
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -445,7 +445,7 @@ class TestRoutingIntents:
         from cron.scheduler import _resolve_delivery_targets
 
         for var in ("TELEGRAM_HOME_CHANNEL", "DISCORD_HOME_CHANNEL", "SLACK_HOME_CHANNEL",
-                    "SIGNAL_HOME_CHANNEL", "MATRIX_HOME_ROOM", "MATTERMOST_HOME_CHANNEL",
+                    "LINE_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL", "MATRIX_HOME_ROOM", "MATTERMOST_HOME_CHANNEL",
                     "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL",
                     "FEISHU_HOME_CHANNEL", "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL",
                     "BLUEBUBBLES_HOME_CHANNEL", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL"):
@@ -478,6 +478,12 @@ class TestRoutingIntents:
         """'ALL' / 'All' / 'all' are all recognized."""
         from cron.scheduler import _resolve_delivery_targets
 
+        for var in ("SLACK_HOME_CHANNEL", "LINE_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL",
+                    "MATRIX_HOME_ROOM", "MATTERMOST_HOME_CHANNEL", "SMS_HOME_CHANNEL",
+                    "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL", "FEISHU_HOME_CHANNEL",
+                    "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL", "BLUEBUBBLES_HOME_CHANNEL",
+                    "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL"):
+            monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
 
@@ -590,6 +596,56 @@ class TestDeliverResultWrapping:
         assert "Title" in args[3]
         # Media files should be forwarded separately
         assert kwargs["media_files"] == [("/tmp/test-voice.ogg", False)]
+
+    def test_live_adapter_captures_slack_message_permalink_metadata(self):
+        """Live Slack delivery should retain message ts and permalink for handoff links."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = MagicMock()
+        send_result = MagicMock(success=True, message_id="1779159999.000100", raw_response={"ts": "1779159999.000100"})
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.get_permalink = AsyncMock(return_value="https://example.slack.com/archives/D123/p1779159999000100")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        calls = {"n": 0}
+
+        def fake_run_coro(coro, _loop):
+            calls["n"] += 1
+            future = Future()
+            if calls["n"] == 2:
+                future.set_result("https://example.slack.com/archives/D123/p1779159999000100")
+            else:
+                future.set_result(send_result)
+            coro.close()
+            return future
+
+        job = {
+            "id": "handoff-test",
+            "deliver": "origin",
+            "origin": {"platform": "slack", "chat_id": "D123"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            err = _deliver_result(job, "handoff seed", adapters={Platform.SLACK: adapter}, loop=loop)
+
+        assert err is None
+        assert job["_last_delivery_results"] == [{
+            "platform": "slack",
+            "chat_id": "D123",
+            "thread_id": None,
+            "message_id": "1779159999.000100",
+            "permalink": "https://example.slack.com/archives/D123/p1779159999000100",
+        }]
 
     def test_live_adapter_sends_media_as_attachments(self):
         """When a live adapter is available, MEDIA files should be sent as native
@@ -1179,6 +1235,57 @@ class TestRunJobSessionPersistence:
         assert "(FAILED)" in output
         # Ephemeral cron agent must still be closed even on agent-flagged failure.
         mock_agent.close.assert_called_once()
+
+    def test_run_job_treats_explicit_cron_status_error_marker_as_failure(self, tmp_path):
+        """A cron agent can report that the tool/script it orchestrated failed.
+
+        Without this marker, the scheduler only knows the agent returned text and
+        would mark last_status=ok even when the underlying script failed.
+        """
+        job = {
+            "id": "script-wrapper-job",
+            "name": "script wrapper",
+            "prompt": "run a shell script and report task failure on failure",
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": f"LLM Wiki ingest failed\n{CRON_STATUS_ERROR_MARKER}",
+                "completed": True,
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error == "LLM Wiki ingest failed"
+        assert "(FAILED)" in output
+        assert CRON_STATUS_ERROR_MARKER not in output
+
+    def test_run_job_writes_model_tag_for_cron_agent(self, tmp_path):
+        job = {
+            "id": "model-tag-job",
+            "name": "model tag",
+            "prompt": "hello",
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, _final_response, _error = run_job(job)
+
+        assert success is True
+        assert (tmp_path / "state.d" / "model_tag.txt").read_text() == "🤖 Model: gpt-5.4 | Reasoning: medium"
 
     def test_run_job_completed_true_without_failed_flag_succeeds(self, tmp_path):
         """Regression guard: a normal success result (``completed=True``,

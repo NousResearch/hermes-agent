@@ -132,6 +132,28 @@ class TestConfigYamlRouting:
         assert "vercel_runtime: python3.13" in config
         assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
 
+    def test_malformed_yaml_is_not_overwritten(self, _isolated_hermes_home, capsys):
+        config_path = _isolated_hermes_home / "config.yaml"
+        original = "model: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        result = set_config_value("model", "gpt-4o")
+
+        assert result is False
+        assert config_path.read_text(encoding="utf-8") == original
+        assert "Refusing to update" in capsys.readouterr().out
+
+    def test_non_mapping_yaml_is_not_overwritten(self, _isolated_hermes_home, capsys):
+        config_path = _isolated_hermes_home / "config.yaml"
+        original = "- just\n- a\n- list\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        result = set_config_value("model", "gpt-4o")
+
+        assert result is False
+        assert config_path.read_text(encoding="utf-8") == original
+        assert "top-level YAML must be a mapping" in capsys.readouterr().out
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277

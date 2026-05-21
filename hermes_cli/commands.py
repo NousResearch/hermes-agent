@@ -509,23 +509,27 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
 
 
 _TELEGRAM_MENU_PRIORITY = (
-    "debug",
-    "restart",
-    "update",
-    "verbose",
-    "commands",
+    # Most-typed everyday commands first.
     "help",
     "new",
     "stop",
     "status",
     "resume",
     "sessions",
+    "model",
+    # Maintenance / diagnostics — the ones that prompted this priority list.
+    "debug",
+    "restart",
+    "update",
+    "verbose",
+    "commands",
+    # Mid-turn session control.
     "approve",
     "deny",
     "queue",
     "steer",
     "background",
-    "model",
+    # Lower-priority but still useful operational built-ins.
     "reasoning",
     "usage",
     "platforms",

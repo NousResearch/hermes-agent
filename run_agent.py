@@ -4959,7 +4959,18 @@ class AIAgent:
             return False
 
         try:
-            from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
+            from agent.anthropic_adapter import (
+                resolve_anthropic_token,
+                build_anthropic_client,
+                refresh_hermes_pool_anthropic_token,
+            )
+
+            # Force-refresh the Hermes credential-pool OAuth entry first.
+            # Anthropic may revoke access tokens before the stored
+            # expires_at_ms suggests; without this nudge, resolve_anthropic_token()
+            # would return the same (still-rejected) token and the 401 retry
+            # would no-op. Safe to call when no pool entry exists.
+            refresh_hermes_pool_anthropic_token(force=True)
 
             new_token = resolve_anthropic_token()
         except Exception as exc:

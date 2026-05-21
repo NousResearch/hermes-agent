@@ -636,6 +636,15 @@ def resolve_anthropic_token() -> Optional[str]:
     if resolved_claude_token:
         return resolved_claude_token
 
+    # 3.5 Hermes credential pool (~/.hermes/auth.json:credential_pool.anthropic).
+    # This is where `hermes auth add anthropic --type oauth` stores tokens.
+    # Without this branch, the OAuth flow registered the credential but no
+    # callsite of resolve_anthropic_token() could find it, breaking the
+    # standard 401-retry-with-refresh path in run_agent.
+    pool_token = resolve_anthropic_pool_token()
+    if pool_token:
+        return pool_token
+
     # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
@@ -643,6 +652,118 @@ def resolve_anthropic_token() -> Optional[str]:
         return api_key
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Hermes credential pool — anthropic OAuth entries
+# ---------------------------------------------------------------------------
+
+_REFRESH_MARGIN_MS = 5 * 60 * 1000  # refresh if expires within 5 min
+
+
+def _hermes_auth_file() -> Path:
+    """Return the path to the Hermes credential store."""
+    return get_hermes_home() / "auth.json"
+
+
+def _read_hermes_pool_anthropic_entry() -> Optional[Dict[str, Any]]:
+    """Return the first anthropic OAuth credential pool entry, or None.
+
+    The dict has access_token / refresh_token / expires_at_ms / source / auth_type
+    as written by `hermes auth add anthropic`.
+    """
+    path = _hermes_auth_file()
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    pool = data.get("credential_pool") or {}
+    entries = pool.get("anthropic") or []
+    if not isinstance(entries, list) or not entries:
+        return None
+    return entries[0]
+
+
+def _write_hermes_pool_anthropic_entry(updated: Dict[str, Any]) -> None:
+    """Persist an updated anthropic OAuth entry back to ~/.hermes/auth.json.
+
+    Replaces the first anthropic entry in the credential_pool — the same
+    one returned by _read_hermes_pool_anthropic_entry.  Silent on I/O errors.
+    """
+    path = _hermes_auth_file()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    pool = data.setdefault("credential_pool", {})
+    entries = pool.get("anthropic")
+    if not isinstance(entries, list) or not entries:
+        return
+    entries[0] = updated
+    data["credential_pool"]["anthropic"] = entries
+    try:
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except (OSError, IOError) as e:
+        logger.debug("Failed to write hermes anthropic pool entry: %s", e)
+
+
+def refresh_hermes_pool_anthropic_token(force: bool = False) -> Optional[str]:
+    """Refresh the first anthropic OAuth entry in the Hermes credential pool.
+
+    Args:
+        force: If True, refresh unconditionally (used on 401 — the access
+            token's claimed expires_at_ms is unreliable since Anthropic may
+            revoke server-side before that timestamp).  If False, refresh
+            only when expires_at_ms is within _REFRESH_MARGIN_MS.
+
+    Returns the new access_token on success, or None when there is no entry,
+    no refresh_token, or the refresh call failed.  The pool entry is
+    written back to disk on success.
+    """
+    entry = _read_hermes_pool_anthropic_entry()
+    if entry is None or entry.get("auth_type") != "oauth":
+        return None
+    refresh_token = entry.get("refresh_token")
+    if not refresh_token:
+        return None
+
+    import time
+
+    if not force:
+        expires_at_ms = entry.get("expires_at_ms")
+        if isinstance(expires_at_ms, (int, float)):
+            now_ms = time.time() * 1000
+            if expires_at_ms - now_ms > _REFRESH_MARGIN_MS:
+                # Token claims to be still valid — just return what we have.
+                return entry.get("access_token") or None
+
+    try:
+        use_json = str(entry.get("source", "")).endswith("hermes_pkce")
+        refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=use_json)
+    except Exception as exc:
+        logger.debug("Hermes anthropic pool refresh failed: %s", exc)
+        return None
+
+    entry["access_token"] = refreshed["access_token"]
+    entry["refresh_token"] = refreshed.get("refresh_token", refresh_token)
+    if "expires_at_ms" in refreshed:
+        entry["expires_at_ms"] = refreshed["expires_at_ms"]
+    elif "expires_in" in refreshed:
+        entry["expires_at_ms"] = int((time.time() + refreshed["expires_in"]) * 1000)
+    _write_hermes_pool_anthropic_entry(entry)
+    logger.info("Refreshed anthropic OAuth token in hermes credential pool")
+    return entry["access_token"]
+
+
+def resolve_anthropic_pool_token() -> Optional[str]:
+    """Return a usable access_token from the Hermes credential pool.
+
+    Prefers the stored access_token, but transparently refreshes when the
+    token's expires_at_ms is within _REFRESH_MARGIN_MS.
+    """
+    return refresh_hermes_pool_anthropic_token(force=False)
 
 
 def run_oauth_setup_token() -> Optional[str]:

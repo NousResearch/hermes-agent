@@ -6086,24 +6086,36 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
     them after a successful ``git pull`` so we can auto-roll-back instead of
     leaving the user with a bricked install.
 
+    The compiled ``.pyc`` is written to a temp directory rather than the
+    source tree's ``__pycache__/`` so we don't race with concurrent test
+    workers that walk the same dir, and so we don't leave a stale pyc
+    behind in production if the next interpreter run picks a different
+    Python version. The pyc is discarded on function return either way —
+    we only care about the compile-or-not signal.
+
     Returns ``(ok, failing_path, error_message)``. ``ok=True`` means every
     file parsed cleanly.
     """
     import py_compile
+    import tempfile
 
     root = Path(root)
-    for relpath in _UPDATE_CRITICAL_FILES:
-        path = root / relpath
-        if not path.exists():
-            # Missing file is suspicious but not necessarily fatal — a future
-            # refactor may legitimately remove one of these. Skip and move on.
-            continue
-        try:
-            py_compile.compile(str(path), doraise=True)
-        except py_compile.PyCompileError as exc:
-            return False, str(path), str(exc)
-        except OSError as exc:
-            return False, str(path), f"could not read: {exc}"
+    with tempfile.TemporaryDirectory(prefix="hermes-syntax-check-") as tmpdir:
+        for relpath in _UPDATE_CRITICAL_FILES:
+            path = root / relpath
+            if not path.exists():
+                # Missing file is suspicious but not necessarily fatal — a future
+                # refactor may legitimately remove one of these. Skip and move on.
+                continue
+            # Mirror the relative path under the tmpdir so two different
+            # files with the same basename don't collide on the cfile name.
+            cfile = Path(tmpdir) / (relpath.replace("/", "__") + "c")
+            try:
+                py_compile.compile(str(path), cfile=str(cfile), doraise=True)
+            except py_compile.PyCompileError as exc:
+                return False, str(path), str(exc)
+            except OSError as exc:
+                return False, str(path), f"could not read: {exc}"
     return True, None, None
 
 

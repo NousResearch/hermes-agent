@@ -7,6 +7,7 @@ import { ja } from "./ja";
 import { de } from "./de";
 import { es } from "./es";
 import { fr } from "./fr";
+import { ar } from "./ar";
 import { tr } from "./tr";
 import { uk } from "./uk";
 import { af } from "./af";
@@ -25,6 +26,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   de,
   es,
   fr,
+  ar,
   tr,
   uk,
   af,
@@ -58,6 +60,7 @@ export const LOCALE_META: Record<Locale, { name: string; flagCountryCode: string
   pt: { name: "Português", flagCountryCode: "pt" },
   ru: { name: "Русский", flagCountryCode: "ru" },
   hu: { name: "Magyar", flagCountryCode: "hu" },
+  ar: { name: "العربية", flagCountryCode: "sa" },
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];

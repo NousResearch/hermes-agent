@@ -234,3 +234,34 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+/* ───────────────────────────────────────────────────────
+   RTL — Arabic / Hebrew / Persian and any future RTL lang
+   ─────────────────────────────────────────────────────── */
+
+/* Logical direction — text flows right-to-left, flex/grid/table
+   columns flip, and Tailwind's logical spacing tokens (ms-/me-,
+   ps-/pe-) pick up the direction automatically. */
+html[dir="rtl"] {
+  direction: rtl;
+}
+
+/* NavLink items in the sidebar carry a hardcoded leading gap for the
+   icon. Flip it to trailing-gap so spacing stays on the right edge. */
+html[dir="rtl"] nav svg[class*="mr-"] { margin-right: 0; margin-left: calc(0.5em); }
+
+/* Keep the chat input at the bottom-right of the conversation pane. */
+html[dir="rtl"] .chat-input-container {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0.5rem;
+}
+
+/* In the kanban column labels the done/draft indicators are positioned
+   absolutely via left; flip them. */
+html[dir="rtl"] .kanban-column .absolute.left-4 { left: auto; right: 1rem; }
+
+/* Prevent messages from drawing a border on the wrong side in RTL. */
+html[dir="rtl"] .msg-bubble {
+  border-inline-start-color: var(--color-border);
+  border-inline-end-color: transparent;
+}
+

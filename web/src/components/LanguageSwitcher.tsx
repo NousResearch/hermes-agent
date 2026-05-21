@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
  * localStorage via the I18n context.
  *
  * Replaces the older two-state EN↔ZH toggle now that we ship 16 locales
- * (en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu).
+ * (en, zh, zh-hant, ja, de, es, fr, ar, tr, uk, af, ko, it, ga, pt, ru, hu).
  *
  * Locale markers use lipis/flag-icons (SVG sprites) instead of emoji so flags
  * render consistently across platforms.

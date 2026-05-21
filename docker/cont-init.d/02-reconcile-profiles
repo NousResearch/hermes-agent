@@ -1,0 +1,30 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Container-boot reconciliation of per-profile gateway s6 services.
+#
+# Runs as root after 01-hermes-setup (the stage2 hook) has chowned
+# the volume and seeded $HERMES_HOME, but before s6-rc starts user
+# services. /etc/cont-init.d/* scripts run in lexicographic order,
+# so the `02-` prefix guarantees ordering.
+#
+# Service directories under /run/service/ live on tmpfs and are
+# wiped on every container restart. Profile directories under
+# $HERMES_HOME/profiles/ live on the persistent VOLUME. This script
+# walks the persistent profiles, recreates the s6 service slots,
+# and auto-starts only those whose last recorded state was
+# `running` — see hermes_cli/container_boot.py.
+#
+# Phase 4 also needs hermes-user writes to /run/service/ (so the
+# profile create/delete hooks can register/unregister at runtime),
+# so we chown the scandir before invoking the reconciler. The
+# .s6-svscan/ subdir stays root-owned; only sibling directories
+# (gateway-<profile>/) need to be hermes-writable.
+set -e
+
+# Make the dynamic scandir hermes-writable. The directory itself
+# starts root-owned by s6-overlay; we leave .s6-svscan/ alone since
+# only s6 itself writes there.
+chown hermes:hermes /run/service 2>/dev/null || true
+
+exec s6-setuidgid hermes /opt/hermes/.venv/bin/python -m hermes_cli.container_boot
+

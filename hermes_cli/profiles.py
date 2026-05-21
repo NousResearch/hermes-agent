@@ -777,6 +777,14 @@ def create_profile(
         except Exception:
             pass  # non-fatal — user can describe later with `hermes profile describe`
 
+    # Phase 4: when running inside a container under s6, register the
+    # new profile's gateway as a runtime s6 service so
+    # `hermes -p <profile> gateway start` can supervise it via
+    # `s6-svc -u` instead of spawning a bare process. On host (systemd
+    # / launchd / windows) this is a no-op — the existing per-profile
+    # unit-generation paths handle gateway lifecycle.
+    _maybe_register_gateway_service(canon)
+
     return profile_dir
 
 
@@ -893,6 +901,10 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # 1. Disable service (prevents auto-restart)
     _cleanup_gateway_service(canon, profile_dir)
+    # 1b. Phase 4: unregister the s6 service slot (container path).
+    # On host this is a no-op; on container it removes
+    # /run/service/gateway-<profile>/ so s6-supervise drops it.
+    _maybe_unregister_gateway_service(canon)
 
     # 2. Stop running gateway
     if gw_running:
@@ -963,6 +975,77 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     print(f"\nProfile '{canon}' deleted.")
     return profile_dir
+
+
+def _allocate_gateway_port(profile_name: str) -> int:
+    """Deterministic port allocation for a profile's s6-supervised gateway.
+
+    Phase 4 of the s6-overlay supervision plan. Ports live in
+    [9200, 9800) — a 600-port window starting just past the dashboard
+    default (9119). Allocation is deterministic via SHA-256 of the
+    profile name so the same profile always gets the same port across
+    container restarts.
+
+    Collision probability is small (~1/600 per pair of profiles); if
+    it happens the gateway will fail to bind with a clear OSError and
+    the caller can set ``HERMES_GATEWAY_PORT`` to override. The
+    Phase 4 plan accepts this rather than carrying explicit allocator
+    state in the persistent volume.
+    """
+    import hashlib
+    h = int(hashlib.sha256(profile_name.encode()).hexdigest()[:8], 16)
+    return 9200 + (h % 600)
+
+
+def _maybe_register_gateway_service(profile_name: str) -> None:
+    """Register a profile's gateway with s6 inside the container.
+
+    No-op on host (systemd/launchd/windows) — those backends raise
+    ``NotImplementedError`` on ``register_profile_gateway`` and the
+    existing per-profile unit-generation paths handle lifecycle.
+
+    Best-effort: any error (no backend detected, port collision, s6
+    not yet ready, etc.) is logged and swallowed so profile creation
+    doesn't fail because the s6 supervision tree is in a weird state.
+    The user can re-register manually later via the gateway start
+    command, which goes through the same dispatch path.
+    """
+    try:
+        from hermes_cli.service_manager import get_service_manager
+        mgr = get_service_manager()
+    except RuntimeError:
+        return  # no backend on this host — nothing to do
+    if not mgr.supports_runtime_registration():
+        return  # host backend; no-op
+    port = _allocate_gateway_port(profile_name)
+    try:
+        mgr.register_profile_gateway(profile_name, port=port)
+    except ValueError:
+        # Already registered (e.g. the container-boot reconciler ran
+        # first and brought up a stale slot). That's fine.
+        pass
+    except Exception as exc:
+        # Don't fail profile create over a supervision-tree hiccup.
+        print(f"⚠ Could not register s6 gateway service: {exc}")
+
+
+def _maybe_unregister_gateway_service(profile_name: str) -> None:
+    """Tear down a profile's s6 gateway service inside the container.
+
+    No-op on host. Idempotent: absent services are silently skipped
+    by ``unregister_profile_gateway``.
+    """
+    try:
+        from hermes_cli.service_manager import get_service_manager
+        mgr = get_service_manager()
+    except RuntimeError:
+        return
+    if not mgr.supports_runtime_registration():
+        return
+    try:
+        mgr.unregister_profile_gateway(profile_name)
+    except Exception as exc:
+        print(f"⚠ Could not unregister s6 gateway service: {exc}")
 
 
 def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:

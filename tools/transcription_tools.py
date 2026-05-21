@@ -74,6 +74,55 @@ _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
 
+
+def _ensure_faster_whisper(*, prompt: bool = False) -> bool:
+    """Make faster-whisper importable, installing it on demand if needed.
+
+    Mirrors the pattern used by ``tools/tts_tool.py::_import_elevenlabs`` so
+    that the local-STT provider Just Works on first voice message even when
+    the user picked ``stt.provider: local`` without having pre-installed the
+    ``[voice]`` extra (e.g. in the published Docker image, which intentionally
+    ships only the lean ``[all]`` set and uses lazy-install for opt-in
+    backends — see comment on the ``all`` extra in pyproject.toml).
+
+    Updates the module-level ``_HAS_FASTER_WHISPER`` flag on success so
+    subsequent calls short-circuit and so existing tests that patch the flag
+    keep working unchanged.
+
+    Skips the install attempt under ``PYTEST_CURRENT_TEST`` so that tests
+    which patch ``_HAS_FASTER_WHISPER`` to ``False`` to exercise the
+    "STT unavailable" code paths don't accidentally trigger a real pip
+    install. Tests that want to exercise the lazy-install path itself
+    should mock ``tools.lazy_deps.ensure`` directly.
+
+    Returns True when faster-whisper is importable after the call.
+    """
+    global _HAS_FASTER_WHISPER
+    if _HAS_FASTER_WHISPER:
+        return True
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # Under pytest, treat a False `_HAS_FASTER_WHISPER` as authoritative
+        # so existing tests that patch the flag don't trigger network installs.
+        return False
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+    except ImportError:
+        return _HAS_FASTER_WHISPER  # lazy_deps unavailable — nothing more to try
+    try:
+        _lazy_ensure("stt.faster_whisper", prompt=prompt)
+    except Exception as exc:  # FeatureUnavailable or install failure
+        logger.warning(
+            "Lazy install of faster-whisper failed (%s); local STT will be "
+            "unavailable. To install manually: `uv pip install faster-whisper "
+            "sounddevice numpy` (inside the Hermes venv).",
+            exc,
+        )
+        return _HAS_FASTER_WHISPER
+    # Re-probe; the install may have populated importlib's metadata cache.
+    if _safe_find_spec("faster_whisper"):
+        _HAS_FASTER_WHISPER = True
+    return _HAS_FASTER_WHISPER
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -214,6 +263,11 @@ def _get_provider(stt_config: dict) -> str:
 
     if explicit:
         if provider == "local":
+            # Lazy-install faster-whisper on demand when the user explicitly
+            # picked local STT but the [voice] extra isn't installed (e.g.
+            # fresh Docker container). See `_ensure_faster_whisper` for the
+            # full rationale. No-op when already present.
+            _ensure_faster_whisper(prompt=False)
             if _HAS_FASTER_WHISPER:
                 return "local"
             if _has_local_command():
@@ -227,6 +281,8 @@ def _get_provider(stt_config: dict) -> str:
         if provider == "local_command":
             if _has_local_command():
                 return "local_command"
+            # Same lazy-install rationale as above — user has fallback to local.
+            _ensure_faster_whisper(prompt=False)
             if _HAS_FASTER_WHISPER:
                 logger.info("Local STT command unavailable, using local faster-whisper")
                 return "local"
@@ -280,6 +336,12 @@ def _get_provider(stt_config: dict) -> str:
     # --- Auto-detect (no explicit provider): local > groq > openai > xai ---
     # mistral is intentionally skipped while `mistralai` is quarantined on
     # PyPI (malicious 2.4.6 release on 2026-05-12).
+    #
+    # Note on lazy-install in auto-detect mode: we only attempt to install
+    # faster-whisper here if it's not already present AND no cloud fallback
+    # would have worked anyway. This avoids surprising the user with a
+    # network install when they've configured OpenAI/Groq/xAI credentials
+    # but never set ``stt.provider`` explicitly.
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -299,6 +361,13 @@ def _get_provider(stt_config: dict) -> str:
             return "xai"
     except Exception:
         pass
+
+    # Last-resort: nothing else is available. Try to lazy-install
+    # faster-whisper so the default Docker / fresh-clone path produces a
+    # working STT instead of silently degrading to "none". This is gated
+    # on `security.allow_lazy_installs` inside `_ensure_faster_whisper`.
+    if _ensure_faster_whisper(prompt=False):
+        return "local"
     return "none"
 
 # ---------------------------------------------------------------------------

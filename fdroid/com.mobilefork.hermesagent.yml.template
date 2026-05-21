@@ -1,8 +1,13 @@
 # Draft fdroiddata metadata for Hermes Agent Fork.
 # Copy this to fdroiddata/metadata/com.mobilefork.hermesagent.yml, then
-# remove Disabled only after the dependency and reproducibility audit passes.
+# keep the source commit, Binaries URL, and AllowedAPKSigningKeys aligned with
+# the signed GitHub release for reproducible-build verification.
 
-Disabled: Needs F-Droid review of Chaquopy, LiteRT-LM, generated native assets, and pip/Maven dependency licensing before official submission.
+AntiFeatures:
+  NonFreeNet:
+    en-US: Optional online features connect to remote model catalogs and user-configured
+      remote AI providers such as OpenAI, OpenRouter, Google Gemini, Anthropic, Hugging
+      Face, Qwen, Z.AI, or Corr3xt.
 Categories:
   - AI Chat
 License: MIT
@@ -13,7 +18,6 @@ Changelog: https://github.com/adybag14-cyber/hermes-agent/releases
 
 Name: Hermes Agent Fork
 AutoName: Hermes Agent Fork
-Summary: Independent fork for local AI chat and Android workflows
 Description: |-
     Hermes Agent Fork is an independent community fork. It is not official Nous Research or Teknium software.
 
@@ -23,22 +27,25 @@ Description: |-
 
 RepoType: git
 Repo: https://github.com/adybag14-cyber/hermes-agent.git
+Binaries: https://github.com/adybag14-cyber/hermes-agent/releases/download/v%v/hermes-agent-android-v%v-universal.apk
 
 Builds:
-  - versionName: 0.13.113
-    versionCode: 141390
-    commit: REPLACE_WITH_REBRAND_COMMIT_HASH
-    subdir: android
+  - versionName: 0.13.114
+    versionCode: 141490
+    commit: REPLACE_WITH_RELEASE_COMMIT_HASH
+    subdir: android/app
+    sudo:
+      - apt-get update
+      - apt-get install -y python3-pip
     gradle:
       - yes
-    prebuild:
-      - echo "Review generated Android Linux assets and Python packaging before enabling this recipe."
-    rm:
-      - artifacts
-      - build
+    prebuild: sed -i -e 's/System.getenv("HERMES_RELEASE_TAG").orEmpty().trim()/"v$$VERSION$$"/'
+      build.gradle.kts
 
-AutoUpdateMode: Version v%v
+AllowedAPKSigningKeys: 2cbdb94d6081413055af1e903d4c1d6714300b4240402d1d4c8182fda777d14e
+
+AutoUpdateMode: Version
 UpdateCheckMode: Tags
 UpdateCheckData: fdroid/com.mobilefork.hermesagent.version|versionCode=(\d+)|.|versionName=(.*)
-CurrentVersion: 0.13.113
-CurrentVersionCode: 141390
+CurrentVersion: 0.13.114
+CurrentVersionCode: 141490

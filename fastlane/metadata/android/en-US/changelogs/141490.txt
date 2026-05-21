@@ -1,0 +1,5 @@
+Hermes Agent Fork 0.13.114
+
+- Publishes the fork under the new Android package com.mobilefork.hermesagent.
+- Uses the Hermes Agent Fork app title, icon, and fork disclosures.
+- Adds signed release artifacts for F-Droid reproducible-build verification.

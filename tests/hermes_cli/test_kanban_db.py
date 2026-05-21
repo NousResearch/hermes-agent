@@ -2012,6 +2012,30 @@ def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
     conn.close()
 
 
+def test_write_txn_ignores_no_active_transaction_rollback_error():
+    """Rollback guard must preserve the original failure when SQLite already aborted."""
+
+    class _Conn:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def execute(self, sql, *args, **kwargs):
+            self.calls.append(sql)
+            if sql == "ROLLBACK":
+                raise sqlite3.OperationalError(
+                    "cannot rollback - no transaction is active"
+                )
+            return None
+
+    conn = _Conn()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with kb.write_txn(conn):  # type: ignore[arg-type]
+            raise RuntimeError("boom")
+
+    assert conn.calls == ["BEGIN IMMEDIATE", "ROLLBACK"]
+
+
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     """Regression test for issue #22459.
 

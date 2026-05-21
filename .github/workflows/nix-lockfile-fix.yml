@@ -14,8 +14,6 @@ on:
         description: 'PR number to fix (leave empty to run on the selected branch)'
         required: false
         type: string
-  issue_comment:
-    types: [edited]
 
 permissions:
   contents: write

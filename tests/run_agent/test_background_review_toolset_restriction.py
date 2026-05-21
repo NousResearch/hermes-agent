@@ -38,11 +38,7 @@ def _make_agent_stub(agent_cls):
     agent._MEMORY_REVIEW_PROMPT = "review memory"
     agent._SKILL_REVIEW_PROMPT = "review skills"
     agent._COMBINED_REVIEW_PROMPT = "review both"
-    # Parent's toolset configuration must propagate to the review fork
-    # so the request body's ``tools[]`` array is byte-identical. Without
-    # propagation, ``enabled_toolsets=None`` expands to "all registered
-    # tools" — which diverges from a parent that narrowed its set via
-    # ``hermes tools disable`` or config.
+    # Non-None so the test catches a missing-kwarg regression.
     agent.enabled_toolsets = ["memory", "skills", "terminal"]
     agent.disabled_toolsets = ["spotify", "feishu_doc"]
     return agent
@@ -60,25 +56,7 @@ class _SyncThread:
 
 
 def test_background_review_matches_parent_toolset_config():
-    """The review fork must propagate the parent's ``enabled_toolsets`` to AIAgent.
-
-    Earlier guidance (the old "do NOT pass enabled_toolsets" rule) assumed the
-    parent always ran with the registry default. In practice the parent is
-    often narrowed via ``hermes tools disable`` or ``config.yaml``, and
-    leaving ``enabled_toolsets=None`` on the fork makes it expand to ALL
-    registered tools — which is what *diverges* from the parent and breaks
-    Anthropic's prefix cache key on ``tools[]``.
-
-    The correct rule is symmetric: whatever the parent has, the fork
-    must have the same. When the parent's value is ``None``, the fork's
-    must also be ``None`` (and they'll both expand identically). When
-    the parent narrows, the fork inherits the narrowed set verbatim.
-
-    (Schema-level alignment with the parent + post-construction runtime
-    whitelist remain the safety contract for #15204 — the whitelist
-    blocks dispatch of non-memory/skill tools regardless of what schemas
-    are sent over the wire.)
-    """
+    """Fork must receive parent's toolset config so ``tools[]`` cache key matches."""
     import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
@@ -98,18 +76,13 @@ def test_background_review_matches_parent_toolset_config():
         )
 
     assert "enabled_toolsets" in captured, "AIAgent.__init__ was not called"
-    # The kwargs must equal the parent's so the ``tools[]`` request-body
-    # bytes match the parent's last main-turn request.
     assert captured["enabled_toolsets"] == agent.enabled_toolsets, (
-        f"Review fork did not propagate parent's enabled_toolsets "
-        f"(got {captured['enabled_toolsets']!r}, expected {agent.enabled_toolsets!r}). "
-        "This causes ``tools[]`` to diverge from the parent — Anthropic's "
-        "prompt-cache key includes ``tools[]``, so divergence forks the "
-        "cache lineage and forces a full prefix rewrite per nudge."
+        f"enabled_toolsets mismatch: {captured['enabled_toolsets']!r} "
+        f"vs expected {agent.enabled_toolsets!r}"
     )
     assert captured["disabled_toolsets"] == agent.disabled_toolsets, (
-        f"Review fork did not propagate parent's disabled_toolsets "
-        f"(got {captured['disabled_toolsets']!r}, expected {agent.disabled_toolsets!r})."
+        f"disabled_toolsets mismatch: {captured['disabled_toolsets']!r} "
+        f"vs expected {agent.disabled_toolsets!r}"
     )
 
 

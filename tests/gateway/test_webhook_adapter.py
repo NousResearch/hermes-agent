@@ -499,6 +499,22 @@ class TestHTTPHandling:
             assert data["route"] == "test"
 
     @pytest.mark.asyncio
+    async def test_route_without_secret_rejects_unsigned_request(self):
+        """Missing HMAC secret must fail closed even if connect() was bypassed."""
+        routes = {"test": {"prompt": "hi"}}
+        adapter = _make_adapter(routes=routes, secret="")
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/test", json={"data": "value"})
+            assert resp.status == 500
+            data = await resp.json()
+            assert data["error"] == "Webhook route is missing an HMAC secret"
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_health_endpoint(self):
         """GET /health returns 200 with status=ok."""
         adapter = _make_adapter()

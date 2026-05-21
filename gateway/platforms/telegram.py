@@ -14,6 +14,7 @@ import os
 import tempfile
 import html as _html
 import re
+from collections import OrderedDict
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -330,6 +331,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    STATUS_MESSAGE_LENGTH = 3800
+    STATUS_MESSAGE_ID_CACHE_LIMIT = 1024
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
@@ -466,6 +469,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # "all"       — every message triggers a push notification (legacy
         #               behavior; opt-in via display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
+        # Status update messages sent through send_or_update_status().  Values
+        # are bot message IDs returned from this adapter's own send path.
+        self._status_message_ids: OrderedDict[
+            tuple[str, Optional[str], str], str
+        ] = OrderedDict()
+        self._status_message_locks: OrderedDict[
+            tuple[str, Optional[str], str], asyncio.Lock
+        ] = OrderedDict()
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1870,6 +1881,172 @@ class TelegramAdapter(BasePlatformAdapter):
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(e)
             return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or not is_timeout))
+
+    @staticmethod
+    def _truncate_utf16_text(text: str, max_length: int, suffix: str = "...") -> str:
+        """Truncate text to a UTF-16 code-unit budget."""
+        if utf16_len(text) <= max_length:
+            return text
+
+        suffix_len = utf16_len(suffix)
+        budget = max(0, max_length - suffix_len)
+        lo, hi = 0, len(text)
+        best = ""
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = text[:mid]
+            if utf16_len(candidate) <= budget:
+                best = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best.rstrip() + suffix
+
+    def _bound_status_text(self, text: str) -> str:
+        """Return status text that will fit in one Telegram message."""
+        raw_text = str(text or "")
+        bounded = self._truncate_utf16_text(raw_text, self.STATUS_MESSAGE_LENGTH)
+        if utf16_len(self.format_message(bounded)) <= self.STATUS_MESSAGE_LENGTH:
+            return bounded
+
+        lo, hi = 0, len(raw_text)
+        best = ""
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = f"{raw_text[:mid].rstrip()}..."
+            fits = (
+                utf16_len(candidate) <= self.STATUS_MESSAGE_LENGTH
+                and utf16_len(self.format_message(candidate)) <= self.STATUS_MESSAGE_LENGTH
+            )
+            if fits:
+                best = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best or "..."
+
+    def _status_message_cache(self) -> OrderedDict[tuple[str, Optional[str], str], str]:
+        cache = getattr(self, "_status_message_ids", None)
+        if not isinstance(cache, OrderedDict):
+            cache = OrderedDict(cache or {})
+            self._status_message_ids = cache
+        return cache
+
+    def _get_status_message_id(self, key: tuple[str, Optional[str], str]) -> Optional[str]:
+        cache = self._status_message_cache()
+        message_id = cache.get(key)
+        if message_id is not None:
+            cache.move_to_end(key)
+        return message_id
+
+    def _remember_status_message_id(
+        self,
+        key: tuple[str, Optional[str], str],
+        message_id: str,
+    ) -> None:
+        cache = self._status_message_cache()
+        cache[key] = str(message_id)
+        cache.move_to_end(key)
+        limit = max(
+            1,
+            int(getattr(self, "STATUS_MESSAGE_ID_CACHE_LIMIT", 1024) or 1024),
+        )
+        while len(cache) > limit:
+            cache.popitem(last=False)
+
+    def _status_message_lock(
+        self,
+        key: tuple[str, Optional[str], str],
+    ) -> asyncio.Lock:
+        locks = getattr(self, "_status_message_locks", None)
+        if not isinstance(locks, OrderedDict):
+            locks = OrderedDict(locks or {})
+            self._status_message_locks = locks
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+        locks.move_to_end(key)
+        limit = max(
+            1,
+            int(getattr(self, "STATUS_MESSAGE_ID_CACHE_LIMIT", 1024) or 1024),
+        )
+        while len(locks) > limit:
+            oldest_key, oldest_lock = next(iter(locks.items()))
+            if oldest_lock.locked():
+                break
+            locks.pop(oldest_key, None)
+        return lock
+
+    @staticmethod
+    def _is_permanent_status_edit_failure(error: Optional[str]) -> bool:
+        """Return True for edit failures where replacing the status is safe."""
+        err = str(error or "").lower()
+        permanent_markers = (
+            "message to edit not found",
+            "message not found",
+            "message can't be edited",
+            "message cannot be edited",
+            "message is not editable",
+            "message_id_invalid",
+            "not enough rights to edit",
+            "no rights to edit",
+            "too old to edit",
+            "message is too old",
+            "message was deleted",
+            "message deleted",
+            "not editable",
+        )
+        return any(marker in err for marker in permanent_markers)
+
+    async def send_or_update_status(
+        self,
+        chat_id: str,
+        thread_id: Optional[str],
+        status_key: str,
+        text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a scoped status message or edit the previous one in-place."""
+        self._status_message_cache()
+
+        bounded_text = self._bound_status_text(text)
+        normalized_thread_id = str(thread_id) if thread_id is not None else None
+        key = (str(chat_id), normalized_thread_id, str(status_key))
+        status_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        if normalized_thread_id is not None and "thread_id" not in status_metadata:
+            status_metadata["thread_id"] = normalized_thread_id
+        metadata = status_metadata or None
+
+        async with self._status_message_lock(key):
+            existing_message_id = self._get_status_message_id(key)
+            if existing_message_id is None:
+                result = await self.send(chat_id, bounded_text, metadata=metadata)
+                if result.success and result.message_id is not None:
+                    self._remember_status_message_id(key, str(result.message_id))
+                return result
+
+            edit_result = await self.edit_message(
+                chat_id,
+                existing_message_id,
+                bounded_text,
+                finalize=True,
+                metadata=metadata,
+            )
+            if edit_result.success:
+                if edit_result.message_id is not None:
+                    self._remember_status_message_id(key, str(edit_result.message_id))
+                return edit_result
+
+            if getattr(edit_result, "retryable", False):
+                return edit_result
+            if not self._is_permanent_status_edit_failure(edit_result.error):
+                return edit_result
+
+            send_result = await self.send(chat_id, bounded_text, metadata=metadata)
+            if send_result.success and send_result.message_id is not None:
+                self._remember_status_message_id(key, str(send_result.message_id))
+            return send_result
 
     async def edit_message(
         self,

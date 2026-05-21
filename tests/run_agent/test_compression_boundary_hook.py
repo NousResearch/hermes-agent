@@ -160,3 +160,54 @@ class TestCompressionBoundaryHook:
             )
             assert compressed
             assert agent.session_id != original_sid
+
+    def test_compression_split_immediately_persists_new_session_snapshot(self):
+        """The rotated session should already contain the compressed transcript."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            hermes_home = Path(tmpdir) / "hermes-home"
+            hermes_home.mkdir()
+            with patch.dict(
+                os.environ,
+                {
+                    "OPENROUTER_API_KEY": "test-key",
+                    "HERMES_HOME": str(hermes_home),
+                },
+            ):
+                agent = self._make_agent(db)
+
+            db.create_session(session_id=agent.session_id, source="test")
+            original_sid = agent.session_id
+
+            compressor = MagicMock()
+            compressor.compress.return_value = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "assistant", "content": "just-finished answer"},
+            ]
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            compressor._last_aux_model_failure_model = None
+            compressor._last_aux_model_failure_error = None
+            agent.context_compressor = compressor
+
+            compressed, _prompt = agent._compress_context(
+                [{"role": "user", "content": "older question"}],
+                "sys",
+                approx_tokens=100,
+            )
+
+            assert agent.session_id != original_sid
+            assert agent._last_flushed_db_idx == len(compressed)
+
+            rows = db.get_messages(agent.session_id)
+            assert [row["role"] for row in rows] == ["user", "assistant"]
+            assert [row["content"] for row in rows] == [
+                "[CONTEXT COMPACTION] summary",
+                "just-finished answer",
+            ]
+            assert agent._session_messages == compressed

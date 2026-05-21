@@ -406,6 +406,13 @@ def compress_context(
             agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
             # Reset flush cursor — new session starts with no messages written
             agent._last_flushed_db_idx = 0
+            # Persist the compressed snapshot immediately so any session-list /
+            # transcript refetch that notices the rotated session_id can load
+            # the latest assistant turn without waiting for the outer
+            # end-of-turn _persist_session() call.
+            agent._session_messages = compressed
+            agent._save_session_log(compressed)
+            agent._flush_messages_to_session_db(compressed, None)
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 

@@ -1420,6 +1420,45 @@ def test_respawn_guard_pr_comment_older_than_unblock_not_guarded(kanban_home):
     assert reason is None
 
 
+def test_respawn_guard_failure_event_does_not_supersede_recent_success(kanban_home):
+    """Failure events should not erase recent-success duplicate-work guardrails."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="failed-after-success", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 300, now - 120),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'spawn_failed', '{}', ?)",
+            (t, now - 30),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "recent_success"
+
+
+def test_respawn_guard_failure_event_does_not_supersede_active_pr(kanban_home):
+    """Failure events should not make an existing PR comment look stale."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="failed-after-pr", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/12', ?)",
+            (t, now - 120),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'timed_out', '{}', ?)",
+            (t, now - 30),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "active_pr"
+
+
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):

@@ -257,6 +257,25 @@ class TestMattermostSend:
         ))
         assert adapter._no_thread_channels == {"config_chan", "env_chan", "other_chan"}
 
+    def test_auto_thread_channels_from_config_and_env(self, monkeypatch):
+        from gateway.platforms.mattermost import MattermostAdapter
+        monkeypatch.setenv("MATTERMOST_AUTO_THREAD_CHANNELS", "env_coding, other_coding")
+        adapter = MattermostAdapter(PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={"url": "https://mm.example.com", "auto_thread_channels": ["config_coding"]},
+        ))
+        # Explicit config wins over env for deterministic workspace channels.
+        assert adapter._auto_thread_channels == {"config_coding"}
+
+    def test_root_id_prefers_metadata_thread_root(self):
+        self.adapter._reply_mode = "thread"
+        assert self.adapter._root_id_from_send_context(
+            "channel_1",
+            reply_to="child_post",
+            metadata={"mattermost_root_id": "root_post"},
+        ) == "root_post"
+
     @pytest.mark.asyncio
     async def test_send_api_failure(self):
         """When API returns error, send should return failure."""
@@ -272,6 +291,223 @@ class TestMattermostSend:
         result = await self.adapter.send("channel_1", "Hello!")
 
         assert result.success is False
+
+
+class TestMattermostMoonDeliveryGoal:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter.send = AsyncMock()
+
+    def _cfg(self, **overrides):
+        cfg = {
+            "enabled": True,
+            "channels": ["coding_channel"],
+            "require_thread": True,
+            "approved_sender_ids": ["mauri_user"],
+            "approval_phrases": ["go", "approved"],
+            "board": "moon-test",
+            "assignee": "mooncoder",
+            "tenant": "moon",
+            "workspace": "worktree",
+            "priority": 10,
+            "max_runtime_seconds": 7200,
+            "repo": "/Users/mauri/app",
+        }
+        cfg.update(overrides)
+        return cfg
+
+    def test_thread_ready_requires_plan_verification_release_and_moon_context(self):
+        assert self.adapter._thread_looks_ready_for_moon_delivery(
+            "Plan for mooninv. Risk: low. Verification: run tests. Release: OTA only."
+        )
+        assert not self.adapter._thread_looks_ready_for_moon_delivery(
+            "Plan for mooninv. Risk: low. Verification: run tests."
+        )
+        assert not self.adapter._thread_looks_ready_for_moon_delivery(
+            "Risk: low. Verification: tests. Release: none."
+        )
+
+    def test_redacts_secrets_from_transcript(self):
+        redacted = self.adapter._redact_mattermost_transcript(
+            "token=abc123456789 bearer abc123456789012345 postgres://user:pass@example/db"
+        )
+        assert "abc123456789" not in redacted
+        assert "postgres://" not in redacted
+        assert "[REDACTED]" in redacted
+
+    @pytest.mark.asyncio
+    async def test_approval_creates_exactly_one_kanban_task_and_consumes_event(self):
+        self.adapter._moon_delivery_goal_config = MagicMock(return_value=self._cfg())
+        self.adapter._fetch_thread_transcript_sync = MagicMock(
+            return_value="[mauri] Build mooninv feature\n[bot] Risk: low. Verification: tests. Release: OTA."
+        )
+        self.adapter._create_moon_delivery_task_sync = MagicMock(return_value="t_delivery123")
+
+        consumed = await self.adapter._maybe_enqueue_moon_delivery_goal(
+            post={"id": "approval_post", "root_id": "root_post"},
+            data={"team_name": "moon"},
+            message_text="go",
+            channel_id="coding_channel",
+            sender_id="mauri_user",
+            sender_name="mauric",
+        )
+
+        assert consumed is True
+        self.adapter._create_moon_delivery_task_sync.assert_called_once()
+        self.adapter.send.assert_awaited_once()
+        assert "t_delivery123" in self.adapter.send.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_approval_blocks_when_thread_lacks_complete_plan(self):
+        self.adapter._moon_delivery_goal_config = MagicMock(return_value=self._cfg())
+        self.adapter._fetch_thread_transcript_sync = MagicMock(return_value="[mauri] just chatting about mooninv")
+        self.adapter._create_moon_delivery_task_sync = MagicMock(return_value="should-not-run")
+
+        consumed = await self.adapter._maybe_enqueue_moon_delivery_goal(
+            post={"id": "approval_post", "root_id": "root_post"},
+            data={"team_name": "moon"},
+            message_text="go",
+            channel_id="coding_channel",
+            sender_id="mauri_user",
+            sender_name="mauric",
+        )
+
+        assert consumed is True
+        self.adapter._create_moon_delivery_task_sync.assert_not_called()
+        assert "complete Moon delivery plan" in self.adapter.send.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_approval_blocks_unapproved_sender(self):
+        self.adapter._moon_delivery_goal_config = MagicMock(return_value=self._cfg())
+        self.adapter._create_moon_delivery_task_sync = MagicMock(return_value="should-not-run")
+
+        consumed = await self.adapter._maybe_enqueue_moon_delivery_goal(
+            post={"id": "approval_post", "root_id": "root_post"},
+            data={"team_name": "moon"},
+            message_text="go",
+            channel_id="coding_channel",
+            sender_id="random_user",
+            sender_name="random",
+        )
+
+        assert consumed is True
+        self.adapter._create_moon_delivery_task_sync.assert_not_called()
+        assert "not allowed" in self.adapter.send.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_approval_fails_closed_without_allowlist(self):
+        self.adapter._moon_delivery_goal_config = MagicMock(
+            return_value=self._cfg(approved_sender_ids=[], approved_senders=[])
+        )
+        self.adapter._create_moon_delivery_task_sync = MagicMock(return_value="should-not-run")
+
+        consumed = await self.adapter._maybe_enqueue_moon_delivery_goal(
+            post={"id": "approval_post", "root_id": "root_post"},
+            data={"team_name": "moon"},
+            message_text="go",
+            channel_id="coding_channel",
+            sender_id="mauri_user",
+            sender_name="mauric",
+        )
+
+        assert consumed is True
+        self.adapter._create_moon_delivery_task_sync.assert_not_called()
+        assert "not allowed" in self.adapter.send.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_handle_ws_plain_approval_bypasses_mention_gate(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_REQUIRE_MENTION", raising=False)
+        monkeypatch.delenv("MATTERMOST_FREE_RESPONSE_CHANNELS", raising=False)
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+        self.adapter._moon_delivery_goal_config = MagicMock(return_value=self._cfg())
+        self.adapter._fetch_thread_transcript_sync = MagicMock(
+            return_value="[mauri] Build mooninv feature\n[bot] Risk: low. Verification: tests. Release: OTA."
+        )
+        self.adapter._create_moon_delivery_task_sync = MagicMock(return_value="t_delivery123")
+
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps({
+                    "id": "approval_post",
+                    "user_id": "mauri_user",
+                    "channel_id": "coding_channel",
+                    "message": "go",
+                    "root_id": "root_post",
+                }),
+                "channel_type": "O",
+                "sender_name": "mauric",
+                "team_name": "moon",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        self.adapter._create_moon_delivery_task_sync.assert_called_once()
+        self.adapter.send.assert_awaited_once()
+        self.adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_ws_nonapproval_without_mention_still_skips(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_REQUIRE_MENTION", raising=False)
+        monkeypatch.delenv("MATTERMOST_FREE_RESPONSE_CHANNELS", raising=False)
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+        self.adapter._moon_delivery_goal_config = MagicMock(return_value=self._cfg())
+        self.adapter._create_moon_delivery_task_sync = MagicMock(return_value="should-not-run")
+
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps({
+                    "id": "plain_post",
+                    "user_id": "mauri_user",
+                    "channel_id": "coding_channel",
+                    "message": "not an approval",
+                    "root_id": "root_post",
+                }),
+                "channel_type": "O",
+                "sender_name": "mauric",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        self.adapter._create_moon_delivery_task_sync.assert_not_called()
+        self.adapter.handle_message.assert_not_called()
+
+    def test_create_task_body_carries_release_train_metadata(self, tmp_path):
+        from hermes_cli import kanban_db as kb
+
+        db_path = tmp_path / "kanban.db"
+        original_connect = kb.connect
+
+        def connect_temp(*args, **kwargs):
+            return original_connect(db_path)
+
+        with patch.object(kb, "connect", side_effect=connect_temp):
+            task_id = self.adapter._create_moon_delivery_task_sync(
+                self._cfg(board="unused-test-board"),
+                post={"id": "approval_post", "root_id": "root_post"},
+                data={"team_name": "moon"},
+                channel_id="coding_channel",
+                root_id="root_post",
+                sender_name="mauric",
+                thread_transcript="[mauri] Build mooninv thing\n[bot] Risk: low. Verification: tests. Release: OTA.",
+            )
+
+        assert task_id
+        with kb.connect(db_path) as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        assert row["assignee"] == "mooncoder"
+        assert row["status"] == "ready"
+        metadata = json.loads(row["metadata"])
+        assert metadata["source"] == "mattermost_moon_delivery_goal"
+        assert metadata["repo"] == "/Users/mauri/app"
+        assert "ota_store_or_backend_gate" in metadata["release_train"]
 
 
 # ---------------------------------------------------------------------------

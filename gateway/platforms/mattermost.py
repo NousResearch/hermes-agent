@@ -107,6 +107,19 @@ class MattermostAdapter(BasePlatformAdapter):
             no_thread_values.extend(env_no_thread.split(","))
         self._no_thread_channels = {str(v).strip() for v in no_thread_values if str(v).strip()}
 
+        auto_thread_raw = (
+            config.extra.get("auto_thread_channels", "")
+            or os.getenv("MATTERMOST_AUTO_THREAD_CHANNELS", "")
+        )
+        if isinstance(auto_thread_raw, (list, tuple, set)):
+            self._auto_thread_channels = {
+                str(channel).strip() for channel in auto_thread_raw if str(channel).strip()
+            }
+        else:
+            self._auto_thread_channels = {
+                channel.strip() for channel in str(auto_thread_raw).split(",") if channel.strip()
+            }
+
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
 
@@ -280,9 +293,9 @@ class MattermostAdapter(BasePlatformAdapter):
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._should_thread_reply(chat_id):
-                payload["root_id"] = reply_to
+            root_id = self._root_id_from_send_context(chat_id, reply_to, metadata)
+            if root_id:
+                payload["root_id"] = root_id
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -294,6 +307,27 @@ class MattermostAdapter(BasePlatformAdapter):
     def _should_thread_reply(self, chat_id: str) -> bool:
         """Return whether replies in this channel should be nested in a Mattermost thread."""
         return self._reply_mode == "thread" and chat_id not in self._no_thread_channels
+
+    def _root_id_from_send_context(
+        self,
+        chat_id: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Resolve the Mattermost thread root for an outbound post.
+
+        Gateway progress, streaming, approval, and background notifications
+        often carry the canonical thread root in metadata and leave reply_to
+        empty. For Mattermost, root_id must be the root post id; child post ids
+        are rejected with Invalid RootId.
+        """
+        if not self._should_thread_reply(chat_id):
+            return None
+        root_id = None
+        if metadata:
+            root_id = metadata.get("mattermost_root_id") or metadata.get("thread_id")
+        root_id = root_id or reply_to
+        return str(root_id) if root_id else None
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return channel name and type."""
@@ -347,7 +381,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Download an image and upload it as a file attachment."""
         return await self._send_url_as_file(
-            chat_id, image_url, caption, reply_to, "image"
+            chat_id, image_url, caption, reply_to, metadata=metadata, kind="image"
         )
 
     async def send_image_file(
@@ -360,7 +394,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a local image file."""
         return await self._send_local_file(
-            chat_id, image_path, caption, reply_to
+            chat_id, image_path, caption, reply_to, metadata=metadata
         )
 
     async def send_document(
@@ -374,7 +408,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a local file as a document."""
         return await self._send_local_file(
-            chat_id, file_path, caption, reply_to, file_name
+            chat_id, file_path, caption, reply_to, file_name, metadata=metadata
         )
 
     async def send_voice(
@@ -387,7 +421,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload an audio file."""
         return await self._send_local_file(
-            chat_id, audio_path, caption, reply_to
+            chat_id, audio_path, caption, reply_to, metadata=metadata
         )
 
     async def send_video(
@@ -400,7 +434,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a video file."""
         return await self._send_local_file(
-            chat_id, video_path, caption, reply_to
+            chat_id, video_path, caption, reply_to, metadata=metadata
         )
 
     def format_message(self, content: str) -> str:
@@ -423,13 +457,14 @@ class MattermostAdapter(BasePlatformAdapter):
         url: str,
         caption: Optional[str],
         reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
         kind: str = "file",
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
         from tools.url_safety import is_safe_url
         if not is_safe_url(url):
             logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
-            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
 
         import aiohttp
 
@@ -447,7 +482,7 @@ class MattermostAdapter(BasePlatformAdapter):
                             await asyncio.sleep(1.5 * (attempt + 1))
                             continue
                     if resp.status >= 400:
-                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
                     file_data = await resp.read()
                     ct = resp.content_type or "application/octet-stream"
                     break
@@ -456,23 +491,24 @@ class MattermostAdapter(BasePlatformAdapter):
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
                 logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
-                return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+                return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
 
         if file_data is None:
             logger.warning("Mattermost: download returned no data for %s", url)
-            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
 
         file_id = await self._upload_file(chat_id, file_data, fname, ct)
         if not file_id:
-            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
 
         payload: Dict[str, Any] = {
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._should_thread_reply(chat_id):
-            payload["root_id"] = reply_to
+        root_id = self._root_id_from_send_context(chat_id, reply_to, metadata)
+        if root_id:
+            payload["root_id"] = root_id
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
@@ -486,6 +522,7 @@ class MattermostAdapter(BasePlatformAdapter):
         caption: Optional[str],
         reply_to: Optional[str],
         file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a local file and attach it to a post."""
         import mimetypes
@@ -493,7 +530,7 @@ class MattermostAdapter(BasePlatformAdapter):
         p = Path(file_path)
         if not p.exists():
             return await self.send(
-                chat_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
+                chat_id, f"{caption or ''}\n(file not found: {file_path})", reply_to, metadata=metadata
             )
 
         fname = file_name or p.name
@@ -509,8 +546,9 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._should_thread_reply(chat_id):
-            payload["root_id"] = reply_to
+        root_id = self._root_id_from_send_context(chat_id, reply_to, metadata)
+        if root_id:
+            payload["root_id"] = root_id
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
@@ -596,6 +634,9 @@ class MattermostAdapter(BasePlatformAdapter):
                     "message": "\n".join(caption_parts),
                     "file_ids": file_ids,
                 }
+                root_id = self._root_id_from_send_context(chat_id, metadata=metadata)
+                if root_id:
+                    payload["root_id"] = root_id
                 logger.info(
                     "Mattermost: sending %d image(s) as single post (chunk %d/%d)",
                     len(file_ids), chunk_idx + 1, len(chunks),
@@ -725,6 +766,8 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
+        sender_id = post.get("user_id", "")
+        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
         # Mention-gating for non-DM channels.
         # Config (config.yaml `mattermost.*` with env-var fallback):
@@ -749,6 +792,21 @@ class MattermostAdapter(BasePlatformAdapter):
                     "Mattermost: ignoring message in non-allowed channel: %s",
                     channel_id,
                 )
+                return
+
+            # Moon delivery approvals are intentionally plain replies like
+            # "go" inside coding threads. They must be recognized before the
+            # generic @mention gate, but the helper still fail-closes on
+            # configured channel, thread root, exact approval phrase, plan
+            # readiness, and approved sender allowlist.
+            if await self._maybe_enqueue_moon_delivery_goal(
+                post=post,
+                data=data,
+                message_text=message_text,
+                channel_id=channel_id,
+                sender_id=sender_id,
+                sender_name=sender_name,
+            ):
                 return
 
             require_mention = os.getenv(
@@ -781,13 +839,12 @@ class MattermostAdapter(BasePlatformAdapter):
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
-
-        # Resolve sender info.
-        sender_id = post.get("user_id", "")
-        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
-
-        # Thread support: if the post is in a thread, use root_id.
+        # Thread support: if the post is in a thread, use root_id. For
+        # configured coding/work channels, a top-level post is the thread root
+        # so each task gets a siloed session and all bot replies stay nested.
         thread_id = post.get("root_id") or None
+        if not thread_id and channel_id in self._auto_thread_channels and channel_type_raw != "D":
+            thread_id = post_id or None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
@@ -849,6 +906,7 @@ class MattermostAdapter(BasePlatformAdapter):
             user_id=sender_id,
             user_name=sender_name,
             thread_id=thread_id,
+            message_id=post_id,
         )
 
         # Per-channel ephemeral prompt
@@ -869,5 +927,294 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
+
+    async def _maybe_enqueue_moon_delivery_goal(
+        self,
+        *,
+        post: Dict[str, Any],
+        data: Dict[str, Any],
+        message_text: str,
+        channel_id: str,
+        sender_id: str,
+        sender_name: str,
+    ) -> bool:
+        """Turn approved Moon coding threads into durable Kanban work.
+
+        The human-facing flow stays natural: a top-level post gets a plan in
+        its Mattermost thread; when Mauri/Aaron replies with an approval phrase,
+        the gateway creates exactly one Kanban task for that Mattermost thread
+        and lets the embedded dispatcher spawn the worker.  This keeps feature
+        delivery durable instead of relying on a long interactive agent run.
+        """
+        cfg = self._moon_delivery_goal_config()
+        if not cfg.get("enabled"):
+            return False
+        channels = {str(ch).strip() for ch in (cfg.get("channels") or []) if str(ch).strip()}
+        if channel_id not in channels:
+            return False
+
+        root_id = str(post.get("root_id") or "").strip()
+        require_thread = bool(cfg.get("require_thread", True))
+        if require_thread and not root_id:
+            return False
+
+        text = (message_text or "").strip().lower()
+        if not text:
+            return False
+        approvals = {str(p).strip().lower() for p in (cfg.get("approval_phrases") or []) if str(p).strip()}
+        if text not in approvals:
+            return False
+
+        allowed_sender_ids = {str(s).strip() for s in (cfg.get("approved_sender_ids") or []) if str(s).strip()}
+        allowed_senders = {str(s).strip().lower().lstrip("@") for s in (cfg.get("approved_senders") or []) if str(s).strip()}
+        sender_key = str(sender_name or "").strip().lower().lstrip("@")
+        sender_id_key = str(sender_id or "").strip()
+        sender_allowed = bool(allowed_sender_ids and sender_id_key in allowed_sender_ids)
+        # Name fallback is only used while bootstrapping, when immutable IDs are
+        # not configured yet. Once approved_sender_ids exists, IDs are the sole
+        # authority. If neither allowlist exists, fail closed; approval phrases
+        # must never become "anyone in channel can launch autonomous work".
+        if not allowed_sender_ids and allowed_senders:
+            sender_allowed = sender_key in allowed_senders
+        if not sender_allowed:
+            logger.info(
+                "Mattermost: consuming denied Moon delivery approval from non-approved sender %s/%s in %s",
+                sender_name,
+                sender_id,
+                channel_id,
+            )
+            await self.send(
+                channel_id,
+                "I saw an approval phrase, but that account is not allowed to launch Moon delivery tasks.",
+                reply_to=root_id or post.get("id"),
+            )
+            return True
+
+        task_root_id = root_id or post.get("id", "")
+        thread_transcript = await asyncio.to_thread(self._fetch_thread_transcript_sync, task_root_id)
+        if not self._thread_looks_ready_for_moon_delivery(thread_transcript):
+            logger.info(
+                "Mattermost: consuming approval phrase in %s/%s because thread does not look like an approved Moon delivery plan",
+                channel_id,
+                task_root_id,
+            )
+            await self.send(
+                channel_id,
+                "I saw the approval phrase, but I don't see a complete Moon delivery plan in this thread yet. Post/approve the plan with risk, verification, and release impact first.",
+                reply_to=task_root_id,
+            )
+            return True
+
+        task_id = await asyncio.to_thread(
+            self._create_moon_delivery_task_sync,
+            cfg,
+            post,
+            data,
+            channel_id,
+            task_root_id,
+            sender_name,
+            thread_transcript,
+        )
+        if not task_id:
+            await self.send(
+                channel_id,
+                "I saw the approval, but couldn't create the Kanban task. Check gateway logs — the conveyor belt jammed before worker dispatch.",
+                reply_to=root_id or post.get("id"),
+            )
+            return True
+
+        board = str(cfg.get("board") or "moon")
+        assignee = str(cfg.get("assignee") or cfg.get("default_assignee") or "mooncoder")
+        await self.send(
+            channel_id,
+            f"Approved plan captured. Kanban task `{task_id}` is queued on `{board}` for `{assignee}`; the dispatcher will pick it up autonomously.",
+            reply_to=root_id or post.get("id"),
+        )
+        return True
+
+    def _moon_delivery_goal_config(self) -> Dict[str, Any]:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            section = cfg.get("moon_delivery_goal", {}) if isinstance(cfg, dict) else {}
+            return section if isinstance(section, dict) else {}
+        except Exception as exc:
+            logger.warning("Mattermost: failed to load moon_delivery_goal config: %s", exc)
+            return {}
+
+    def _create_moon_delivery_task_sync(
+        self,
+        cfg: Dict[str, Any],
+        post: Dict[str, Any],
+        data: Dict[str, Any],
+        channel_id: str,
+        root_id: str,
+        sender_name: str,
+        thread_transcript: str,
+    ) -> Optional[str]:
+        try:
+            from hermes_cli import kanban_db as kb
+
+            board = str(cfg.get("board") or "moon")
+            assignee = str(cfg.get("assignee") or cfg.get("default_assignee") or "mooncoder")
+            tenant = str(cfg.get("tenant") or "moon")
+            thread_url = self._mattermost_thread_url(data, channel_id, root_id)
+            body = self._moon_delivery_task_body(cfg, channel_id, root_id, thread_url, sender_name, thread_transcript)
+            title = self._moon_delivery_task_title(body)
+            metadata = {
+                "source": "mattermost_moon_delivery_goal",
+                "platform": "mattermost",
+                "channel_id": channel_id,
+                "thread_id": root_id,
+                "thread_url": thread_url,
+                "approved_by": sender_name,
+                "repo": str(cfg.get("repo") or "/Users/mauri/app"),
+                "release_train": [
+                    "scope_and_plan_approved",
+                    "branch_or_worktree",
+                    "implement",
+                    "self_review_diff",
+                    "automated_tests",
+                    "simulator_or_emulator_if_available",
+                    "physical_device_when_required",
+                    "ota_store_or_backend_gate",
+                    "final_report",
+                ],
+            }
+            with kb.connect(board=board) as conn:
+                return kb.create_task(
+                    conn,
+                    title=title,
+                    body=body,
+                    assignee=assignee,
+                    created_by=f"mattermost:{sender_name}",
+                    workspace_kind=str(cfg.get("workspace") or "worktree"),
+                    tenant=tenant,
+                    priority=int(cfg.get("priority", 10) or 10),
+                    idempotency_key=f"mattermost:{channel_id}:{root_id}:moon-delivery-goal",
+                    max_runtime_seconds=int(cfg.get("max_runtime_seconds", 7200) or 7200),
+                    skills=["expo-eas-mobile-release", "github-pr-workflow", "requesting-code-review"],
+                    metadata=metadata,
+                )
+        except Exception as exc:
+            logger.error("Mattermost: failed to create Moon delivery Kanban task: %s", exc, exc_info=True)
+            return None
+
+    def _mattermost_thread_url(self, data: Dict[str, Any], channel_id: str, root_id: str) -> str:
+        team = data.get("team_name") or data.get("team_id") or ""
+        if self._base_url and team and root_id:
+            return f"{self._base_url}/{team}/pl/{root_id}"
+        if self._base_url and root_id:
+            return f"{self._base_url}/_redirect/pl/{root_id}"
+        return f"mattermost:{channel_id}:{root_id}"
+
+    def _moon_delivery_task_body(
+        self,
+        cfg: Dict[str, Any],
+        channel_id: str,
+        root_id: str,
+        thread_url: str,
+        sender_name: str,
+        thread_transcript: str,
+    ) -> str:
+        thread_text = self._redact_mattermost_transcript(thread_transcript)
+        template = str(cfg.get("goal_template") or "Implement the approved Moon task from this Mattermost thread.")
+        repo = str(cfg.get("repo") or "/Users/mauri/app")
+        return (
+            f"{template}\n\n"
+            f"Approved by: {sender_name}\n"
+            f"Source: {thread_url}\n"
+            f"Repo: {repo}\n\n"
+            "Mandatory workflow:\n"
+            "1. Work in an isolated branch/worktree; do not touch unrelated dirty files.\n"
+            "2. Implement the approved plan from the transcript below.\n"
+            "3. Run targeted tests plus ./scripts/moon-verify-branch.sh when available.\n"
+            "4. Test simulator/emulator/physical-device paths when the environment supports them; if tooling is missing, report the blocker explicitly.\n"
+            "5. Review every diff before commit.\n"
+            "6. Push/merge only low/medium-risk app-only work when green. Ask before production Supabase/backend deploys, EAS credit-spending builds, store submission, Stripe/billing, destructive data work, or unclear high-risk rollback.\n\n"
+            "Mattermost thread transcript:\n"
+            f"{thread_text}"
+        )
+
+    def _fetch_thread_transcript_sync(self, root_id: str) -> str:
+        # Called from an asyncio.to_thread context; use the REST API with urllib
+        # instead of trying to await the adapter's aiohttp session from a worker thread.
+        if not root_id or not self._base_url or not self._token:
+            return "[thread transcript unavailable]"
+        try:
+            import urllib.request
+            from urllib.parse import urlsplit
+
+            base_host = urlsplit(self._base_url).netloc
+            if not base_host or urlsplit(self._base_url).scheme not in {"http", "https"}:
+                return "[thread transcript unavailable]"
+
+            class _NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+                    return None
+
+            req = urllib.request.Request(
+                f"{self._base_url}/api/v4/posts/{root_id}/thread",
+                headers={"Authorization": f"Bearer {self._token}"},
+            )
+            opener = urllib.request.build_opener(_NoRedirect)
+            with opener.open(req, timeout=30) as resp:  # nosec B310: configured Mattermost base URL, redirects disabled
+                final_host = urlsplit(resp.geturl()).netloc
+                if final_host and final_host != base_host:
+                    return "[thread transcript unavailable]"
+                payload = json.loads(resp.read().decode("utf-8"))
+            order = payload.get("order") or []
+            posts = payload.get("posts") or {}
+            lines: List[str] = []
+            for pid in order:
+                p = posts.get(pid) or {}
+                msg = str(p.get("message") or "").strip()
+                if not msg:
+                    continue
+                user = p.get("props", {}).get("from_webhook") or p.get("user_id") or "unknown"
+                lines.append(f"[{user}] {msg}")
+            return "\n\n".join(lines) if lines else "[thread transcript empty]"
+        except Exception as exc:
+            logger.warning("Mattermost: failed to fetch thread transcript for %s: %s", root_id, exc)
+            return "[thread transcript unavailable]"
+
+    def _thread_looks_ready_for_moon_delivery(self, transcript: str) -> bool:
+        text = (transcript or "").lower()
+        if not text or text.startswith("[thread transcript unavailable]"):
+            return False
+        # The channel prompts require the plan to cover these exact concepts.
+        # Requiring them makes casual replies like "go" in a random thread fall
+        # through to normal agent handling instead of launching a worker.
+        has_plan_shape = all(marker in text for marker in ("risk", "verification", "release"))
+        # Use token/word-aware matching so generic words like "release" do not
+        # accidentally satisfy the EAS marker via the substring "eas".
+        has_moon_context = bool(re.search(r"\b(?:moon|mooninv|mooncus|supabase|eas|ota)\b", text))
+        return has_plan_shape and has_moon_context
+
+    def _redact_mattermost_transcript(self, transcript: str) -> str:
+        redacted = transcript or "[thread transcript unavailable]"
+        patterns = (
+            r'(?i)(api[_-]?key|secret|password|passwd|token|service[_-]?role[_-]?key)\s*[:=]\s*[^\s`\'\"]+',
+            r'(?i)(bearer\s+)[a-z0-9._~+/=-]{12,}',
+            r'(?i)(sk|rk|pk)_[a-z0-9_\-]{16,}',
+            r'postgres(?:ql)?://[^\s`\'\"]+',
+        )
+        for pattern in patterns:
+            redacted = re.sub(pattern, lambda m: m.group(1) + "[REDACTED]" if m.lastindex else "[REDACTED]", redacted)
+        return redacted
+
+    def _moon_delivery_task_title(self, body: str) -> str:
+        in_transcript = False
+        for line in body.splitlines():
+            stripped = line.strip()
+            if stripped == "Mattermost thread transcript:":
+                in_transcript = True
+                continue
+            if not in_transcript or not stripped:
+                continue
+            if "]" in stripped:
+                stripped = stripped.split("]", 1)[1].strip()
+            return stripped[:120] or "Approved Moon delivery task"
+        return "Approved Moon delivery task"
 
 

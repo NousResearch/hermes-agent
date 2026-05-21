@@ -27,9 +27,40 @@ import subprocess
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_dir
+from hermes_cli._subprocess_compat import windows_hide_flags
+
+
+def _bridge_popen_extra_kwargs(*, is_windows: Optional[bool] = None) -> Dict[str, Any]:
+    """Platform-specific extras for ``subprocess.Popen`` when launching
+    the WhatsApp Node bridge (#29715).
+
+    On POSIX we run the bridge in its own session via ``os.setsid`` so
+    Ctrl+C in the gateway terminal doesn't propagate to the bridge.
+    On Windows the equivalent intent is "don't allocate a visible
+    console window for the node.exe subprocess" — ``CREATE_NO_WINDOW``
+    (via the shared ``windows_hide_flags()`` helper).
+
+    We deliberately use ``windows_hide_flags`` (``CREATE_NO_WINDOW``
+    only) rather than the sibling ``windows_detach_flags`` helper
+    (``DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW``)
+    because ``DETACHED_PROCESS`` severs stdio handles, which would
+    break the ``stdout=bridge_log_fh`` redirect the adapter relies on
+    for QR-code / connection diagnostics.
+
+    ``is_windows`` is resolved lazily (default ``None`` reads the
+    module-level ``_IS_WINDOWS`` at call time) so tests can simulate
+    the Windows path via ``monkeypatch.setattr``. Pass an explicit
+    boolean from unit tests that want to pin the platform regardless
+    of where they run.
+    """
+    if is_windows is None:
+        is_windows = _IS_WINDOWS
+    if is_windows:
+        return {"creationflags": windows_hide_flags()}
+    return {"preexec_fn": os.setsid}
 
 logger = logging.getLogger(__name__)
 
@@ -617,6 +648,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
 
+            # Platform-specific Popen extras (#29715). On Windows the
+            # raw call without ``creationflags`` allocates a visible
+            # ``node.exe`` console window; on POSIX we want a new
+            # session via ``os.setsid``. See ``_bridge_popen_extra_kwargs``
+            # for the rationale (and why we deliberately do NOT use
+            # ``DETACHED_PROCESS`` here — it would sever the stdio
+            # redirect to ``bridge.log``).
             self._bridge_process = subprocess.Popen(
                 [
                     "node",
@@ -627,8 +665,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 ],
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
-                preexec_fn=None if _IS_WINDOWS else os.setsid,
                 env=bridge_env,
+                **_bridge_popen_extra_kwargs(),
             )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             

@@ -35,6 +35,20 @@ _FAILED_CHECK_CONCLUSIONS = {
 }
 _TERMINAL_CHECK_STATUSES = {"completed", "complete", "success"}
 _APPROVAL_DECISIONS = {"approved", "close_approved", "accepted", "ship"}
+_DATA_MOUNT_PREFIX = "/mnt/hermes-data/"
+_HARDBLOCK_RESIDUE_KINDS = {
+    "archive_backup",
+    "build_cache",
+    "completed_workspace",
+    "node_modules",
+    "obsolete_branch",
+    "pr_worktree",
+    "task_tmp",
+    "workspace_archive",
+    "workspace_backup",
+}
+_PASSING_RESIDUE_DISPOSITIONS = {"none", "cleared", "moved", "retained"}
+_UNDISPOSED_RESIDUE_DISPOSITIONS = {"", "needs_decision", "pending", "unknown", "unaccounted"}
 
 
 @dataclass(frozen=True)
@@ -237,6 +251,75 @@ def _cleanup_proven(evidence: Mapping[str, Any]) -> tuple[bool, str | None]:
     return True, None
 
 
+def _has_ttl_or_revisit(item: Mapping[str, Any]) -> bool:
+    return bool(
+        _text(item.get("ttl"))
+        or _text(item.get("revisit_at"))
+        or _text(item.get("expires_at"))
+    )
+
+
+def _is_on_data_mount(path: Any) -> bool:
+    value = _text(path)
+    return value == "/mnt/hermes-data" or value.startswith(_DATA_MOUNT_PREFIX)
+
+
+def _residue_blockers(evidence: Mapping[str, Any]) -> list[str]:
+    if "residue" not in evidence:
+        return ["missing_residue_evidence"]
+    residue = evidence.get("residue")
+    if not isinstance(residue, Mapping):
+        return ["invalid_residue_evidence"]
+
+    blockers: list[str] = []
+    summary = _text(residue.get("summary"))
+    items = residue.get("items")
+    if items is None:
+        items_list: list[Any] = []
+    elif isinstance(items, list):
+        items_list = items
+    else:
+        return ["invalid_residue_evidence"]
+
+    if not summary and not items_list and "db_backups" not in residue:
+        blockers.append("invalid_residue_evidence")
+
+    for raw_item in items_list:
+        if not isinstance(raw_item, Mapping):
+            blockers.append("invalid_residue_evidence")
+            continue
+        item = _as_mapping(raw_item)
+        kind = _lower(item.get("kind"))
+        disposition = _lower(item.get("disposition")) or ("none" if kind == "none" else "")
+        if disposition in _UNDISPOSED_RESIDUE_DISPOSITIONS:
+            blockers.append("undisposed_residue")
+            continue
+        if disposition not in _PASSING_RESIDUE_DISPOSITIONS:
+            blockers.append("invalid_residue_evidence")
+            continue
+        if disposition == "retained":
+            if not _text(item.get("reason")):
+                blockers.append("retained_residue_missing_reason")
+            if not _has_ttl_or_revisit(item):
+                blockers.append("retained_residue_missing_ttl")
+        if disposition == "moved" and kind in _HARDBLOCK_RESIDUE_KINDS:
+            if not _is_on_data_mount(item.get("destination")):
+                blockers.append("moved_residue_not_on_data_mount")
+
+    db_backups = residue.get("db_backups")
+    if db_backups is not None:
+        if not isinstance(db_backups, Mapping):
+            blockers.append("invalid_residue_evidence")
+        else:
+            db = _as_mapping(db_backups)
+            count = db.get("count")
+            has_any = bool(count or _text(db.get("retention")) or _has_ttl_or_revisit(db))
+            if has_any and not (_text(db.get("retention")) and _has_ttl_or_revisit(db)):
+                blockers.append("db_backup_retention_uncapped")
+
+    return list(dict.fromkeys(blockers))
+
+
 def _extract_pr_candidates(evidence: Mapping[str, Any]) -> list[dict[str, Any]]:
     candidates = []
     for key in ("pr_candidates", "pull_requests", "prs"):
@@ -320,6 +403,7 @@ def _review_ready_blockers(evidence: Mapping[str, Any]) -> list[str]:
         blockers.append("missing_worker_evidence")
     blockers.extend(_check_pr(evidence))
     blockers.extend(_check_statuses(evidence))
+    blockers.extend(_residue_blockers(evidence))
     cleanup_ok, cleanup_blocker = _cleanup_proven(evidence)
     if not cleanup_ok and cleanup_blocker:
         blockers.append(cleanup_blocker)
@@ -393,6 +477,7 @@ def verify_closeout_transition(
                 blockers.append(cleanup_blocker)
             if not _has_worker_evidence(normalized):
                 blockers.append("missing_worker_evidence")
+            blockers.extend(_residue_blockers(normalized))
         else:
             blockers.extend(_review_ready_blockers(normalized))
 

@@ -1955,6 +1955,35 @@ def apply_closeout_transition(
                 summary="Kanban closeout approved and closed",
                 metadata={"closeout_phase": "closed"},
             )
+        elif review_phase == "review_ready":
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET review_phase = ?,
+                       closeout_evidence = ?,
+                       status = 'blocked',
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ?
+                   AND status != 'archived'
+                """,
+                (
+                    review_phase,
+                    _json_dumps_dict(closeout_evidence, "closeout_evidence"),
+                    task_id,
+                ),
+            )
+            if cur.rowcount != 1:
+                return False
+            run_id = _end_run(
+                conn,
+                task_id,
+                outcome="blocked",
+                status="blocked",
+                summary="Kanban closeout review package ready; waiting for review/close approval",
+                metadata={"closeout_phase": "review_ready", "blocked_reason": "review_ready_waiting_for_review"},
+            )
         else:
             cur = conn.execute(
                 """

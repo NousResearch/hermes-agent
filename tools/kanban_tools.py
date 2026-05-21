@@ -426,7 +426,10 @@ def _handle_complete(args: dict, **kw) -> str:
                 metadata["artifacts"] = artifacts
     if not (summary or result):
         return tool_error(
-            "provide at least one of: summary (preferred), result"
+            "provide at least one of: summary (preferred), result. "
+            "Include a short 'Residue:' note in the summary when practical; "
+            "final review_ready/closed closeout is enforced separately with "
+            "structured closeout_evidence.residue."
         )
     if metadata is not None and not isinstance(metadata, dict):
         return tool_error(

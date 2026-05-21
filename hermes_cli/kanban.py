@@ -512,7 +512,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_closeout.add_argument(
         "--evidence",
         default=None,
-        help="JSON object with PR/check/evidence/cleanup/approval closeout facts",
+        help=(
+            "JSON object with PR/check/evidence/cleanup/approval closeout facts. "
+            "review_ready/closed also require residue, e.g. "
+            "{\"residue\":{\"summary\":\"Residue: none\",\"items\":[]}}; "
+            "retained residue needs reason + ttl/revisit_at, moved hardblock residue should land under /mnt/hermes-data."
+        ),
     )
     p_closeout.add_argument(
         "--repo",
@@ -1842,6 +1847,11 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:
                 print(f"Completed {tid}")
+                print(
+                    "  note: worker completion is not final board Done; "
+                    "use `hermes kanban closeout ... review_ready` with "
+                    "structured residue evidence, then `closed` after review approval."
+                )
     return 0 if not failed else 1
 
 

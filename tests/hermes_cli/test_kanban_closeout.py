@@ -47,6 +47,12 @@ def _head(repo: Path) -> str:
     ).stdout.strip()
 
 
+def _valid_residue(**overrides):
+    residue = {"summary": "Residue: none", "items": []}
+    residue.update(overrides)
+    return residue
+
+
 def _review_ready_evidence(repo: Path, **overrides):
     evidence = {
         "summary": "implementation completed with regression coverage",
@@ -60,6 +66,7 @@ def _review_ready_evidence(repo: Path, **overrides):
         },
         "checks": [{"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"}],
         "cleanup": {"proof": "worktree cleanup verified", "worktree_clean": True},
+        "residue": _valid_residue(),
         "evidence": {"changed_files": ["hermes_cli/kanban_closeout.py"], "tests_run": ["targeted"]},
     }
     evidence.update(overrides)
@@ -118,7 +125,9 @@ def test_review_ready_requires_live_pr_checks_evidence_and_cleanup(kanban_home, 
 
     assert result["status"] == "transitioned"
     assert task.review_phase == "review_ready"
-    assert task.status == "ready"
+    assert task.status == "blocked"
+    assert result["task_status"] == "blocked"
+    assert task.closeout_evidence["residue"]["summary"] == "Residue: none"
     assert task.closeout_evidence["verification"]["allowed"] is True
     assert task.closeout_evidence["verification"]["gateway_restarted_or_reloaded"] is False
     assert task.closeout_evidence["verification"]["pr_merged"] is False
@@ -186,6 +195,105 @@ def test_review_ready_fails_closed_for_dirty_worktree(git_repo):
     assert "dirty_worktree" in result.blockers
 
 
+def test_review_ready_requires_residue_evidence(git_repo):
+    evidence = _review_ready_evidence(git_repo)
+    evidence.pop("residue")
+
+    result = closeout.verify_closeout_transition(
+        "review_ready",
+        evidence,
+        current_phase="worker_done",
+        repo_path=git_repo,
+    )
+
+    assert result.allowed is False
+    assert "missing_residue_evidence" in result.blockers
+
+
+@pytest.mark.parametrize(
+    "residue,blocker",
+    [
+        ({"summary": "Residue: needs decision", "items": [{"kind": "task_tmp", "path": "/tmp/x", "disposition": "needs_decision"}]}, "undisposed_residue"),
+        ({"summary": "Residue retained", "items": [{"kind": "task_tmp", "path": "/tmp/x", "disposition": "retained", "revisit_at": "2026-06-01"}]}, "retained_residue_missing_reason"),
+        ({"summary": "Residue retained", "items": [{"kind": "task_tmp", "path": "/tmp/x", "disposition": "retained", "reason": "debug evidence"}]}, "retained_residue_missing_ttl"),
+        ({"summary": "Residue moved", "items": [{"kind": "workspace_backup", "path": "/tmp/ws.tgz", "disposition": "moved", "destination": "/tmp/ws.tgz", "reason": "rollback", "revisit_at": "2026-06-01"}]}, "moved_residue_not_on_data_mount"),
+        ({"summary": "DB backups", "items": [], "db_backups": {"count": 12}}, "db_backup_retention_uncapped"),
+    ],
+)
+def test_residue_policy_fails_closed_for_invalid_dispositions(git_repo, residue, blocker):
+    result = closeout.verify_closeout_transition(
+        "review_ready",
+        _review_ready_evidence(git_repo, residue=residue),
+        current_phase="worker_done",
+        repo_path=git_repo,
+    )
+
+    assert result.allowed is False
+    assert blocker in result.blockers
+
+
+def test_residue_policy_accepts_moved_and_retained_backup_dispositions(git_repo):
+    residue = {
+        "summary": "Residue accounted",
+        "items": [
+            {
+                "kind": "workspace_backup",
+                "path": "/home/ubuntu/.hermes/kanban/residue-backups/ws.tgz",
+                "disposition": "moved",
+                "destination": "/mnt/hermes-data/kanban-residue/ws.tgz",
+                "reason": "rollback until review closes",
+                "revisit_at": "2026-06-01",
+                "size_bytes": 89000000,
+            },
+            {
+                "kind": "archive_backup",
+                "path": "/home/ubuntu/.hermes/kanban/residue-backups/archive.tgz",
+                "disposition": "retained",
+                "reason": "temporary audit evidence",
+                "ttl": "7d",
+            },
+        ],
+        "db_backups": {"count": 2, "retention": "latest 10 or 7 days", "revisit_at": "2026-06-01"},
+    }
+
+    result = closeout.verify_closeout_transition(
+        "review_ready",
+        _review_ready_evidence(git_repo, residue=residue),
+        current_phase="worker_done",
+        repo_path=git_repo,
+    )
+
+    assert result.allowed is True
+    assert result.blockers == []
+
+
+def test_closed_requires_residue_even_with_approval(git_repo):
+    evidence = _review_ready_evidence(git_repo, approval={"decision": "approved", "approved_by": "reviewer"})
+    evidence.pop("residue")
+
+    result = closeout.verify_closeout_transition(
+        "closed",
+        evidence,
+        current_phase="review_ready",
+        repo_path=git_repo,
+    )
+
+    assert result.allowed is False
+    assert "missing_residue_evidence" in result.blockers
+
+
+def test_worker_done_remains_compatible_without_residue(git_repo):
+    result = closeout.verify_closeout_transition(
+        "worker_done",
+        {"summary": "worker finished; residue gate deferred to review_ready"},
+        current_phase=None,
+        repo_path=git_repo,
+    )
+
+    assert result.allowed is True
+    assert "missing_residue_evidence" not in result.blockers
+
+
 def test_closed_requires_review_ready_and_explicit_approval(kanban_home, git_repo):
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="close me", workspace_kind="dir", workspace_path=str(git_repo))
@@ -223,6 +331,7 @@ def test_closed_allows_documented_no_pr_exception_policy(kanban_home, git_repo):
     evidence = {
         "summary": "documentation-only cleanup completed",
         "cleanup": {"proof": "no worktree residue", "worktree_clean": True},
+        "residue": _valid_residue(),
         "no_pr_exception": {
             "policy": "docs-only-no-pr-closeout",
             "reason": "operator documented no repository diff requiring PR",

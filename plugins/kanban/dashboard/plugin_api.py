@@ -142,6 +142,8 @@ BOARD_COLUMNS: list[str] = [
 
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
+_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES = 64 * 1024
+_WORKER_REVIEW_QUEUE_MAX_LIMIT = 200
 
 
 def _task_dict(
@@ -542,6 +544,114 @@ def get_task(
                 )
             ],
         }
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# External worker progress / review evidence
+# ---------------------------------------------------------------------------
+
+@router.get("/tasks/{task_id}/progress")
+def get_task_progress(
+    task_id: str,
+    log_tail: Optional[int] = Query(
+        None,
+        ge=1,
+        le=_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES,
+        description="Include the last N bytes of the worker log",
+    ),
+    board: Optional[str] = Query(None),
+):
+    """Read a task's worker progress/evidence snapshot without mutating it."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        snapshot = kanban_db.task_progress_snapshot(
+            conn,
+            task_id,
+            log_tail_bytes=log_tail,
+            board=board,
+        )
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        return snapshot.to_dict()
+    finally:
+        conn.close()
+
+
+@router.get("/reviews")
+def list_review_required(
+    assignee: Optional[str] = Query(None),
+    tenant: Optional[str] = Query(None),
+    lane: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=_WORKER_REVIEW_QUEUE_MAX_LIMIT),
+    log_tail: Optional[int] = Query(
+        None,
+        ge=1,
+        le=_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES,
+        description="Include the last N bytes of each worker log",
+    ),
+    board: Optional[str] = Query(None),
+):
+    """List tasks waiting for Hermes review of external-worker evidence."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        snapshots = kanban_db.review_required_snapshots(
+            conn,
+            assignee=assignee,
+            tenant=tenant,
+            worker_lane=lane,
+            limit=limit,
+            log_tail_bytes=log_tail,
+            board=board,
+        )
+        return {
+            "tasks": [snapshot.to_dict() for snapshot in snapshots],
+            "count": len(snapshots),
+            "limit": limit,
+        }
+    finally:
+        conn.close()
+
+
+class ReviewTaskBody(BaseModel):
+    decision: str = Field(
+        ...,
+        description="'approve' or 'request_changes'",
+    )
+    reviewer: Optional[str] = None
+    comment: Optional[str] = None
+    result: Optional[str] = None
+    summary: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/review")
+def review_task_evidence(
+    task_id: str,
+    payload: ReviewTaskBody,
+    board: Optional[str] = Query(None),
+):
+    """Approve or request changes for bounded worker-lane evidence."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            snapshot = kanban_db.review_worker_evidence(
+                conn,
+                task_id,
+                decision=payload.decision,
+                reviewer=payload.reviewer or "dashboard",
+                comment=payload.comment,
+                result=payload.result,
+                summary=payload.summary,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = 404 if msg.startswith("unknown task ") else 400
+            raise HTTPException(status_code=status_code, detail=msg)
+        return snapshot.to_dict()
     finally:
         conn.close()
 

@@ -1284,6 +1284,176 @@ def test_event_dict_includes_run_id(client):
     assert comp[0]["run_id"] == run_id
 
 
+def test_task_progress_endpoint_is_read_only_and_bounded(client, tmp_path):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="progress endpoint",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        run_id = task.current_run_id
+        kb.record_task_event(
+            conn,
+            tid,
+            "worker_progress",
+            {"lane": "codex-deep", "items": [{"index": 1, "status": "done", "text": "mock"}]},
+            run_id=run_id,
+        )
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=run_id,
+            metadata=metadata,
+        )
+        before = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+
+    log_path = kb.worker_log_path(tid)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("0123456789abcdefghijklmnopqrstuvwxyz", encoding="utf-8")
+
+    r = client.get(f"/api/plugins/kanban/tasks/{tid}/progress?log_tail=10")
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    conn = kb.connect()
+    try:
+        after = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+    assert data["task"]["id"] == tid
+    assert data["task"]["status"] == "blocked"
+    assert data["review_required"] is True
+    assert data["worker_progress"]["items"][0]["text"] == "mock"
+    assert data["worker_log_tail"] == "qrstuvwxyz"
+    assert after.status == before.status
+    assert after.claim_lock == before.claim_lock
+
+
+def test_reviews_endpoint_lists_review_required_evidence(client, tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="review queue endpoint",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        other = kb.create_task(conn, title="ordinary", assignee="codex-deep")
+        assert other
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/reviews?lane=codex-deep&limit=5")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["count"] == 1
+    assert [item["task"]["id"] for item in data["tasks"]] == [tid]
+    assert data["tasks"][0]["worker_lane"]["name"] == "codex-deep"
+    assert data["tasks"][0]["verification"]["commands"] == ["pytest -q"]
+
+
+def test_review_endpoint_approve_and_request_changes(client, tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    def make_review_task(conn, title: str) -> str:
+        metadata = {
+            "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+            "verification": {"commands": ["pytest -q"], "summary": "passed"},
+            "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+        }
+        tid = kb.create_task(
+            conn,
+            title=title,
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path / title),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        return tid
+
+    conn = kb.connect()
+    try:
+        approve_tid = make_review_task(conn, "approve via api")
+        changes_tid = make_review_task(conn, "changes via api")
+    finally:
+        conn.close()
+
+    approved = client.post(
+        f"/api/plugins/kanban/tasks/{approve_tid}/review",
+        json={
+            "decision": "approve",
+            "reviewer": "dashboard-reviewer",
+            "summary": "bounded evidence accepted",
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    approved_data = approved.json()
+    assert approved_data["task"]["status"] == "done"
+    assert approved_data["evidence"]["review"]["decision"] == "approved"
+    assert approved_data["evidence"]["review"]["reviewer"] == "dashboard-reviewer"
+
+    changes = client.post(
+        f"/api/plugins/kanban/tasks/{changes_tid}/review",
+        json={
+            "decision": "request_changes",
+            "reviewer": "dashboard-reviewer",
+            "comment": "add a regression test",
+        },
+    )
+    assert changes.status_code == 200, changes.text
+    changes_data = changes.json()
+    assert changes_data["task"]["status"] == "ready"
+    assert changes_data["review_required"] is False
+    conn = kb.connect()
+    try:
+        comments = kb.list_comments(conn, changes_tid)
+        events = kb.list_events(conn, changes_tid)
+    finally:
+        conn.close()
+    assert "regression test" in comments[-1].body
+    assert any(e.kind == "worker_review_changes_requested" for e in events)
+
+
 
 # ---------------------------------------------------------------------------
 # Per-task force-loaded skills via REST

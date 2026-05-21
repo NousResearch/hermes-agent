@@ -218,6 +218,8 @@ Progress queries should read Kanban state, events, logs, and run metadata:
 
 - `hermes kanban progress <task_id> --json`
 - `hermes kanban reviews --json`
+- `GET /api/plugins/kanban/tasks/<task_id>/progress`
+- `GET /api/plugins/kanban/reviews`
 - `hermes kanban show <task_id>`
 - `hermes kanban tail <task_id>`
 - `hermes kanban log <task_id>`
@@ -238,6 +240,9 @@ Reviewers can close the handoff through the same bounded-evidence path:
 hermes kanban review <task_id> approve --summary "bounded evidence accepted"
 hermes kanban review <task_id> request-changes --comment "add a regression test"
 ```
+
+The dashboard/API equivalent is `POST /api/plugins/kanban/tasks/<task_id>/review`
+with `decision=approve` or `decision=request_changes`.
 
 `approve` records the review decision and marks the task done. `request-changes`
 records the reviewer comment, emits a review event, and unblocks the task so the

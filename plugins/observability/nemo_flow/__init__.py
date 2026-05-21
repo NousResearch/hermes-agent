@@ -1,4 +1,4 @@
-"""nemo_flow — optional Hermes plugin for NeMo-Flow observability."""
+"""nemo_flow — optional Hermes plugin for NeMo Relay observability."""
 
 from __future__ import annotations
 
@@ -43,6 +43,8 @@ class _Settings:
     atif_agent_name: str = "Hermes Agent"
     atif_agent_version: str = "unknown"
     atif_model_name: str = "unknown"
+    adaptive_enabled: bool = False
+    adaptive_mode: str = "observe"
 
 
 class _Runtime:
@@ -70,10 +72,10 @@ class _Runtime:
                 asyncio.run(result)
             return True
         except RuntimeError:
-            logger.debug("NeMo-Flow plugins.toml init skipped inside a running event loop")
+            logger.debug("NeMo Relay plugins.toml init skipped inside a running event loop")
             return False
         except Exception as exc:
-            logger.debug("NeMo-Flow plugins.toml init failed: %s", exc, exc_info=True)
+            logger.debug("NeMo Relay plugins.toml init failed: %s", exc, exc_info=True)
             return False
 
     def _configure_atof(self) -> None:
@@ -137,13 +139,13 @@ class _Runtime:
             try:
                 self.nemo_flow.scope.pop(state.handle, output=_jsonable(kwargs))
             except Exception:
-                logger.debug("NeMo-Flow session pop failed", exc_info=True)
+                logger.debug("NeMo Relay session pop failed", exc_info=True)
         self.export_atif(state)
         if state.atif_exporter is not None and state.atif_subscriber_name:
             try:
                 state.atif_exporter.deregister(state.atif_subscriber_name)
             except Exception:
-                logger.debug("NeMo-Flow ATIF deregister failed", exc_info=True)
+                logger.debug("NeMo Relay ATIF deregister failed", exc_info=True)
 
     def mark(self, name: str, kwargs: dict[str, Any]) -> None:
         state = self.ensure_session(kwargs)
@@ -153,6 +155,84 @@ class _Runtime:
             data=_jsonable(kwargs),
             metadata=_metadata(kwargs),
         )
+
+    def managed_tool_enabled(self) -> bool:
+        return (
+            self.settings.adaptive_enabled
+            and callable(getattr(getattr(self.nemo_flow, "tools", None), "execute", None))
+        )
+
+    def managed_llm_enabled(self) -> bool:
+        return (
+            self.settings.adaptive_enabled
+            and callable(getattr(getattr(self.nemo_flow, "llm", None), "execute", None))
+            and callable(getattr(self.nemo_flow, "LLMRequest", None))
+        )
+
+    def execute_tool(self, kwargs: dict[str, Any]) -> Any:
+        state = self.ensure_session(kwargs)
+        tool_name = str(kwargs.get("tool_name") or "tool")
+        args = _jsonable(kwargs.get("args") or {})
+        next_call = kwargs.get("next_call")
+        if not callable(next_call):
+            return args
+
+        def _impl(next_args: Any) -> Any:
+            return next_call(next_args if isinstance(next_args, dict) else args)
+
+        return _resolve_awaitable(
+            self.nemo_flow.tools.execute(
+                tool_name,
+                args,
+                _impl,
+                handle=state.handle,
+                data=_jsonable(
+                    {
+                        "turn_id": kwargs.get("turn_id"),
+                        "api_request_id": kwargs.get("api_request_id"),
+                        "mode": self.settings.adaptive_mode,
+                    }
+                ),
+                metadata=_metadata(kwargs),
+            )
+        )
+
+    def execute_llm(self, kwargs: dict[str, Any]) -> Any:
+        state = self.ensure_session(kwargs)
+        request_body = _jsonable(kwargs.get("request") or {})
+        request = self.nemo_flow.LLMRequest({}, request_body)
+        next_call = kwargs.get("next_call")
+        if not callable(next_call):
+            return request_body
+
+        raw_response: dict[str, Any] = {"set": False, "value": None}
+
+        def _impl(next_request: Any) -> Any:
+            next_body = getattr(next_request, "content", next_request)
+            raw = next_call(next_body if isinstance(next_body, dict) else request_body)
+            raw_response["set"] = True
+            raw_response["value"] = raw
+            return _jsonable(raw)
+
+        managed_result = _resolve_awaitable(
+            self.nemo_flow.llm.execute(
+                str(kwargs.get("provider") or "llm"),
+                request,
+                _impl,
+                handle=state.handle,
+                data=_jsonable(
+                    {
+                        "turn_id": kwargs.get("turn_id"),
+                        "api_request_id": kwargs.get("api_request_id"),
+                        "api_call_count": kwargs.get("api_call_count"),
+                        "mode": self.settings.adaptive_mode,
+                    }
+                ),
+                metadata=_metadata(kwargs),
+                model_name=str(kwargs.get("model") or ""),
+            )
+        )
+        return raw_response["value"] if raw_response["set"] else managed_result
 
 
 def register(ctx) -> None:
@@ -171,6 +251,8 @@ def register(ctx) -> None:
     ctx.register_hook("post_approval_response", on_post_approval_response)
     ctx.register_hook("subagent_start", on_subagent_start)
     ctx.register_hook("subagent_stop", on_subagent_stop)
+    ctx.register_middleware("tool_execution", on_tool_execution_middleware)
+    ctx.register_middleware("api_execution", on_api_execution_middleware)
 
 
 def on_session_start(**kwargs: Any) -> None:
@@ -213,6 +295,8 @@ def on_pre_api_request(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is None:
         return
+    if runtime.managed_llm_enabled():
+        return
 
     def _record() -> None:
         state = runtime.ensure_session(kwargs)
@@ -235,6 +319,8 @@ def on_pre_api_request(**kwargs: Any) -> None:
 def on_post_api_request(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is None:
+        return
+    if runtime.managed_llm_enabled():
         return
 
     def _record() -> None:
@@ -278,6 +364,8 @@ def on_pre_tool_call(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is None:
         return
+    if runtime.managed_tool_enabled():
+        return
 
     def _record() -> None:
         state = runtime.ensure_session(kwargs)
@@ -297,6 +385,11 @@ def on_pre_tool_call(**kwargs: Any) -> None:
 def on_post_tool_call(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is None:
+        return
+    if runtime.managed_tool_enabled() and kwargs.get("status") != "blocked":
+        return
+    if runtime.managed_tool_enabled() and kwargs.get("status") == "blocked":
+        _safe(lambda: runtime.mark("hermes.tool.blocked", kwargs))
         return
 
     def _record() -> None:
@@ -339,6 +432,22 @@ def on_subagent_stop(**kwargs: Any) -> None:
         _safe(lambda: runtime.mark("hermes.subagent.stop", kwargs))
 
 
+def on_tool_execution_middleware(**kwargs: Any) -> Any:
+    runtime = _get_runtime()
+    next_call = kwargs.get("next_call")
+    if runtime is None or not runtime.managed_tool_enabled() or not callable(next_call):
+        return next_call(kwargs.get("args") or {}) if callable(next_call) else kwargs.get("args")
+    return runtime.execute_tool(kwargs)
+
+
+def on_api_execution_middleware(**kwargs: Any) -> Any:
+    runtime = _get_runtime()
+    next_call = kwargs.get("next_call")
+    if runtime is None or not runtime.managed_llm_enabled() or not callable(next_call):
+        return next_call(kwargs.get("request") or {}) if callable(next_call) else kwargs.get("request")
+    return runtime.execute_llm(kwargs)
+
+
 def _get_runtime() -> Optional[_Runtime]:
     global _RUNTIME
     with _LOCK:
@@ -347,15 +456,15 @@ def _get_runtime() -> Optional[_Runtime]:
         if isinstance(_RUNTIME, _Runtime):
             return _RUNTIME
         try:
-            import nemo_flow
+            import nemo_relay
         except Exception as exc:
-            logger.debug("NeMo-Flow plugin disabled: import failed: %s", exc)
+            logger.debug("NeMo Relay plugin disabled: import failed: %s", exc)
             _RUNTIME = _INIT_FAILED
             return None
         try:
-            _RUNTIME = _Runtime(nemo_flow=nemo_flow, settings=_load_settings())
+            _RUNTIME = _Runtime(nemo_flow=nemo_relay, settings=_load_settings())
         except Exception as exc:
-            logger.debug("NeMo-Flow plugin disabled: init failed: %s", exc, exc_info=True)
+            logger.debug("NeMo Relay plugin disabled: init failed: %s", exc, exc_info=True)
             _RUNTIME = _INIT_FAILED
             return None
         return _RUNTIME
@@ -374,6 +483,8 @@ def _load_settings() -> _Settings:
         atif_agent_name=_env("HERMES_NEMO_FLOW_ATIF_AGENT_NAME") or "Hermes Agent",
         atif_agent_version=_env("HERMES_NEMO_FLOW_ATIF_AGENT_VERSION") or "unknown",
         atif_model_name=_env("HERMES_NEMO_FLOW_ATIF_MODEL_NAME") or "unknown",
+        adaptive_enabled=_env_bool("HERMES_NEMO_FLOW_ADAPTIVE_ENABLED"),
+        adaptive_mode=_env("HERMES_NEMO_FLOW_ADAPTIVE_MODE") or "observe",
     )
 
 
@@ -458,7 +569,17 @@ def _safe(fn) -> None:
     try:
         fn()
     except Exception as exc:
-        logger.debug("NeMo-Flow hook handling failed: %s", exc, exc_info=True)
+        logger.debug("NeMo Relay hook handling failed: %s", exc, exc_info=True)
+
+
+def _resolve_awaitable(value: Any) -> Any:
+    if not inspect.isawaitable(value):
+        return value
+    try:
+        return asyncio.run(value)
+    except RuntimeError:
+        logger.debug("NeMo Relay adaptive awaitable skipped inside a running event loop")
+        raise
 
 
 def reset_for_tests() -> None:

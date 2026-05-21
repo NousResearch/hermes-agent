@@ -25,8 +25,16 @@ class _FakeNemoFlow:
             pop=self._scope_pop,
             event=self._scope_event,
         )
-        self.llm = SimpleNamespace(call=self._llm_call, call_end=self._llm_call_end)
-        self.tools = SimpleNamespace(call=self._tool_call, call_end=self._tool_call_end)
+        self.llm = SimpleNamespace(
+            call=self._llm_call,
+            call_end=self._llm_call_end,
+            execute=self._llm_execute,
+        )
+        self.tools = SimpleNamespace(
+            call=self._tool_call,
+            call_end=self._tool_call_end,
+            execute=self._tool_execute,
+        )
         self.plugin = SimpleNamespace(initialize=self._plugin_initialize)
         self.LLMRequest = _FakeLLMRequest
         self.AtofExporterConfig = _FakeAtofExporterConfig
@@ -53,6 +61,12 @@ class _FakeNemoFlow:
     def _llm_call_end(self, handle, response, **kwargs):
         self.events.append(("llm.call_end", handle, response, kwargs))
 
+    def _llm_execute(self, name, request, func, **kwargs):
+        self.events.append(("llm.execute.start", name, request.content, kwargs))
+        result = func(_FakeLLMRequest(request.headers, {"intercepted": True, **request.content}))
+        self.events.append(("llm.execute.end", name, result, kwargs))
+        return result
+
     def _tool_call(self, name, args, **kwargs):
         handle = ("tool", name)
         self.events.append(("tool.call", name, args, kwargs))
@@ -60,6 +74,12 @@ class _FakeNemoFlow:
 
     def _tool_call_end(self, handle, result, **kwargs):
         self.events.append(("tool.call_end", handle, result, kwargs))
+
+    def _tool_execute(self, name, args, func, **kwargs):
+        self.events.append(("tool.execute.start", name, args, kwargs))
+        result = func({"intercepted": True, **args})
+        self.events.append(("tool.execute.end", name, result, kwargs))
+        return result
 
     def _make_atof_exporter(self, config):
         return _FakeAtofExporter(self.events, config)
@@ -114,7 +134,7 @@ class _FakeAtifExporter:
 
 
 def _fresh_plugin(monkeypatch, fake):
-    monkeypatch.setitem(sys.modules, "nemo_flow", fake)
+    monkeypatch.setitem(sys.modules, "nemo_relay", fake)
     sys.modules.pop("plugins.observability.nemo_flow", None)
     plugin = importlib.import_module("plugins.observability.nemo_flow")
     plugin.reset_for_tests()
@@ -127,6 +147,31 @@ def test_manifest_fields():
     assert "pre_api_request" in data["hooks"]
     assert "api_request_error" in data["hooks"]
     assert "subagent_start" in data["hooks"]
+
+
+def test_register_adds_observer_hooks_and_adaptive_middleware(monkeypatch):
+    fake = _FakeNemoFlow()
+    plugin = _fresh_plugin(monkeypatch, fake)
+
+    class Ctx:
+        def __init__(self):
+            self.hooks = []
+            self.middleware = []
+
+        def register_hook(self, name, callback):
+            self.hooks.append((name, callback))
+
+        def register_middleware(self, kind, callback):
+            self.middleware.append((kind, callback))
+
+    ctx = Ctx()
+    plugin.register(ctx)
+
+    hook_names = [name for name, _ in ctx.hooks]
+    middleware_names = [name for name, _ in ctx.middleware]
+    assert "pre_api_request" in hook_names
+    assert "post_tool_call" in hook_names
+    assert middleware_names == ["tool_execution", "api_execution"]
 
 
 def test_nemo_flow_plugin_emits_llm_tool_and_exports_atif(tmp_path, monkeypatch):
@@ -245,7 +290,7 @@ output_directory = "events"
 
 
 def test_nemo_flow_plugin_noops_without_dependency(monkeypatch):
-    monkeypatch.delitem(sys.modules, "nemo_flow", raising=False)
+    monkeypatch.delitem(sys.modules, "nemo_relay", raising=False)
     sys.modules.pop("plugins.observability.nemo_flow", None)
     plugin = importlib.import_module("plugins.observability.nemo_flow")
     plugin.reset_for_tests()
@@ -253,11 +298,85 @@ def test_nemo_flow_plugin_noops_without_dependency(monkeypatch):
     real_import = builtins.__import__
 
     def blocked_import(name, *args, **kwargs):
-        if name == "nemo_flow":
-            raise ModuleNotFoundError("No module named 'nemo_flow'")
+        if name == "nemo_relay":
+            raise ModuleNotFoundError("No module named 'nemo_relay'")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", blocked_import)
 
     plugin.on_pre_api_request(session_id="s1", api_request_id="api-1")
     plugin.on_post_api_request(session_id="s1", api_request_id="api-1")
+
+
+def test_adaptive_tool_execution_middleware_uses_managed_execute(monkeypatch):
+    fake = _FakeNemoFlow()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    monkeypatch.setenv("HERMES_NEMO_FLOW_ADAPTIVE_ENABLED", "1")
+
+    result = plugin.on_tool_execution_middleware(
+        session_id="s1",
+        task_id="t1",
+        turn_id="turn-1",
+        api_request_id="api-1",
+        tool_name="read_file",
+        tool_call_id="tool-1",
+        args={"path": "demo.txt"},
+        next_call=lambda args: {"result": args},
+        telemetry_schema_version="hermes.observer.v1",
+        middleware_schema_version="hermes.middleware.v1",
+    )
+
+    assert result == {"result": {"intercepted": True, "path": "demo.txt"}}
+    assert any(event[0] == "tool.execute.start" for event in fake.events)
+    assert not any(event[0] == "tool.call" for event in fake.events)
+
+
+def test_adaptive_llm_execution_middleware_preserves_raw_response(monkeypatch):
+    fake = _FakeNemoFlow()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    monkeypatch.setenv("HERMES_NEMO_FLOW_ADAPTIVE_ENABLED", "1")
+    raw_response = object()
+    seen_request = {}
+
+    result = plugin.on_api_execution_middleware(
+        session_id="s1",
+        task_id="t1",
+        turn_id="turn-1",
+        api_request_id="api-1",
+        provider="openai",
+        model="demo-model",
+        request={"messages": [{"role": "user", "content": "hi"}]},
+        next_call=lambda request: (seen_request.update(request) or raw_response),
+        telemetry_schema_version="hermes.observer.v1",
+        middleware_schema_version="hermes.middleware.v1",
+    )
+
+    assert result is raw_response
+    assert seen_request["intercepted"] is True
+    assert seen_request["messages"] == [{"role": "user", "content": "hi"}]
+    execute_start = next(event for event in fake.events if event[0] == "llm.execute.start")
+    assert execute_start[1] == "openai"
+    assert execute_start[2]["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_adaptive_observer_hooks_do_not_duplicate_managed_tool_spans(monkeypatch):
+    fake = _FakeNemoFlow()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    monkeypatch.setenv("HERMES_NEMO_FLOW_ADAPTIVE_ENABLED", "1")
+
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "tool_name": "read_file",
+        "tool_call_id": "tool-1",
+        "args": {"path": "demo.txt"},
+        "telemetry_schema_version": "hermes.observer.v1",
+    }
+    plugin.on_pre_tool_call(**base)
+    plugin.on_post_tool_call(**base, result='{"ok": true}', status="ok")
+    plugin.on_post_tool_call(**base, result='{"error": "blocked"}', status="blocked")
+
+    assert not any(event[0] == "tool.call" for event in fake.events)
+    assert not any(event[0] == "tool.call_end" for event in fake.events)
+    assert any(event[0] == "scope.event" and event[1] == "hermes.tool.blocked" for event in fake.events)

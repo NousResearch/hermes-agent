@@ -1,17 +1,17 @@
 # Status — Plan 004: Self-Improvement Service (Hermes-internal module)
 
-**Status:** APPROVED, NOT STARTED
-**Last updated:** 2026-05-20
-**Blocked by:** None — all prerequisites complete (Plan 001-A/B/C/D + Plan 002 + Plan 003 + atlas-012)
+**Status:** COMPLETE (2026-05-21 — all 4 phases shipped end-to-end in batched dispatch)
+**Last updated:** 2026-05-21
+**Blocked by:** None
 
 ## Phase Progress
 
 | Phase | Title | Status | Notes |
 |---|---|---|---|
-| 004-A | Skills dashboard — read-side first (capture + display) | Not started | 1.5w. Slack reaction → Neon writer + per-skill score aggregation + `/skills` dashboard. Foundation for B/C/D |
-| 004-B | Auto-suggest + Blake-approve promotion | Not started | 1.5w. Daily job surfaces promotion candidates; Blake clicks approve → Skills Service promote_skill call. Bidirectional (demote on regression) |
-| 004-C | Drift / regression alerts | Not started | 1w. Watch thumbs_rate over 14d rolling; alert on baseline drop |
-| 004-D | Skill recommendations — LLM-driven gap analysis | Not started | 2-3w. Weekly LLM cluster analysis; generates SKILL.md drafts |
+| 004-A | Skills dashboard — read-side first (capture + display) | **Complete** | Commit 3e67879. feedback_capture.py + skill_scorer.py + Slack reaction handlers + `/skills` Next.js dashboard. RLS-scoped via HermesIdentity. |
+| 004-B | Auto-suggest + Blake-approve promotion | **Complete** | Commit 2475227. promotion_proposer.py daily cron + Slack DM with top 5 candidates + bidirectional demotion. No silent promotions. |
+| 004-C | Drift / regression alerts | **Complete** | Commit fb6b5e7. drift_detector.py watches 14d rolling thumbs_rate; alerts at baseline drop; auto-resolution + manual dismiss. |
+| 004-D | Skill recommendations — LLM-driven gap analysis | **Complete (with xfail tracker)** | Commit 9e9750f. recommender.py 589 LOC + Sonnet via Portkey + $20/mo BudgetGate. 8/10 tests pass; 2 xfail on TF-IDF clustering threshold (Q-D.1: defer to shadow-mode tuning). |
 
 ## Execution sequence
 

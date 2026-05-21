@@ -1277,6 +1277,7 @@ class SessionStore:
                     platform_message_id=(
                         message.get("platform_message_id") or message.get("message_id")
                     ),
+                    observed=bool(message.get("observed")),
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)

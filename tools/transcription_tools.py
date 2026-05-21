@@ -69,7 +69,7 @@ def _safe_find_spec(module_name: str) -> bool:
     except (ImportError, ValueError):
         return module_name in globals() or module_name in os.sys.modules
 
-
+_HAS_VOSK = _safe_find_spec("vosk")
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
@@ -103,6 +103,10 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
+
+# Singleton for Vosk model caching
+_vosk_model: Optional[object] = None
+_vosk_model_name: Optional[str] = None
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -274,6 +278,12 @@ def _get_provider(stt_config: dict) -> str:
                 "STT provider 'xai' configured but no xAI credentials are available"
             )
             return "none"
+        
+        if provider == "vosk":
+            if _HAS_VOSK:
+                return "vosk"
+            logger.warning("STT provider 'vosk' configured but unavailable")
+            return "none"
 
         return provider  # Unknown — let it fail downstream
 
@@ -291,6 +301,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
+    if _HAS_VOSK:
+        logger.info("No default local STT available, using Vosk")
+        return "vosk"
     try:
         from tools.xai_http import resolve_xai_http_credentials
 
@@ -805,6 +818,77 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         logger.error("xAI STT transcription failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"xAI STT transcription failed: {e}"}
 
+# ---------------------------------------------------------------------------
+# Provider: vosk
+# ---------------------------------------------------------------------------
+
+def _transcribe_vosk(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Vosk STT (local, highly lightweight)."""
+    global _vosk_model, _vosk_model_name
+
+    if not _HAS_VOSK:
+        return {"success": False, "transcript": "", "error": "vosk package not installed"}
+
+    try:
+        from vosk import Model, KaldiRecognizer
+        import wave
+        import json
+
+        # 1. Resolve & lazy-load the Vosk model
+        # model_name can be a model name to auto-download (e.g. "vosk-model-small-en-us-0.15")
+        # or a path to a downloaded model directory.
+        if _vosk_model is None or _vosk_model_name != model_name:
+            logger.info("Loading Vosk model '%s'...", model_name)
+            # If model_name is a valid path, use it directly, otherwise let Vosk download it
+            if os.path.exists(model_name):
+                _vosk_model = Model(model_path=model_name)
+            else:
+                _vosk_model = Model(model_name=model_name)
+            _vosk_model_name = model_name
+
+        # 2. Prepare the audio (Vosk requires WAV PCM mono)
+        with tempfile.TemporaryDirectory(prefix="hermes-vosk-") as temp_dir:
+            prepared_wav, prep_err = _prepare_local_audio(file_path, temp_dir)
+            if prep_err:
+                return {"success": False, "transcript": "", "error": prep_err}
+
+            # 3. Read and feed bytes into KaldiRecognizer
+            with wave.open(prepared_wav, "rb") as wf:
+                # Check for standard Vosk constraints (PCM only)
+                if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE":
+                    return {
+                        "success": False,
+                        "transcript": "",
+                        "error": "Audio file must be WAV format mono PCM."
+                    }
+
+                rec = KaldiRecognizer(_vosk_model, wf.getframerate())
+                rec.SetWords(False)
+
+                results = []
+                while True:
+                    data = wf.readframes(4000)
+                    if len(data) == 0:
+                        break
+                    if rec.AcceptWaveform(data):
+                        part = json.loads(rec.Result())
+                        if part.get("text"):
+                            results.append(part["text"])
+
+                final = json.loads(rec.FinalResult())
+                if final.get("text"):
+                    results.append(final["text"])
+
+            transcript_text = " ".join(results).strip()
+            logger.info("Transcribed %s via Vosk STT (%s, %d chars)", 
+                        Path(file_path).name, model_name, len(transcript_text))
+
+            return {"success": True, "transcript": transcript_text, "provider": "vosk"}
+
+    except Exception as e:
+        logger.error("Vosk transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Vosk transcription failed: {e}"}
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -878,6 +962,12 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         # xAI Grok STT doesn't use a model parameter — pass through for logging
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
+
+    if provider == "vosk":
+        vosk_cfg = stt_config.get("vosk", {})
+        # Default model can be e.g. "vosk-model-small-en-us-0.15" or a custom path
+        model_name = model or vosk_cfg.get("model", "vosk-model-small-en-us-0.15")
+        return _transcribe_vosk(file_path, model_name)
 
     # No provider available
     return {

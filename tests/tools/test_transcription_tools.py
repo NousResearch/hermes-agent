@@ -1405,3 +1405,106 @@ class TestShellSafety:
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
         assert use_shell is False
+
+
+# ============================================================================
+# Vosk Provider Tests
+# ============================================================================
+
+@pytest.fixture
+def mock_vosk_module():
+    """Inject a fake vosk module into sys.modules for testing."""
+    mock_model_cls = MagicMock()
+    mock_rec_cls = MagicMock()
+    fake_module = MagicMock()
+    fake_module.Model = mock_model_cls
+    fake_module.KaldiRecognizer = mock_rec_cls
+    with patch.dict("sys.modules", {"vosk": fake_module}):
+        yield mock_model_cls, mock_rec_cls
+
+
+class TestTranscribeVosk:
+    def test_no_vosk_package(self):
+        with patch("tools.transcription_tools._HAS_VOSK", False):
+            from tools.transcription_tools import _transcribe_vosk
+            result = _transcribe_vosk("/tmp/test.wav", "vosk-model-small-en-us-0.15")
+            assert result["success"] is False
+            assert "vosk package not installed" in result["error"]
+
+    def test_successful_vosk_transcription(self, sample_wav, mock_vosk_module):
+        mock_model_cls, mock_rec_cls = mock_vosk_module
+        mock_model = MagicMock()
+        mock_model_cls.return_value = mock_model
+        mock_rec = MagicMock()
+        mock_rec_cls.return_value = mock_rec
+
+        # Handle arbitrary number of frame reads by returning True once, then False
+        accept_results = [True]
+        def accept_waveform_side_effect(data):
+            if accept_results:
+                return accept_results.pop(0)
+            return False
+        mock_rec.AcceptWaveform.side_effect = accept_waveform_side_effect
+        mock_rec.Result.return_value = '{"text": "hello"}'
+        mock_rec.FinalResult.return_value = '{"text": "world"}'
+
+        with patch("tools.transcription_tools._HAS_VOSK", True), \
+             patch("tools.transcription_tools._prepare_local_audio", return_value=(sample_wav, None)):
+            from tools.transcription_tools import _transcribe_vosk
+            result = _transcribe_vosk(sample_wav, "vosk-model-small-en-us-0.15")
+
+            assert result["success"] is True
+            assert result["transcript"] == "hello world"
+            assert result["provider"] == "vosk"
+
+    def test_vosk_prepare_audio_failure(self, sample_wav, mock_vosk_module):
+        with patch("tools.transcription_tools._HAS_VOSK", True), \
+             patch("tools.transcription_tools._prepare_local_audio", return_value=(None, "ffmpeg failed")):
+            from tools.transcription_tools import _transcribe_vosk
+            result = _transcribe_vosk(sample_wav, "vosk-model-small-en-us-0.15")
+
+            assert result["success"] is False
+            assert "ffmpeg failed" in result["error"]
+
+
+class TestGetProviderVosk:
+    def test_vosk_explicit_when_available(self):
+        with patch("tools.transcription_tools._HAS_VOSK", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "vosk"}) == "vosk"
+
+    def test_vosk_explicit_when_unavailable(self):
+        with patch("tools.transcription_tools._HAS_VOSK", False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "vosk"}) == "none"
+
+    def test_vosk_auto_detect_fallback(self, monkeypatch):
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", False), \
+             patch("tools.transcription_tools._HAS_MISTRAL", False), \
+             patch("tools.transcription_tools._HAS_VOSK", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "vosk"
+
+
+class TestTranscribeAudioVoskDispatch:
+    def test_dispatches_to_vosk(self, sample_wav):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "vosk"}), \
+             patch("tools.transcription_tools._get_provider", return_value="vosk"), \
+             patch("tools.transcription_tools._transcribe_vosk",
+                   return_value={"success": True, "transcript": "vosk transcription", "provider": "vosk"}) as mock_vosk:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_wav)
+
+            assert result["success"] is True
+            assert result["transcript"] == "vosk transcription"
+            assert result["provider"] == "vosk"
+            mock_vosk.assert_called_once()
+

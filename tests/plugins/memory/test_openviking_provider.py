@@ -483,7 +483,7 @@ def test_on_session_switch_waits_for_inflight_sync_thread():
             # Simulate a worker that finishes within the join window.
             self._alive = False
 
-    provider._sync_thread = FakeThread()
+    provider._inflight_writers["old-sid"] = {FakeThread()}
 
     provider.on_session_switch("new-sid")
 
@@ -561,8 +561,8 @@ def test_sync_turn_captures_session_id_before_worker_runs():
         # Rotate the provider's session id while the worker is mid-flight.
         provider._session_id = "new-sid"
         release.set()
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=2.0)
+        for t in list(provider._inflight_writers.get("old-sid", set())):
+            t.join(timeout=2.0)
     finally:
         _mod._VikingClient = real_client_cls
 
@@ -582,7 +582,7 @@ def test_sync_turn_noop_when_session_id_blank():
 
     # No turn counted, no worker spawned.
     assert provider._turn_count == 0
-    assert provider._sync_thread is None
+    assert provider._inflight_writers == {}
 
 
 def test_on_session_end_marks_session_clean_after_successful_commit():
@@ -660,7 +660,7 @@ def test_on_session_end_skips_commit_when_sync_worker_outlives_join():
     already-committed session and never be extracted. Leave _turn_count
     intact so the session stays marked dirty."""
     provider = _make_provider_with_session("old-sid", turn_count=3)
-    provider._sync_thread = _HungThread()
+    provider._inflight_writers["old-sid"] = {_HungThread()}
 
     provider.on_session_end([])
 
@@ -673,13 +673,85 @@ def test_on_session_switch_skips_commit_when_sync_worker_outlives_join():
     session needs to start) but the old-session commit is skipped to avoid
     orphaning the worker's late writes past commit."""
     provider = _make_provider_with_session("old-sid", turn_count=2)
-    provider._sync_thread = _HungThread()
+    provider._inflight_writers["old-sid"] = {_HungThread()}
 
     provider.on_session_switch("new-sid")
 
     provider._client.post.assert_not_called()
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Orphaned-writer hazard: commit must wait for ALL writers for the session,
+# not just the latest tracked one. sync_turn's bounded rate-limit can drop a
+# still-alive previous worker — that dropped writer keeps POSTing under the
+# old sid and would otherwise land its writes past the commit boundary.
+# ---------------------------------------------------------------------------
+
+def test_on_session_end_waits_for_all_writers_not_just_latest():
+    provider = _make_provider_with_session("old-sid", turn_count=2)
+    provider._inflight_writers["old-sid"] = {_HungThread()}
+
+    provider.on_session_end([])
+
+    provider._client.post.assert_not_called()
+    assert provider._turn_count == 2
+
+
+def test_on_session_switch_waits_for_all_writers_not_just_latest():
+    provider = _make_provider_with_session("old-sid", turn_count=2)
+    provider._inflight_writers["old-sid"] = {_HungThread()}
+
+    provider.on_session_switch("new-sid")
+
+    provider._client.post.assert_not_called()
+    assert provider._session_id == "new-sid"
+    assert provider._turn_count == 0
+
+
+def test_sync_turn_tracks_writer_under_session_id():
+    """Every sync_turn writer must register under its captured sid so the
+    drain at end/switch sees it even if a later sync_turn replaces the
+    latest-tracked reference."""
+    import threading
+
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = "sid-1"
+
+    release = threading.Event()
+    started = threading.Event()
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            started.set()
+            release.wait(timeout=2.0)
+            return {}
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.sync_turn("u", "a")
+        assert started.wait(timeout=2.0), "worker never entered post()"
+        assert len(provider._inflight_writers.get("sid-1", set())) == 1
+        release.set()
+        for t in list(provider._inflight_writers.get("sid-1", set())):
+            t.join(timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    # Worker should have removed itself from the inflight set on exit.
+    assert provider._inflight_writers.get("sid-1", set()) == set()
 
 
 # ---------------------------------------------------------------------------

@@ -192,6 +192,7 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    context_id: Optional[str] = None,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -270,6 +271,7 @@ def init_agent(
     agent._chat_name = chat_name
     agent._chat_type = chat_type
     agent._thread_id = thread_id
+    agent._context_id = context_id  # Per-channel/tenant memory scoping
     agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
     # Pluggable print function — CLI replaces this with _cprint so that
     # raw ANSI status lines are routed through prompt_toolkit's renderer
@@ -1072,6 +1074,7 @@ def init_agent(
                 agent._memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
+                    context_id=context_id,
                 )
                 agent._memory_store.load_from_disk()
         except Exception:

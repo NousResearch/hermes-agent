@@ -122,11 +122,13 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 context_id: Optional[str] = None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.context_id = context_id
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -147,12 +149,26 @@ class MemoryStore:
 
         Scanning is deterministic from disk bytes, so the snapshot remains
         stable for the entire session (prefix-cache invariant holds).
+
+        When context_id is set, reads global entries first then merges in
+        context-scoped entries (deduplicating).  Writes always go to the
+        scoped path via _path_for().
         """
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        # Always start with global entries
+        self.memory_entries = self._read_file(self._global_path_for("memory"))
+        self.user_entries = self._read_file(self._global_path_for("user"))
+
+        # Merge context-scoped entries when context_id is set
+        if self.context_id is not None:
+            scoped_dir = mem_dir / "contexts" / self.context_id
+            scoped_dir.mkdir(parents=True, exist_ok=True)
+            scoped_memory = self._read_file(scoped_dir / "MEMORY.md")
+            scoped_user = self._read_file(scoped_dir / "USER.md")
+            self.memory_entries.extend(scoped_memory)
+            self.user_entries.extend(scoped_user)
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -244,11 +260,25 @@ class MemoryStore:
             fd.close()
 
     @staticmethod
-    def _path_for(target: str) -> Path:
+    def _global_path_for(target: str) -> Path:
+        """Return the global (unscoped) path for a memory target."""
         mem_dir = get_memory_dir()
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
+
+    def _path_for(self, target: str) -> Path:
+        """Return the write path for a memory target.
+
+        When context_id is set, routes to contexts/{context_id}/ subdirectory.
+        When context_id is None, returns the global path (backward compatible).
+        """
+        if self.context_id is None:
+            return self._global_path_for(target)
+        mem_dir = get_memory_dir()
+        if target == "user":
+            return mem_dir / "contexts" / self.context_id / "USER.md"
+        return mem_dir / "contexts" / self.context_id / "MEMORY.md"
 
     def _reload_target(self, target: str) -> Optional[str]:
         """Re-read entries from disk into in-memory state.
@@ -260,18 +290,27 @@ class MemoryStore:
         When drift is detected the caller must abort the mutation —
         flushing would discard the un-roundtrippable content.
         Returns None on clean reload.
+
+        When context_id is set, merges global + scoped entries.
         """
         path = self._path_for(target)
         bak = self._detect_external_drift(target)
-        fresh = self._read_file(path)
+        if self.context_id is not None:
+            # Merge global + scoped
+            global_entries = self._read_file(self._global_path_for(target))
+            scoped_entries = self._read_file(path)
+            fresh = global_entries + scoped_entries
+        else:
+            fresh = self._read_file(path)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
         return bak
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        path = self._path_for(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_file(path, self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":

@@ -11715,6 +11715,11 @@ class GatewayRunner:
                     except Exception as e:
                         logger.warning("Background task vision enrichment failed: %s", e)
 
+            # Per-channel memory scoping for background tasks
+            _bg_context_id = None
+            if source.chat_type in ("group", "forum", "channel") and source.chat_id:
+                _bg_context_id = source.chat_id
+
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -11741,6 +11746,7 @@ class GatewayRunner:
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
+                    context_id=_bg_context_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -16607,6 +16613,12 @@ class GatewayRunner:
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
+                # Per-channel memory scoping: group/channel chats get scoped memory,
+                # DMs get global memory.
+                _context_id = None
+                if source.chat_type in ("group", "forum", "channel") and source.chat_id:
+                    _context_id = source.chat_id
+
                 # Config changed or first message — create fresh agent
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -16636,6 +16648,7 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    context_id=_context_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )

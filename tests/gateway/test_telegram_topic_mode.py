@@ -267,6 +267,62 @@ async def test_managed_topic_binding_reuses_restored_session_over_static_lane_se
 
 
 @pytest.mark.asyncio
+async def test_topic_binding_follows_session_id_rotation_after_compression(
+    tmp_path, monkeypatch
+):
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_key = build_session_key(_make_source(thread_id="17585"))
+    session_db.create_session(
+        session_id="oversized-parent-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.create_session(
+        session_id="compressed-child-session",
+        source="telegram",
+        user_id="208214988",
+        parent_session_id="oversized-parent-session",
+    )
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=session_key,
+        session_id="oversized-parent-session",
+    )
+    runner = _make_runner(session_db=session_db)
+
+    async def fake_run_agent(*args, **kwargs):
+        assert kwargs.get("session_id") == "oversized-parent-session"
+        return {
+            "success": True,
+            "final_response": "compressed response",
+            "session_id": "compressed-child-session",
+            "messages": [],
+            "last_prompt_tokens": 1234,
+        }
+
+    runner._run_agent = AsyncMock(side_effect=fake_run_agent)
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("continue", thread_id="17585"))
+
+    assert result == "compressed response"
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988",
+        thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "compressed-child-session"
+
+
+@pytest.mark.asyncio
 async def test_telegram_group_prompt_is_not_topic_lobby_even_when_dm_topic_mode_enabled(
     tmp_path, monkeypatch
 ):

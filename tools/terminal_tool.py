@@ -47,6 +47,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from hermes_cli.terminal_config import default_terminal_config
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
@@ -1008,11 +1009,19 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
 
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
-    # Default image with Python and Node.js for maximum compatibility
-    default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    terminal_defaults = default_terminal_config()
+    env_type = os.getenv("TERMINAL_ENV", str(terminal_defaults["env_type"]))
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    def _bool_env(name: str, default: bool) -> bool:
+        return os.getenv(name, str(default)).lower() in {"true", "1", "yes"}
+
+    def _json_default(key: str) -> str:
+        return json.dumps(terminal_defaults[key])
+
+    mount_docker_cwd = _bool_env(
+        "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        terminal_defaults["docker_mount_cwd_to_workspace"],
+    )
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
@@ -1056,18 +1065,26 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
-        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
-        "docker_forward_env": _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
-        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
-        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", str(terminal_defaults["modal_mode"]))),
+        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", terminal_defaults["docker_image"]),
+        "docker_forward_env": _parse_env_var(
+            "TERMINAL_DOCKER_FORWARD_ENV",
+            _json_default("docker_forward_env"),
+            json.loads,
+            "valid JSON",
+        ),
+        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", terminal_defaults["singularity_image"]),
+        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", terminal_defaults["modal_image"]),
+        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", terminal_defaults["daytona_image"]),
+        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", terminal_defaults["vercel_runtime"]).strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
-        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "timeout": _parse_env_var("TERMINAL_TIMEOUT", str(terminal_defaults["timeout"])),
+        "lifetime_seconds": _parse_env_var(
+            "TERMINAL_LIFETIME_SECONDS",
+            str(terminal_defaults["lifetime_seconds"]),
+        ),
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
@@ -1078,19 +1095,32 @@ def _get_env_config() -> Dict[str, Any]:
         # Per-backend env vars override if explicitly set.
         "ssh_persistent": os.getenv(
             "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
+            os.getenv("TERMINAL_PERSISTENT_SHELL", str(terminal_defaults["persistent_shell"])),
         ).lower() in {"true", "1", "yes"},
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        "local_persistent": _bool_env("TERMINAL_LOCAL_PERSISTENT", terminal_defaults.get("local_persistent", False)),
         # Container resource config (applies to docker, singularity, modal,
         # daytona, and vercel_sandbox -- ignored for local/ssh)
-        "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
-        "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
-        "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
-        "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
-        "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_extra_args": _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"),
+        "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", str(terminal_defaults["container_cpu"]), float, "number"),
+        "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", str(terminal_defaults["container_memory"])),
+        "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", str(terminal_defaults["container_disk"])),
+        "container_persistent": _bool_env("TERMINAL_CONTAINER_PERSISTENT", terminal_defaults["container_persistent"]),
+        "docker_volumes": _parse_env_var(
+            "TERMINAL_DOCKER_VOLUMES",
+            _json_default("docker_volumes"),
+            json.loads,
+            "valid JSON",
+        ),
+        "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", _json_default("docker_env"), json.loads, "valid JSON"),
+        "docker_run_as_host_user": _bool_env(
+            "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+            terminal_defaults["docker_run_as_host_user"],
+        ),
+        "docker_extra_args": _parse_env_var(
+            "TERMINAL_DOCKER_EXTRA_ARGS",
+            _json_default("docker_extra_args"),
+            json.loads,
+            "valid JSON",
+        ),
     }
 
 

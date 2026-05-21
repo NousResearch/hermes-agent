@@ -1508,6 +1508,24 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Optional local HTML artifacts for selected long-form cron outputs.
+        # Global default is off. When enabled, jobs must still be explicitly
+        # allowlisted under jobs.<job_id>.enabled. Attachments remain off by
+        # default and are handled by a later rollout stage.
+        "html_artifacts": {
+            "enabled": False,
+            "default_attach_to_delivery": False,
+            "max_attachment_kb": 512,
+            "publish": {
+                "enabled": False,
+                "provider": "acta_worker",
+                "endpoint": "https://acta.imperatr.com",
+                "upload_token_env": "ACTA_UPLOAD_TOKEN",
+                "max_kb": 512,
+                "timeout_seconds": 20,
+            },
+            "jobs": {},
+        },
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

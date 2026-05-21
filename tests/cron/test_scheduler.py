@@ -1839,6 +1839,187 @@ class TestSilentDelivery:
         )
 
 
+class TestCronHtmlArtifacts:
+    def _make_job(self, job_id="pilot-job"):
+        return {
+            "id": job_id,
+            "name": "pilot",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+    def _enabled_config(self, job_id="pilot-job"):
+        return {
+            "cron": {
+                "html_artifacts": {
+                    "enabled": True,
+                    "default_attach_to_delivery": False,
+                    "max_attachment_kb": 512,
+                    "jobs": {job_id: {"enabled": True, "attach_to_delivery": False}},
+                }
+            }
+        }
+
+    def test_disabled_config_does_not_generate_html(self, tmp_path):
+        output_path = tmp_path / "out.md"
+        output = "<!-- HERMES_HTML_REPORT_START -->\n# Report\n<!-- HERMES_HTML_REPORT_END -->"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, output, "summary", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_path), \
+             patch("cron.scheduler.save_job_html_output") as save_html, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"html_artifacts": {"enabled": False}}}), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        save_html.assert_not_called()
+
+    def test_enabled_allowlisted_job_generates_html(self, tmp_path):
+        output_path = tmp_path / "out.md"
+        output = "archive prompt contains <!-- HERMES_HTML_REPORT_START --> instructions <!-- HERMES_HTML_REPORT_END -->"
+        final_response = "<!-- HERMES_HTML_REPORT_START -->\n# Report\n- item\n<!-- HERMES_HTML_REPORT_END -->"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, output, final_response, None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_path), \
+             patch("cron.scheduler.save_job_html_output", return_value=tmp_path / "out.html") as save_html, \
+             patch("cron.scheduler.load_config", return_value=self._enabled_config()), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        save_html.assert_called_once()
+        assert '<h1 class="report-title">Report</h1>' in save_html.call_args.args[1]
+
+    def test_enabled_allowlisted_job_strips_html_report_from_delivery(self, tmp_path):
+        output_path = tmp_path / "out.md"
+        output = "Short Telegram ping\n\n<!-- HERMES_HTML_REPORT_START -->\n# Long Report\n<!-- HERMES_HTML_REPORT_END -->"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, output, output, None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_path), \
+             patch("cron.scheduler.save_job_html_output", return_value=tmp_path / "out.html"), \
+             patch("cron.scheduler.load_config", return_value=self._enabled_config()), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+        assert deliver_mock.call_args.args[1] == "Short Telegram ping"
+
+    def test_enabled_publish_appends_artifact_link_to_delivery(self, tmp_path):
+        output_path = tmp_path / "out.md"
+        output = "Short Telegram ping\n\n<!-- HERMES_HTML_REPORT_START -->\n# Long Report\n<!-- HERMES_HTML_REPORT_END -->"
+        config = self._enabled_config()
+        config["cron"]["html_artifacts"]["publish"] = {"enabled": True, "endpoint": "https://acta.imperatr.com"}
+        config["cron"]["html_artifacts"]["jobs"]["pilot-job"]["publish"] = True
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, output, output, None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_path), \
+             patch("cron.scheduler.save_job_html_output", return_value=tmp_path / "out.html"), \
+             patch("cron.scheduler.publish_html_artifact", return_value="https://acta.imperatr.com/r/pilot/out.html?exp=1&sig=s"), \
+             patch("cron.scheduler.load_config", return_value=config), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+        delivered = deliver_mock.call_args.args[1]
+        assert delivered.startswith("Short Telegram ping")
+        assert "HERMES_HTML_REPORT" not in delivered
+        assert "Full brief: https://acta.imperatr.com/r/pilot/out.html" in delivered
+
+    def test_publish_failure_does_not_fail_cron_run_or_leak_link(self, tmp_path, caplog):
+        output_path = tmp_path / "out.md"
+        output = "Short Telegram ping\n\n<!-- HERMES_HTML_REPORT_START -->\n# Long Report\n<!-- HERMES_HTML_REPORT_END -->"
+        config = self._enabled_config()
+        config["cron"]["html_artifacts"]["publish"] = {"enabled": True, "endpoint": "https://acta.imperatr.com"}
+        config["cron"]["html_artifacts"]["jobs"]["pilot-job"]["publish"] = True
+        from cron.html_publish import HtmlArtifactPublishError
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, output, output, None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_path), \
+             patch("cron.scheduler.save_job_html_output", return_value=tmp_path / "out.html"), \
+             patch("cron.scheduler.publish_html_artifact", side_effect=HtmlArtifactPublishError("no token")), \
+             patch("cron.scheduler.load_config", return_value=config), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_run:
+            from cron.scheduler import tick
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                tick(verbose=False)
+        mark_run.assert_called_once()
+        assert mark_run.call_args.args[1] is True
+        assert deliver_mock.call_args.args[1] == "Short Telegram ping"
+        assert any("HTML artifact publish failed" in r.message for r in caplog.records)
+
+    def test_job_not_allowlisted_does_not_generate_html(self, tmp_path):
+        output_path = tmp_path / "out.md"
+        output = "<!-- HERMES_HTML_REPORT_START -->\n# Report\n<!-- HERMES_HTML_REPORT_END -->"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job("other-job")]), \
+             patch("cron.scheduler.run_job", return_value=(True, output, "summary", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_path), \
+             patch("cron.scheduler.save_job_html_output") as save_html, \
+             patch("cron.scheduler.load_config", return_value=self._enabled_config("pilot-job")), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        save_html.assert_not_called()
+
+    def test_string_false_config_values_do_not_enable_artifacts(self, tmp_path):
+        output_path = tmp_path / "out.md"
+        output = "<!-- HERMES_HTML_REPORT_START -->\n# Report\n<!-- HERMES_HTML_REPORT_END -->"
+        config = {
+            "cron": {
+                "html_artifacts": {
+                    "enabled": "false",
+                    "jobs": {"pilot-job": {"enabled": "true"}},
+                }
+            }
+        }
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, output, "summary", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_path), \
+             patch("cron.scheduler.save_job_html_output") as save_html, \
+             patch("cron.scheduler.load_config", return_value=config), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        save_html.assert_not_called()
+
+    def test_missing_report_section_skips_html_but_run_succeeds(self, tmp_path, caplog):
+        output_path = tmp_path / "out.md"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# audit only", "summary", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_path), \
+             patch("cron.scheduler.save_job_html_output") as save_html, \
+             patch("cron.scheduler.load_config", return_value=self._enabled_config()), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run") as mark_run:
+            from cron.scheduler import tick
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                tick(verbose=False)
+        save_html.assert_not_called()
+        mark_run.assert_called_once()
+        assert mark_run.call_args.args[1] is True
+        assert any("no valid HERMES_HTML_REPORT" in r.message for r in caplog.records)
+
+    def test_render_failure_does_not_fail_cron_run(self, tmp_path, caplog):
+        output_path = tmp_path / "out.md"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "output", "summary", None)), \
+             patch("cron.scheduler.save_job_output", return_value=output_path), \
+             patch("cron.scheduler.render_report_from_output", side_effect=RuntimeError("boom")), \
+             patch("cron.scheduler.load_config", return_value=self._enabled_config()), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run") as mark_run:
+            from cron.scheduler import tick
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                tick(verbose=False)
+        mark_run.assert_called_once()
+        assert mark_run.call_args.args[1] is True
+        assert any("HTML artifact generation failed" in r.message for r in caplog.records)
+
+
 class TestBuildJobPromptSilentHint:
     """Verify _build_job_prompt always injects [SILENT] guidance."""
 

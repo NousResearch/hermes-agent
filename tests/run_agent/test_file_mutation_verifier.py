@@ -216,6 +216,53 @@ class TestRecordFileMutationResult:
 
         assert agent._turn_failed_file_mutations == {}
 
+    def test_execute_code_nested_success_removes_prior_failure(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": "/tmp/a.md", "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "not found"}),
+            is_error=True,
+        )
+        assert "/tmp/a.md" in agent._turn_failed_file_mutations
+
+        execute_result = json.dumps({
+            "status": "success",
+            "output": "updated",
+            "file_mutations": [{
+                "tool": "write_file",
+                "targets": ["/tmp/a.md"],
+                "landed": True,
+                "error_preview": "",
+            }],
+        })
+        agent._record_file_mutation_result(
+            "execute_code", {"code": "..."}, execute_result, is_error=False,
+        )
+
+        assert agent._turn_failed_file_mutations == {}
+
+    def test_execute_code_nested_failure_is_recorded(self):
+        agent = _bare_agent()
+        execute_result = json.dumps({
+            "status": "success",
+            "output": "attempted",
+            "file_mutations": [{
+                "tool": "patch",
+                "targets": ["/tmp/a.md"],
+                "landed": False,
+                "error_preview": "Could not find old_string",
+            }],
+        })
+
+        agent._record_file_mutation_result(
+            "execute_code", {"code": "..."}, execute_result, is_error=False,
+        )
+
+        state = agent._turn_failed_file_mutations
+        assert state["/tmp/a.md"]["tool"] == "patch"
+        assert "old_string" in state["/tmp/a.md"]["error_preview"]
+
     def test_repeated_failure_keeps_first_error(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(
@@ -277,6 +324,28 @@ class TestRecordFileMutationResult:
 class TestFormatFooter:
     def test_empty_returns_empty_string(self):
         assert AIAgent._format_file_mutation_failure_footer({}) == ""
+
+    def test_sync_final_response_updates_last_text_assistant_message(self):
+        messages = [
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+            {"role": "assistant", "content": "original final"},
+        ]
+
+        AIAgent._sync_final_response_to_last_assistant_message(
+            messages,
+            "original final\n\n⚠️ File-mutation verifier: warning",
+        )
+
+        assert messages[-1]["content"].endswith("warning")
+        assert messages[0]["content"] == ""  # tool-call scaffold untouched
+
+    def test_sync_final_response_noops_without_text_assistant_message(self):
+        messages = [{"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]}]
+
+        AIAgent._sync_final_response_to_last_assistant_message(messages, "final")
+
+        assert messages[0]["content"] == ""
 
     def test_single_failure(self):
         out = AIAgent._format_file_mutation_failure_footer(

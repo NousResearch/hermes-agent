@@ -24,6 +24,7 @@ from cron.jobs import (
     advance_next_run,
     get_due_jobs,
     save_job_output,
+    save_job_html_output,
 )
 
 
@@ -953,3 +954,13 @@ class TestSaveJobOutput:
         assert output_file.exists()
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
+
+    def test_save_job_html_output_uses_markdown_basename(self, tmp_cron_dir):
+        markdown_file = save_job_output("test123", "# Results\nEverything ok.")
+        html_file = save_job_html_output(markdown_file, "<html>ok</html>")
+
+        assert html_file.exists()
+        assert html_file.read_text() == "<html>ok</html>"
+        assert html_file.parent == markdown_file.parent
+        assert html_file.stem == markdown_file.stem
+        assert html_file.suffix == ".html"

@@ -124,7 +124,9 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, save_job_html_output, advance_next_run
+from cron.html_artifacts import HtmlReportMetadata, render_report_from_output, strip_html_report_section
+from cron.html_publish import HtmlArtifactPublishError, publish_html_artifact, resolve_publish_settings
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1131,6 +1133,76 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:
     return assembled
 
 
+def _strict_config_bool(value: object, default: bool = False) -> bool:
+    """Parse config booleans without treating non-empty strings as truthy."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off", ""}:
+            return False
+    return default
+
+
+def _resolve_html_artifact_settings(job: dict, cfg: dict) -> dict:
+    """Resolve local HTML artifact settings for a cron job.
+
+    Global enablement is a master switch. Even when enabled, a job must be
+    explicitly allowlisted under ``cron.html_artifacts.jobs.<job_id>.enabled``
+    so the feature cannot accidentally roll out to every cron job.
+    """
+    cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+    html_cfg = cron_cfg.get("html_artifacts", {}) if isinstance(cron_cfg, dict) else {}
+    if not isinstance(html_cfg, dict) or not _strict_config_bool(html_cfg.get("enabled")):
+        return {"enabled": False, "attach_to_delivery": False, "max_attachment_kb": 512}
+
+    jobs_cfg = html_cfg.get("jobs", {})
+    job_cfg = jobs_cfg.get(job.get("id"), {}) if isinstance(jobs_cfg, dict) else {}
+    if not isinstance(job_cfg, dict) or not _strict_config_bool(job_cfg.get("enabled")):
+        return {"enabled": False, "attach_to_delivery": False, "max_attachment_kb": 512}
+
+    max_kb = html_cfg.get("max_attachment_kb", 512)
+    try:
+        max_kb = max(1, int(max_kb))
+    except (TypeError, ValueError):
+        max_kb = 512
+
+    return {
+        "enabled": True,
+        "attach_to_delivery": _strict_config_bool(
+            job_cfg.get("attach_to_delivery", html_cfg.get("default_attach_to_delivery", False))
+        ),
+        "max_attachment_kb": max_kb,
+        "publish": html_cfg.get("publish", {}),
+        "jobs": {str(job.get("id")): job_cfg},
+    }
+
+
+def _generate_local_html_artifact(job: dict, output: str, markdown_path: Path | str) -> Path | None:
+    """Best-effort local HTML generation for an already-saved cron Markdown output."""
+    markdown_path = Path(markdown_path)
+    html = render_report_from_output(
+        output,
+        HtmlReportMetadata(
+            job_id=str(job.get("id", "")),
+            job_name=str(job.get("name") or job.get("id") or "Cron report"),
+            run_time=_hermes_now().isoformat(),
+            source_filename=markdown_path.name,
+        ),
+    )
+    if html is None:
+        logger.warning(
+            "Job '%s': HTML artifact enabled but no valid HERMES_HTML_REPORT_START/HERMES_HTML_REPORT_END section was found; skipping",
+            job.get("id"),
+        )
+        return None
+    return save_job_html_output(markdown_path, html)
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job, applying any per-job profile override."""
     job_id = job["id"]
@@ -1867,10 +1939,42 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
+                html_settings = {"enabled": False}
+                artifact_url = None
+                try:
+                    html_settings = _resolve_html_artifact_settings(job, load_config() or {})
+                    if html_settings.get("enabled"):
+                        html_file = _generate_local_html_artifact(job, final_response, output_file)
+                        if html_file and verbose:
+                            logger.info("HTML artifact saved to: %s", html_file)
+                        if html_file:
+                            publish_settings = resolve_publish_settings(job, html_settings)
+                            if publish_settings.get("enabled"):
+                                try:
+                                    artifact_url = publish_html_artifact(html_file, job, publish_settings)
+                                    if artifact_url and verbose:
+                                        logger.info("HTML artifact published for job %s", job.get("id"))
+                                except HtmlArtifactPublishError as publish_exc:
+                                    logger.warning(
+                                        "Job '%s': HTML artifact publish failed; continuing cron run: %s",
+                                        job.get("id"),
+                                        publish_exc,
+                                    )
+                except Exception as artifact_exc:
+                    logger.warning(
+                        "Job '%s': HTML artifact generation failed; continuing cron run: %s",
+                        job.get("id"),
+                        artifact_exc,
+                    )
+
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                if success and html_settings.get("enabled"):
+                    deliver_content = strip_html_report_section(deliver_content)
+                    if artifact_url:
+                        deliver_content = f"{deliver_content.rstrip()}\n\nFull brief: {artifact_url}"
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.

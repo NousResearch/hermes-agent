@@ -432,6 +432,62 @@ def _call(tool_name, args):
 # RPC server (runs in a thread inside the parent process)
 # ---------------------------------------------------------------------------
 
+
+def _redact_sensitive_preview(text: str) -> str:
+    """Redact secrets from nested tool error previews before returning them.
+
+    Fail closed: if the shared redactor is unavailable or raises, never return
+    the original preview text to the execute_code result.
+    """
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=True)
+    except Exception:
+        return "[REDACTED]" if text else ""
+
+
+def _file_mutation_observation(tool_name: str, tool_args: dict, result: Any) -> Optional[dict]:
+    """Return compact verifier metadata for nested file mutations.
+
+    execute_code proxies write_file/patch calls through this module, so the
+    outer agent loop only sees the top-level execute_code result.  Including
+    compact mutation metadata lets the turn-end verifier clear recovered
+    failures and report nested failures without dumping full tool arguments.
+    """
+    try:
+        from agent.tool_result_classification import (
+            FILE_MUTATING_TOOL_NAMES,
+            file_mutation_result_landed,
+            file_mutation_targets,
+        )
+        if tool_name not in FILE_MUTATING_TOOL_NAMES:
+            return None
+        targets = file_mutation_targets(tool_name, tool_args)
+        if not targets:
+            return None
+        preview = ""
+        try:
+            data = json.loads(result) if isinstance(result, str) else None
+            if isinstance(data, dict):
+                preview = str(data.get("error") or data.get("message") or "")
+        except Exception:
+            preview = ""
+        landed = file_mutation_result_landed(tool_name, result)
+        if not landed and not preview and isinstance(result, str):
+            preview = result.strip().splitlines()[0] if result.strip() else ""
+        preview = _redact_sensitive_preview(preview)
+        if len(preview) > 180:
+            preview = preview[:179] + "…"
+        return {
+            "tool": tool_name,
+            "targets": targets,
+            "landed": landed,
+            "error_preview": preview,
+        }
+    except Exception:
+        return None
+
+
 # Terminal parameters that must not be used from ephemeral sandbox scripts
 _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
@@ -536,11 +592,15 @@ def _rpc_server_loop(
 
                 # Log for observability
                 args_preview = str(tool_args)[:80]
-                tool_call_log.append({
+                log_entry = {
                     "tool": tool_name,
                     "args_preview": args_preview,
                     "duration": round(call_duration, 2),
-                })
+                }
+                mutation = _file_mutation_observation(tool_name, tool_args, result)
+                if mutation:
+                    log_entry["file_mutation"] = mutation
+                tool_call_log.append(log_entry)
 
                 conn.sendall((result + "\n").encode())
 
@@ -808,11 +868,15 @@ def _rpc_poll_loop(
 
                     tool_call_counter[0] += 1
                     call_duration = time.monotonic() - call_start
-                    tool_call_log.append({
+                    log_entry = {
                         "tool": tool_name,
                         "args_preview": str(tool_args)[:80],
                         "duration": round(call_duration, 2),
-                    })
+                    }
+                    mutation = _file_mutation_observation(tool_name, tool_args, tool_result)
+                    if mutation:
+                        log_entry["file_mutation"] = mutation
+                    tool_call_log.append(log_entry)
 
                 # Write response atomically (tmp + rename).
                 # Use echo piping (not stdin_data) because Modal doesn't
@@ -1004,6 +1068,9 @@ def _execute_remote(
         "tool_calls_made": tool_call_counter[0],
         "duration_seconds": duration,
     }
+    file_mutations = [entry["file_mutation"] for entry in tool_call_log if entry.get("file_mutation")]
+    if file_mutations:
+        result["file_mutations"] = file_mutations
 
     if status == "timeout":
         timeout_msg = f"Script timed out after {timeout}s and was killed."
@@ -1388,6 +1455,9 @@ def execute_code(
             "tool_calls_made": tool_call_counter[0],
             "duration_seconds": duration,
         }
+        file_mutations = [entry["file_mutation"] for entry in tool_call_log if entry.get("file_mutation")]
+        if file_mutations:
+            result["file_mutations"] = file_mutations
 
         if status == "timeout":
             timeout_msg = f"Script timed out after {timeout}s and was killed."

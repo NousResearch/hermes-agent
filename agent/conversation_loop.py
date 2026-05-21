@@ -3930,6 +3930,12 @@ def run_conversation(
                 footer = agent._format_file_mutation_failure_footer(_failed)
                 if footer:
                     final_response = final_response.rstrip() + "\n\n" + footer
+                    # Gateway/CLI streaming can deliver the model's final
+                    # text before this post-processing block runs. Emit the
+                    # verifier footer as one last delta so the warning is
+                    # visible instead of being suppressed as "already sent".
+                    if agent._has_stream_consumers():
+                        agent._fire_stream_delta("\n\n" + footer)
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
@@ -3953,6 +3959,9 @@ def run_conversation(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    if final_response and not interrupted:
+        agent._sync_final_response_to_last_assistant_message(messages, final_response)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

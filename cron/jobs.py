@@ -1086,6 +1086,31 @@ def save_job_output(job_id: str, output: str):
     return output_file
 
 
+def save_job_html_output(markdown_path: Union[str, Path], html_output: str) -> Path:
+    """Save an HTML sibling next to an existing Markdown cron output file."""
+    markdown_path = Path(markdown_path)
+    output_file = markdown_path.with_suffix(".html")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    _secure_dir(output_file.parent)
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(output_file.parent), suffix='.tmp', prefix='.output_')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(html_output)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, output_file)
+        _secure_file(output_file)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    return output_file
+
+
 # =============================================================================
 # Skill reference rewriting (curator integration)
 # =============================================================================

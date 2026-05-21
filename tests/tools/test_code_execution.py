@@ -45,6 +45,7 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _file_mutation_observation,
 )
 
 
@@ -58,11 +59,11 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
     if function_name == "read_file":
         return json.dumps({"content": "line 1\nline 2\nline 3\n", "total_lines": 3})
     if function_name == "write_file":
-        return json.dumps({"status": "ok", "path": function_args.get("path", "")})
+        return json.dumps({"bytes_written": len(function_args.get("content", "")), "path": function_args.get("path", "")})
     if function_name == "search_files":
         return json.dumps({"matches": [{"file": "test.py", "line": 1, "text": "match"}]})
     if function_name == "patch":
-        return json.dumps({"status": "ok", "replacements": 1})
+        return json.dumps({"success": True, "replacements": 1})
     if function_name == "web_extract":
         return json.dumps("# Extracted content\nSome text from the page.")
     return json.dumps({"error": f"Unknown tool in mock: {function_name}"})
@@ -217,6 +218,44 @@ print(result.get("output", ""))
         self.assertEqual(result["status"], "success")
         self.assertIn("mock output for: echo hello", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
+
+    def test_execute_code_reports_nested_file_mutations(self):
+        code = """
+from hermes_tools import write_file
+write_file('/tmp/nested.txt', 'hello')
+print('done')
+"""
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["file_mutations"], [{
+            "tool": "write_file",
+            "targets": ["/tmp/nested.txt"],
+            "landed": True,
+            "error_preview": "",
+        }])
+
+    def test_nested_file_mutation_error_preview_is_redacted(self):
+        with patch("tools.code_execution_tool._redact_sensitive_preview", return_value="[REDACTED]"):
+            observation = _file_mutation_observation(
+                "patch",
+                {"mode": "replace", "path": "/tmp/secret.txt", "old_string": "x", "new_string": "y"},
+                json.dumps({"error": "private preview"}),
+            )
+
+        assert observation is not None
+        self.assertEqual(observation["error_preview"], "[REDACTED]")
+
+    def test_nested_file_mutation_error_preview_redaction_fails_closed(self):
+        with patch("agent.redact.redact_sensitive_text", side_effect=RuntimeError("redactor unavailable")):
+            observation = _file_mutation_observation(
+                "patch",
+                {"mode": "replace", "path": "/tmp/secret.txt", "old_string": "x", "new_string": "y"},
+                json.dumps({"error": "private secret preview"}),
+            )
+
+        assert observation is not None
+        self.assertEqual(observation["error_preview"], "[REDACTED]")
+
 
     def test_multi_tool_chain(self):
         """Script calls multiple tools sequentially."""

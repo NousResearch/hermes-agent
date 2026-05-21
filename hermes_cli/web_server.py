@@ -3401,6 +3401,50 @@ def _ws_request_is_allowed(ws: "WebSocket") -> bool:
     """Return True when the WebSocket upgrade matches dashboard boundaries."""
     return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
 
+
+def _ws_auth_ok(ws: "WebSocket") -> bool:
+    """Validate WS-upgrade auth in either loopback or gated mode.
+
+    Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
+    parameter, constant-time compared.
+
+    Gated (public bind, no ``--insecure``): ``?ticket=<single-use>`` query
+    parameter consumed against the dashboard-auth ticket store. The legacy
+    token path is unconditionally rejected in this mode (the SPA bundle
+    isn't carrying the token any longer).
+
+    Returns True if the WS should be accepted; callers close with the
+    appropriate WS code (4401) on False. Audit-logs the rejection so
+    operators can debug "WS keeps closing" issues from the log.
+    """
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    if auth_required:
+        ticket = ws.query_params.get("ticket", "")
+        if not ticket:
+            return False
+        # Lazy import — keeps this function importable in test harnesses
+        # that don't bring in the dashboard_auth layer.
+        from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+        from hermes_cli.dashboard_auth.ws_tickets import (
+            TicketInvalid,
+            consume_ticket,
+        )
+
+        try:
+            consume_ticket(ticket)
+            return True
+        except TicketInvalid as exc:
+            audit_log(
+                AuditEvent.WS_TICKET_REJECTED,
+                reason=str(exc),
+                ip=(ws.client.host if ws.client else ""),
+                path=ws.url.path,
+            )
+            return False
+
+    token = ws.query_params.get("token", "")
+    return hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
+
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
@@ -3455,7 +3499,21 @@ def _resolve_chat_argv(
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
-    """ws:// URL the PTY child should publish events to, or None when unbound."""
+    """ws:// URL the PTY child should publish events to, or None when unbound.
+
+    Loopback / ``--insecure``: uses ``?token=<_SESSION_TOKEN>``.
+
+    Gated mode: mints a single-use ticket via the dashboard-auth ticket
+    store (server-side mint, no HTTP round trip — the PTY child is a
+    server-spawned process and we trust it). The ticket binds to the
+    pseudo-user ``"pty-sidecar"`` so audit logs can distinguish these from
+    browser-initiated tickets.
+
+    The single-use lifetime means the PTY child cannot reconnect without a
+    new sidecar URL. PTY children open ``/api/pub`` once at startup; if
+    reconnect semantics ever become important, this should be upgraded to
+    a long-lived process-scoped token.
+    """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
 
@@ -3463,7 +3521,15 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
         return None
 
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
-    qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
+
+    if getattr(app.state, "auth_required", False):
+        # Gated mode — mint a ticket so the WS upgrade survives _ws_auth_ok.
+        from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+
+        ticket = mint_ticket(user_id="pty-sidecar", provider="server-internal")
+        qs = urllib.parse.urlencode({"ticket": ticket, "channel": channel})
+    else:
+        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
 
     return f"ws://{netloc}/api/pub?{qs}"
 
@@ -3496,9 +3562,7 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- auth + loopback check (before accept so we can close cleanly) ---
-    token = ws.query_params.get("token", "")
-    expected = _SESSION_TOKEN
-    if not hmac.compare_digest(token.encode(), expected.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
@@ -3616,8 +3680,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
@@ -3648,8 +3711,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 
@@ -3677,8 +3739,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    token = ws.query_params.get("token", "")
-    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+    if not _ws_auth_ok(ws):
         await ws.close(code=4401)
         return
 

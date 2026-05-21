@@ -2316,11 +2316,30 @@ def test_board_usage_rollup_reads_fresh_task_run_snapshots(client, kanban_home):
                 }),
             ),
         )
+        conn.execute(
+            """
+            INSERT INTO task_runs(
+                task_id, profile, status, started_at, ended_at, outcome,
+                summary, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tid,
+                "worker",
+                "done",
+                20,
+                int(time.time()) + 2000,
+                "completed",
+                "run without usage metadata",
+                None,
+            ),
+        )
 
     r = client.get("/api/plugins/kanban/board")
     assert r.status_code == 200, r.text
     tasks = [task for col in r.json()["columns"] for task in col["tasks"]]
     card = next(t for t in tasks if t["id"] == tid)
+    assert card["usage"]["runs"] == 3
     assert card["usage"]["input_tokens"] == 60
     assert card["usage"]["output_tokens"] == 90
     assert card["usage"]["reasoning_tokens"] == 14

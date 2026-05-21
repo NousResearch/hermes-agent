@@ -223,6 +223,12 @@ def _usage_from_run_snapshots(board_slug: Optional[str], task_ids: list[str]) ->
         tid = str(row["task_id"])
         if tid not in wanted:
             continue
+        bucket = latest_by_task.setdefault(tid, {
+            "runs": 0,
+            "by_session": {},
+            "sessionless": None,
+        })
+        bucket["runs"] += 1
         try:
             meta = json.loads(row["metadata"] or "{}")
         except Exception:
@@ -230,12 +236,6 @@ def _usage_from_run_snapshots(board_slug: Optional[str], task_ids: list[str]) ->
         snapshot = meta.get("usage_snapshot") if isinstance(meta, dict) else None
         if not isinstance(snapshot, dict):
             continue
-        bucket = latest_by_task.setdefault(tid, {
-            "runs": 0,
-            "by_session": {},
-            "sessionless": None,
-        })
-        bucket["runs"] += 1
         sid = snapshot.get("session_id") or meta.get("worker_session_id")
         if sid:
             # Rows are newest-first, so the first snapshot per session is the

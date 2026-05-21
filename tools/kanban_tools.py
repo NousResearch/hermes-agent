@@ -119,15 +119,15 @@ def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
     """Add trusted worker session id + token usage metadata for this worker."""
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
-        return metadata
-    session_id = os.environ.get("HERMES_SESSION_ID")
-    if not session_id:
-        return metadata
     try:
         from hermes_cli.project_usage_ledger import stamp_worker_usage_metadata
         return stamp_worker_usage_metadata(task_id, metadata)
     except Exception:
+        if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+            return metadata
+        session_id = os.environ.get("HERMES_SESSION_ID")
+        if not session_id:
+            return metadata
         stamped = dict(metadata or {})
         stamped["worker_session_id"] = session_id
         return stamped

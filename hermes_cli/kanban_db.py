@@ -1409,6 +1409,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    subscribe: Optional[dict] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
@@ -1436,6 +1437,13 @@ def create_task(
     ``kanban-worker``. Use this to pin a task to a specialist skill
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``subscribe`` optionally creates a notification subscription in the
+    same write transaction as the task row. Expected keys: ``platform``
+    and ``chat_id`` (required), plus optional ``thread_id`` and
+    ``user_id``. When ``subscribe`` is omitted, the gateway-provided
+    ``HERMES_NOTIFY_PLATFORM`` / ``HERMES_NOTIFY_CHAT_ID`` env vars are
+    used as a best-effort fallback.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -1526,6 +1534,34 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    # Resolve notification subscription from explicit arg or env vars.
+    resolved_subscribe: Optional[dict[str, str]] = None
+    if not subscribe:
+        sub_platform = os.environ.get("HERMES_NOTIFY_PLATFORM")
+        sub_chat_id = os.environ.get("HERMES_NOTIFY_CHAT_ID")
+        if sub_platform and sub_chat_id:
+            subscribe = {
+                "platform": sub_platform,
+                "chat_id": sub_chat_id,
+            }
+            sub_thread = os.environ.get("HERMES_NOTIFY_THREAD_ID")
+            if sub_thread:
+                subscribe["thread_id"] = sub_thread
+    if isinstance(subscribe, dict):
+        platform = str(subscribe.get("platform") or "").strip()
+        chat_id = str(subscribe.get("chat_id") or "").strip()
+        if platform and chat_id:
+            resolved_subscribe = {
+                "platform": platform,
+                "chat_id": chat_id,
+            }
+            thread_id = str(subscribe.get("thread_id") or "").strip()
+            if thread_id:
+                resolved_subscribe["thread_id"] = thread_id
+            user_id = str(subscribe.get("user_id") or "").strip()
+            if user_id:
+                resolved_subscribe["user_id"] = user_id
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
@@ -1610,6 +1646,15 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
+                if resolved_subscribe:
+                    _add_notify_sub_inner(
+                        conn,
+                        task_id=task_id,
+                        platform=resolved_subscribe["platform"],
+                        chat_id=resolved_subscribe["chat_id"],
+                        thread_id=resolved_subscribe.get("thread_id"),
+                        user_id=resolved_subscribe.get("user_id"),
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -5786,6 +5831,34 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+def _add_notify_sub_inner(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> None:
+    """Insert/update a notify sub — assumes caller already holds a write_txn."""
+    now = int(time.time())
+    conn.execute(
+        """INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+    )
+    if notifier_profile:
+        conn.execute(
+            """UPDATE kanban_notify_subs
+                 SET notifier_profile = ?
+               WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                 AND (notifier_profile IS NULL OR notifier_profile = '')""",
+            (notifier_profile, task_id, platform, chat_id, thread_id or ""),
+        )
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -5798,28 +5871,16 @@ def add_notify_sub(
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
-    now = int(time.time())
     with write_txn(conn):
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+        _add_notify_sub_inner(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            notifier_profile=notifier_profile,
         )
-        if notifier_profile:
-            # Self-heal legacy rows that predate notifier ownership by
-            # backfilling only when the existing value is unset.
-            conn.execute(
-                """
-                UPDATE kanban_notify_subs
-                   SET notifier_profile = ?
-                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
-                   AND (notifier_profile IS NULL OR notifier_profile = '')
-                """,
-                (notifier_profile, task_id, platform, chat_id, thread_id or ""),
-            )
 
 
 def list_notify_subs(

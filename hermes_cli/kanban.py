@@ -91,6 +91,24 @@ def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
     return {"state_type": st, "state_name": sn}
 
 
+def _infer_subscribe_from_env() -> Optional[dict[str, str]]:
+    platform = (os.environ.get("HERMES_NOTIFY_PLATFORM") or "").strip()
+    chat_id = (os.environ.get("HERMES_NOTIFY_CHAT_ID") or "").strip()
+    if not platform or not chat_id:
+        return None
+    subscribe = {
+        "platform": platform,
+        "chat_id": chat_id,
+    }
+    thread_id = (os.environ.get("HERMES_NOTIFY_THREAD_ID") or "").strip()
+    user_id = (os.environ.get("HERMES_NOTIFY_USER_ID") or "").strip()
+    if thread_id:
+        subscribe["thread_id"] = thread_id
+    if user_id:
+        subscribe["user_id"] = user_id
+    return subscribe
+
+
 def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
     """Parse ``--workspace`` into ``(kind, path|None)``.
 
@@ -341,6 +359,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--subscribe-platform", default=None,
+                          help="Auto-subscribe task notifications for this platform")
+    p_create.add_argument("--subscribe-chat-id", default=None,
+                          help="Chat ID for the notification subscription")
+    p_create.add_argument("--subscribe-thread-id", default=None,
+                          help="Optional thread/topic ID for the notification subscription")
+    p_create.add_argument("--subscribe-user-id", default=None,
+                          help="Optional user ID for the notification subscription")
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -1286,6 +1312,28 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    subscribe = None
+    sub_platform = (getattr(args, "subscribe_platform", None) or "").strip()
+    sub_chat_id = (getattr(args, "subscribe_chat_id", None) or "").strip()
+    sub_thread_id = (getattr(args, "subscribe_thread_id", None) or "").strip()
+    sub_user_id = (getattr(args, "subscribe_user_id", None) or "").strip()
+    if any((sub_platform, sub_chat_id, sub_thread_id, sub_user_id)):
+        if not sub_platform or not sub_chat_id:
+            print(
+                "kanban: --subscribe-platform and --subscribe-chat-id must be passed together",
+                file=sys.stderr,
+            )
+            return 2
+        subscribe = {
+            "platform": sub_platform,
+            "chat_id": sub_chat_id,
+        }
+        if sub_thread_id:
+            subscribe["thread_id"] = sub_thread_id
+        if sub_user_id:
+            subscribe["user_id"] = sub_user_id
+    if subscribe is None:
+        subscribe = _infer_subscribe_from_env()
     with kb.connect() as conn:
         task_id = kb.create_task(
             conn,
@@ -1304,6 +1352,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            subscribe=subscribe,
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)

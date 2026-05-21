@@ -1605,6 +1605,82 @@ def test_session_id_compose_with_tenant_filter(kanban_home):
     assert [t.title for t in rows] == ["match"]
 
 
+def test_create_task_without_subscribe_creates_no_subs(kanban_home, monkeypatch):
+    """No notify sub is created when subscribe=None and no env vars set."""
+    monkeypatch.delenv("HERMES_NOTIFY_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_NOTIFY_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_NOTIFY_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_NOTIFY_USER_ID", raising=False)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="no-sub")
+        subs = kb.list_notify_subs(conn, task_id=tid)
+    assert subs == []
+
+
+def test_create_task_with_subscribe_dict_creates_sub(kanban_home):
+    """Passing subscribe=dict creates a row in kanban_notify_subs."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="with-sub",
+            subscribe={"platform": "telegram", "chat_id": "123"},
+        )
+        subs = kb.list_notify_subs(conn, task_id=tid)
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "123"
+    assert subs[0]["task_id"] == tid
+
+
+def test_create_task_with_subscribe_includes_optional_fields(kanban_home):
+    """thread_id and user_id are persisted when passed in subscribe dict."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="with-optional",
+            subscribe={
+                "platform": "discord",
+                "chat_id": "456",
+                "thread_id": "thread-1",
+                "user_id": "user-1",
+            },
+        )
+        subs = kb.list_notify_subs(conn, task_id=tid)
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "456"
+    assert subs[0]["thread_id"] == "thread-1"
+    assert subs[0]["user_id"] == "user-1"
+
+
+def test_create_task_falls_back_to_env_vars(kanban_home, monkeypatch):
+    """When subscribe=None but HERMES_NOTIFY_PLATFORM/CHAT_ID are set,
+    the env vars are used as fallback."""
+    monkeypatch.setenv("HERMES_NOTIFY_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_NOTIFY_CHAT_ID", "999")
+    monkeypatch.setenv("HERMES_NOTIFY_THREAD_ID", "topic-x")
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="env-fallback")
+        subs = kb.list_notify_subs(conn, task_id=tid)
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "999"
+    assert subs[0]["thread_id"] == "topic-x"
+
+
+def test_create_task_env_vars_skipped_when_subscribe_passed(kanban_home, monkeypatch):
+    """Explicit subscribe=dict takes precedence over env vars."""
+    monkeypatch.setenv("HERMES_NOTIFY_PLATFORM", "slack")
+    monkeypatch.setenv("HERMES_NOTIFY_CHAT_ID", "111")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="explicit-override",
+            subscribe={"platform": "telegram", "chat_id": "222"},
+        )
+        subs = kb.list_notify_subs(conn, task_id=tid)
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "222"
+
+
 # ---------------------------------------------------------------------------
 # Shared-board path resolution (issue #19348)
 #

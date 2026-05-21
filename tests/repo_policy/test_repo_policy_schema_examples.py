@@ -75,18 +75,21 @@ def contract_errors(policy: dict) -> list[str]:
             "canonical_landing": "develop",
             "work_done_means": "pushed_to_develop",
             "release_source": "develop",
-            "release_target": "main",
             "live_apply": "deploy_gate",
         }
         for key, expected in expected_workflow.items():
             if workflow.get(key) != expected:
                 errors.append(f"product workflow.{key} must be {expected}")
+        if workflow.get("release_target") not in {"main", "master"}:
+            errors.append("product workflow.release_target must be main or master")
+        if branches.get("release_base") != workflow.get("release_target"):
+            errors.append("product branches.release_base must match workflow.release_target")
         if roles.get("landing") != "develop":
             errors.append("product roles.landing must be develop")
         if branches.get("landing") != "develop":
             errors.append("product branches.landing must be develop")
-        if roles.get("release") != "release_pr_to_main":
-            errors.append("product roles.release must be release_pr_to_main")
+        if roles.get("release") not in {"release_pr_to_main", "release_gate_to_release_target"}:
+            errors.append("product roles.release must be release_pr_to_main or release_gate_to_release_target")
         if roles.get("live_apply") != "deploy_gate":
             errors.append("product roles.live_apply must be deploy_gate")
 
@@ -120,7 +123,7 @@ def test_schema_file_is_valid_json_and_documents_fail_closed_contract() -> None:
 
 @pytest.mark.parametrize(
     "example",
-    ["product-develop.yaml", "runtime-tooling-hermes-agent.yaml"],
+    ["product-develop.yaml", "product-develop-master.yaml", "runtime-tooling-hermes-agent.yaml"],
 )
 def test_valid_examples_satisfy_repo_policy_contract(example: str) -> None:
     policy = load_policy(example)

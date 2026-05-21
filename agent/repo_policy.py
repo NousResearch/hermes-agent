@@ -153,16 +153,19 @@ def _add_contract_issues(policy: dict[str, Any], issues: list[RepoPolicyIssue]) 
             issues.append(RepoPolicyIssue("product_workflow_landing_not_develop", "Policy drift detected: product workflow.canonical_landing must be develop"))
         if workflow.get("work_done_means") != "pushed_to_develop":
             issues.append(RepoPolicyIssue("product_work_done_not_develop", "Policy drift detected: product work_done_means must be pushed_to_develop"))
-        if workflow.get("release_source") != "develop" or workflow.get("release_target") != "main":
-            issues.append(RepoPolicyIssue("product_release_path_not_develop_to_main", "Policy drift detected: product release path must be develop->main"))
+        release_target = workflow.get("release_target")
+        if workflow.get("release_source") != "develop" or release_target not in {"main", "master"}:
+            issues.append(RepoPolicyIssue("product_release_path_not_develop_to_release_target", "Policy drift detected: product release path must be develop-><repo release target main|master>"))
+        if branches.get("release_base") != release_target:
+            issues.append(RepoPolicyIssue("product_release_base_mismatch", "Policy drift detected: product branches.release_base must match workflow.release_target"))
         if workflow.get("live_apply") != "deploy_gate":
             issues.append(RepoPolicyIssue("product_workflow_live_apply_not_deploy_gate", "Policy drift detected: product workflow.live_apply must be deploy_gate"))
         if roles.get("landing") != "develop":
             issues.append(RepoPolicyIssue("product_landing_not_develop", "Policy drift detected: product roles.landing must be develop"))
         if branches.get("landing") != "develop":
             issues.append(RepoPolicyIssue("product_branch_not_develop", "Policy drift detected: product branches.landing must be develop"))
-        if roles.get("release") != "release_pr_to_main":
-            issues.append(RepoPolicyIssue("product_release_not_standard", "Policy drift detected: product roles.release must be release_pr_to_main"))
+        if roles.get("release") not in {"release_pr_to_main", "release_gate_to_release_target"}:
+            issues.append(RepoPolicyIssue("product_release_not_standard", "Policy drift detected: product roles.release must be release_pr_to_main or release_gate_to_release_target"))
         if roles.get("live_apply") != "deploy_gate":
             issues.append(RepoPolicyIssue("product_live_apply_not_deploy_gate", "Policy drift detected: product roles.live_apply must be deploy_gate"))
 

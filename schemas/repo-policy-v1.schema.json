@@ -95,11 +95,12 @@
           "type": "string",
           "enum": [
             "release_pr_to_main",
+            "release_gate_to_release_target",
             "upstream_sync_or_local_release_note",
             "manual_gate",
             "not_applicable"
           ],
-          "description": "Release gate after landing. Release/merge/deploy remains Red unless explicitly approved."
+          "description": "Release gate after landing. Product repos use a repo-local explicit release target (for example main or master); release/merge/deploy remains Red unless explicitly approved."
         },
         "live_apply": {
           "type": "string",
@@ -329,7 +330,7 @@
             "string",
             "null"
           ],
-          "description": "Branch/ref that release PRs target; product repos use main."
+          "description": "Branch/ref that release PRs or release batches target. Product repos must declare this explicitly; v1 allows main or master because products may have different production branch names while still standardizing landing on develop."
         },
         "live_apply": {
           "type": "string",
@@ -365,7 +366,10 @@
                 "const": "develop"
               },
               "release": {
-                "const": "release_pr_to_main"
+                "enum": [
+                  "release_pr_to_main",
+                  "release_gate_to_release_target"
+                ]
               },
               "live_apply": {
                 "const": "deploy_gate"
@@ -391,7 +395,10 @@
                 "const": "develop"
               },
               "release_target": {
-                "const": "main"
+                "enum": [
+                  "main",
+                  "master"
+                ]
               },
               "live_apply": {
                 "const": "deploy_gate"

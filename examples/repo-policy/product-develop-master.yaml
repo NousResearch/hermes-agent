@@ -1,0 +1,60 @@
+version: 1
+repo:
+  name: chriskim12/whystarve
+  class: product
+authority:
+  policy_source: .hermes/repo-policy.yaml
+  agents_pointer: AGENTS.md
+roles:
+  work: task_branch
+  landing: develop
+  release: release_gate_to_release_target
+  live_apply: deploy_gate
+workflow:
+  canonical_landing: develop
+  work_done_means: pushed_to_develop
+  release_source: develop
+  release_target: master
+  live_apply: deploy_gate
+branches:
+  landing: develop
+  release_base: master
+gates:
+  green_allowed:
+  - code_changes
+  - tests
+  - static_checks
+  - cleanup
+  - local_commit
+  - push_to_landing
+  yellow_queue:
+  - release_pr_prepare
+  - live_apply_pending
+  - human_review_needed
+  - policy_migration_needed
+  red_requires_explicit_approval:
+  - upstream_pr
+  - merge
+  - release
+  - deploy
+  - prod_mutation
+  - env_secret_change
+  - billing_pricing_change
+  - customer_visible_change
+  - destructive_cleanup
+runtime:
+  restart_policy: not_applicable
+  live_apply_queue: not_applicable
+closeout:
+  required_sections:
+  - 결론
+  - 실제 반영
+  - 아직 안 한 것
+  - 다음 판단
+  - Policy check
+  - Green 완료
+  - Yellow 대기
+  - Red 필요
+  - 검증
+  - Git 상태
+  - Live 상태

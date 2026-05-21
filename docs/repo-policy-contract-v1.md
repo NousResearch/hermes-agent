@@ -13,7 +13,8 @@ The authority file is:
 ## Files in this slice
 
 - `schemas/repo-policy-v1.schema.json` — schema contract.
-- `examples/repo-policy/product-develop.yaml` — product repo policy with `develop` landing.
+- `examples/repo-policy/product-develop.yaml` — product repo policy with `develop` landing and `main` release target.
+- `examples/repo-policy/product-develop-master.yaml` — product repo policy with `develop` landing and `master` release target.
 - `examples/repo-policy/runtime-tooling-hermes-agent.yaml` — runtime/tooling policy with live-apply queue and bounded gateway restart model.
 - `examples/repo-policy/invalid-*.yaml` — negative fixtures for the checker lane.
 - `tests/repo_policy/test_repo_policy_schema_examples.py` — schema/example contract tests.
@@ -30,11 +31,11 @@ authority:
 roles:
   work: task_branch
   landing: develop
-  release: release_pr_to_main
+  release: release_gate_to_release_target # or release_pr_to_main for repos whose release target is main
   live_apply: deploy_gate
 branches:
   landing: develop
-  release_base: main
+  release_base: main # repo-local release target; may be master
 gates:
   green_allowed:
     - code_changes
@@ -65,18 +66,26 @@ closeout:
 
 ## Product repo v1 rule
 
-Product repos standardize on:
+Product repos standardize their ordinary work landing on `develop`, while the production release target remains repo-local and explicit:
 
 ```text
-work branch/worktree -> develop -> release PR -> main/prod deploy gate
+work branch/worktree -> develop -> release PR/gate -> <repo release target>/prod deploy gate
 ```
+
+Examples:
+
+- DailyChingu: `develop -> main`.
+- WhyStarve migration target: `develop -> master` after explicit branch/push approval.
 
 Schema-level requirements:
 
 - `repo.class: product`
 - `roles.landing: develop`
 - `branches.landing: develop`
-- `roles.release: release_pr_to_main`
+- `roles.release: release_pr_to_main` or `release_gate_to_release_target`
+- `workflow.release_source: develop`
+- `workflow.release_target: main` or `master`
+- `branches.release_base` matching `workflow.release_target`
 - `roles.live_apply: deploy_gate`
 
 Checker-level freshness requirements for BO-101:

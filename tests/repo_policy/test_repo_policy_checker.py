@@ -57,6 +57,44 @@ def test_product_policy_passes_when_develop_is_observed(git_repo: Path) -> None:
     assert result["authority"]["red_still_requires_explicit_approval"] is True
 
 
+def test_product_policy_allows_master_release_target_when_develop_is_observed(git_repo: Path) -> None:
+    run(["git", "branch", "develop"], git_repo)
+    install_policy(git_repo, "product-develop-master.yaml")
+
+    result = check_repo_policy(git_repo).as_dict()
+
+    assert result["ok"] is True
+    assert result["status"] == "pass"
+    assert result["repo_class"] == "product"
+    assert result["authority"]["workflow"]["release_path"] == "develop->master"
+
+
+def test_product_policy_fails_when_release_base_mismatches_target(git_repo: Path) -> None:
+    run(["git", "branch", "develop"], git_repo)
+    install_policy(git_repo, "product-develop-master.yaml")
+    policy_path = git_repo / ".hermes" / "repo-policy.yaml"
+    text = policy_path.read_text(encoding="utf-8")
+    policy_path.write_text(text.replace("release_base: master", "release_base: main"), encoding="utf-8")
+
+    result = check_repo_policy(git_repo).as_dict()
+
+    assert result["ok"] is False
+    assert "product_release_base_mismatch" in issue_codes(result)
+
+
+def test_product_policy_fails_when_release_target_is_not_allowed(git_repo: Path) -> None:
+    run(["git", "branch", "develop"], git_repo)
+    install_policy(git_repo, "product-develop.yaml")
+    policy_path = git_repo / ".hermes" / "repo-policy.yaml"
+    text = policy_path.read_text(encoding="utf-8")
+    policy_path.write_text(text.replace("release_target: main", "release_target: production"), encoding="utf-8")
+
+    result = check_repo_policy(git_repo).as_dict()
+
+    assert result["ok"] is False
+    assert "product_release_path_not_develop_to_release_target" in issue_codes(result)
+
+
 def test_product_policy_fails_when_workflow_does_not_define_develop_landing(git_repo: Path) -> None:
     run(["git", "branch", "develop"], git_repo)
     install_policy(git_repo, "product-develop.yaml")

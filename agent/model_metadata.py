@@ -111,6 +111,10 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
+# Process-lifetime cache: after the first successful probe we remember the
+# server type so subsequent refreshes skip the full waterfall (no more 404
+# spam every 5 minutes on non-matching endpoints like /api/v1/models on vllm).
+_endpoint_probe_path_cache: Dict[str, str] = {}
 
 
 def _get_model_metadata_cache_path() -> Path:
@@ -636,6 +640,10 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
     Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
+
+    The result is cached for the lifetime of the process so that repeated
+    calls (e.g. every 5-minute metadata refresh) never re-run the waterfall
+    and never spray 404s at endpoints the server does not expose.
     """
     import httpx
 
@@ -645,53 +653,63 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
         server_url = server_url[:-3]
     lmstudio_url = _lmstudio_server_root(base_url)
 
+    cached = _endpoint_probe_path_cache.get(server_url)
+    if cached is not None:
+        return cached
+
     headers = _auth_headers(api_key)
 
+    result: Optional[str] = None
     try:
         with httpx.Client(timeout=2.0, headers=headers) as client:
             # LM Studio exposes /api/v1/models — check first (most specific)
             try:
                 r = client.get(f"{lmstudio_url}/api/v1/models")
                 if r.status_code == 200:
-                    return "lm-studio"
+                    result = "lm-studio"
             except Exception:
                 pass
-            # Ollama exposes /api/tags and responds with {"models": [...]}
-            # LM Studio returns {"error": "Unexpected endpoint"} with status 200
-            # on this path, so we must verify the response contains "models".
-            try:
-                r = client.get(f"{server_url}/api/tags")
-                if r.status_code == 200:
-                    try:
+            if result is None:
+                # Ollama exposes /api/tags and responds with {"models": [...]}
+                # LM Studio returns {"error": "Unexpected endpoint"} with status 200
+                # on this path, so we must verify the response contains "models".
+                try:
+                    r = client.get(f"{server_url}/api/tags")
+                    if r.status_code == 200:
+                        try:
+                            data = r.json()
+                            if "models" in data:
+                                result = "ollama"
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            if result is None:
+                # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
+                try:
+                    r = client.get(f"{server_url}/v1/props")
+                    if r.status_code != 200:
+                        r = client.get(f"{server_url}/props")  # fallback for older builds
+                    if r.status_code == 200 and "default_generation_settings" in r.text:
+                        result = "llamacpp"
+                except Exception:
+                    pass
+            if result is None:
+                # vLLM: /version
+                try:
+                    r = client.get(f"{server_url}/version")
+                    if r.status_code == 200:
                         data = r.json()
-                        if "models" in data:
-                            return "ollama"
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
-            try:
-                r = client.get(f"{server_url}/v1/props")
-                if r.status_code != 200:
-                    r = client.get(f"{server_url}/props")  # fallback for older builds
-                if r.status_code == 200 and "default_generation_settings" in r.text:
-                    return "llamacpp"
-            except Exception:
-                pass
-            # vLLM: /version
-            try:
-                r = client.get(f"{server_url}/version")
-                if r.status_code == 200:
-                    data = r.json()
-                    if "version" in data:
-                        return "vllm"
-            except Exception:
-                pass
+                        if "version" in data:
+                            result = "vllm"
+                except Exception:
+                    pass
     except Exception:
         pass
 
-    return None
+    if result is not None:
+        _endpoint_probe_path_cache[server_url] = result
+    return result
 
 
 def _iter_nested_dicts(value: Any):

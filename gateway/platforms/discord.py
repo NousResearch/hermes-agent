@@ -1386,6 +1386,12 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        # ── Suppress NO_REPLY delivery (#29932) ──────────────────────
+        # Agent returns NO_REPLY as a silence token — not actual content.
+        if (content or "").strip() == "NO_REPLY":
+            logger.debug("[%s] Agent returned NO_REPLY — suppressing delivery", self.name)
+            return SendResult(success=True, message_id=None, raw_response={"suppressed_no_reply": True})
+
         try:
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
@@ -3789,6 +3795,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not content:
                     continue
 
+                # Exclude NO_REPLY sentinel from backfill (#29932).
+                if content.strip() == "NO_REPLY":
+                    continue
+
                 name = msg.author.display_name
                 if getattr(msg.author, "bot", False):
                     name = f"{name} [bot]"
@@ -4476,6 +4486,21 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+
+        # ── NO_REPLY sentinel filter (#29932) ───────────────────────
+        # Drop bot-to-bot NO_REPLY messages before they enter the agent loop.
+        # NO_REPLY is a control/silence token — not a user prompt. When
+        # DISCORD_ALLOW_BOTS=mentions, other bots' NO_REPLY must be ignored.
+        _NO_REPLY_SENTINEL = "NO_REPLY"
+        if (
+            getattr(message.author, "bot", False)
+            and normalized_content.strip() == _NO_REPLY_SENTINEL
+        ):
+            logger.debug(
+                "[%s] Dropping bot NO_REPLY sentinel from %s — not a user prompt.",
+                self.name, message.author.display_name,
+            )
+            return
 
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:

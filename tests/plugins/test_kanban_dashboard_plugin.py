@@ -139,6 +139,46 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
     assert not any(t["id"] == task["id"] for t in columns["todo"])
 
 
+def test_create_task_auto_assigns_sole_profile(client):
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Auto-routed dashboard task"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["task"]["assignee"] == "default"
+    assert data["auto_assigned"] == "default"
+    assert data["task"]["status"] == "ready"
+
+
+def test_create_task_does_not_auto_assign_when_multiple_profiles_exist(client, kanban_home):
+    extra_profile = kanban_home / "profiles" / "researcher"
+    extra_profile.mkdir(parents=True)
+    (extra_profile / "config.yaml").write_text("model: test\n", encoding="utf-8")
+
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Needs explicit routing"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["task"]["assignee"] is None
+    assert "auto_assigned" not in data
+    assert "warning" in data
+
+
+def test_create_triage_task_does_not_auto_assign(client):
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Needs shaping", "triage": True},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["task"]["assignee"] is None
+    assert "auto_assigned" not in data
+    assert data["task"]["status"] == "triage"
+
+
 def test_tenant_filter(client):
     client.post("/api/plugins/kanban/tasks", json={"title": "A", "tenant": "t1"})
     client.post("/api/plugins/kanban/tasks", json={"title": "B", "tenant": "t2"})

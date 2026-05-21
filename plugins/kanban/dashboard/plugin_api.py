@@ -565,16 +565,34 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
 
 
+def _auto_assign_sole_profile(conn) -> Optional[str]:
+    """Return the only spawnable on-disk profile, when there is exactly one."""
+    try:
+        on_disk = [
+            row["name"]
+            for row in kanban_db.known_assignees(conn)
+            if row.get("on_disk") and row.get("name")
+        ]
+    except Exception:
+        return None
+    return on_disk[0] if len(on_disk) == 1 else None
+
+
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        assignee = payload.assignee
+        auto_assigned = False
+        if not assignee and not payload.triage:
+            assignee = _auto_assign_sole_profile(conn)
+            auto_assigned = bool(assignee)
         task_id = kanban_db.create_task(
             conn,
             title=payload.title,
             body=payload.body,
-            assignee=payload.assignee,
+            assignee=assignee,
             created_by="dashboard",
             workspace_kind=payload.workspace_kind,
             workspace_path=payload.workspace_path,
@@ -588,6 +606,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
+        if auto_assigned:
+            body["auto_assigned"] = assignee
         # Surface a dispatcher-presence warning so the UI can show a
         # banner when a `ready` task would otherwise sit idle because no
         # gateway is running (or dispatch_in_gateway=false). Only emit
@@ -602,6 +622,11 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             except Exception:
                 # Probe failure must never block the create itself.
                 pass
+        elif task and task.status == "ready" and not task.assignee:
+            body["warning"] = (
+                "Task is ready but has no assignee, so the Kanban dispatcher "
+                "will not pick it up until a worker profile is assigned."
+            )
         return body
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

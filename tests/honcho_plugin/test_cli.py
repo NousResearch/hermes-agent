@@ -154,3 +154,88 @@ class TestCmdStatus:
         out = capsys.readouterr().out
         assert "FAILED (Invalid API key)" in out
         assert "Connection... OK" not in out
+
+
+class TestCloneHonchoForProfile:
+    """Regression tests for clone_honcho_for_profile identity-key carryover.
+
+    PR #27371 added userPeerAliases, runtimePeerPrefix, and pinPeerName as
+    host-scoped identity-mapping config.  These keys must survive profile
+    cloning, otherwise a new profile silently fragments memory by resolving
+    gateway users to raw runtime IDs instead of operator-declared peers.
+    """
+
+    def _setup_clone_env(self, monkeypatch, tmp_path, cfg):
+        import plugins.memory.honcho.cli as honcho_cli
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}")
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host_key=None: True)
+        written = {}
+        def _write(c, path=None):
+            written["cfg"] = c
+        monkeypatch.setattr(honcho_cli, "_write_config", _write)
+        return honcho_cli, written
+
+    def test_user_peer_aliases_carry_into_cloned_profile(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {
+                "hermes": {
+                    "userPeerAliases": {"86701400": "eri", "discord-491827364": "eri"},
+                    "peerName": "eri",
+                },
+            },
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes.coder"]
+        assert new_block["userPeerAliases"] == {"86701400": "eri", "discord-491827364": "eri"}
+
+    def test_runtime_peer_prefix_carries_into_cloned_profile(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {
+                "hermes": {
+                    "runtimePeerPrefix": "telegram_",
+                    "peerName": "eri",
+                },
+            },
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes.coder"]
+        assert new_block["runtimePeerPrefix"] == "telegram_"
+
+    def test_pin_peer_name_carries_into_cloned_profile(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {
+                "hermes": {
+                    "pinPeerName": True,
+                    "peerName": "eri",
+                },
+            },
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes.coder"]
+        assert new_block["pinPeerName"] is True
+
+    def test_unset_identity_keys_do_not_appear_in_cloned_profile(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"peerName": "eri"}},
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes.coder"]
+        assert "userPeerAliases" not in new_block
+        assert "runtimePeerPrefix" not in new_block
+        assert "pinPeerName" not in new_block

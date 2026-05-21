@@ -16,6 +16,11 @@
   openssh,
   ffmpeg,
   tirith,
+
+  # linux-only deps
+  wl-clipboard,
+  xclip,
+
   # Flake inputs — passed explicitly by packages.nix and overlays.nix
   uv2nix,
   pyproject-nix,
@@ -68,6 +73,10 @@ let
     openssh
     ffmpeg
     tirith
+  ]
+  ++ lib.optionals stdenv.isLinux [
+    wl-clipboard
+    xclip
   ];
 
   runtimePath = lib.makeBinPath runtimeDeps;

@@ -828,7 +828,6 @@ def init_agent(
         tool_names = sorted(agent.valid_tool_names)
         if not agent.quiet_mode:
             print(f"🛠️  Loaded {len(agent.tools)} tools: {', '.join(tool_names)}")
-            
             # Show filtering info if applied
             if enabled_toolsets:
                 print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
@@ -836,7 +835,18 @@ def init_agent(
                 print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
     elif not agent.quiet_mode:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
-    
+
+    # Kanban worker/orchestrator lifecycle guidance is session-static:
+    # the dispatcher decides at spawn time whether this process is a kanban
+    # worker (kanban_show tool is present iff HERMES_KANBAN_TASK is set).
+    # Resolving the ~835-token block once here avoids re-running the
+    # membership test + reference on every system-prompt rebuild
+    # (init + each context compression).
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    agent._kanban_worker_guidance = (
+        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+    )
+
     # Check tool requirements
     if agent.tools and not agent.quiet_mode:
         requirements = _ra().check_toolset_requirements()
@@ -891,7 +901,19 @@ def init_agent(
     hermes_home = get_hermes_home()
     agent.logs_dir = hermes_home / "sessions"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
-    agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
+    # Per-session JSON snapshot writer (~/.hermes/sessions/session_{sid}.json)
+    # is opt-in via sessions.write_json_snapshots (default False).  state.db
+    # is canonical — the snapshot is only useful for external tooling that
+    # reads the JSON files directly.  See run_agent._save_session_log.
+    agent._session_json_enabled = False
+    try:
+        from hermes_cli.config import load_config as _load_sess_cfg
+        _sess_cfg = (_load_sess_cfg().get("sessions") or {})
+        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
+    except Exception:
+        pass
+    # logs_dir is retained unconditionally for request_dump_*.json (debug
+    # breadcrumb path written by agent_runtime_helpers.dump_api_request_debug).
     
     # Track conversation messages for session logging
     agent._session_messages: List[Dict[str, Any]] = []
@@ -1456,7 +1478,13 @@ def init_agent(
     # Gateway status_callback is not yet wired, so any warning is stored
     # in _compression_warning and replayed in the first run_conversation().
     agent._compression_warning = None
-    agent._check_compression_model_feasibility()
+    # Lazy feasibility check: deferred to the first turn that approaches the
+    # compression threshold. Running it eagerly here costs ~400ms cold (network
+    # probe of the auxiliary provider chain + /models lookup) on every agent
+    # init, including short ``chat -q`` runs that never reach the threshold.
+    # ``ensure_compression_feasibility_checked`` (called from
+    # ``run_conversation``'s preflight) runs it at most once per agent.
+    agent._compression_feasibility_checked = False
 
     # Snapshot primary runtime for per-turn restoration.  When fallback
     # activates during a turn, the next turn restores these values so the

@@ -206,7 +206,12 @@ KANBAN_GUIDANCE = (
     "files outside it unless the task explicitly asks.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
     "every few minutes during long subprocesses (training, encoding, crawling). "
-    "Skip heartbeats for short tasks.\n"
+    "Skip heartbeats for short tasks. **If your task may run longer than 1 hour, "
+    "you MUST call `kanban_heartbeat` at least once an hour** — the dispatcher "
+    "reclaims tasks running past `kanban.dispatch_stale_timeout_seconds` "
+    "(default 4 hours) when no heartbeat has arrived in the last hour. A "
+    "reclaim re-queues the task as `ready` without penalty (no failure counter "
+    "tick), but you lose your current run's progress.\n"
     "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
@@ -268,7 +273,7 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm")
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,

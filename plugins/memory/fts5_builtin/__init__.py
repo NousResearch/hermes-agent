@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 
@@ -173,6 +173,28 @@ class FTS5BuiltinProvider(MemoryProvider):
         except Exception as e:
             logger.debug("fts5_builtin tool error: %s", e)
             return json.dumps({"ok": False, "error": str(e)})
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror built-in memory writes as FTS5 facts.
+
+        Only mirrors 'add' and 'replace' actions.  'remove' is a no-op
+        for the keyword store (facts persist unless explicitly deleted).
+        """
+        if action not in ("add", "replace"):
+            return
+        if not self._store or not content.strip():
+            return
+        try:
+            category = "user_pref" if target == "user" else "general"
+            self._store.add_fact(content, category=category)
+        except Exception as e:
+            logger.debug("fts5_builtin memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
         self._store = None

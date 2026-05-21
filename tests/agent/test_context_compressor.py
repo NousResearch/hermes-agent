@@ -1849,3 +1849,83 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+class TestGate3ReturnsOriginalMessages:
+    """Regression: when TokenJuice Gate 3 rejects a summary, the compressor
+    must return the ORIGINAL (unpruned) messages, not the version that was
+    already mutated by _prune_old_tool_results."""
+
+    def test_gate3_rejection_returns_unpruned_messages(self):
+        import json as _json
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+        large_tool_content = '{"output": "' + ("x" * 3000) + '"}'
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "run a command"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "terminal", "arguments": _json.dumps({"command": "npm test"})}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": large_tool_content},
+            {"role": "user", "content": "good"},
+            {"role": "assistant", "content": "great"},
+            {"role": "user", "content": "continue"},
+            {"role": "assistant", "content": "sure"},
+            {"role": "user", "content": "more"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        original_count = len(messages)
+        with patch.object(c, "_generate_summary", return_value="summarized content"):
+            with patch.object(c, "_prune_old_tool_results", wraps=c._prune_old_tool_results) as mock_prune:
+                result = c.compress(messages)
+        # Gate 3 rejection should return original (unpruned) messages.
+        found_large = False
+        for msg in result:
+            content = msg.get("content", "")
+            if isinstance(content, str) and len(content) > 2500 and "xxxx" in content:
+                found_large = True
+                break
+        assert found_large, (
+            "Gate 3 rejection should return original (unpruned) messages; "
+            "the large tool output was lost, indicating pruned messages were returned"
+        )
+
+    def test_gate3_acceptance_still_uses_summary(self):
+        """When Gate 3 accepts (good compression), the summary is used."""
+        import json as _json
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi " * 200},
+            {"role": "user", "content": "ok"},
+            {"role": "assistant", "content": "done " * 200},
+            {"role": "user", "content": "goodbye"},
+            {"role": "assistant", "content": "bye " * 200},
+            {"role": "user", "content": "final"},
+            {"role": "assistant", "content": "end " * 200},
+        ]
+        short_summary = "everything was about greetings"
+        with patch.object(c, "_generate_summary", return_value=short_summary):
+            result = c.compress(messages)
+        found_summary = False
+        for msg in result:
+            content = msg.get("content", "")
+            if isinstance(content, str) and short_summary in content:
+                found_summary = True
+                break
+        assert found_summary, "Gate 3 should accept summary with good compression ratio"

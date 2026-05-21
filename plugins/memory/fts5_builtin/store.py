@@ -10,14 +10,29 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+_MAX_LIMIT = 100
+_MIN_LIMIT = 1
+_DEFAULT_SEARCH_LIMIT = 10
+_DEFAULT_LIST_LIMIT = 50
+
+
+def _clamp_limit(value: int, default: int) -> int:
+    """Clamp a limit value to the safe range [1, 100]."""
+    if not isinstance(value, int) or value < _MIN_LIMIT:
+        return max(default, _MIN_LIMIT)
+    return min(value, _MAX_LIMIT)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    content    TEXT NOT NULL,
+    content    TEXT NOT NULL UNIQUE,
     category   TEXT DEFAULT 'general',
     tags       TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+PRAGMA journal_mode=WAL;
+PRAGMA busy_timeout=5000;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
     USING fts5(content, tags, content=facts, content_rowid=fact_id);
@@ -81,10 +96,18 @@ class FTS5Store:
         with self._lock:
             conn = self._get_conn()
             try:
-                cur = conn.execute(
-                    "INSERT INTO facts (content, category, tags) VALUES (?, ?, ?)",
-                    (content, category, tags),
-                )
+                try:
+                    cur = conn.execute(
+                        "INSERT INTO facts (content, category, tags) VALUES (?, ?, ?)",
+                        (content, category, tags),
+                    )
+                except sqlite3.IntegrityError:
+                    # Dedup: content already exists — return existing fact_id
+                    row = conn.execute(
+                        "SELECT fact_id FROM facts WHERE content = ?",
+                        (content,),
+                    ).fetchone()
+                    return row[0] if row else 0
                 conn.commit()
                 return cur.lastrowid or 0
             finally:
@@ -97,6 +120,7 @@ class FTS5Store:
         if not query:
             return []
         # Escape FTS5 special chars (simple — only quote the query)
+        limit = _clamp_limit(limit, _DEFAULT_SEARCH_LIMIT)
         safe = query.replace('"', '""')
         fts_query = f'"{safe}"'
         with self._lock:
@@ -122,6 +146,7 @@ class FTS5Store:
     def list_facts(self, *, category: Optional[str] = None,
                    limit: int = 50) -> list[dict]:
         """List recent facts, optionally filtered by category."""
+        limit = _clamp_limit(limit, _DEFAULT_LIST_LIMIT)
         with self._lock:
             conn = self._get_conn()
             try:

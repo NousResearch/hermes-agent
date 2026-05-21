@@ -126,12 +126,34 @@ def classify_messages(
 
 # ── Gate 3 ─────────────────────────────────────────────────────────────────
 
+# Gate 3 absolute minimum — reject summaries shorter than this many characters
+# regardless of ratio.  Prevents near-empty / one-word summaries from
+# replacing the original tool output.
+_TOKENJUICE_MIN_COMPRESSED_CHARS: int = 50
+
+# Gate 3 relative minimum — compressed text must be at least this fraction
+# of the original length.  Prevents summaries that discard > 97% of content,
+# which typically means the LLM returned garbage rather than a real summary.
+# Set low enough (3%) that legitimate dense summaries still pass.
+_TOKENJUICE_MIN_COMPRESSED_RATIO: float = 0.03
+
+
 def compression_safe_to_apply(original_len: int, compressed_len: int) -> bool:
     """Return True if the compressed text is meaningfully shorter.
 
-    Gate 3: if compressed_len >= original_len * MIN_COMPRESSION_RATIO,
-    the compression didn't help enough — return False (reject, keep original).
+    Gate 3: three-stage safety check —
+      1. Absolute floor: compressed_len >= 50 chars.
+      2. Relative floor: compressed_len >= 3% of original_len.
+      3. Ratio gate: compressed_len < 95% of original_len
+         (i.e. the compression actually saved ≥5%).
+
+    Rejects summaries that are pathologically short (empty, one-word, etc.)
+    which would otherwise pass the ratio check by being tiny.
     """
     if original_len <= 0:
+        return False
+    if compressed_len < _TOKENJUICE_MIN_COMPRESSED_CHARS:
+        return False
+    if compressed_len < original_len * _TOKENJUICE_MIN_COMPRESSED_RATIO:
         return False
     return (compressed_len / original_len) < TOKENJUICE_MIN_COMPRESSION_RATIO

@@ -50,6 +50,7 @@ import abc
 import base64
 import datetime
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -202,12 +203,36 @@ class VideoGenProvider(abc.ABC):
 
 
 def _videos_cache_dir() -> Path:
-    """Return ``$HERMES_HOME/cache/videos/``, creating parents as needed."""
+    """Return the video output directory, creating parents as needed."""
     from hermes_constants import get_hermes_home
 
-    path = get_hermes_home() / "cache" / "videos"
+    override = os.environ.get("HERMES_VIDEO_OUTPUT_DIR")
+    if override:
+        path = Path(override).expanduser()
+    else:
+        hermes_home = get_hermes_home()
+        # Tests and isolated profiles commonly override HERMES_HOME; keep media
+        # inside that sandbox instead of leaking files to the real Desktop.
+        default_home = Path.home() / ".hermes"
+        if os.environ.get("HERMES_HOME") and hermes_home.resolve() != default_home.resolve():
+            path = hermes_home / "cache" / "videos"
+        else:
+            home = Path.home()
+            desktop = home / "Desktop"
+            path = desktop / "AI生成媒体" / "视频" if desktop.exists() else hermes_home / "cache" / "videos"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def materialize_video_reference(video: str, *, prefix: str = "video") -> Tuple[str, Optional[str]]:
+    """Return a generated video reference without fetching remote URLs.
+
+    Providers that return base64 already save local files via ``save_b64_video``.
+    Providers that return HTTP(S) URLs are passed through unchanged so the
+    gateway/client can handle delivery without introducing server-side URL
+    fetches or SSRF risk in the provider layer.
+    """
+    return video, None
 
 
 def save_b64_video(
@@ -261,9 +286,10 @@ def success_response(
     ``modality`` is ``"text"`` (text-to-video) or ``"image"`` (image-to-video) —
     indicates which endpoint was actually hit, useful for diagnostics.
     """
+    local_video, original_url = materialize_video_reference(video, prefix=f"{provider}_{model}")
     payload: Dict[str, Any] = {
         "success": True,
-        "video": video,
+        "video": local_video,
         "model": model,
         "prompt": prompt,
         "modality": modality,
@@ -271,6 +297,8 @@ def success_response(
         "duration": int(duration) if duration else 0,
         "provider": provider,
     }
+    if original_url:
+        payload["original_url"] = original_url
     if extra:
         for k, v in extra.items():
             payload.setdefault(k, v)

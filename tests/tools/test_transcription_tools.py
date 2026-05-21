@@ -1364,6 +1364,32 @@ class TestTranscribeAudioXAIDispatch:
 
         assert mock_xai.call_args[0][1] == "custom-stt"
 
+    def test_xai_timeout_falls_back_to_local(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "xai"}), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": False, "transcript": "", "error": "timeout", "error_type": "timeout"}), \
+             patch("tools.transcription_tools._transcribe_local_fallback",
+                   return_value={"success": True, "transcript": "hi", "fallback_from": "xai"}) as mock_fallback:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        assert result["fallback_from"] == "xai"
+        mock_fallback.assert_called_once()
+
+    def test_xai_auth_error_does_not_fall_back_to_local(self, sample_ogg):
+        xai_error = {"success": False, "transcript": "", "error": "HTTP 401", "error_type": "http", "status_code": 401}
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "xai"}), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai", return_value=xai_error), \
+             patch("tools.transcription_tools._transcribe_local_fallback") as mock_fallback:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result is xai_error
+        mock_fallback.assert_not_called()
+
 
 # ============================================================================
 # Shell safety — shlex.split on auto-detected templates

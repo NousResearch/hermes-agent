@@ -364,8 +364,8 @@ class TestAspectRatioNormalization:
 class TestRegistryIntegration:
 
     def test_schema_exposes_only_prompt_and_aspect_ratio_to_agent(self, image_tool):
-        """The agent-facing schema must stay tight — model selection is a
-        user-level config choice, not an agent-level arg."""
+        """The agent-facing schema must stay tight — backend/model routing is
+        a user-level config choice, not a prompt-controllable tool arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
         assert set(props.keys()) == {"prompt", "aspect_ratio"}
 

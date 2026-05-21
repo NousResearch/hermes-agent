@@ -8,6 +8,7 @@ import pytest
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
+    get_tool_definitions,
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
@@ -295,6 +296,10 @@ class TestLegacyToolsetMap:
 # =========================================================================
 
 class TestBackwardCompat:
+    def test_empty_enabled_toolsets_means_no_tools(self):
+        """Security-sensitive callers use [] to deliberately strip every tool."""
+        assert get_tool_definitions(enabled_toolsets=[], quiet_mode=True) == []
+
     def test_get_all_tool_names_returns_list(self):
         names = get_all_tool_names()
         assert isinstance(names, list)

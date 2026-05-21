@@ -1060,7 +1060,7 @@ def init_agent(
     # through _ra().get_tool_definitions()).  Duplicate function names cause
     # 400 errors on providers that enforce unique names (e.g. Xiaomi
     # MiMo via Nous Portal).
-    if agent._memory_manager and agent.tools is not None:
+    if agent._memory_manager and agent.tools:
         _existing_tool_names = {
             t.get("function", {}).get("name")
             for t in agent.tools

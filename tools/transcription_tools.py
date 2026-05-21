@@ -739,11 +739,21 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     # is_truthy_value only normalizes truthy/falsy strings from config.
     use_format = is_truthy_value(xai_config.get("format", True))
     use_diarize = is_truthy_value(xai_config.get("diarize", False))
+    try:
+        timeout_seconds = int(xai_config.get("timeout_seconds", 30))
+    except (TypeError, ValueError):
+        timeout_seconds = 30
+    timeout_seconds = max(5, min(timeout_seconds, 120))
 
     try:
         import requests
+        from requests import ReadTimeout, ConnectionError as RequestsConnectionError
         from tools.xai_http import hermes_xai_user_agent
+    except Exception as e:
+        logger.error("xAI STT dependencies failed to import: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"xAI STT setup failed: {e}", "error_type": "setup"}
 
+    try:
         data: Dict[str, str] = {}
         if language:
             data["language"] = language
@@ -763,7 +773,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
                     "file": (Path(file_path).name, audio_file),
                 },
                 data=data,
-                timeout=120,
+                timeout=timeout_seconds,
             )
 
         if response.status_code != 200:
@@ -773,10 +783,13 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
                 detail = err_body.get("error", {}).get("message", "") or response.text[:300]
             except Exception:
                 detail = response.text[:300]
+            error_type = "transient_http" if response.status_code in {408, 429, 500, 502, 503, 504} else "http"
             return {
                 "success": False,
                 "transcript": "",
                 "error": f"xAI STT API error (HTTP {response.status_code}): {detail}",
+                "error_type": error_type,
+                "status_code": response.status_code,
             }
 
         result = response.json()
@@ -787,6 +800,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
                 "success": False,
                 "transcript": "",
                 "error": "xAI STT returned empty transcript",
+                "error_type": "empty_transcript",
             }
 
         logger.info(
@@ -800,10 +814,46 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": True, "transcript": transcript_text, "provider": "xai"}
 
     except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}", "error_type": "permission"}
+    except ReadTimeout as e:
+        logger.warning("xAI STT timed out after %ss for %s", timeout_seconds, Path(file_path).name)
+        return {"success": False, "transcript": "", "error": f"xAI STT timed out after {timeout_seconds}s: {e}", "error_type": "timeout"}
+    except RequestsConnectionError as e:
+        logger.warning("xAI STT connection failed for %s: %s", Path(file_path).name, e)
+        return {"success": False, "transcript": "", "error": f"xAI STT connection failed: {e}", "error_type": "connection"}
     except Exception as e:
         logger.error("xAI STT transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"xAI STT transcription failed: {e}"}
+        return {"success": False, "transcript": "", "error": f"xAI STT transcription failed: {e}", "error_type": "unexpected"}
+
+
+def _transcribe_local_fallback(file_path: str, stt_config: dict, *, reason: str) -> Dict[str, Any]:
+    """Fallback used when a configured cloud STT provider is flaky.
+
+    Explicit cloud provider choices should not make voice input brittle.  If
+    xAI times out or drops the connection, use the same local backend Hermes
+    would use when stt.provider=local, and annotate the response so diagnostics
+    still show that xAI failed first.
+    """
+    logger.warning("Falling back to local STT after cloud STT failure: %s", reason)
+    local_cfg = stt_config.get("local", {})
+    model_name = _normalize_local_model(local_cfg.get("model", DEFAULT_LOCAL_MODEL))
+
+    if _HAS_FASTER_WHISPER:
+        result = _transcribe_local(file_path, model_name)
+    elif _has_local_command():
+        result = _transcribe_local_command(file_path, model_name)
+    else:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Cloud STT failed and no local fallback is available: {reason}",
+            "provider": "xai",
+        }
+
+    if result.get("success"):
+        result["fallback_from"] = "xai"
+        result["fallback_reason"] = reason
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -875,9 +925,20 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return _transcribe_mistral(file_path, model_name)
 
     if provider == "xai":
-        # xAI Grok STT doesn't use a model parameter — pass through for logging
+        # xAI Grok STT doesn't use a model parameter — pass through for logging.
+        # Keep xAI as the primary provider, but fall back locally on transient
+        # xAI endpoint failures so gateway voice messages remain usable.
         model_name = model or "grok-stt"
-        return _transcribe_xai(file_path, model_name)
+        result = _transcribe_xai(file_path, model_name)
+        if result.get("success"):
+            return result
+        if result.get("error_type") in {"timeout", "connection", "transient_http"}:
+            return _transcribe_local_fallback(
+                file_path,
+                stt_config,
+                reason=str(result.get("error") or "xAI STT failed"),
+            )
+        return result
 
     # No provider available
     return {

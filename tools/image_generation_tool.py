@@ -770,10 +770,22 @@ def image_generate_tool(
             len(formatted_images), generation_time, upscaled_count, model_id,
         )
 
+        image_ref = formatted_images[0]["url"] if formatted_images else None
+        if image_ref:
+            try:
+                from agent.image_gen_provider import materialize_image_reference
+                image_ref, original_url = materialize_image_reference(image_ref, prefix=f"fal_{model_id}")
+            except Exception:
+                original_url = None
+        else:
+            original_url = None
+
         response_data = {
             "success": True,
-            "image": formatted_images[0]["url"] if formatted_images else None,
+            "image": image_ref,
         }
+        if original_url:
+            response_data["original_url"] = original_url
 
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)
@@ -930,9 +942,8 @@ IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
         "Generate high-quality images from text prompts. The underlying "
-        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
+        "backend is selected by image_gen.provider in config.yaml. Returns "
+        "either path in the `image` field; display it with markdown "
         "![description](url-or-path) and the gateway will deliver it."
     ),
     "parameters": {
@@ -990,7 +1001,29 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _read_configured_provider_model(provider_name: str):
+    """Return image_gen.<provider>.model from config.yaml, if present."""
+    if not provider_name:
+        return None
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            sub = section.get(provider_name)
+            if isinstance(sub, dict):
+                value = sub.get("model")
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    except Exception as exc:
+        logger.debug("Could not read image_gen.%s.model: %s", provider_name, exc)
+    return None
+
+
+def _dispatch_to_plugin_provider(
+    prompt: str,
+    aspect_ratio: str,
+):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -1001,12 +1034,16 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     a later PR ports it into ``plugins/image_gen/fal/``). Any other value
     that matches a registered plugin provider wins.
     """
-    configured = _read_configured_image_provider()
+    configured = (_read_configured_image_provider() or "").strip()
     if not configured or configured == "fal":
         return None
 
-    # Also read configured model so we can pass it to the plugin
-    configured_model = _read_configured_image_model()
+    # Prefer a per-provider model so Grok and GPT can coexist in config without
+    # leaking image_gen.model across providers.
+    configured_model = (
+        _read_configured_provider_model(configured)
+        or _read_configured_image_model()
+    )
 
     try:
         # Import locally so plugin discovery isn't triggered just by
@@ -1075,7 +1112,9 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
 
     # Route to a plugin-registered provider if one is active (and it's
-    # not the in-tree FAL path).
+    # not the in-tree FAL path). Provider/model selection is intentionally
+    # config-only; the agent-facing tool schema does not allow per-call
+    # credential/provider routing.
     dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
     if dispatched is not None:
         return dispatched

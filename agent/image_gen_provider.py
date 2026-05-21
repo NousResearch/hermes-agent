@@ -32,6 +32,7 @@ import abc
 import base64
 import datetime
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -163,12 +164,36 @@ def resolve_aspect_ratio(value: Optional[str]) -> str:
 
 
 def _images_cache_dir() -> Path:
-    """Return ``$HERMES_HOME/cache/images/``, creating parents as needed."""
+    """Return the image output directory, creating parents as needed."""
     from hermes_constants import get_hermes_home
 
-    path = get_hermes_home() / "cache" / "images"
+    override = os.environ.get("HERMES_IMAGE_OUTPUT_DIR")
+    if override:
+        path = Path(override).expanduser()
+    else:
+        hermes_home = get_hermes_home()
+        # Tests and isolated profiles commonly override HERMES_HOME; keep media
+        # inside that sandbox instead of leaking files to the real Desktop.
+        default_home = Path.home() / ".hermes"
+        if os.environ.get("HERMES_HOME") and hermes_home.resolve() != default_home.resolve():
+            path = hermes_home / "cache" / "images"
+        else:
+            home = Path.home()
+            desktop = home / "Desktop"
+            path = desktop / "AI生成媒体" / "图片" if desktop.exists() else hermes_home / "cache" / "images"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def materialize_image_reference(image: str, *, prefix: str = "image") -> Tuple[str, Optional[str]]:
+    """Return a generated image reference without fetching remote URLs.
+
+    Providers that return base64 already save local files via ``save_b64_image``.
+    Providers that return HTTP(S) URLs are passed through unchanged so the
+    gateway/client can handle delivery without introducing server-side URL
+    fetches or SSRF risk in the provider layer.
+    """
+    return image, None
 
 
 def save_b64_image(
@@ -206,14 +231,17 @@ def success_response(
     providers like OpenAI). Callers that need to pass through additional
     backend-specific fields can supply ``extra``.
     """
+    local_image, original_url = materialize_image_reference(image, prefix=f"{provider}_{model}")
     payload: Dict[str, Any] = {
         "success": True,
-        "image": image,
+        "image": local_image,
         "model": model,
         "prompt": prompt,
         "aspect_ratio": aspect_ratio,
         "provider": provider,
     }
+    if original_url:
+        payload["original_url"] = original_url
     if extra:
         for k, v in extra.items():
             payload.setdefault(k, v)

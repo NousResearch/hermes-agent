@@ -5490,14 +5490,17 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
     #
-    # Exception: if the task's most recent ``blocked`` event carried a
-    # review-drain-cycle reason (``review-required:``, ``review-approved:``,
-    # or ``review-rejected:``), the PR URL in comments is the HANDOFF
-    # signal for the next leg of the review cycle (reviewer-spawn on
-    # ``review-required:``; original-assignee-spawn to merge/fix on
-    # ``review-approved:`` / ``review-rejected:``), not a duplicate-PR
-    # risk. Skip the active_pr guard in that case so review-drain
-    # workflows can spawn normally.
+    # Exception: if the task has a still-live review-drain handoff
+    # (most-recent ``blocked`` event carrying ``review-required:``,
+    # ``review-approved:``, or ``review-rejected:`` reason, with no
+    # subsequent ``completed`` event), the PR URL in comments is the
+    # HANDOFF signal for the next leg of the review cycle
+    # (reviewer-spawn on ``review-required:``; original-assignee-spawn
+    # to merge/fix on ``review-approved:`` / ``review-rejected:``), not
+    # a duplicate-PR risk. Skip the active_pr guard in that case so
+    # review-drain workflows can spawn normally, even when intervening
+    # non-review blocks (e.g. ``force-push-required:``) sit between
+    # the review block and the spawn attempt.
     # See ``_review_required_handoff_active`` for the discriminator.
     if not _review_required_handoff_active(conn, task_id):
         pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
@@ -5514,9 +5517,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 def _review_required_handoff_active(
     conn: sqlite3.Connection, task_id: str
 ) -> bool:
-    """Return True iff the task's most recent ``blocked`` event carried a
-    review-drain-cycle reason (``review-required:``, ``review-approved:``,
-    or ``review-rejected:``).
+    """Return True iff the task has a still-live review-drain handoff.
 
     Used by ``check_respawn_guard`` to disable the ``active_pr`` guard for
     every leg of a review-drain workflow. The cycle has two spawn-needing
@@ -5534,58 +5535,74 @@ def _review_required_handoff_active(
        Same PR URL is still in comments — same handoff signal, same
        false-positive risk.
 
-    Reads the latest ``blocked`` event's ``reason`` payload field (a
-    JSON-encoded payload column on ``task_events``). Returns False when:
+    Semantics: a review-drain handoff is "live" until the task completes.
+    Intervening non-review blocks (``force-push-required:``,
+    ``merge-conflict-required:``, ad-hoc operator blocks) are
+    operational drift, NOT a fresh duplicate-PR signal — the duplicate-PR
+    risk that ``active_pr`` defends against was resolved when the
+    review-drain block was originally drained. Searching for the
+    most-recent block of ANY kind (the v0.30 semantic) collapsed under
+    these intervening blocks; this version searches explicitly for the
+    most-recent ``blocked`` event whose reason is a review-drain prefix
+    (the v0.31 semantic).
 
-    - the task has no ``blocked`` event in its history
-    - the latest ``blocked`` event has no parseable reason
-    - the reason does not start with one of the review-drain prefixes
-    - a more recent ``completed`` event exists (the review has already
-      drained AND the original assignee has completed; we're now in a
-      fresh work cycle)
+    Reads the latest review-drain ``blocked`` event's ``reason`` payload
+    field (a JSON-encoded payload column on ``task_events``). Returns
+    False when:
 
-    The check is intentionally narrow: it looks at the SINGLE most-recent
-    block event, not a substring scan of all history. This keeps the
-    exception scoped to the active review-drain — once the original
-    assignee completes the task post-review, subsequent re-spawns revert
-    to the normal active_pr behavior.
+    - the task has no review-drain ``blocked`` event in its history
+    - a ``completed`` event exists AFTER the most-recent review-drain
+      block (the review drained AND the original assignee completed;
+      we're now in a fresh work cycle)
+
+    The exception is still scoped to the active review-drain — once the
+    original assignee completes the task post-review, subsequent
+    re-spawns revert to normal ``active_pr`` behavior. The difference
+    from v0.30 is that intervening NON-review blocks (force-push,
+    merge-conflict, ad-hoc operator blocks) no longer collapse the
+    signal; only a ``completed`` event does.
     """
-    row = conn.execute(
-        "SELECT kind, payload FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'completed', 'unblocked') "
-        "ORDER BY created_at DESC, id DESC LIMIT 1",
-        (task_id,),
-    ).fetchone()
-    if row is None:
-        return False
-    # If the most recent terminal-ish event is ``completed``, the prior
-    # review drained and we're past it; do not extend the exception.
-    if row["kind"] == "completed":
-        return False
-    # Search for the most recent ``blocked`` event explicitly. ``unblocked``
-    # alone doesn't tell us why the task was blocked; we need the matching
-    # ``blocked`` event before it.
-    blocked = conn.execute(
-        "SELECT payload FROM task_events "
+    # Find the most recent ``blocked`` event whose reason starts with a
+    # review-drain prefix. We scan event rows newest-first and stop at
+    # the first match — intervening non-review blocks are ignored.
+    review_drain_block = None
+    for row in conn.execute(
+        "SELECT id, payload, created_at FROM task_events "
         "WHERE task_id = ? AND kind = 'blocked' "
-        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        "ORDER BY created_at DESC, id DESC",
         (task_id,),
+    ):
+        if not row["payload"]:
+            continue
+        try:
+            payload = json.loads(row["payload"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        if not isinstance(reason, str):
+            continue
+        stripped = reason.lstrip()
+        if (
+            stripped.startswith("review-required:")
+            or stripped.startswith("review-approved:")
+            or stripped.startswith("review-rejected:")
+        ):
+            review_drain_block = row
+            break
+    if review_drain_block is None:
+        return False
+    # Check whether a ``completed`` event lands strictly after the
+    # review-drain block. If yes, the exception expired (fresh cycle).
+    completed_after = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND kind = 'completed' "
+        "AND (created_at, id) > (?, ?) "
+        "LIMIT 1",
+        (task_id, review_drain_block["created_at"], review_drain_block["id"]),
     ).fetchone()
-    if blocked is None or not blocked["payload"]:
+    if completed_after is not None:
         return False
-    try:
-        payload = json.loads(blocked["payload"])
-    except (json.JSONDecodeError, TypeError):
-        return False
-    reason = payload.get("reason") if isinstance(payload, dict) else None
-    if not isinstance(reason, str):
-        return False
-    stripped = reason.lstrip()
-    return (
-        stripped.startswith("review-required:")
-        or stripped.startswith("review-approved:")
-        or stripped.startswith("review-rejected:")
-    )
+    return True
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:

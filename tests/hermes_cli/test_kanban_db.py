@@ -1684,6 +1684,174 @@ def test_respawn_guard_review_approved_exception_does_not_leak_past_completion(
     assert reason == "active_pr"
 
 
+def test_respawn_guard_review_approved_survives_intervening_force_push_block(
+    kanban_home,
+):
+    """A ``force-push-required:`` block landing AFTER ``review-approved:``
+    does NOT collapse the review-drain signal.
+
+    Concrete failure that surfaced this regression (t_94ca85f4, 2026-05-21):
+      1. author posts PR URL, blocks ``review-required:``
+      2. reviewer drains ``review-approved:``, reassigns to author
+      3. author starts squash-merge rebase, hits sandbox limit
+      4. author blocks ``force-push-required:`` asking operator for help
+      5. operator force-pushes + merges PR externally, unblocks the task
+      6. dispatcher must spawn the author for the final ``kanban_complete``
+
+    Under the v0.30 semantic (most-recent block of ANY kind) the
+    ``force-push-required:`` block buried the ``review-approved:`` signal
+    and the active_pr guard fired 7× before a human synthesized a fresh
+    ``review-approved:`` block to restore the signal. Under v0.31 the
+    predicate scans for the most-recent REVIEW-DRAIN block specifically,
+    so intervening operational blocks no longer collapse the handoff.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="merge-blocked-on-sandbox", assignee="alice")
+        kb.add_comment(
+            conn, t, "alice",
+            "review-required handoff: PR at "
+            "https://github.com/totemx-AI/subsidysmart/pull/100",
+        )
+        kb.claim_task(conn, t)
+        # Reviewer-spawn leg already ran.
+        kb.block_task(
+            conn, t,
+            reason="review-required: PR #100 ready for engineering-shape review",
+        )
+        kb.unblock_task(conn, t)
+        # Reviewer drained approved + reassigned to alice.
+        kb.block_task(
+            conn, t,
+            reason="review-approved: PR #100 — ACs verified, ready to merge",
+        )
+        kb.unblock_task(conn, t)
+        # Alice started merge, hit sandbox limit, asked for force-push help.
+        kb.block_task(
+            conn, t,
+            reason="force-push-required: rebase needs --force-with-lease from operator",
+        )
+        kb.unblock_task(conn, t)
+        # Operator merged externally. Dispatcher tries to spawn alice for
+        # the final ``kanban_complete``. Under v0.30 this returned
+        # active_pr; under v0.31 the review-approved signal still wins.
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None  # Guard suppressed; merge-completion spawn proceeds.
+
+
+def test_respawn_guard_review_required_survives_intervening_operator_block(
+    kanban_home,
+):
+    """An ad-hoc operator block landing AFTER ``review-required:`` does
+    NOT collapse the reviewer-spawn signal either.
+
+    Symmetric to the review-approved case but on the reviewer-spawn leg:
+    an operator might block a task for sideband reasons (e.g. ``triage:
+    operator-touched, do-not-spawn-until-cleared``) between the author
+    posting ``review-required:`` and the reviewer being routed in. The
+    review-drain signal must survive.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-blocked-by-operator", assignee="alice")
+        kb.add_comment(
+            conn, t, "alice",
+            "review-required handoff: PR at "
+            "https://github.com/totemx-AI/subsidysmart/pull/101",
+        )
+        kb.claim_task(conn, t)
+        kb.block_task(
+            conn, t,
+            reason="review-required: PR #101 ready for engineering-shape review",
+        )
+        kb.unblock_task(conn, t)
+        # Operator interjected with an ad-hoc block.
+        kb.block_task(
+            conn, t,
+            reason="triage: operator-touched, hold while we audit branch state",
+        )
+        kb.unblock_task(conn, t)
+        # Dispatcher tries to spawn the reviewer. Review-required wins.
+        conn.execute(
+            "UPDATE tasks SET assignee = 'reviewer' WHERE id = ?", (t,),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_review_required_handoff_active_skips_intervening_non_review_blocks(
+    kanban_home,
+):
+    """The predicate finds the most-recent REVIEW-DRAIN block, ignoring
+    non-review blocks layered on top.
+
+    Direct unit-level coverage of the v0.31 semantic change. Pre-v0.31
+    this would return False (most-recent block is non-review); post-v0.31
+    it returns True (most-recent review-drain block found, no completed
+    event after it).
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="layered-blocks", assignee="alice")
+        kb.claim_task(conn, t)
+        kb.block_task(
+            conn, t,
+            reason="review-approved: PR ready to merge",
+        )
+        kb.unblock_task(conn, t)
+        kb.block_task(
+            conn, t,
+            reason="force-push-required: need operator force-push",
+        )
+        kb.unblock_task(conn, t)
+        kb.block_task(
+            conn, t,
+            reason="merge-conflict-required: rebase against main first",
+        )
+        kb.unblock_task(conn, t)
+        assert kb._review_required_handoff_active(conn, t) is True
+
+
+def test_review_required_handoff_active_completion_after_review_resets_signal(
+    kanban_home,
+):
+    """A ``completed`` event landing AFTER the most-recent review-drain
+    block (even with non-review blocks layered on after) resets the
+    exception.
+
+    Defends the post-completion invariant: once the original assignee
+    has completed the task, subsequent re-spawns revert to normal
+    active_pr behavior, regardless of intervening operational blocks.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="completed-then-respawned", assignee="alice")
+        kb.claim_task(conn, t)
+        kb.block_task(
+            conn, t,
+            reason="review-approved: PR #200 merged successfully",
+        )
+        kb.unblock_task(conn, t)
+        # Get the review-approved block's timestamp so we can insert a
+        # ``completed`` event strictly after it.
+        review_blocked_ts = conn.execute(
+            "SELECT created_at FROM task_events "
+            "WHERE task_id = ? AND kind = 'blocked' "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (t,),
+        ).fetchone()["created_at"]
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'completed', '{}', ?)",
+            (t, review_blocked_ts + 10),
+        )
+        # Now layer another non-review block on top (e.g. dispatcher
+        # re-opened the task and a fresh worker hit an unrelated issue).
+        kb.block_task(
+            conn, t,
+            reason="stuck: follow-up work needs human input on API choice",
+        )
+        kb.unblock_task(conn, t)
+        # Predicate must return False — the completion expired the exception.
+        assert kb._review_required_handoff_active(conn, t) is False
+
+
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):

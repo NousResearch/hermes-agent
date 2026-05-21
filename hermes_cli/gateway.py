@@ -1214,7 +1214,17 @@ def _systemd_operational(system: bool = False) -> bool:
 
 
 def _container_systemd_operational() -> bool:
-    """Return True when a container exposes working user or system systemd."""
+    """Return True when a container exposes working user or system systemd.
+
+    This is NOT our Hermes Docker image — that one runs s6-overlay as
+    PID 1 (since Phase 2 of the s6-overlay supervision plan) and is
+    detected via ``service_manager.detect_service_manager() == "s6"``.
+    This function handles the "container managed by something else"
+    case: systemd-nspawn, certain k8s pods, containers built FROM
+    systemd-bearing distros where the user has wired systemd as their
+    init. In those environments systemctl behaves identically to the
+    host case, so we fall through to the normal systemd code paths.
+    """
     if _systemd_operational(system=False):
         return True
     if _systemd_operational(system=True):

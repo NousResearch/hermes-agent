@@ -2636,6 +2636,31 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
+        self._setup_agent(agent)
+        agent.model = "qwen3.5:9b"
+        agent.provider = "custom"
+        agent.base_url = "http://host.docker.internal:11434/v1"
+        agent._ollama_num_ctx = 4096
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            caplog.at_level(logging.WARNING, logger="agent.conversation_loop"),
+        ):
+            result = agent.run_conversation("Call ps -aux")
+
+        assert result["failed"] is True
+        assert result["completed"] is False
+        assert result["api_calls"] == 0
+        assert result["turn_exit_reason"] == "ollama_runtime_context_too_small"
+        assert "Ollama loaded `qwen3.5:9b` with only 4,096 tokens" in result["final_response"]
+        assert "model.ollama_num_ctx: 65536" in result["final_response"]
+        assert not agent.client.chat.completions.create.called
+        assert "Ollama runtime context too small for Hermes tool use" in caplog.text
+        assert "runtime_context=4096" in caplog.text
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

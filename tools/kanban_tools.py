@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+KANBAN_REVIEWS_DEFAULT_LIMIT = 50
+KANBAN_REVIEWS_MAX_LIMIT = 200
+KANBAN_LOG_TAIL_MAX_BYTES = 64 * 1024
 
 
 def _profile_has_kanban_toolset() -> bool:
@@ -202,6 +205,27 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     if text in {"false", "0", "no"}:
         return False, None
     return default, f"{name} must be a boolean or 'true'/'false'"
+
+
+def _parse_positive_int_arg(
+    args: dict,
+    name: str,
+    *,
+    default: Optional[int] = None,
+    maximum: Optional[int] = None,
+) -> tuple[Optional[int], Optional[str]]:
+    value = args.get(name)
+    if value is None:
+        return default, None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default, f"{name} must be an integer"
+    if parsed < 1:
+        return default, f"{name} must be >= 1"
+    if maximum is not None and parsed > maximum:
+        return default, f"{name} must be <= {maximum}"
+    return parsed, None
 
 
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
@@ -387,6 +411,126 @@ def _handle_list(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_list failed")
         return tool_error(f"kanban_list: {e}")
+
+
+def _handle_progress(args: dict, **kw) -> str:
+    """Read a task's progress/evidence snapshot without interrupting it."""
+    guard = _require_orchestrator_tool("kanban_progress")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    log_tail_bytes, int_error = _parse_positive_int_arg(
+        args,
+        "log_tail_bytes",
+        default=None,
+        maximum=KANBAN_LOG_TAIL_MAX_BYTES,
+    )
+    if int_error:
+        return tool_error(int_error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            snapshot = kb.task_progress_snapshot(
+                conn,
+                str(tid),
+                log_tail_bytes=log_tail_bytes,
+                board=board,
+            )
+            if snapshot is None:
+                return tool_error(f"task {tid} not found")
+            return json.dumps(snapshot.to_dict())
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_progress: {e}")
+    except Exception as e:
+        logger.exception("kanban_progress failed")
+        return tool_error(f"kanban_progress: {e}")
+
+
+def _handle_reviews(args: dict, **kw) -> str:
+    """List review-required external-worker evidence snapshots."""
+    guard = _require_orchestrator_tool("kanban_reviews")
+    if guard:
+        return guard
+    limit, int_error = _parse_positive_int_arg(
+        args,
+        "limit",
+        default=KANBAN_REVIEWS_DEFAULT_LIMIT,
+        maximum=KANBAN_REVIEWS_MAX_LIMIT,
+    )
+    if int_error:
+        return tool_error(int_error)
+    log_tail_bytes, tail_error = _parse_positive_int_arg(
+        args,
+        "log_tail_bytes",
+        default=None,
+        maximum=KANBAN_LOG_TAIL_MAX_BYTES,
+    )
+    if tail_error:
+        return tool_error(tail_error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            snapshots = kb.review_required_snapshots(
+                conn,
+                assignee=args.get("assignee"),
+                tenant=args.get("tenant"),
+                worker_lane=args.get("lane"),
+                limit=limit or KANBAN_REVIEWS_DEFAULT_LIMIT,
+                log_tail_bytes=log_tail_bytes,
+                board=board,
+            )
+            return json.dumps({
+                "tasks": [snapshot.to_dict() for snapshot in snapshots],
+                "count": len(snapshots),
+                "limit": limit,
+            })
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_reviews: {e}")
+    except Exception as e:
+        logger.exception("kanban_reviews failed")
+        return tool_error(f"kanban_reviews: {e}")
+
+
+def _handle_review(args: dict, **kw) -> str:
+    """Approve or request changes for review-required worker evidence."""
+    guard = _require_orchestrator_tool("kanban_review")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    decision = args.get("decision")
+    if not decision:
+        return tool_error("decision is required")
+    reviewer = args.get("reviewer") or os.environ.get("HERMES_PROFILE") or "agent"
+    try:
+        kb, conn = _connect(board=args.get("board"))
+        try:
+            snapshot = kb.review_worker_evidence(
+                conn,
+                str(tid),
+                decision=str(decision),
+                reviewer=str(reviewer),
+                comment=args.get("comment"),
+                result=args.get("result"),
+                summary=args.get("summary"),
+            )
+            return json.dumps(snapshot.to_dict())
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_review failed")
+        return tool_error(f"kanban_review: {e}")
 
 
 def _handle_complete(args: dict, **kw) -> str:
@@ -865,6 +1009,119 @@ KANBAN_LIST_SCHEMA = {
     },
 }
 
+KANBAN_PROGRESS_SCHEMA = {
+    "name": "kanban_progress",
+    "description": (
+        "Read a task's external-worker progress/evidence snapshot without "
+        "claiming, reclaiming, heartbeating, or interrupting the worker. "
+        "Returns task state, latest run summary/metadata, latest progress "
+        "event, latest heartbeat, review-required flag, and optional bounded "
+        "worker-log tail. Orchestrator-only; dispatcher-spawned task workers "
+        "never see this tool."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id to inspect.",
+            },
+            "log_tail_bytes": {
+                "type": "integer",
+                "description": (
+                    "Optional worker-log tail bytes to include. Max 65536. "
+                    "Omit unless the bounded evidence needs a small log tail."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
+KANBAN_REVIEWS_SCHEMA = {
+    "name": "kanban_reviews",
+    "description": (
+        "List tasks whose latest worker run is waiting for Hermes review "
+        "(`review.required: true`). Use this as the review queue for "
+        "Codex/external-worker lane handoffs. Returns bounded evidence "
+        "snapshots and never replays the full worker session. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "assignee": {
+                "type": "string",
+                "description": "Optional task assignee filter.",
+            },
+            "tenant": {
+                "type": "string",
+                "description": "Optional tenant/project namespace filter.",
+            },
+            "lane": {
+                "type": "string",
+                "description": "Optional worker lane name filter, e.g. codex-deep.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional maximum rows to return (default 50, max 200).",
+            },
+            "log_tail_bytes": {
+                "type": "integer",
+                "description": (
+                    "Optional worker-log tail bytes per task. Max 65536. "
+                    "Omit for compact queue reads."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": [],
+    },
+}
+
+KANBAN_REVIEW_SCHEMA = {
+    "name": "kanban_review",
+    "description": (
+        "Resolve a review-required external-worker handoff from bounded "
+        "evidence. `approve` records the reviewer decision and marks the task "
+        "done. `request_changes` writes a reviewer comment and unblocks the "
+        "task for another worker run. Does not read or replay the full Codex "
+        "session. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Review-required task id.",
+            },
+            "decision": {
+                "type": "string",
+                "enum": ["approve", "request_changes"],
+                "description": "Review decision to apply.",
+            },
+            "reviewer": {
+                "type": "string",
+                "description": "Reviewer identity. Defaults to HERMES_PROFILE or agent.",
+            },
+            "comment": {
+                "type": "string",
+                "description": "Required when decision is request_changes.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "Approval summary stored on the completed review run.",
+            },
+            "result": {
+                "type": "string",
+                "description": "Task result text to store when approving.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "decision"],
+    },
+}
+
 KANBAN_COMPLETE_SCHEMA = {
     "name": "kanban_complete",
     "description": (
@@ -1231,6 +1488,33 @@ registry.register(
     handler=_handle_list,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="📋",
+)
+
+registry.register(
+    name="kanban_progress",
+    toolset="kanban",
+    schema=KANBAN_PROGRESS_SCHEMA,
+    handler=_handle_progress,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="📈",
+)
+
+registry.register(
+    name="kanban_reviews",
+    toolset="kanban",
+    schema=KANBAN_REVIEWS_SCHEMA,
+    handler=_handle_reviews,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🔎",
+)
+
+registry.register(
+    name="kanban_review",
+    toolset="kanban",
+    schema=KANBAN_REVIEW_SCHEMA,
+    handler=_handle_review,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="✅",
 )
 
 registry.register(

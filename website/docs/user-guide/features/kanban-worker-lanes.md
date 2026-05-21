@@ -243,6 +243,11 @@ hermes kanban review <task_id> request-changes --comment "add a regression test"
 records the reviewer comment, emits a review event, and unblocks the task so the
 dispatcher can hand the follow-up back to the assigned lane.
 
+Configured orchestrator/main-agent profiles can use the equivalent tools:
+`kanban_reviews` for the queue, `kanban_progress` for one task's bounded
+snapshot, and `kanban_review` to approve or request changes. These tools are
+orchestrator-only; dispatcher-spawned Codex workers do not see them.
+
 ## Goal bridge
 
 The intended `/goal` bridge is:

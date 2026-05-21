@@ -276,6 +276,149 @@ class TestCmdUpdateProfileSkillSync:
         assert default_p.path in synced_paths
 
 
+class TestCmdUpdateBranchFlag:
+    """``hermes update --branch <name>`` targets the requested branch.
+
+    The CLI default stays 'main'; --branch lets callers pick a different
+    target without monkey-patching the implementation.
+    """
+
+    def _branch_side_effect(self, current_branch, target_branch, *, checkout_fails=False, track_fails=False, commit_count="0"):
+        """Mock side-effect that knows about checkout/track behavior.
+
+        - ``current_branch``  what ``git rev-parse --abbrev-ref HEAD`` returns
+        - ``target_branch``   passed via --branch; what we expect the code to switch to
+        - ``checkout_fails``  if True, ``git checkout <target>`` returns non-zero
+                              (simulates branch absent locally; code should retry with -B)
+        - ``track_fails``     if True, ``git checkout -B <target> origin/<target>`` ALSO fails
+                              (simulates branch absent on origin too)
+        - ``commit_count``    rev-list count returned (0 = up-to-date, >0 = behind)
+        """
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{current_branch}\n", stderr="")
+
+            if "checkout" in joined and "-B" in joined:
+                rc = 128 if track_fails else 0
+                err = f"fatal: '{target_branch}' did not match any file(s) known to git\n" if track_fails else ""
+                return subprocess.CompletedProcess(cmd, rc, stdout="", stderr=err)
+
+            if "checkout" in joined and "-B" not in joined and "rev-parse" not in joined:
+                rc = 128 if checkout_fails else 0
+                err = f"error: pathspec '{target_branch}' did not match\n" if checkout_fails else ""
+                return subprocess.CompletedProcess(cmd, rc, stdout="", stderr=err)
+
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        return side_effect
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_branch_flag_pulls_against_named_branch(self, mock_run, _mock_which, capsys):
+        """--branch bb/gui makes rev-list and pull target origin/bb/gui."""
+        mock_run.side_effect = self._branch_side_effect(
+            current_branch="bb/gui", target_branch="bb/gui", commit_count="3"
+        )
+        args = SimpleNamespace(branch="bb/gui")
+
+        cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+
+        # rev-list must compare against origin/bb/gui, not origin/main
+        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        assert any("origin/bb/gui" in c for c in rev_list_cmds), rev_list_cmds
+        assert not any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
+
+        # pull must target bb/gui
+        pull_cmds = [c for c in commands if "pull" in c and "ff-only" in c]
+        assert any("bb/gui" in c and "main" not in c.split() for c in pull_cmds), pull_cmds
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_branch_flag_defaults_to_main_when_none(self, mock_run, _mock_which, capsys):
+        """No --branch (or --branch=None) preserves the historical 'main' default."""
+        mock_run.side_effect = self._branch_side_effect(
+            current_branch="main", target_branch="main", commit_count="0"
+        )
+        args = SimpleNamespace(branch=None)
+
+        cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        assert all("origin/main" in c for c in rev_list_cmds), rev_list_cmds
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_branch_flag_switches_from_different_branch(self, mock_run, _mock_which, capsys):
+        """When HEAD is on main and --branch=bb/gui, switch to bb/gui first."""
+        mock_run.side_effect = self._branch_side_effect(
+            current_branch="main", target_branch="bb/gui", commit_count="2"
+        )
+        args = SimpleNamespace(branch="bb/gui")
+
+        cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        # First checkout call should switch us to bb/gui (not -B; happy-path branch exists locally)
+        checkout_cmds = [c for c in commands if "checkout" in c and "rev-parse" not in c]
+        assert len(checkout_cmds) >= 1
+        assert "bb/gui" in checkout_cmds[0]
+
+        out = capsys.readouterr().out
+        assert "switching to bb/gui" in out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_branch_flag_tracks_remote_when_branch_absent_locally(self, mock_run, _mock_which, capsys):
+        """If local lacks the branch but origin has it, fall back to ``checkout -B``."""
+        mock_run.side_effect = self._branch_side_effect(
+            current_branch="main",
+            target_branch="bb/gui",
+            checkout_fails=True,  # plain checkout fails
+            track_fails=False,    # -B from origin/bb/gui succeeds
+            commit_count="2",
+        )
+        args = SimpleNamespace(branch="bb/gui")
+
+        cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        # Should have BOTH a failed `checkout bb/gui` AND a successful `checkout -B bb/gui origin/bb/gui`
+        track_cmds = [c for c in commands if "checkout" in c and "-B" in c]
+        assert len(track_cmds) == 1
+        assert "bb/gui" in track_cmds[0]
+        assert "origin/bb/gui" in track_cmds[0]
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_branch_flag_fails_when_branch_missing_everywhere(self, mock_run, _mock_which, capsys):
+        """If branch doesn't exist locally OR on origin, exit non-zero with clear error."""
+        mock_run.side_effect = self._branch_side_effect(
+            current_branch="main",
+            target_branch="nonexistent",
+            checkout_fails=True,
+            track_fails=True,
+            commit_count="0",
+        )
+        args = SimpleNamespace(branch="nonexistent")
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(args)
+        assert exc_info.value.code == 1
+
+        out = capsys.readouterr().out
+        assert "does not exist locally or on origin" in out
+        assert "nonexistent" in out
+
+
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm
 

@@ -2202,13 +2202,20 @@ class SlackAdapter(BasePlatformAdapter):
             self.config.extra, channel_id, None,
         )
 
+        # Command dispatch depends on MessageEvent.text being the exact slash
+        # command string. Slack may include rich-text blocks, unfurls, files,
+        # or thread reply metadata alongside the text; those are useful for LLM
+        # turns but must not become /model args or other command payload.
+        if msg_type == MessageType.COMMAND:
+            text = original_text
+
         # Extract reply context if this message is a thread reply.
         # Mirrors the Telegram/Discord implementations so that gateway.run
         # can inject a `[Replying to: "..."]` prefix when the parent is not
         # already in the session history. Uses the thread-context cache when
         # available to avoid redundant conversations.replies calls.
         reply_to_text = None
-        if thread_ts and thread_ts != ts:
+        if msg_type != MessageType.COMMAND and thread_ts and thread_ts != ts:
             try:
                 reply_to_text = await self._fetch_thread_parent_text(
                     channel_id=channel_id,

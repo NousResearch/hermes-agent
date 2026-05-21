@@ -783,6 +783,40 @@ class TestBangPrefixCommands:
         assert msg_event.source.thread_id == "1111111111.000001"
 
     @pytest.mark.asyncio
+    async def test_bang_model_command_ignores_slack_blocks_and_reply_context(self, adapter):
+        """Slack block/reply metadata must not become /model arguments."""
+        evt = self._make_event(
+            "!model glm-5.1",
+            thread_ts="1111111111.000001",
+            channel_type="im",
+            channel="D123",
+        )
+        evt["blocks"] = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "text", "text": "!model glm-5.1"},
+                            {"type": "text", "text": " extra block text"},
+                        ],
+                    }
+                ],
+            }
+        ]
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="parent text")
+
+        await adapter._handle_slack_message(evt)
+
+        adapter._fetch_thread_parent_text.assert_not_awaited()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model glm-5.1"
+        assert msg_event.get_command_args() == "glm-5.1"
+        assert msg_event.reply_to_text is None
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
     async def test_bang_command_with_leading_newline_tab_works_inside_thread(self, adapter):
         """Leading newline/tab before ``!stop`` still dispatches in threads."""
         evt = self._make_event("\n\t!stop", thread_ts="1111111111.000001")

@@ -1655,7 +1655,6 @@ class SlackAdapter(BasePlatformAdapter):
         thread_ts = (
             assistant_thread.get("thread_ts")
             or event.get("thread_ts")
-            or event.get("message_ts")
             or ""
         )
         user_id = (

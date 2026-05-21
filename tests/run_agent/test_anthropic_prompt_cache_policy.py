@@ -87,7 +87,9 @@ class TestThirdPartyAnthropicGateway:
         )
         should, native = agent._anthropic_prompt_cache_policy()
         assert should is True, "Third-party Anthropic gateway with Claude must cache"
-        assert native is True, "Third-party Anthropic gateway uses native cache_control layout"
+        assert (
+            native is True
+        ), "Third-party Anthropic gateway uses native cache_control layout"
 
     def test_third_party_anthropic_non_claude_unknown_provider_does_not_cache(self):
         # A provider exposing e.g. GLM via anthropic_messages transport from
@@ -326,7 +328,64 @@ class TestExplicitOverrides:
         assert (should, native) == (True, False)
 
 
+class TestLiteLLMProvider:
+    """LiteLLM proxy with Anthropic Messages transport — cache-capable for Claude aliases."""
+
+    def test_litellm_opus_alias_caches_with_native_layout(self):
+        agent = _make_agent(
+            provider="litellm",
+            base_url="http://10.71.1.33:4000/v1",
+            api_mode="anthropic_messages",
+            model="opus4.6[1M]",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_litellm_sonnet_alias_caches(self):
+        agent = _make_agent(
+            provider="litellm",
+            base_url="http://example.test/v1",
+            api_mode="anthropic_messages",
+            model="sonnet4.6[1M]",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_litellm_claude_full_id_caches(self):
+        agent = _make_agent(
+            provider="litellm",
+            base_url="http://example.test/v1",
+            api_mode="anthropic_messages",
+            model="claude-opus-4-6@default[1M]",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_litellm_haiku_caches(self):
+        agent = _make_agent(
+            provider="litellm",
+            base_url="http://example.test/v1",
+            api_mode="anthropic_messages",
+            model="haiku",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_litellm_gemini_on_anthropic_wire_does_not_cache(self):
+        agent = _make_agent(
+            provider="litellm",
+            base_url="http://example.test/v1",
+            api_mode="anthropic_messages",
+            model="gemini-3-flash",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_litellm_on_chat_completions_does_not_cache(self):
+        agent = _make_agent(
+            provider="litellm",
+            base_url="http://example.test/v1",
+            api_mode="chat_completions",
+            model="opus4.6[1M]",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Long-lived prefix cache policy (cross-session 1h tier)
 # ─────────────────────────────────────────────────────────────────────
-

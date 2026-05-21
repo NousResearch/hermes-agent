@@ -38,11 +38,7 @@ def _make_agent_stub(agent_cls):
     agent._MEMORY_REVIEW_PROMPT = "review memory"
     agent._SKILL_REVIEW_PROMPT = "review skills"
     agent._COMBINED_REVIEW_PROMPT = "review both"
-    # Parent's toolset configuration — must be propagated to the review
-    # fork so ``tools[]`` matches byte-for-byte. Without these set on the
-    # stub, ``getattr(agent, ..., None)`` would return None on both sides
-    # and the test wouldn't catch a regression where the fork is built
-    # without the kwargs at all.
+    # Non-None so the test catches a missing-kwarg regression.
     agent.enabled_toolsets = ["memory", "skills", "terminal"]
     agent.disabled_toolsets = ["spotify", "feishu_doc"]
     return agent
@@ -193,21 +189,7 @@ def test_review_fork_pins_session_start_and_session_id():
 
 
 def test_review_fork_inherits_parent_toolset_config():
-    """The review fork must receive ``enabled_toolsets`` / ``disabled_toolsets``
-    from the parent so the outbound request body's ``tools[]`` field matches
-    byte-for-byte.
-
-    Without this, ``enabled_toolsets=None`` defaults to "all registered tools"
-    and the fork sends every tool descriptor (e.g. Spotify, Feishu, video)
-    even when the parent disabled them via ``hermes tools disable``. Anthropic's
-    prompt cache keys on the byte-exact ``tools[]`` array, so divergence here
-    forks the cache lineage and forces a full prefix rewrite per nudge
-    (~100-200 K cache-write tokens for long conversations).
-
-    This is the same byte-stability invariant as
-    ``test_review_fork_inherits_parent_cached_system_prompt`` but for the
-    ``tools[]`` slot of the request body, not the ``system`` slot.
-    """
+    """``tools[]`` byte-stability: fork must inherit parent's toolset config."""
     import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
@@ -218,7 +200,6 @@ def test_review_fork_inherits_parent_toolset_config():
         def __init__(self, *args, **kwargs):
             captured["enabled_toolsets"] = kwargs.get("enabled_toolsets")
             captured["disabled_toolsets"] = kwargs.get("disabled_toolsets")
-            # Minimal post-init attrs the surrounding code touches.
             self._cached_system_prompt = None
             self._memory_write_origin = None
             self._memory_write_context = None
@@ -249,14 +230,10 @@ def test_review_fork_inherits_parent_toolset_config():
         )
 
     assert captured.get("enabled_toolsets") == agent.enabled_toolsets, (
-        f"Review fork did not receive parent's enabled_toolsets. "
-        f"Got {captured.get('enabled_toolsets')!r}, expected {agent.enabled_toolsets!r}. "
-        "This causes ``tools[]`` to diverge between main turns and review nudges, "
-        "breaking Anthropic prompt-cache parity."
+        f"enabled_toolsets mismatch: {captured.get('enabled_toolsets')!r} "
+        f"vs expected {agent.enabled_toolsets!r}"
     )
     assert captured.get("disabled_toolsets") == agent.disabled_toolsets, (
-        f"Review fork did not receive parent's disabled_toolsets. "
-        f"Got {captured.get('disabled_toolsets')!r}, expected {agent.disabled_toolsets!r}. "
-        "This causes ``tools[]`` to diverge between main turns and review nudges, "
-        "breaking Anthropic prompt-cache parity."
+        f"disabled_toolsets mismatch: {captured.get('disabled_toolsets')!r} "
+        f"vs expected {agent.disabled_toolsets!r}"
     )

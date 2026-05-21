@@ -4850,15 +4850,44 @@ def start_server(
         # provider to be registered, else fail closed".
         from hermes_cli.dashboard_auth import list_providers
         if not list_providers():
+            # Surface the *specific* reason any bundled provider declined
+            # to register (e.g. missing HERMES_DASHBOARD_OAUTH_CLIENT_ID).
+            # Each provider plugin that ships with Hermes Agent exposes a
+            # module-level ``LAST_SKIP_REASON`` string for this purpose;
+            # without it the operator would only see "no providers" which
+            # is misleading when the provider IS installed but unconfigured.
+            skip_reasons: list[str] = []
+            try:
+                from plugins.dashboard_auth import nous as _nous_plugin
+
+                if _nous_plugin.LAST_SKIP_REASON:
+                    skip_reasons.append(
+                        f"  • nous: {_nous_plugin.LAST_SKIP_REASON}"
+                    )
+            except Exception:
+                pass
+
+            if skip_reasons:
+                raise SystemExit(
+                    f"Refusing to bind dashboard to {host} — the OAuth auth "
+                    f"gate engages on non-loopback binds, but no auth "
+                    f"providers are registered.\n"
+                    f"\n"
+                    f"Bundled providers reported these issues:\n"
+                    + "\n".join(skip_reasons)
+                    + "\n"
+                    f"\n"
+                    f"Or pass --insecure to skip the auth gate (NOT "
+                    f"recommended on untrusted networks)."
+                )
             raise SystemExit(
                 f"Refusing to bind dashboard to {host} — the OAuth auth "
                 f"gate engages on non-loopback binds, but no auth providers "
-                f"are registered.\n"
-                f"Install the default Nous provider "
-                f"(plugins/dashboard-auth-nous) or another "
-                f"DashboardAuthProvider plugin.\n"
-                f"Or pass --insecure to skip the auth gate (NOT recommended "
-                f"on untrusted networks)."
+                f"are registered and no bundled plugin reported a reason "
+                f"(was the dashboard_auth/nous plugin removed?).\n"
+                f"Install a DashboardAuthProvider plugin, or pass --insecure "
+                f"to skip the auth gate (NOT recommended on untrusted "
+                f"networks)."
             )
         _log.info(
             "Dashboard binding to %s with OAuth auth gate enabled. "

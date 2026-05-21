@@ -1887,8 +1887,8 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     elif action == "reset":
         if not args:
             c.print("[bold red]Usage:[/] /skills reset <name> [--restore] [--now]\n")
-            c.print("[dim]Clears the bundled-skills manifest entry so future updates stop marking it as user-modified.[/]")
-            c.print("[dim]Pass --restore to also replace the current copy with the bundled version.[/]\n")
+            c.print("[dim]Clears the bundled-skills manifest entry. If your local copy matches bundled, the next sync re-baselines and accepts upstream updates.[/]")
+            c.print("[dim]If your copy differs from bundled, it is preserved and keeps being skipped on updates — pass --restore to overwrite it with the bundled version.[/]\n")
             return
         name = args[0]
         restore = "--restore" in args

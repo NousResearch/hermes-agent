@@ -594,7 +594,10 @@ class TestSyncSkills:
 
         captured = capsys.readouterr().out
         assert "new-skill" in captured
-        assert "hermes skills reset new-skill" in captured
+        # The hint must point at `--restore`: plain `reset` only clears the
+        # manifest entry and re-runs sync, which falls into this same branch
+        # again because user_hash != bundled_hash — leaving the user in a loop.
+        assert "hermes skills reset --restore new-skill" in captured
 
     def test_backfills_official_optional_provenance_for_existing_identical_skill(self, tmp_path):
         bundled = self._setup_bundled(tmp_path)
@@ -937,6 +940,37 @@ class TestResetBundledSkill:
 
         assert result["ok"] is False
         assert result["action"] == "bundled_missing"
+
+    def test_reset_on_genuinely_modified_skill_reports_preserved(self, tmp_path):
+        """When the user's copy genuinely differs from bundled, plain `reset`
+        cannot un-stick the skill — it clears the manifest, then sync skips
+        the skill because user_hash != bundled_hash and no manifest write
+        happens. The return message must say so honestly and point at
+        --restore, not falsely claim future syncs will accept upstream."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        dest = skills_dir / "productivity" / "google-workspace"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text(
+            "---\nname: google-workspace\n---\n# user-edited content, NOT bundled\n"
+        )
+        bundled_hash = _dir_hash(bundled / "productivity" / "google-workspace")
+        manifest_file.write_text(f"google-workspace:{bundled_hash}\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = reset_bundled_skill("google-workspace", restore=False)
+
+            assert result["ok"] is True
+            assert result["action"] == "manifest_cleared_local_preserved"
+            assert "--restore" in result["message"]
+            assert "preserved" in result["message"]
+            # Manifest entry stays absent — sync_skills hit the new-skill-
+            # collision branch and refused to poison the manifest.
+            assert "google-workspace" not in _read_manifest()
+            # User's edited copy is intact.
+            assert "user-edited" in (dest / "SKILL.md").read_text()
 
     def test_reset_no_op_when_already_clean(self, tmp_path):
         """If manifest has skill but user copy is in-sync, reset still safely clears + re-baselines."""

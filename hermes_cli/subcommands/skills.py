@@ -142,11 +142,13 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
 
     skills_reset = skills_subparsers.add_parser(
         "reset",
-        help="Reset a bundled skill — clears 'user-modified' tracking so updates work again",
+        help="Reset a bundled skill — re-baselines tracking when your copy matches bundled; use --restore for modified copies",
         description=(
-            "Clear a bundled skill's entry from the sync manifest (~/.hermes/skills/.bundled_manifest) "
-            "so future 'hermes update' runs stop marking it as user-modified. Pass --restore to also "
-            "replace the current copy with the bundled version."
+            "Clear a bundled skill's entry from the sync manifest (~/.hermes/skills/.bundled_manifest). "
+            "If your local copy is byte-identical to the bundled version, the next sync re-baselines "
+            "and future 'hermes update' runs accept upstream changes. If your copy genuinely differs "
+            "from bundled, the manifest stays cleared but the skill is preserved and continues to be "
+            "skipped on updates — pass --restore to overwrite your copy with the bundled version."
         ),
     )
     skills_reset.add_argument(

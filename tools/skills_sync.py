@@ -544,8 +544,8 @@ def sync_skills(quiet: bool = False) -> dict:
                         print(
                             f"  ⚠ {skill_name}: bundled version shipped but you "
                             f"already have a local skill by this name — yours "
-                            f"was kept. Run `hermes skills reset {skill_name}` "
-                            f"to replace it with the bundled version."
+                            f"was kept. Run `hermes skills reset --restore "
+                            f"{skill_name}` to replace it with the bundled version."
                         )
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -801,11 +801,29 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         action = "restored"
         message = f"Restored '{name}' (no prior user copy, re-copied from bundled)."
     else:
-        action = "manifest_cleared"
-        message = (
-            f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
-            f"will re-baseline against your current copy and accept upstream changes."
-        )
+        # Non-restore path: sync_skills() above either re-baselined the manifest
+        # (when user_hash matches the current bundled hash) or skipped without
+        # writing a manifest entry (when the user's copy genuinely differs from
+        # bundled — the new-skill-collision branch). Distinguish by reading the
+        # manifest after the resync so the user-facing message reflects what
+        # actually happened: a true re-baseline vs. a preserved local copy that
+        # will keep being skipped on future syncs.
+        manifest_after = _read_manifest()
+        if name in manifest_after:
+            action = "manifest_cleared"
+            message = (
+                f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
+                f"will re-baseline against your current copy and accept upstream changes."
+            )
+        else:
+            action = "manifest_cleared_local_preserved"
+            message = (
+                f"Cleared manifest entry for '{name}', but your local copy differs "
+                f"from the bundled version, so it remains preserved and will not "
+                f"receive upstream updates. Use "
+                f"`hermes skills reset --restore {name}` to revert to the shipped "
+                f"version."
+            )
 
     return {"ok": True, "action": action, "message": message, "synced": synced}
 

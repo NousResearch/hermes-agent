@@ -240,6 +240,12 @@ def make_acp_edit_approval_requester(
 ) -> EditApprovalRequester:
     """Return a sync requester that bridges edit proposals to ACP permissions."""
 
+    # Closure-scoped flag flipped on by an interactive "Allow for session"
+    # selection. Mirrors the server-side ``AUTO_APPROVE_SESSION`` policy
+    # (see ``should_auto_approve_edit``): sensitive paths still prompt even
+    # after the user opts in for the session.
+    session_state = {"allow_for_session": False}
+
     def _requester(proposal: EditProposal) -> bool:
         from acp.schema import PermissionOption
         from agent.async_utils import safe_schedule_threadsafe
@@ -253,8 +259,20 @@ def make_acp_edit_approval_requester(
             except Exception:
                 logger.debug("ACP edit auto-approval policy check failed", exc_info=True)
 
+        if session_state["allow_for_session"] and not _is_sensitive_auto_approve_path(proposal.path):
+            logger.info("Auto-approved ACP edit under interactive session opt-in: %s", proposal.path)
+            return True
+
         options = [
             PermissionOption(option_id="allow_once", kind="allow_once", name="Allow edit"),
+            PermissionOption(
+                option_id="allow_session",
+                # ACP has no session-scoped kind, so use the closest persistent
+                # hint while keeping Hermes semantics in the option id. Matches
+                # the terminal command bridge in ``permissions.py``.
+                kind="allow_always",
+                name="Allow edits for session",
+            ),
             PermissionOption(option_id="deny", kind="reject_once", name="Deny"),
         ]
         tool_call = build_acp_edit_tool_call(proposal)
@@ -278,9 +296,12 @@ def make_acp_edit_approval_requester(
             logger.warning("Edit approval request timed out or failed: %s", exc)
             return False
         outcome = getattr(response, "outcome", None)
-        return (
-            getattr(outcome, "outcome", None) == "selected"
-            and getattr(outcome, "option_id", None) == "allow_once"
-        )
+        if getattr(outcome, "outcome", None) != "selected":
+            return False
+        option_id = getattr(outcome, "option_id", None)
+        if option_id == "allow_session":
+            session_state["allow_for_session"] = True
+            return True
+        return option_id == "allow_once"
 
     return _requester

@@ -2241,8 +2241,6 @@ WantedBy=multi-user.target
     sane_path = ":".join(path_entries)
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
-After=network-online.target
-Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]

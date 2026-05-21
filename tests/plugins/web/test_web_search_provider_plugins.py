@@ -47,6 +47,9 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIRECRAWL_GATEWAY_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
+        "CUSTOM_SEARCH_API_KEY",
+        "CUSTOM_SEARCH_BASE_URL",
+        "CUSTOM_SEARCH_MODEL",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -70,15 +73,16 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All seven bundled web plugins discover and register correctly."""
+    """All bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_bundled_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
         assert names == [
             "brave-free",
+            "custom",
             "ddgs",
             "exa",
             "firecrawl",
@@ -100,6 +104,7 @@ class TestBundledPluginsRegister:
             # disabled in the migration (fell through to a legacy inline
             # path); the follow-up commit enabled it natively.
             ("firecrawl", True, True, True),
+            ("custom", True, True, False),
         ],
     )
     def test_capability_flags_match_spec(
@@ -120,7 +125,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "custom"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -133,7 +138,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "custom"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""

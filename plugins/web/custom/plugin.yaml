@@ -1,0 +1,7 @@
+name: web-custom
+version: 1.0.0
+description: "Custom OpenAI-compatible web search + extract backend. Plugs any chat completions endpoint with built-in web search (e.g. Perplexity Sonar) into the web tools. Requires CUSTOM_SEARCH_API_KEY and CUSTOM_SEARCH_BASE_URL."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - custom

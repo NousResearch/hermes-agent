@@ -447,6 +447,25 @@ class DiagnosticCardsTest {
                                         .put("fraction", 0.85),
                                 ),
                             ),
+                    )
+                    .put(
+                        JSONObject()
+                            .put("title", "Agent Observation")
+                            .put("body", "Observation dashboard.")
+                            .put("graph_type", "agent_observation_matrix")
+                            .put(
+                                "rows",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("category", "agent_observation")
+                                        .put("label", "Gemma signal dashboard")
+                                        .put("ready", true)
+                                        .put("value_label", "single observation report")
+                                        .put("detail", "Wi-Fi, Bluetooth, sensors, radio, SOC, and Kai rows.")
+                                        .put("recommendation", "Use this first.")
+                                        .put("fraction", 0.95),
+                                ),
+                            ),
                     ),
             )
             .toString()
@@ -455,6 +474,7 @@ class DiagnosticCardsTest {
         val socRow = cards[0].rows.single()
         val heartbeatRow = cards[1].rows.single()
         val operationsRow = cards[2].rows.single()
+        val observationRow = cards[3].rows.single()
 
         assertEquals("SOC and LiteRT backend policy", socRow.label)
         assertEquals("ARM MediaTek/Mali", socRow.valueLabel)
@@ -468,6 +488,10 @@ class DiagnosticCardsTest {
         assertEquals("tool_catalog", operationsRow.valueLabel)
         assertTrue(operationsRow.detail.contains("kai operations"))
         assertTrue(operationsRow.detail.contains("tool_catalog"))
+        assertEquals("Gemma signal dashboard", observationRow.label)
+        assertEquals("single observation report", observationRow.valueLabel)
+        assertTrue(observationRow.detail.contains("agent observation"))
+        assertTrue(observationRow.detail.contains("Use this first"))
     }
 
     @Test

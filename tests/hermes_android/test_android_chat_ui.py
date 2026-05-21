@@ -66,6 +66,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
 
     for action in [
         "signal_awareness_report",
+        "agent_observation_report",
         "agent_environment_report",
         "soc_compatibility_report",
         "wifi_analyzer_report",
@@ -85,6 +86,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
     assert "extractExplicitAndroidDiagnosticsArguments(userText)" in chat_client
     assert 'testTag("HermesSignalQuickAction_${action.id}")' in chat_screen
     assert 'id = "wifi_analyzer"' in actions
+    assert 'id = "agent_observation"' in actions
     assert 'id = "soc_compatibility"' in actions
     assert 'id = "wifi_occupancy"' in actions
     assert 'id = "bluetooth_analyzer"' in actions

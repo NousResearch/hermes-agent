@@ -106,6 +106,8 @@ object HermesDeviceDiagnosticsBridge {
                 socCompatibilityReportJson(appContext).toString()
             "signal_awareness_report", "nearby_signal_report", "rf_sensor_fusion_report", "ambient_context_report" ->
                 signalAwarenessReportJson(appContext).toString()
+            "agent_observation_report", "agent_signal_dashboard", "gemma_observation_report", "multimodal_signal_dashboard" ->
+                agentObservationReportJson(appContext).toString()
             "agent_environment_report", "environment_report", "capability_matrix", "system_capability_report", "kai_parity_report" ->
                 agentEnvironmentReportJson(appContext).toString()
             "social_gmail_goal_preflight", "social_gmail_preflight", "phone_goal_preflight", "end_to_end_goal_preflight" ->
@@ -1844,6 +1846,69 @@ object HermesDeviceDiagnosticsBridge {
             )
     }
 
+    fun agentObservationReportJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val wifiReport = wifiAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
+        val bluetoothReport = bluetoothAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
+        val sensorReport = sensorAnalyzerReportJson(appContext, JSONObject().put("include_snapshot", false))
+        val radioReport = radioSignalStatusJson(appContext)
+        val signalReport = signalAwarenessReportJson(appContext)
+        val environmentReport = agentEnvironmentReportJson(appContext)
+        val observationRows = agentObservationMatrixRows(
+            wifiReport = wifiReport,
+            bluetoothReport = bluetoothReport,
+            sensorReport = sensorReport,
+            radioReport = radioReport,
+            signalReport = signalReport,
+            environmentReport = environmentReport,
+        )
+        val routeRows = agentObservationRouteRows()
+        return JSONObject()
+            .put("success", true)
+            .put("action", "agent_observation_report")
+            .put("report_scope", "Gemma-visible dashboard for Wi-Fi, Bluetooth, sensor, radio, SOC, local model, Kai operations, and expandable top-card routes.")
+            .put("source_report_actions", JSONArray().put("wifi_analyzer_report").put("bluetooth_analyzer_report").put("sensor_analyzer_report").put("radio_signal_status").put("signal_awareness_report").put("agent_environment_report"))
+            .put("wifi_observation_summary", observationSummaryJson(wifiReport, "wifi_analyzer_report"))
+            .put("bluetooth_observation_summary", observationSummaryJson(bluetoothReport, "bluetooth_analyzer_report"))
+            .put("sensor_observation_summary", observationSummaryJson(sensorReport, "sensor_analyzer_report"))
+            .put("radio_observation_summary", observationSummaryJson(radioReport, "radio_signal_status"))
+            .put("signal_observation_summary", observationSummaryJson(signalReport, "signal_awareness_report"))
+            .put("agent_environment_observation_summary", observationSummaryJson(environmentReport, "agent_environment_report"))
+            .put("agent_observation_matrix", observationRows)
+            .put("agent_observation_routes", routeRows)
+            .put("agent_observation_count", observationRows.length())
+            .put("ready_agent_observation_count", countReadyRows(observationRows))
+            .put("agent_observation_route_count", routeRows.length())
+            .put(
+                "gemma_observation_directives",
+                JSONArray()
+                    .put("Read agent_observation_matrix first to decide which signal, sensor, radio, SOC, or Kai surface is actually available on this device.")
+                    .put("Use agent_observation_routes for the next precise android_device_diagnostics_tool action instead of guessing from text.")
+                    .put("Open the expandable cards before explaining Wi-Fi channels, Bluetooth proximity, radio limits, motion context, or local model readiness.")
+                    .put("Prefer passive analyzer reports for planning; request refresh or active sampling only when the user needs current live data."),
+            )
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "Agent Observation",
+                            body = "${observationRows.length()} Gemma-visible row(s) summarizing Wi-Fi, Bluetooth, sensors, radio, SOC, local model, Kai operations, and card coverage.",
+                            graphType = "agent_observation_matrix",
+                            rows = observationRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Observation Routes",
+                            body = "${routeRows.length()} direct route row(s) for opening the right analyzer or dashboard card next.",
+                            graphType = "agent_observation_routes",
+                            rows = routeRows,
+                        ),
+                    ),
+            )
+    }
+
     private fun kaiParityMatrixRows(
         preferredModel: JSONObject,
         hindsightStatus: JSONObject,
@@ -2082,6 +2147,239 @@ object HermesDeviceDiagnosticsBridge {
                         .put("source_surface", "android_terminal_workspace"),
                 ),
             )
+    }
+
+    private fun agentObservationMatrixRows(
+        wifiReport: JSONObject,
+        bluetoothReport: JSONObject,
+        sensorReport: JSONObject,
+        radioReport: JSONObject,
+        signalReport: JSONObject,
+        environmentReport: JSONObject,
+    ): JSONArray {
+        val wifiNetworkCount = wifiReport.optInt("total_scan_result_count", wifiReport.optJSONArray("wifi_networks")?.length() ?: 0)
+        val wifiDetailCount = wifiReport.optJSONArray("wifi_access_point_details")?.length() ?: 0
+        val wifiChannelCount = wifiReport.optJSONArray("wifi_channel_ratings")?.length() ?: 0
+        val bluetoothDeviceCount = bluetoothReport.optInt("bluetooth_device_count", bluetoothReport.optJSONArray("bluetooth_devices")?.length() ?: 0)
+        val bluetoothMetadataCount = bluetoothReport.optInt("bluetooth_metadata_count", bluetoothReport.optJSONArray("bluetooth_metadata_summary")?.length() ?: 0)
+        val sensorCapabilityCount = sensorReport.optInt("sensor_capability_count", sensorReport.optJSONArray("sensor_capabilities")?.length() ?: 0)
+        val motionPoseCount = sensorReport.optInt("motion_pose_estimate_count", sensorReport.optJSONArray("motion_pose_estimates")?.length() ?: 0)
+        val radioBandCount = radioReport.optInt("radio_band_plan_count", radioReport.optJSONArray("radio_bands")?.length() ?: 0)
+        val signalRouteCount = signalReport.optInt("signal_workflow_route_count", signalReport.optJSONArray("signal_workflow_routes")?.length() ?: 0)
+        val kaiOperationsCount = environmentReport.optInt("kai_operations_count", environmentReport.optJSONArray("kai_operations_matrix")?.length() ?: 0)
+        val capabilityCount = environmentReport.optInt("agent_capability_count", environmentReport.optJSONArray("agent_capability_matrix")?.length() ?: 0)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "agent_observation",
+                    label = "Gemma signal dashboard",
+                    ready = true,
+                    valueLabel = "single observation report",
+                    detail = "Combines passive Wi-Fi, Bluetooth, sensor, radio, SOC, local model, and Kai operation summaries before the model chooses a next tool.",
+                    recommendation = "Use this first when the user asks what Hermes can currently see about nearby signals or device readiness.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("tool_action", "agent_observation_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "wifi_observation",
+                    label = "Wi-Fi AP metadata and channel graphs",
+                    ready = wifiReport.optBoolean("success", false),
+                    valueLabel = "$wifiNetworkCount AP(s), $wifiChannelCount channel row(s)",
+                    detail = "$wifiDetailCount access-point detail row(s), ${wifiReport.optInt("wifi_access_point_semantic_count", 0)} semantic row(s), ${wifiReport.optInt("wifi_band_coverage_count", 0)} band coverage row(s).",
+                    recommendation = "Open Wi-Fi Analyzer cards before advising channel changes, security risk, AP identity, or vendor/OUI context.",
+                    fraction = when {
+                        wifiNetworkCount > 0 && wifiChannelCount > 0 -> 0.95f
+                        wifiReport.optBoolean("success", false) -> 0.7f
+                        else -> 0.35f
+                    },
+                    extra = JSONObject().put("tool_action", "wifi_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_observation",
+                    label = "Bluetooth nearby metadata",
+                    ready = bluetoothReport.optBoolean("success", false),
+                    valueLabel = "$bluetoothDeviceCount device(s)",
+                    detail = "$bluetoothMetadataCount metadata row(s), ${bluetoothReport.optInt("bluetooth_service_label_count", 0)} service label(s), ${bluetoothReport.optInt("bluetooth_manufacturer_name_count", 0)} manufacturer name(s), ${bluetoothReport.optInt("bluetooth_signal_history_count", 0)} cached trend row(s).",
+                    recommendation = "Open Bluetooth Analyzer cards before explaining proximity, service identity, paired inventory, or BLE manufacturer context.",
+                    fraction = when {
+                        bluetoothDeviceCount > 0 && bluetoothMetadataCount > 0 -> 0.95f
+                        bluetoothReport.optBoolean("success", false) -> 0.7f
+                        else -> 0.35f
+                    },
+                    extra = JSONObject().put("tool_action", "bluetooth_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_observation",
+                    label = "Motion and sensor context",
+                    ready = sensorReport.optBoolean("sensor_service_available", false),
+                    valueLabel = "$sensorCapabilityCount sensor row(s)",
+                    detail = "${sensorReport.optInt("motion_sensor_count", 0)} motion sensor(s), ${sensorReport.optInt("ambient_sensor_count", 0)} ambient sensor(s), $motionPoseCount pose estimate row(s).",
+                    recommendation = "Use sensor cards for accelerometer, gyroscope, heading, ambient, sampling, power, and workflow trigger context.",
+                    fraction = if (sensorCapabilityCount > 0) 0.9f else 0.35f,
+                    extra = JSONObject().put("tool_action", "sensor_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "radio_observation",
+                    label = "Radio and RF boundaries",
+                    ready = radioBandCount > 0,
+                    valueLabel = "$radioBandCount band row(s)",
+                    detail = "${radioReport.optInt("radio_signal_feature_count", 0)} feature row(s), ${radioReport.optInt("radio_signal_constraint_count", 0)} constraint row(s), external SDR required=${radioReport.optBoolean("requires_external_sdr_for_broad_rf", true)}.",
+                    recommendation = "Use radio cards to distinguish public Android Wi-Fi/Bluetooth signal access from AM/FM or broader RF hardware limits.",
+                    fraction = if (radioBandCount > 0) 0.85f else 0.35f,
+                    extra = JSONObject().put("tool_action", "radio_signal_status"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "soc_model_observation",
+                    label = "SOC and local model readiness",
+                    ready = capabilityCount > 0,
+                    valueLabel = "${environmentReport.optInt("ready_capability_count", 0)}/$capabilityCount ready",
+                    detail = "SOC/backend policy, preferred local model, UI control, automation, memory, and signal inputs are visible to the agent environment report.",
+                    recommendation = "Use SOC and local-model cards before assuming Snapdragon-only behavior or multimodal local inference availability.",
+                    fraction = if (capabilityCount > 0) 0.85f else 0.35f,
+                    extra = JSONObject().put("tool_action", "agent_environment_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_observation",
+                    label = "Kai operations and interactive routes",
+                    ready = kaiOperationsCount > 0,
+                    valueLabel = "$kaiOperationsCount operation row(s)",
+                    detail = "Provider fallback, native tool bridge, encrypted storage/backup, heartbeat, TTS, image attachment, and shell-boundary rows are visible from the Kai Operations card.",
+                    recommendation = "Use these rows before routing a Kai-style workflow through Hermes tools, cards, local model, or generated HTML screens.",
+                    fraction = if (kaiOperationsCount > 0) 0.9f else 0.35f,
+                    extra = JSONObject().put("tool_action", "agent_environment_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "card_observation",
+                    label = "Expandable card coverage",
+                    ready = true,
+                    valueLabel = "${reportCardTitles(wifiReport).length() + reportCardTitles(bluetoothReport).length() + reportCardTitles(sensorReport).length() + reportCardTitles(signalReport).length()} source cards",
+                    detail = "The dashboard points the user to expandable graph cards for Wi-Fi, Bluetooth, sensor, radio, signal-awareness, and agent-environment rows.",
+                    recommendation = "Prefer cards for scan-heavy or graph-heavy answers so the user can expand the underlying rows instead of reading a long text dump.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("source_surface", "diagnostic_cards"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "route_observation",
+                    label = "Next-tool route coverage",
+                    ready = signalRouteCount > 0,
+                    valueLabel = "$signalRouteCount route row(s)",
+                    detail = "Signal-awareness and observation-route rows map broad user questions to exact diagnostic actions.",
+                    recommendation = "Use route rows to choose between wifi_analyzer_report, bluetooth_analyzer_report, sensor_analyzer_report, radio_signal_status, soc_compatibility_report, or agent_environment_report.",
+                    fraction = if (signalRouteCount > 0) 0.9f else 0.45f,
+                    extra = JSONObject().put("tool_action", "signal_awareness_report"),
+                ),
+            )
+    }
+
+    private fun agentObservationRouteRows(): JSONArray {
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "agent_observation_route",
+                    label = "Open the full observation dashboard",
+                    ready = true,
+                    valueLabel = "agent_observation_report",
+                    detail = "Use for one compact Gemma-visible view across Wi-Fi, Bluetooth, sensors, radio, SOC, local model, Kai operations, and cards.",
+                    recommendation = "Run first for broad nearby-signal or phone-capability questions.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("tool_action", "agent_observation_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_observation_route",
+                    label = "Open Wi-Fi analyzer cards",
+                    ready = true,
+                    valueLabel = "wifi_analyzer_report",
+                    detail = "Use for AP metadata, channel ratings, utilization, band coverage, semantic labels, vendor/OUI, filters, exports, and signal history.",
+                    recommendation = "Use refresh=false for planning and refresh=true only when current scan data is needed.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "wifi_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_observation_route",
+                    label = "Open Bluetooth analyzer cards",
+                    ready = true,
+                    valueLabel = "bluetooth_analyzer_report",
+                    detail = "Use for nearby/paired inventory, RSSI trend, proximity, service labels, manufacturer metadata, and scan-policy boundaries.",
+                    recommendation = "Use refresh=false for passive rows and refresh=true only when the user needs a live nearby scan.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "bluetooth_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_observation_route",
+                    label = "Open sensor analyzer cards",
+                    ready = true,
+                    valueLabel = "sensor_analyzer_report",
+                    detail = "Use for accelerometer, gyroscope, magnetic, ambient, hardware metadata, sampling policy, motion trends, and pose estimates.",
+                    recommendation = "Keep include_snapshot=false until a live reading is actually needed.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "sensor_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_observation_route",
+                    label = "Open radio and RF limit cards",
+                    ready = true,
+                    valueLabel = "radio_signal_status",
+                    detail = "Use for AM/FM band-plan rows, vendor radio hints, Wi-Fi/Bluetooth radio routes, SDR constraints, and public Android RF limits.",
+                    recommendation = "Use before promising broad AM/FM or microwave scanning on normal phones.",
+                    fraction = 0.85f,
+                    extra = JSONObject().put("tool_action", "radio_signal_status"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_observation_route",
+                    label = "Open SOC and Kai environment cards",
+                    ready = true,
+                    valueLabel = "agent_environment_report",
+                    detail = "Use for MediaTek/Mali/PowerVR backend policy, local model readiness, tool bridge, memory, heartbeat, TTS, image, and Kai operation parity.",
+                    recommendation = "Use when the question mixes device compatibility with autonomous-agent readiness.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "agent_environment_report"),
+                ),
+            )
+    }
+
+    private fun observationSummaryJson(report: JSONObject, action: String): JSONObject {
+        return JSONObject()
+            .put("action", action)
+            .put("success", report.optBoolean("success", false))
+            .put("report_scope", report.optString("report_scope"))
+            .put("card_titles", reportCardTitles(report))
+            .put("card_count", report.optJSONArray("cards")?.length() ?: 0)
+    }
+
+    private fun reportCardTitles(report: JSONObject, limit: Int = 6): JSONArray {
+        val titles = JSONArray()
+        val cards = report.optJSONArray("cards") ?: return titles
+        for (index in 0 until minOf(cards.length(), limit)) {
+            val title = cards.optJSONObject(index)?.optString("title").orEmpty()
+            if (title.isNotBlank()) titles.put(title)
+        }
+        return titles
     }
 
     private fun workflowReadinessRows(
@@ -4476,7 +4774,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(toolJson("android_system_tool", "Read phone state and open settings or user-granted Shizuku/Sui actions.", "action, package_name, permission"))
                     .put(toolJson("android_ui_tool", "Inspect and control visible Android UI through accessibility and screenshots.", "action, selectors, coordinates"))
                     .put(toolJson("android_automation_tool", "Run/open/create saved automations, watcher tasks, overlays, notifications, widgets, and Tasker-style triggers.", "action, trigger, data_uri"))
-                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel ratings/AP detail and export rows/vendor OUI/filter facets, Bluetooth nearby devices/service UUID labels/manufacturer names/proximity/history, camera, sensors, SOC compatibility, overlay, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, refresh, sensor_types, timeout_ms"))
+                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel ratings/AP detail and export rows/vendor OUI/filter facets, Bluetooth nearby devices/service UUID labels/manufacturer names/proximity/history, camera, sensors, SOC compatibility, overlay, Gemma-visible agent observation dashboards, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, refresh, sensor_types, timeout_ms"))
                     .put(toolJson("hindsight_memory_tool", "Retain, recall, reflect, and promote local Hindsight-style memories with tags, entities, keywords, recency, reinforcement, and reusable prompt context.", "action, content, query, tags, category")),
             )
             .put("diagnostics_actions", JSONArray(ACTIONS))
@@ -7727,6 +8025,7 @@ object HermesDeviceDiagnosticsBridge {
         "local_backend_runtime_report",
         "soc_compatibility_report",
         "signal_awareness_report",
+        "agent_observation_report",
         "agent_environment_report",
         "social_gmail_goal_preflight",
         "show_active_overlay",

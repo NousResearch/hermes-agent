@@ -225,6 +225,34 @@ def test_android_diagnostics_exposes_agent_environment_report_for_kai_parity():
     assert 'capabilityMatrixRow(row)' in diagnostic_cards
 
 
+def test_android_diagnostics_exposes_agent_observation_dashboard_for_gemma_signal_cards():
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    quick_actions = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
+
+    assert '"agent_observation_report"' in diagnostics_bridge
+    assert 'agentObservationReportJson(appContext)' in diagnostics_bridge
+    assert 'fun agentObservationReportJson(context: Context): JSONObject' in diagnostics_bridge
+    assert 'agentObservationMatrixRows(' in diagnostics_bridge
+    assert 'agentObservationRouteRows()' in diagnostics_bridge
+    assert '"agent_observation_matrix"' in diagnostics_bridge
+    assert '"agent_observation_routes"' in diagnostics_bridge
+    assert '"gemma_observation_directives"' in diagnostics_bridge
+    assert 'Wi-Fi AP metadata and channel graphs' in diagnostics_bridge
+    assert 'Bluetooth nearby metadata' in diagnostics_bridge
+    assert 'Motion and sensor context' in diagnostics_bridge
+    assert 'Radio and RF boundaries' in diagnostics_bridge
+    assert 'Kai operations and interactive routes' in diagnostics_bridge
+    assert 'agent_observation_report' in chat_client
+    assert '"agent_observation_matrix"' in chat_client
+    assert '"agent_observation_routes"' in chat_client
+    assert '"gemma_observation_directives"' in chat_client
+    assert '"agent_observation_matrix", "agent_observation_routes"' in diagnostic_cards
+    assert 'id = "agent_observation"' in quick_actions
+    assert 'action=agent_observation_report' in quick_actions
+
+
 def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_cards():
     diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
     chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")

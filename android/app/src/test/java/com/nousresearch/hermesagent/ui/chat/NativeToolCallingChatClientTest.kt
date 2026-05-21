@@ -497,6 +497,58 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun compactsAgentObservationReportWithoutDroppingDashboardRows() {
+        val observations = JSONArray()
+        repeat(20) { index ->
+            observations.put(
+                JSONObject()
+                    .put("category", "agent_observation")
+                    .put("label", "Observation $index")
+                    .put("ready", true)
+                    .put("value_label", "route $index")
+                    .put("detail", "Detailed observation dashboard row $index")
+                    .put("recommendation", "Open the matching analyzer card.")
+                    .put("tool_action", "agent_observation_report"),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "agent_observation_report")
+            .put("agent_observation_count", 20)
+            .put("ready_agent_observation_count", 20)
+            .put("agent_observation_route_count", 1)
+            .put("agent_observation_matrix", observations)
+            .put(
+                "agent_observation_routes",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "agent_observation_route")
+                        .put("label", "Open Wi-Fi analyzer cards")
+                        .put("ready", true)
+                        .put("value_label", "wifi_analyzer_report")
+                        .put("tool_action", "wifi_analyzer_report"),
+                ),
+            )
+            .put("gemma_observation_directives", JSONArray().put("Read agent_observation_matrix first"))
+            .put("cards", JSONArray().put(JSONObject().put("title", "Agent Observation").put("body", "20 rows")))
+            .toString()
+
+        val compacted = NativeToolContextCompressor.compactToolResult(result)
+        val parsed = JSONObject(compacted)
+        val compactedObservations = parsed.getJSONObject("agent_observation_matrix")
+        val routes = parsed.getJSONArray("agent_observation_routes")
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(20, parsed.getInt("agent_observation_count"))
+        assertEquals("array", compactedObservations.getString("type"))
+        assertEquals(20, compactedObservations.getInt("original_count"))
+        assertEquals("Observation 0", compactedObservations.getJSONArray("items").getJSONObject(0).getString("label"))
+        assertEquals("agent_observation_report", compactedObservations.getJSONArray("items").getJSONObject(0).getString("tool_action"))
+        assertEquals("Open Wi-Fi analyzer cards", routes.getJSONObject(0).getString("label"))
+        assertEquals("Read agent_observation_matrix first", parsed.getJSONArray("gemma_observation_directives").getString(0))
+    }
+
+    @Test
     fun compactsSignalAwarenessReportWithoutDroppingRoutesOrConstraints() {
         val awareness = JSONArray()
         repeat(18) { index ->

@@ -1048,6 +1048,35 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun agentObservationReportComposesGemmaVisibleSignalDashboard() {
+        val result = HermesDeviceDiagnosticsBridge.agentObservationReportJson(context)
+        val observations = result.getJSONArray("agent_observation_matrix")
+        val routes = result.getJSONArray("agent_observation_routes")
+        val observationText = observations.toString()
+        val routeText = routes.toString()
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("agent_observation_report", result.getString("action"))
+        assertTrue(result.getJSONArray("source_report_actions").toString().contains("wifi_analyzer_report"))
+        assertTrue(result.getJSONObject("wifi_observation_summary").getJSONArray("card_titles").toString().contains("Wi-Fi Analyzer"))
+        assertTrue(result.getJSONObject("agent_environment_observation_summary").getJSONArray("card_titles").toString().contains("Kai Operations"))
+        assertTrue(observationText.contains("Gemma signal dashboard"))
+        assertTrue(observationText.contains("Wi-Fi AP metadata and channel graphs"))
+        assertTrue(observationText.contains("Bluetooth nearby metadata"))
+        assertTrue(observationText.contains("Motion and sensor context"))
+        assertTrue(observationText.contains("Radio and RF boundaries"))
+        assertTrue(observationText.contains("SOC and local model readiness"))
+        assertTrue(observationText.contains("Kai operations and interactive routes"))
+        assertTrue(routeText.contains("Open Wi-Fi analyzer cards"))
+        assertTrue(routeText.contains("Open SOC and Kai environment cards"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Agent Observation"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Observation Routes"))
+        assertTrue(result.getJSONArray("gemma_observation_directives").toString().contains("Read agent_observation_matrix first"))
+        assertTrue(result.getInt("agent_observation_count") >= 8)
+        assertTrue(result.getInt("agent_observation_route_count") >= 6)
+    }
+
+    @Test
     fun socialGmailPreflightReportsPackagesAccessibilityAndPreferredModel() {
         val modelFile = java.io.File(context.filesDir, "preflight-model.gguf").apply {
             writeText("HERMES_PREFLIGHT_MODEL")

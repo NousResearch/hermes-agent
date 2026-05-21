@@ -64,6 +64,7 @@ import gateway.platforms.slack as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -1781,6 +1782,70 @@ class TestEditMessageStreamingPipeline:
         result = await adapter.edit_message("C123", "ts1", "**hello**")
         assert result.success is False
         assert "Not connected" in result.error
+
+    @pytest.mark.asyncio
+    async def test_edit_message_reports_slack_update_failure(self, adapter):
+        """chat.update ok=False must not look like delivered stream content."""
+        adapter._app.client.chat_update = AsyncMock(
+            return_value={"ok": False, "error": "message_not_found"}
+        )
+
+        result = await adapter.edit_message(
+            "D123",
+            "stream_ts",
+            "final answer",
+            finalize=True,
+        )
+
+        assert result.success is False
+        assert result.error == "message_not_found"
+        assert result.raw_response == {"ok": False, "error": "message_not_found"}
+
+    @pytest.mark.asyncio
+    async def test_slack_dm_stream_update_failure_falls_back_to_final_post(self, adapter):
+        """Min repro: failed Slack DM stream edit must not drop final-send.
+
+        Before this guard, SlackAdapter.edit_message treated chat.update
+        ``ok=False`` as success.  GatewayStreamConsumer then marked
+        final_response_sent/final_content_delivered, causing gateway/run.py to
+        drop the normal fresh chat.postMessage final-send even though the DM
+        never received the final update.
+        """
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "stream_ts"}
+        )
+        adapter._app.client.chat_update = AsyncMock(
+            return_value={"ok": False, "error": "message_not_found"}
+        )
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "D123",
+            StreamConsumerConfig(
+                edit_interval=0,
+                buffer_threshold=1,
+                cursor="",
+                transport="edit",
+                chat_type="dm",
+            ),
+        )
+        consumer._message_id = "stream_ts"
+        consumer._message_created_ts = 0.0
+        consumer._already_sent = True
+        consumer._last_sent_text = "partial"
+
+        consumer.on_delta("final answer")
+        consumer.finish()
+        await asyncio.wait_for(consumer.run(), timeout=1.0)
+
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is False
+        adapter._app.client.chat_update.assert_awaited()
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+        post_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert post_kwargs["channel"] == "D123"
+        assert post_kwargs["text"] == "final answer"
 
 
 # ---------------------------------------------------------------------------

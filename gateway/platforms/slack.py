@@ -881,14 +881,24 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
-            await self._get_client(chat_id).chat_update(
+            result = await self._get_client(chat_id).chat_update(
                 channel=chat_id,
                 ts=message_id,
                 text=formatted,
             )
+            if isinstance(result, dict) and result.get("ok") is False:
+                return SendResult(
+                    success=False,
+                    error=str(result.get("error") or "Slack chat.update failed"),
+                    raw_response=result,
+                )
             if finalize:
                 await self.stop_typing(chat_id)
-            return SendResult(success=True, message_id=message_id)
+            return SendResult(
+                success=True,
+                message_id=message_id,
+                raw_response=result,
+            )
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[Slack] Failed to edit message %s in channel %s: %s",

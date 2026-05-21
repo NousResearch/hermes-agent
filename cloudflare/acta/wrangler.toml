@@ -1,0 +1,22 @@
+name = "acta-briefs"
+main = "src/index.js"
+compatibility_date = "2026-05-20"
+
+# Roman name note: Acta Diurna were daily public notices in ancient Rome.
+# This Worker serves Hermes' curated daily briefs under acta.imperatr.com.
+routes = [
+  { pattern = "acta.imperatr.com", custom_domain = true }
+]
+
+[[r2_buckets]]
+binding = "REPORTS"
+bucket_name = "acta-briefs"
+
+[[d1_databases]]
+binding = "VESTA_DB"
+database_name = "vesta"
+database_id = "b746fc8a-e6bb-4762-b1de-4a64423b81ca"
+
+[vars]
+PUBLIC_BASE_URL = "https://acta.imperatr.com"
+DEFAULT_TTL_DAYS = "90"

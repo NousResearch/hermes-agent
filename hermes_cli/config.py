@@ -5478,78 +5478,141 @@ _inject_profile_env_vars()
 # An optional ``optional_env`` block surfaces non-required vars the same way
 # (e.g. allowlist, home channel).
 
-_platform_plugin_env_vars_injected = False
+_plugin_env_vars_injected = False
 
 
-def _inject_platform_plugin_env_vars() -> None:
-    """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests.
+def _merge_plugin_env_entry(name: str, meta: dict, label: str, default_category: str) -> None:
+    """Merge one ``requires_env`` / ``optional_env`` entry into OPTIONAL_ENV_VARS.
 
-    Called once at module load time. Idempotent — repeated calls are no-ops.
-    Failures are swallowed so a malformed plugin.yaml can't break CLI import.
+    Skips if a hardcoded entry already exists for the same name (preserves
+    back-compat for well-known service keys). Applies the standard
+    secret-detection heuristic (*_TOKEN, *_SECRET, *_KEY, *_PASSWORD, *_JSON
+    are treated as secrets unless the manifest says otherwise).
     """
-    global _platform_plugin_env_vars_injected
-    if _platform_plugin_env_vars_injected:
-        return
-    _platform_plugin_env_vars_injected = True
+    if name in OPTIONAL_ENV_VARS:
+        return  # hardcoded entry wins
+    name_upper = name.upper()
+    is_secret = bool(meta.get("password") or meta.get("secret"))
+    if not is_secret and not meta.get("password") is False:
+        is_secret = any(
+            name_upper.endswith(suf)
+            for suf in ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
+        )
+    OPTIONAL_ENV_VARS[name] = {
+        "description": meta.get("description") or f"{label} configuration",
+        "prompt": meta.get("prompt") or name,
+        "url": meta.get("url") or None,
+        "password": is_secret,
+        "category": meta.get("category") or default_category,
+    }
+
+
+def _inject_env_vars_from_manifest(manifest_path: Path, plugin_dir: Path, default_category: str) -> None:
+    """Read one plugin.yaml and merge its env-var declarations into OPTIONAL_ENV_VARS.
+
+    Any failure (missing file, unreadable, malformed YAML, non-dict
+    top-level node) is swallowed so one broken manifest can't take down
+    CLI import.
+    """
     try:
         import yaml  # type: ignore
 
-        # Resolve the bundled plugins dir from this file's location so the
-        # injector works regardless of CWD.
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = yaml.safe_load(f)
+    except Exception:
+        return
+    if not isinstance(manifest, dict):
+        return
+    label = manifest.get("label") or manifest.get("name") or plugin_dir.name
+    entries = list(manifest.get("requires_env") or [])
+    entries.extend(manifest.get("optional_env") or [])
+    for entry in entries:
+        if isinstance(entry, str):
+            _merge_plugin_env_entry(entry, {}, label, default_category)
+        elif isinstance(entry, dict) and entry.get("name"):
+            _merge_plugin_env_entry(entry["name"], entry, label, default_category)
+
+
+def _inject_env_vars_from_plugins_dir(
+    plugins_root: Path,
+    *,
+    default_category: str,
+    recurse_categories: bool = False,
+) -> None:
+    """Scan a plugins root and merge every plugin's env-var declarations into OPTIONAL_ENV_VARS.
+
+    Layout:
+      * ``<plugins_root>/<plugin>/plugin.yaml`` — flat layout (always scanned).
+      * ``<plugins_root>/<category>/<plugin>/plugin.yaml`` — category layout
+        (scanned only when *recurse_categories* is True; a top-level dir
+        with no manifest of its own is treated as a category namespace,
+        matching the depth-2 cap in :class:`PluginManager._scan_directory_level`).
+    """
+    if not plugins_root.is_dir():
+        return
+    for child in sorted(plugins_root.iterdir()):
+        if not child.is_dir():
+            continue
+        manifest_path = child / "plugin.yaml"
+        if not manifest_path.exists():
+            manifest_path = child / "plugin.yml"
+        if manifest_path.exists():
+            _inject_env_vars_from_manifest(manifest_path, child, default_category)
+            continue
+        if not recurse_categories:
+            continue
+        for grandchild in sorted(child.iterdir()):
+            if not grandchild.is_dir():
+                continue
+            sub_manifest = grandchild / "plugin.yaml"
+            if not sub_manifest.exists():
+                sub_manifest = grandchild / "plugin.yml"
+            if sub_manifest.exists():
+                _inject_env_vars_from_manifest(sub_manifest, grandchild, default_category)
+
+
+def _inject_plugin_env_vars() -> None:
+    """Populate OPTIONAL_ENV_VARS from plugin manifests on disk.
+
+    Called once at module load time. Idempotent — repeated calls are no-ops.
+    Failures are swallowed so a malformed plugin.yaml can't break CLI import.
+
+    Two sources are scanned, in order (first wins via the hardcoded-entry
+    rule in :func:`_merge_plugin_env_entry`):
+
+    1. **Bundled platform plugins** at ``<repo>/plugins/platforms/`` —
+       categorised as ``messaging`` for back-compat with the original
+       ``_inject_platform_plugin_env_vars`` behaviour.
+    2. **User-installed plugins** at ``~/.hermes/plugins/`` — installed
+       via ``hermes plugins install``. Supports both the flat layout
+       (``<name>/plugin.yaml``) and the category layout
+       (``<category>/<name>/plugin.yaml``), matching the runtime plugin
+       discovery in :class:`PluginManager._scan_directory_level`.
+    """
+    global _plugin_env_vars_injected
+    if _plugin_env_vars_injected:
+        return
+    _plugin_env_vars_injected = True
+    try:
         repo_root = Path(__file__).resolve().parents[1]
-        platforms_dir = repo_root / "plugins" / "platforms"
-        if not platforms_dir.is_dir():
-            return
-        for child in platforms_dir.iterdir():
-            if not child.is_dir():
-                continue
-            manifest_path = child / "plugin.yaml"
-            if not manifest_path.exists():
-                manifest_path = child / "plugin.yml"
-            if not manifest_path.exists():
-                continue
-            try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
-                    manifest = yaml.safe_load(f) or {}
-            except Exception:
-                continue
-            label = manifest.get("label") or manifest.get("name") or child.name
-            # Merge required + optional env var declarations.
-            entries = list(manifest.get("requires_env") or [])
-            entries.extend(manifest.get("optional_env") or [])
-            for entry in entries:
-                if isinstance(entry, str):
-                    name = entry
-                    meta: dict = {}
-                elif isinstance(entry, dict) and entry.get("name"):
-                    name = entry["name"]
-                    meta = entry
-                else:
-                    continue
-                if name in OPTIONAL_ENV_VARS:
-                    continue  # hardcoded entry wins (back-compat)
-                # Heuristic: anything named *TOKEN, *SECRET, *KEY, *PASSWORD
-                # is a password field unless explicitly overridden.
-                name_upper = name.upper()
-                is_secret = bool(meta.get("password") or meta.get("secret"))
-                if not is_secret and not meta.get("password") is False:
-                    is_secret = any(
-                        name_upper.endswith(suf)
-                        for suf in ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
-                    )
-                OPTIONAL_ENV_VARS[name] = {
-                    "description": (
-                        meta.get("description")
-                        or f"{label} configuration"
-                    ),
-                    "prompt": meta.get("prompt") or name,
-                    "url": meta.get("url") or None,
-                    "password": is_secret,
-                    "category": meta.get("category") or "messaging",
-                }
+        _inject_env_vars_from_plugins_dir(
+            repo_root / "plugins" / "platforms",
+            default_category="messaging",
+        )
+        _inject_env_vars_from_plugins_dir(
+            get_hermes_home() / "plugins",
+            default_category="plugins",
+            recurse_categories=True,
+        )
     except Exception:
         pass
 
 
-# Eagerly inject so that platform plugin env vars show up in the setup wizard.
-_inject_platform_plugin_env_vars()
+# Keep the old name as an alias so any external caller (or test) that
+# imported `_inject_platform_plugin_env_vars` by name still works.  The
+# function now scans user-installed plugins too, despite the legacy name.
+_inject_platform_plugin_env_vars = _inject_plugin_env_vars
+
+
+# Eagerly inject so that plugin env vars show up in the dashboard / setup wizard.
+_inject_plugin_env_vars()

@@ -996,13 +996,24 @@ class WeComAdapter(BasePlatformAdapter):
             "downgrade_note": None,
         }
 
-    @staticmethod
+    # WeCom error codes that indicate a transient WebSocket session issue
+    # and should trigger reconnect + retry rather than hard failure.
+    _TRANSIENT_ERRCODES = {
+        846609,  # aibot websocket not subscribed — session WS disconnected
+        846601,  # aibot websocket timeout
+        846602,  # aibot websocket send failed
+    }
+
     def _response_error(response: Dict[str, Any]) -> Optional[str]:
         errcode = response.get("errcode", 0)
         if errcode in {0, None}:
             return None
         errmsg = str(response.get("errmsg") or "unknown error")
         return f"WeCom errcode {errcode}: {errmsg}"
+
+    def _is_transient_ws_error(self, response: Dict[str, Any]) -> bool:
+        """Return True if the error is a transient WebSocket session error."""
+        return int(response.get("errcode", 0)) in self._TRANSIENT_ERRCODES
 
     @classmethod
     def _raise_for_wecom_error(cls, response: Dict[str, Any], operation: str) -> None:
@@ -1363,6 +1374,32 @@ class WeComAdapter(BasePlatformAdapter):
                         "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
                     },
                 )
+
+            # Retry once on transient WebSocket session errors (ercode 846609).
+            # The session-level WS disconnects within 1-2s of connecting;
+            # reconnecting the main WS and retrying usually succeeds (issue #29667).
+            if self._is_transient_ws_error(response):
+                logger.warning(
+                    "[%s] Transient WS error (ercode %s) — reconnecting and retrying",
+                    self.name, response.get("errcode"),
+                )
+                try:
+                    await self._connect_ws()
+                    if reply_req_id:
+                        response = await self._send_reply_markdown(reply_req_id, content)
+                    else:
+                        response = await self._send_request(
+                            APP_CMD_SEND,
+                            {
+                                "chatid": chat_id,
+                                "msgtype": "markdown",
+                                "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
+                            },
+                        )
+                except Exception as retry_exc:
+                    logger.error("[%s] Retry after reconnect failed: %s", self.name, retry_exc)
+                    return SendResult(success=False, error=f"Fallback send also failed: {retry_exc}")
+
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:

@@ -329,6 +329,42 @@ def stamp_install_method(method: str) -> None:
         pass
 
 
+def is_uv_tool_install(uv_path: Optional[str] = None) -> bool:
+    """Return True when Hermes is installed via ``uv tool install hermes-agent``.
+
+    ``uv tool`` installs live outside any virtualenv, so ``uv pip install``
+    (the previous update path) fails with ``No virtual environment found``.
+    The fast path inspects ``sys.prefix`` for the standard uv tool layout
+    (``.../uv/tools/hermes-agent/...``); the authoritative fallback shells
+    out to ``uv tool list``. Returns False on any error so callers fall
+    back to the legacy pip path.
+    """
+    prefix = os.path.normpath(sys.prefix).replace(os.sep, "/").lower()
+    if "/uv/tools/hermes-agent/" in prefix + "/":
+        return True
+    if uv_path is None:
+        import shutil
+        uv_path = shutil.which("uv")
+    if not uv_path:
+        return False
+    try:
+        result = subprocess.run(
+            [uv_path, "tool", "list"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    for line in result.stdout.splitlines():
+        tokens = line.strip().split()
+        if tokens and tokens[0] == "hermes-agent":
+            return True
+    return False
+
+
 def recommended_update_command_for_method(method: str) -> str:
     """Return the update command or guidance for a given install method."""
     if method == "nixos":
@@ -341,6 +377,8 @@ def recommended_update_command_for_method(method: str) -> str:
         import shutil
         uv = shutil.which("uv")
         if uv:
+            if is_uv_tool_install(uv):
+                return "uv tool upgrade hermes-agent"
             return "uv pip install --upgrade hermes-agent"
         return "pip install --upgrade hermes-agent"
     return "hermes update"

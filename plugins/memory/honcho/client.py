@@ -91,12 +91,17 @@ def _normalize_recall_mode(val: str) -> str:
     return val if val in _VALID_RECALL_MODES else "hybrid"
 
 
-def _resolve_bool(host_val, root_val, *, default: bool) -> bool:
-    """Resolve a bool config field: host wins, then root, then default."""
-    if host_val is not None:
-        return bool(host_val)
-    if root_val is not None:
-        return bool(root_val)
+def _resolve_bool(*vals, default: bool) -> bool:
+    """Resolve a bool config field: first non-None wins, else default.
+
+    Variadic to support aliased keys (e.g. ``pinUserPeer`` shadowing
+    ``pinPeerName`` for backwards compatibility).  Pass values in
+    precedence order: caller's preferred alias first, then fallback
+    aliases, in (host, root) interleaving as needed.
+    """
+    for val in vals:
+        if val is not None:
+            return bool(val)
     return default
 
 
@@ -488,7 +493,15 @@ class HonchoClientConfig:
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
             pin_peer_name=_resolve_bool(
+                # ``pinUserPeer`` is the clearer name (the resolver pins
+                # the user-side peer to ``peerName``, ignoring runtime
+                # identity).  ``pinPeerName`` is the original key from
+                # #14984 and stays accepted for backward compatibility.
+                # Host-level keys win over root-level; among same-level
+                # keys, ``pinUserPeer`` wins over ``pinPeerName``.
+                host_block.get("pinUserPeer"),
                 host_block.get("pinPeerName"),
+                raw.get("pinUserPeer"),
                 raw.get("pinPeerName"),
                 default=False,
             ),

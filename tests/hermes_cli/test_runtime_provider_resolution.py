@@ -2466,3 +2466,163 @@ def test_openrouter_key_reaches_openrouter_host(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="openrouter")
 
     assert resolved["api_key"] == "or-secret"
+
+
+# ----------------------------------------------------------------------
+# Issue #28660 — bonus: `<VENDOR>_API_KEY` derivation from host.
+# After the host-gating fix, users with a `DEEPSEEK_API_KEY` set and
+# `base_url: https://api.deepseek.com/v1` should get the key picked up
+# without needing to configure custom_providers.key_env first.
+# ----------------------------------------------------------------------
+
+
+def test_host_derived_key_picked_up_for_deepseek(monkeypatch):
+    """DEEPSEEK_API_KEY env var must be forwarded to api.deepseek.com."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://api.deepseek.com/v1",
+        },
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-secret")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["api_key"] == "sk-deepseek-secret"
+
+
+def test_host_derived_key_picked_up_for_groq(monkeypatch):
+    """GROQ_API_KEY env var must be forwarded to api.groq.com."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://api.groq.com/openai/v1",
+        },
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-groq-secret")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["api_key"] == "gsk-groq-secret"
+
+
+def test_host_derived_key_does_not_leak_to_lookalike_host(monkeypatch):
+    """DEEPSEEK_API_KEY must NOT be sent to an attacker-controlled lookalike
+    host (e.g. api.deepseek.com.attacker.test). The host-derive helper uses
+    proper hostname parsing so it picks the *attacker's* vendor label, not
+    DEEPSEEK — and any real DEEPSEEK_API_KEY stays put."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://api.deepseek.com.attacker.test/v1",
+        },
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-secret")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert "sk-deepseek-secret" not in (resolved["api_key"] or "")
+    # No ATTACKER_API_KEY is set, so the chain falls through to no-key-required.
+    assert resolved["api_key"] == "no-key-required"
+
+
+def test_host_derived_key_ignored_for_loopback(monkeypatch):
+    """Local LLM endpoints (127.0.0.1, localhost) must not derive any host
+    env var — there's no meaningful vendor label."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:1234/v1",
+        },
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # Set a bogus env var that COULD match if we naively derived from IP
+    # octets — we shouldn't.
+    monkeypatch.setenv("LOCALHOST_API_KEY", "should-not-be-used")
+    monkeypatch.setenv("_API_KEY", "should-not-be-used")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["api_key"] == "no-key-required"
+
+
+def test_host_derived_key_skips_already_handled_vendors(monkeypatch):
+    """The host-derive helper must not double-resolve OPENAI / OPENROUTER /
+    OLLAMA env vars — those are owned by their explicit host-gated paths.
+    Specifically, OPENAI_API_KEY must not leak to a non-openai host via the
+    `openai` label in a path or subdomain."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            # Hosts like proxy.openai.evil should derive nothing — but even
+            # if "openai" were the registrable label, the explicit
+            # OPENAI/OPENROUTER/OLLAMA filter blocks it.
+            "base_url": "https://api.example.com/v1",
+        },
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-secret")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-secret")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    # example.com has no EXAMPLE_API_KEY set, and OPENAI/OPENROUTER are gated
+    # on their own hosts — chain falls through to no-key-required.
+    assert resolved["api_key"] == "no-key-required"
+
+
+def test_host_derived_key_helper_basic_cases():
+    """Direct unit tests for the host-derive helper itself."""
+    # Standard provider hosts → derives correctly.
+    import os as _os
+
+    _os.environ.pop("DEEPSEEK_API_KEY", None)
+    _os.environ.pop("GROQ_API_KEY", None)
+    _os.environ.pop("MISTRAL_API_KEY", None)
+
+    _os.environ["DEEPSEEK_API_KEY"] = "dk"
+    assert rp._host_derived_api_key("https://api.deepseek.com/v1") == "dk"
+
+    _os.environ["GROQ_API_KEY"] = "gk"
+    assert rp._host_derived_api_key("https://api.groq.com/openai/v1") == "gk"
+
+    _os.environ["MISTRAL_API_KEY"] = "mk"
+    assert rp._host_derived_api_key("https://api.mistral.ai/v1") == "mk"
+
+    # IPs and loopback → empty.
+    assert rp._host_derived_api_key("http://127.0.0.1:1234/v1") == ""
+    assert rp._host_derived_api_key("http://192.168.0.103:8080/v1") == ""
+    assert rp._host_derived_api_key("http://localhost:1234") == ""
+
+    # Empty / malformed → empty.
+    assert rp._host_derived_api_key("") == ""
+    assert rp._host_derived_api_key("not a url") == ""
+
+    # Already-handled vendors → empty (guards against bypass of host-gate).
+    _os.environ["OPENAI_API_KEY"] = "should-not-leak"
+    assert rp._host_derived_api_key("https://api.openai.com/v1") == ""
+    _os.environ["OPENROUTER_API_KEY"] = "should-not-leak"
+    assert rp._host_derived_api_key("https://openrouter.ai/api/v1") == ""
+
+    # Cleanup
+    for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
+              "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
+        _os.environ.pop(k, None)

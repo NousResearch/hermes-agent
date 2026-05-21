@@ -1989,19 +1989,32 @@ def apply_closeout_transition(
                 """
                 UPDATE tasks
                    SET review_phase = ?,
-                       closeout_evidence = ?
+                       closeout_evidence = ?,
+                       status = 'done',
+                       completed_at = COALESCE(completed_at, ?),
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
                  WHERE id = ?
                    AND status != 'archived'
                 """,
                 (
                     review_phase,
                     _json_dumps_dict(closeout_evidence, "closeout_evidence"),
+                    now,
                     task_id,
                 ),
             )
             if cur.rowcount != 1:
                 return False
-            run_id = _current_run_id(conn, task_id)
+            run_id = _end_run(
+                conn,
+                task_id,
+                outcome="completed",
+                status="done",
+                summary="Kanban worker evidence accepted; waiting for review_ready closeout",
+                metadata={"closeout_phase": "worker_done"},
+            )
 
         _append_event(
             conn,
@@ -3076,6 +3089,7 @@ def complete_task(
                        END
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
+                   AND NOT (status = 'blocked' AND review_phase = 'review_ready')
                 """,
                 (result, now, task_id),
             )
@@ -3096,6 +3110,7 @@ def complete_task(
                        END
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
+                   AND NOT (status = 'blocked' AND review_phase = 'review_ready')
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),

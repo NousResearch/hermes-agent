@@ -90,9 +90,44 @@ def test_worker_done_transition_does_not_final_close(kanban_home):
 
     assert result["status"] == "transitioned"
     assert task.review_phase == "worker_done"
-    assert task.status == "ready"
+    assert task.status == "done"
     assert task.review_phase != "closed"
     assert task.closeout_evidence["verification"]["linear_done_mutated"] is False
+
+
+def test_worker_done_transition_from_triage_repairs_execution_status(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="manual admission work", triage=True)
+        result = closeout.transition_task_closeout(
+            conn,
+            task_id,
+            "worker_done",
+            {"summary": "manual worker evidence accepted"},
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert result["status"] == "transitioned"
+    assert task.review_phase == "worker_done"
+    assert task.status == "done"
+
+
+def test_complete_task_cannot_bypass_review_ready_to_done(kanban_home, git_repo):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="review package", workspace_kind="dir", workspace_path=str(git_repo))
+        closeout.transition_task_closeout(conn, task_id, "worker_done", {"summary": "done"})
+        closeout.transition_task_closeout(
+            conn,
+            task_id,
+            "review_ready",
+            _review_ready_evidence(git_repo),
+            repo_path=git_repo,
+        )
+
+        assert kb.complete_task(conn, task_id, result="accidental raw complete") is False
+        task = kb.get_task(conn, task_id)
+
+    assert task.status == "blocked"
+    assert task.review_phase == "review_ready"
 
 
 def test_complete_task_on_governed_task_sets_worker_done_not_closed(kanban_home):

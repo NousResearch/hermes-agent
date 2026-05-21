@@ -1,10 +1,11 @@
 """Regression tests for terminal config -> env-var bridging.
 
-terminal_tool._get_env_config() reads ALL terminal settings from os.environ
+terminal_tool._get_env_config() reads terminal settings from os.environ
 (TERMINAL_*).  config.yaml values therefore have to be bridged into env vars
-at startup, by THREE separate code paths:
+at startup, by the config source-of-truth and by adjacent entry-point code paths:
 
-  1. cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
+  1. hermes_cli.terminal_config.TERMINAL_ENV_MAPPINGS
+                       -> shared CLI / TUI source-of-truth used by cli.py
   2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
                           platforms)
   3. hermes_cli/config.py:save_config_value
@@ -16,11 +17,12 @@ silently does nothing for that entry-point.  This bug already shipped once
 for ``docker_run_as_host_user`` (gateway and CLI maps) and once for
 ``docker_mount_cwd_to_workspace`` (gateway map).
 
-This test guards against future drift by extracting all three maps via source
-inspection and asserting they all bridge the same set of writable
-``terminal.*`` keys.  Source inspection (rather than importing the live
-dicts) keeps the test independent of the user's ~/.hermes/config.yaml and
-mirrors the pattern used in tests/hermes_cli/test_config_drift.py.
+This test guards against future drift by treating the shared terminal_config
+mapping as the CLI source-of-truth, source-inspecting the remaining inline maps,
+and asserting the load-bearing terminal env vars stay aligned.  Source
+inspection for gateway/config maps (rather than executing their bridge paths)
+keeps the test independent of the user's ~/.hermes/config.yaml and mirrors the
+pattern used in tests/hermes_cli/test_config_drift.py.
 """
 
 import ast
@@ -71,10 +73,12 @@ def _extract_dict_keys(source: str, dict_name: str) -> set[str]:
 
 
 def _cli_env_map_keys() -> set[str]:
-    """terminal config keys bridged by cli.load_cli_config()."""
-    import cli
-    source = inspect.getsource(cli.load_cli_config)
-    return _extract_dict_keys(source, "env_mappings")
+    """terminal config keys bridged by the shared CLI/source-of-truth map."""
+    from hermes_cli.terminal_config import SENSITIVE_TERMINAL_ENV_MAPPINGS, TERMINAL_ENV_MAPPINGS
+
+    # Include the intentionally sensitive SUDO_PASSWORD mapping by key name only
+    # so the CLI bridge surface stays represented without exposing secret values.
+    return set(TERMINAL_ENV_MAPPINGS) | set(SENSITIVE_TERMINAL_ENV_MAPPINGS)
 
 
 def _gateway_env_map_keys() -> set[str]:
@@ -84,6 +88,14 @@ def _gateway_env_map_keys() -> set[str]:
     import gateway.run as gr
     source = inspect.getsource(gr)
     return _extract_dict_keys(source, "_terminal_env_map")
+
+
+def _gateway_env_map_values() -> set[str]:
+    """TERMINAL_* env vars bridged by gateway/run.py at module load."""
+    import gateway.run as gr
+
+    source = inspect.getsource(gr)
+    return _extract_dict_values(source, "_terminal_env_map")
 
 
 def _save_config_env_sync_keys() -> set[str]:
@@ -97,8 +109,8 @@ def _save_config_env_sync_keys() -> set[str]:
     return {k.split(".", 1)[1] for k in keys if k.startswith("terminal.")}
 
 
-# Keys present in cli.py env_mappings but intentionally absent from
-# gateway/run.py or set_config_value.  Each entry must be justified.
+# Keys present in the shared CLI/source-of-truth mapping but intentionally
+# absent from gateway/run.py or set_config_value.  Each entry must be justified.
 _CLI_ONLY_OK = frozenset({
     # `env_type` is a legacy YAML key alias for `backend` that cli.py
     # accepts for backwards-compat with older cli-config.yaml.  The
@@ -109,6 +121,14 @@ _CLI_ONLY_OK = frozenset({
     # used across backends, bridged to $SUDO_PASSWORD (not TERMINAL_*).
     # Treating it as terminal-only would be misleading.
     "sudo_password",
+    # modal_mode is normalized by CLI setup/subscription flows and consumed by
+    # terminal_tool when present, but gateway does not currently expose the
+    # managed-vs-direct Modal selector through its startup bridge.
+    "modal_mode",
+    # docker_extra_args is a Docker-only escape hatch consumed by terminal_tool;
+    # the gateway bridge intentionally stays on the historically supported
+    # Docker env/config keys until that surface is explicitly expanded.
+    "docker_extra_args",
 })
 
 
@@ -123,7 +143,7 @@ def _terminal_tool_env_var_names() -> set[str]:
 
 
 def test_cli_and_gateway_env_maps_agree():
-    """cli.py and gateway/run.py must bridge the same set of terminal keys.
+    """Shared CLI config and gateway/run.py must bridge the same terminal keys.
 
     Both feed the same downstream consumer (terminal_tool).  Drift between
     them means a config.yaml setting that "works in CLI mode but not gateway
@@ -143,14 +163,38 @@ def test_cli_and_gateway_env_maps_agree():
     missing_in_cli = gw_keys - cli_keys
 
     assert not missing_in_gateway, (
-        f"Keys in cli.py env_mappings but missing from gateway/run.py "
+        f"Keys in shared TERMINAL_ENV_MAPPINGS but missing from gateway/run.py "
         f"_terminal_env_map: {sorted(missing_in_gateway)}.  Add them to "
         f"both maps (same bug class as docker_run_as_host_user shipping "
         f"wired in cli but not gateway in April 2026)."
     )
     assert not missing_in_cli, (
-        f"Keys in gateway/run.py _terminal_env_map but missing from cli.py "
-        f"env_mappings: {sorted(missing_in_cli)}.  Add them to both maps."
+        f"Keys in gateway/run.py _terminal_env_map but missing from shared "
+        f"TERMINAL_ENV_MAPPINGS: {sorted(missing_in_cli)}. Add them to both maps."
+    )
+
+
+def test_shared_terminal_env_map_points_at_terminal_tool_consumers():
+    """Every shared terminal env var should be consumed by terminal_tool."""
+    from hermes_cli.terminal_config import TERMINAL_ENV_MAPPINGS
+
+    missing_consumers = set(TERMINAL_ENV_MAPPINGS.values()) - _terminal_tool_env_var_names()
+
+    assert not missing_consumers, (
+        "Shared TERMINAL_ENV_MAPPINGS contains env vars terminal_tool does not "
+        f"consume: {sorted(missing_consumers)}. Remove dead mappings or add the "
+        "terminal_tool consumer."
+    )
+
+
+def test_gateway_terminal_env_map_points_at_terminal_tool_consumers():
+    """Every gateway terminal env var should be consumed by terminal_tool."""
+    missing_consumers = _gateway_env_map_values() - _terminal_tool_env_var_names()
+
+    assert not missing_consumers, (
+        "gateway/run.py _terminal_env_map contains env vars terminal_tool does "
+        f"not consume: {sorted(missing_consumers)}. Remove dead mappings or add "
+        "the terminal_tool consumer."
     )
 
 
@@ -188,7 +232,7 @@ def test_docker_run_as_host_user_is_bridged_everywhere():
     """Explicit pin for the bug we just fixed.
 
     docker_run_as_host_user was added to terminal_tool._get_env_config and
-    DockerEnvironment but NOT to cli.py's env_mappings or gateway/run.py's
+    DockerEnvironment but NOT to the CLI env map or gateway/run.py's
     _terminal_env_map, so ``terminal.docker_run_as_host_user: true`` in
     config.yaml had no effect at runtime.  This guard makes the regression
     impossible to reintroduce silently.

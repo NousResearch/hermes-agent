@@ -10152,7 +10152,13 @@ class GatewayRunner:
                         cfg = yaml.safe_load(f) or {}
                 else:
                     cfg = {}
-                model_cfg = cfg.setdefault("model", {})
+                model_cfg = cfg.get("model")
+                if isinstance(model_cfg, str):
+                    model_cfg = {"default": model_cfg}
+                    cfg["model"] = model_cfg
+                elif not isinstance(model_cfg, dict):
+                    model_cfg = {}
+                    cfg["model"] = model_cfg
                 model_cfg["default"] = result.new_model
                 model_cfg["provider"] = result.target_provider
                 if result.base_url:

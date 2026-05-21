@@ -555,6 +555,7 @@ def _resolve_named_custom_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated
     # from a `model_aliases:` direct-alias resolution) — build a runtime
@@ -614,11 +615,15 @@ def _resolve_named_custom_runtime(
     # Check if a credential pool exists for this custom endpoint
     pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
     if pool_result:
-        # Propagate the model name even when using pooled credentials —
-        # the pool doesn't know about the custom_providers model field.
-        model_name = custom_provider.get("model")
-        if model_name:
-            pool_result["model"] = model_name
+        # Preserve explicit model selection when credentials are supplied by a
+        # pool.  The pool only knows the endpoint/key, not which model the user
+        # selected for this custom provider.
+        model_cfg = _get_model_config()
+        effective_model = (target_model or "").strip() or str(model_cfg.get("default") or "").strip()
+        if not effective_model:
+            effective_model = str(custom_provider.get("model", "") or "").strip()
+        if effective_model:
+            pool_result["model"] = effective_model
         return pool_result
 
     api_key_candidates = [
@@ -1140,6 +1145,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider

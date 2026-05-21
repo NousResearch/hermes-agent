@@ -69,3 +69,25 @@ def test_loopback_host_header_validation_still_enforced(client_loopback):
     """DNS-rebinding protection: a foreign Host header is rejected."""
     r = client_loopback.get("/api/status", headers={"Host": "evil.test"})
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# should_require_auth predicate (Task 0.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("host,allow_public,expected", [
+    ("127.0.0.1", False, False),
+    ("127.0.0.1", True,  False),
+    ("localhost", False, False),
+    ("::1",       False, False),
+    ("0.0.0.0",   True,  False),    # --insecure escape hatch
+    ("0.0.0.0",   False, True),
+    ("192.168.1.5", False, True),
+    ("10.0.0.1",  True,  False),
+    ("100.64.0.1", False, True),    # Tailscale CGNAT — treated as public
+    ("hermes-agent-prod-abc.fly.dev", False, True),
+])
+def test_should_require_auth_truth_table(host, allow_public, expected):
+    from hermes_cli.web_server import should_require_auth
+    assert should_require_auth(host, allow_public) is expected

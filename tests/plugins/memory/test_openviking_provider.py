@@ -472,11 +472,16 @@ def test_on_session_switch_waits_for_inflight_sync_thread():
     join_calls = []
 
     class FakeThread:
+        def __init__(self):
+            self._alive = True
+
         def is_alive(self):
-            return True
+            return self._alive
 
         def join(self, timeout=None):
             join_calls.append(timeout)
+            # Simulate a worker that finishes within the join window.
+            self._alive = False
 
     provider._sync_thread = FakeThread()
 
@@ -629,3 +634,162 @@ def test_on_session_switch_swallows_commit_failure():
 
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Hung-writer protection: the sync worker can outlive the bounded join
+# because each OpenViking POST has _TIMEOUT=30s and there are two per turn.
+# Committing while late writes are still in flight would orphan them past
+# the commit boundary — they would never be extracted.
+# ---------------------------------------------------------------------------
+
+class _HungThread:
+    """Thread stand-in that stays alive across joins."""
+
+    def is_alive(self):
+        return True
+
+    def join(self, timeout=None):
+        # Pretend the join timed out — worker still running.
+        return None
+
+
+def test_on_session_end_skips_commit_when_sync_worker_outlives_join():
+    """If the sync worker is still alive after the 10s join, the commit must
+    be skipped — late writes from the worker would otherwise land in an
+    already-committed session and never be extracted. Leave _turn_count
+    intact so the session stays marked dirty."""
+    provider = _make_provider_with_session("old-sid", turn_count=3)
+    provider._sync_thread = _HungThread()
+
+    provider.on_session_end([])
+
+    provider._client.post.assert_not_called()
+    assert provider._turn_count == 3
+
+
+def test_on_session_switch_skips_commit_when_sync_worker_outlives_join():
+    """Same hazard on the switch path. Rotation must still proceed (the new
+    session needs to start) but the old-session commit is skipped to avoid
+    orphaning the worker's late writes past commit."""
+    provider = _make_provider_with_session("old-sid", turn_count=2)
+    provider._sync_thread = _HungThread()
+
+    provider.on_session_switch("new-sid")
+
+    provider._client.post.assert_not_called()
+    assert provider._session_id == "new-sid"
+    assert provider._turn_count == 0
+
+
+# ---------------------------------------------------------------------------
+# on_memory_write: same late-capture hazard as sync_turn — worker must use
+# the session id snapshotted at call time, not re-read self._session_id.
+# Block inside the stub ctor (BEFORE the f-string for the post path is
+# evaluated) so the rotation deterministically beats the f-string.
+# ---------------------------------------------------------------------------
+
+def test_on_memory_write_captures_session_id_at_call_time():
+    import threading
+
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = "old-sid"
+
+    in_ctor = threading.Event()
+    release = threading.Event()
+    done = threading.Event()
+    captured_paths = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            in_ctor.set()
+            release.wait(timeout=2.0)
+
+        def post(self, path, payload=None, **kwargs):
+            captured_paths.append(path)
+            done.set()
+            return {}
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.on_memory_write("add", "viking://memories/x", "remember this")
+        assert in_ctor.wait(timeout=2.0), "worker never entered ctor"
+        # Rotate provider's session id while the worker is parked in the ctor,
+        # BEFORE it evaluates the f-string for the post path. If the worker
+        # reads self._session_id inside the closure, it will now see "new-sid".
+        provider._session_id = "new-sid"
+        release.set()
+        assert done.wait(timeout=2.0), "worker never reached post()"
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    # The write must target the OLD session id captured at call time.
+    assert captured_paths == ["/api/v1/sessions/old-sid/messages"]
+
+
+# ---------------------------------------------------------------------------
+# Prefetch staleness: a prefetch worker that finishes AFTER a session switch
+# must drop its result instead of repopulating the new session with stale
+# recall from the old generation. Bump the generation directly (rather than
+# calling on_session_switch, whose own join blocks on the test worker) so
+# the test isolates the generation-gating behavior.
+# ---------------------------------------------------------------------------
+
+def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
+    import threading
+
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = "old-sid"
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            started.set()
+            release.wait(timeout=2.0)
+            return {
+                "result": {
+                    "memories": [
+                        {"uri": "viking://memories/old", "score": 0.9,
+                         "abstract": "stale from old session"},
+                    ],
+                    "resources": [],
+                }
+            }
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.queue_prefetch("anything")
+        assert started.wait(timeout=2.0), "prefetch worker never entered post()"
+        # Simulate a session switch by bumping the generation directly.
+        # The worker captured the pre-bump generation when it was spawned.
+        provider._prefetch_generation += 1
+        release.set()
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    # The stale result from the pre-bump generation must NOT have been written
+    # into the new generation's prefetch slot.
+    assert provider._prefetch_result == ""

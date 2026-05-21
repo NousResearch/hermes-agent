@@ -1631,6 +1631,33 @@ def test_named_custom_runtime_propagates_model_direct_path(monkeypatch):
     assert resolved["provider"] == "custom"
 
 
+def test_named_custom_runtime_propagates_extra_body_direct_path(monkeypatch):
+    """Custom provider extra_body should become runtime request_overrides."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-gemma")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-gemma",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "google/gemma-4-31b-it",
+            "extra_body": {
+                "enable_thinking": True,
+                "reasoning_effort": "high",
+            },
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-gemma")
+    assert resolved["request_overrides"] == {
+        "extra_body": {
+            "enable_thinking": True,
+            "reasoning_effort": "high",
+        }
+    }
+
+
 def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     """Model should propagate even when credential pool handles credentials."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
@@ -1660,6 +1687,36 @@ def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
         "model must be injected into pool result"
     )
     assert resolved["api_key"] == "pool-key", "pool credentials should be used"
+
+
+def test_named_custom_runtime_propagates_extra_body_pool_path(monkeypatch):
+    """Custom provider extra_body should survive credential-pool resolution."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-gemma")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-gemma",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "google/gemma-4-31b-it",
+            "extra_body": {"enable_thinking": True},
+        },
+    )
+    monkeypatch.setattr(
+        rp, "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:my-gemma",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-gemma")
+    assert resolved["request_overrides"] == {
+        "extra_body": {"enable_thinking": True}
+    }
 
 
 def test_named_custom_runtime_no_model_when_absent(monkeypatch):
@@ -2150,6 +2207,24 @@ class TestProviderEntryApiKeyEnvAlias:
         key_env so the set stays in sync with what the runtime actually reads."""
         from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
         assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
+
+    def test_extra_body_is_supported_schema(self):
+        from hermes_cli.config import (
+            _VALID_CUSTOM_PROVIDER_FIELDS,
+            _normalize_custom_provider_entry,
+        )
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/v1",
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": True},
+                "include_reasoning": True,
+            },
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+        assert "extra_body" in _VALID_CUSTOM_PROVIDER_FIELDS
+        assert normalized["extra_body"] == entry["extra_body"]
 # =============================================================================
 # Tencent TokenHub — API-key provider runtime resolution
 # =============================================================================

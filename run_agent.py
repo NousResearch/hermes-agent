@@ -124,8 +124,8 @@ from agent.memory_manager import StreamingContextScrubber, build_memory_context_
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
-# Imported for agent.system_prompt._ra() patch contract.
-from agent.prompt_builder import build_nous_subscription_prompt  # noqa: F401
+# Imported for compatibility and agent.system_prompt._ra() patch contract.
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, build_nous_subscription_prompt  # noqa: F401
 from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,

@@ -60,7 +60,7 @@ export default function PluginsPage() {
 
   useEffect(() => {
     setEnd(
-      <div className="flex w-full min-w-0 justify-start">
+      <div className="flex w-full min-w-0 justify-start sm:justify-end">
         <Button
           ghost
           size="sm"

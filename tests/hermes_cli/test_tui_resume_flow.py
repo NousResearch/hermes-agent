@@ -251,6 +251,38 @@ def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):
     assert captured == {"toolsets": "web,terminal", "tui": True}
 
 
+def test_termux_fast_tui_launch_uses_light_parser(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(
+        sys, "argv", ["hermes", "--tui", "--toolsets", "web,terminal"]
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "cmd_chat",
+        lambda args: captured.update({"toolsets": args.toolsets, "tui": args.tui}),
+    )
+
+    assert main_mod._try_termux_fast_tui_launch() is True
+    assert captured == {"toolsets": "web,terminal", "tui": True}
+
+
+def test_termux_fast_tui_launch_skips_help(monkeypatch, main_mod):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(sys, "argv", ["hermes", "--tui", "--help"])
+
+    assert main_mod._try_termux_fast_tui_launch() is False
+
+
+def test_fast_tui_launch_is_termux_only(monkeypatch, main_mod):
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(sys, "argv", ["hermes", "--tui"])
+
+    assert main_mod._try_termux_fast_tui_launch() is False
+
+
 def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
     captured = {}
 
@@ -521,6 +553,66 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert active_path_during_call == active_path
     assert not active_path.exists()
     assert env["NODE_ENV"] == "production"
+
+
+def test_launch_tui_exit_code_42_relaunches_update(monkeypatch, main_mod):
+    from unittest.mock import patch
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call", lambda *args, **kwargs: 42)
+
+    with patch("hermes_cli.relaunch.relaunch") as mock_relaunch:
+        with pytest.raises(SystemExit) as exc:
+            main_mod._launch_tui()
+
+    assert exc.value.code == 42
+    mock_relaunch.assert_called_once_with(["update"], preserve_inherited=False)
+
+
+def test_launch_tui_drops_stale_resume_env_without_resume_arg(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setenv("HERMES_TUI_RESUME", "stale-missing-session")
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert "HERMES_TUI_RESUME" not in captured["env"]
+
+
+def test_launch_tui_sets_resume_env_from_resume_arg(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setenv("HERMES_TUI_RESUME", "stale-missing-session")
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(resume_session_id="20260518_000000_goodid")
+
+    assert captured["env"]["HERMES_TUI_RESUME"] == "20260518_000000_goodid"
 
 
 def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path):

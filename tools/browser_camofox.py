@@ -56,7 +56,7 @@ def get_camofox_url() -> str:
 def is_camofox_mode() -> bool:
     """True when Camofox backend is configured and no CDP override is active.
 
-    When the user has explicitly connected to a live Chrome instance via
+    When the user has explicitly connected to a live Chromium-family browser via
     ``/browser connect`` (which sets ``BROWSER_CDP_URL``), the CDP connection
     takes priority over Camofox so the browser tools operate on the real
     browser instead of being silently routed to the Camofox backend.

@@ -5293,6 +5293,23 @@ def _default_spawn(
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
 
+    # Strip session-level env vars inherited from the parent process.
+    # When the dispatcher runs inside a gateway agent loop, env contains
+    # HERMES_SESSION_ID and other chat-context vars that would pin the
+    # worker to the dispatcher's session. Workers must start with a clean
+    # session state — the kanban-specific vars set below are the only
+    # Hermes context the worker should inherit.
+    _SESSION_ENV_STRIP = {
+        "HERMES_SESSION_ID",
+        "HERMES_CHAT_ID",
+        "HERMES_THREAD_ID",
+        "HERMES_USER_ID",
+        "HERMES_PLATFORM",
+        "HERMES_GATEWAY_MODE",
+    }
+    for key in _SESSION_ENV_STRIP:
+        env.pop(key, None)
+
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
     # config.  Without this, `env = dict(os.environ)` copies only the parent's

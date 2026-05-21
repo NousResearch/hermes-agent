@@ -3316,6 +3316,24 @@ def test_ready_completion_synthesizes_review_status_run(kanban_home, monkeypatch
     assert run.outcome == "completed"
 
 
+def test_complete_task_preserves_zero_expected_run_id_for_review_gate(kanban_home, monkeypatch):
+    """Only None means no run id; numeric zero should still be passed through."""
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    seen = []
+
+    def fake_run_started_from_review(conn, task_id, run_id):
+        _ = conn, task_id
+        seen.append(run_id)
+        return False
+
+    monkeypatch.setattr(kb, "_run_started_from_review", fake_run_started_from_review)
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="zero run id", assignee="worker-a")
+        assert not kb.complete_task(conn, t, summary="mismatched run", expected_run_id=0)
+
+    assert seen == [0]
+
+
 def test_required_review_gate_allows_review_run_to_complete_done(kanban_home, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
     monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")

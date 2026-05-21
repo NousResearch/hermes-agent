@@ -3117,7 +3117,7 @@ def complete_task(
             return False
         run_for_gate = expected_run_id if expected_run_id is not None else task_row["current_run_id"]
         route_to_review = review_gate_enabled() and not _run_started_from_review(
-            conn, task_id, int(run_for_gate) if run_for_gate else None
+            conn, task_id, int(run_for_gate) if run_for_gate is not None else None
         )
         effective_metadata = metadata
         if route_to_review:

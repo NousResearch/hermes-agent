@@ -1758,24 +1758,6 @@ def unsubscribe_home(task_id: str, platform: str, board: Optional[str] = Query(N
 
 
 # ---------------------------------------------------------------------------
-# Usage (token/cost rollups from the project usage ledger)
-# ---------------------------------------------------------------------------
-
-@router.get("/usage")
-def get_usage(
-    board: Optional[str] = Query(None),
-    task_id: Optional[str] = Query(None),
-    refresh: bool = Query(True),
-):
-    board = _resolve_board(board)
-    try:
-        from hermes_cli import project_usage_ledger as usage
-        return usage.get_summary(board=board, task_id=task_id, refresh=refresh)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"usage summary failed: {exc}")
-
-
-# ---------------------------------------------------------------------------
 # Stats (per-profile / per-status counts + oldest-ready age)
 # ---------------------------------------------------------------------------
 

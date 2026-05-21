@@ -2415,36 +2415,11 @@ def test_board_usage_rollup_falls_back_for_multiple_snapshot_sessions(monkeypatc
     assert rollup["estimated_cost_usd"] == pytest.approx(0.017)
 
 
-def test_usage_route_returns_board_filtered_summary(client, kanban_home):
-    from hermes_state import SessionDB
-
-    db = SessionDB(kanban_home / "state.db")
-    try:
-        db.create_session("sess-route", "kanban", model="gpt-test")
-        db.update_token_counts(
-            "sess-route",
-            input_tokens=8,
-            output_tokens=9,
-            estimated_cost_usd=0.002,
-            absolute=True,
-        )
-    finally:
-        db.close()
-
-    with kb.connect(board="default") as conn:
-        tid = kb.create_task(conn, title="route usage", assignee="worker")
-        assert kb.claim_task(conn, tid)
-        assert kb.complete_task(
-            conn, tid, summary="done", metadata={"worker_session_id": "sess-route"}
-        )
-
-    r = client.get(f"/api/plugins/kanban/usage?board=default&task_id={tid}")
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["totals"]["input_tokens"] == 8
-    assert [b["board_slug"] for b in data["boards"]] == ["default"]
-    assert data["tasks"][0]["task_id"] == tid
-    assert data["runs"][0]["session_id"] == "sess-route"
+def test_kanban_usage_route_removed_in_favor_of_project_usage_plugin(client, kanban_home):
+    """Project usage is exposed by the dedicated project_usage dashboard plugin."""
+    _ = kanban_home
+    r = client.get("/api/plugins/kanban/usage?board=default")
+    assert r.status_code == 404
 
 
 def test_dashboard_bundle_renders_usage_badge():

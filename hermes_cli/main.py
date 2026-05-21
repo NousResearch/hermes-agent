@@ -13368,8 +13368,9 @@ Examples:
 
             discover_mcp_tools()
         except Exception:
-            logger.debug(
-                "MCP tool discovery failed at CLI startup",
+            logger.warning(
+                "MCP tool discovery failed at CLI startup — one or more "
+                "optional MCP servers may be unavailable. See logs for details.",
                 exc_info=True,
             )
         try:

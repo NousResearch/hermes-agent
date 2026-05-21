@@ -451,6 +451,63 @@ class TestTelegramApprovalCallback:
         assert "already been resolved" in query.answer.call_args[1]["text"]
 
     @pytest.mark.asyncio
+    async def test_button_state_stale_after_text_approve_does_not_edit_as_success(self):
+        adapter = _make_adapter()
+        adapter._approval_state[3] = "some-session"
+
+        query = AsyncMock()
+        query.data = "ea:deny:3"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "Alice"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=0) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_called_once_with("some-session", "deny")
+        query.answer.assert_called_once()
+        assert "already been resolved" in query.answer.call_args[1]["text"]
+        query.edit_message_text.assert_not_called()
+        assert 3 not in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_button_resolve_failure_keeps_state_for_retry(self):
+        adapter = _make_adapter()
+        adapter._approval_state[4] = "some-session"
+
+        query = AsyncMock()
+        query.data = "ea:once:4"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "Alice"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", side_effect=RuntimeError("boom")):
+                await adapter._handle_callback_query(update, context)
+
+        query.answer.assert_called_once()
+        assert "failed" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert adapter._approval_state[4] == "some-session"
+
+    @pytest.mark.asyncio
     async def test_model_picker_callback_not_affected(self):
         """Ensure model picker callbacks still route correctly."""
         adapter = _make_adapter()
@@ -493,11 +550,10 @@ class TestTelegramApprovalCallback:
 
         with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
             with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
-                # Allow the caller — the new fail-closed allowlist gate
-                # (#24457) rejects empty TELEGRAM_ALLOWED_USERS, but this
-                # test isn't exercising that gate; it's verifying the
-                # update_prompt callback still writes the response.
-                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}):
+                # Allow the caller — the fail-closed allowlist gate rejects
+                # missing/empty TELEGRAM_ALLOWED_USERS, but this test is about
+                # update_prompt callback routing rather than authorization.
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "123"}):
                     await adapter._handle_callback_query(update, context)
 
         # Should NOT have triggered approval resolution

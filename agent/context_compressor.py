@@ -1012,6 +1012,14 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
 
+## Guardrail & Verification Evidence
+[Preserve workflow-critical evidence that should survive compaction:
+- Required workflow steps completed or still missing
+- Test/build/lint/smoke commands and outcomes
+- User approvals/denials and exact gated phrases
+- Tool guardrail warnings/blocks that affected the task
+- Final artifact paths and verification status]
+
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 
 Write only the summary body. Do not include any preamble or prefix."""

@@ -67,7 +67,7 @@ class TestCommandRegistry:
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
 
     def test_every_entry_has_valid_category(self):
-        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit"}
+        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit", "Workflow"}
         for cmd in COMMAND_REGISTRY:
             assert cmd.category in valid_categories, f"{cmd.name} has invalid category '{cmd.category}'"
 
@@ -109,6 +109,43 @@ class TestResolveCommand:
         assert resolve_command("reload_mcp").name == "reload-mcp"
         assert resolve_command("codex_runtime").name == "codex-runtime"
         assert resolve_command("tasks").name == "agents"
+
+    def test_afterwork_available_in_cli_and_gateway(self):
+        afterwork = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "afterwork")
+
+        assert not afterwork.cli_only
+        assert not afterwork.gateway_only
+        assert "afterwork" in GATEWAY_KNOWN_COMMANDS
+        assert "퇴근" in GATEWAY_KNOWN_COMMANDS
+        assert "퇴근모드" in GATEWAY_KNOWN_COMMANDS
+
+    def test_afterwork_visible_in_telegram_menu(self):
+        names = {name for name, _ in telegram_bot_commands()}
+
+        assert "afterwork" in names
+
+    def test_workflow_skill_wrappers_are_registered_for_cli_and_gateway(self):
+        workflow_names = {
+            "autopilot",
+            "ralplan",
+            "deep-interview",
+            "verify",
+            "ultraqa",
+            "trace",
+            "deepsearch",
+            "devflow",
+            "tdd",
+        }
+        registry = {cmd.name: cmd for cmd in COMMAND_REGISTRY}
+        for name in workflow_names:
+            cmd = registry[name]
+            assert cmd.category == "Workflow"
+            assert not cmd.cli_only
+            assert not cmd.gateway_only
+            assert f"/{name}" in COMMANDS
+            assert name in GATEWAY_KNOWN_COMMANDS
+            assert resolve_command(name).name == name
+        assert resolve_command("deepinterview").name == "deep-interview"
 
     def test_topic_is_gateway_command(self):
         topic = resolve_command("topic")

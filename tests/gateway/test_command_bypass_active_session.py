@@ -300,6 +300,9 @@ class TestAllResolvableCommandsBypassGuard:
             ("/usage", "usage"),
             ("/reload-mcp", "reload-mcp"),
             ("/sethome", "sethome"),
+            ("/afterwork", "afterwork"),
+            ("/퇴근", "afterwork"),
+            ("/퇴근모드", "afterwork"),
         ],
     )
     @pytest.mark.asyncio
@@ -319,6 +322,30 @@ class TestAllResolvableCommandsBypassGuard:
             "not silently discarded"
         )
 
+    @pytest.mark.asyncio
+    async def test_afterwork_plaintext_is_coerced_and_bypasses_guard(self):
+        """Plain Korean away-mode text must not interrupt/queue as normal chat."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("퇴근모드"))
+
+        assert sk not in adapter._pending_messages
+        assert any("handled:afterwork" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
+    async def test_afterwork_natural_sentence_stays_normal_text(self):
+        """Only exact away-mode phrases become commands."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("그냥 퇴근할까?"))
+
+        assert sk in adapter._pending_messages
+        assert len(adapter.sent_responses) == 0
+
     def test_should_bypass_returns_true_for_every_registered_command(self):
         """Spot-check: the commands previously-broken on Discord all bypass."""
         from hermes_cli.commands import should_bypass_active_session
@@ -326,7 +353,7 @@ class TestAllResolvableCommandsBypassGuard:
         for cmd in (
             "model", "reasoning", "personality", "voice", "insights", "title",
             "resume", "retry", "undo", "compress", "usage",
-            "reload-mcp", "sethome", "reset",
+            "reload-mcp", "sethome", "reset", "afterwork", "퇴근", "퇴근모드",
         ):
             assert should_bypass_active_session(cmd) is True, (
                 f"/{cmd} must bypass the active-session guard"

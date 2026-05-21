@@ -2509,6 +2509,7 @@ from agent.skill_commands import (
     get_skill_commands,
     build_skill_invocation_message,
     build_preloaded_skills_prompt,
+    resolve_skill_command_key,
 )
 from agent.skill_bundles import (
     get_skill_bundles,
@@ -7340,6 +7341,138 @@ class HermesCLI:
         except Exception:
             return False
 
+    @staticmethod
+    def _looks_like_afterwork_plaintext(text: str) -> bool:
+        """Return True for exact Korean/plaintext away-mode commands.
+
+        These phrases are intentionally exact-match only so normal Korean chat
+        does not accidentally become a control-plane command. The Enter handler
+        rewrites them to /afterwork before busy-input routing, which prevents
+        the default interrupt mode from killing the current run.
+        """
+        normalized = (text or "").strip().lower()
+        return normalized in {"퇴근", "퇴근모드", "퇴근 모드", "afterwork", "awaymode"}
+
+    @staticmethod
+    def _looks_like_office_plaintext(text: str) -> bool:
+        """Return True for exact Korean/plaintext office-mode commands."""
+        normalized = (text or "").strip().lower()
+        return normalized in {"출근", "출근모드", "출근 모드", "office", "morning"}
+
+    def _should_handle_afterwork_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when away mode should be handled as a command now.
+
+        /afterwork is a control-plane command. If Hermes is busy, routing it
+        through the normal pending/interrupt path is exactly the bug away mode
+        is meant to avoid. Dispatch it on the UI thread like /steer.
+        """
+        if not text or has_images:
+            return False
+        if self._looks_like_afterwork_plaintext(text) or self._looks_like_office_plaintext(text):
+            return True
+        if not _looks_like_slash_command(text):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name in {"afterwork", "office"})
+        except Exception:
+            return False
+
+    def _afterwork_prompt(self) -> tuple[str, Path]:
+        """Build the local away-mode instruction and handoff path."""
+        try:
+            workdir = Path(getattr(self, "cwd", None) or os.getcwd())
+        except Exception:
+            workdir = Path.cwd()
+        handoff = workdir / ".hermes" / "handoff" / "current.md"
+        prompt = (
+            "퇴근모드로 전환해. 현재 진행 중인 작업은 중단하지 말고 계속 진행해. "
+            "먼저 현재 상태, 완료/진행/대기 항목, 다음 계획, 사용자 확인이 필요한 결정을 간단히 정리해. "
+            "가능하면 프로젝트 handoff 파일을 업데이트해: "
+            f"{handoff}. "
+            "막히면 Telegram 알림으로 결정이 필요한 사항만 짧게 보고해."
+        )
+        return prompt, handoff
+
+    def _handle_project_mode_command(self, mode: str, target: str = "all") -> bool:
+        """Handle global tmux project away/office mode from the local CLI."""
+        try:
+            from types import SimpleNamespace
+            from gateway.project_sessions import set_mode
+            source = SimpleNamespace(
+                platform=SimpleNamespace(value="local"),
+                chat_id="cli",
+                user_id=None,
+                thread_id=None,
+            )
+            message = set_mode(source, mode, target or "all")
+        except Exception as exc:
+            _cprint(f"  {_ERR}프로젝트 모드 전환 실패: {exc}{_RST}")
+            return False
+        for line in str(message).splitlines():
+            _cprint(f"  {line}")
+        return True
+
+    def _handle_afterwork_command(self, cmd: str):
+        """Handle /afterwork, /awaymode, /퇴근, /퇴근모드 in the local CLI.
+
+        `/afterwork all|current` is the global tmux project-session away mode.
+        Bare `/afterwork` keeps the local-session compatibility path.
+        Plain Korean `퇴근모드` is rewritten to `/afterwork all` before this
+        handler, so the user's natural command acts as the global commute flow.
+        """
+        parts = (cmd or "").split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+        if arg in {"all", "current"}:
+            self._handle_project_mode_command("away", arg)
+            return
+        prompt, handoff = self._afterwork_prompt()
+        try:
+            handoff.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        if self._agent_running and self.agent is not None and hasattr(self.agent, "steer"):
+            try:
+                if self.agent.steer(prompt):
+                    _cprint(f"  {_ACCENT}퇴근모드 전환 요청을 현재 작업에 주입했습니다. 작업은 중단하지 않습니다.{_RST}")
+                    _cprint(f"  {_DIM}handoff: {handoff}{_RST}")
+                    return
+            except Exception as exc:
+                _cprint(f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}")
+
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(prompt)
+            if self._agent_running:
+                _cprint(f"  {_ACCENT}퇴근모드 요청을 다음 턴으로 큐잉했습니다. 현재 작업은 interrupt하지 않습니다.{_RST}")
+            else:
+                _cprint(f"  {_ACCENT}퇴근모드 요청을 시작합니다.{_RST}")
+            _cprint(f"  {_DIM}handoff: {handoff}{_RST}")
+        else:
+            _cprint("  (._.) Cannot enter away mode: input queue is unavailable.")
+
+    def _handle_office_command(self, cmd: str):
+        """Handle /office, /morning, /출근, /출근모드 in the local CLI."""
+        parts = (cmd or "").split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "all"
+        if arg not in {"all", "current"}:
+            _cprint("  사용: /office [all|current]")
+            return
+        self._handle_project_mode_command("office", arg)
+
+    def _handle_commute_command(self):
+        """Print commute-mode usage help in CLI."""
+        try:
+            from gateway.project_sessions import commute_help_text
+            text = commute_help_text()
+        except Exception as exc:
+            _cprint(f"  {_ERR}퇴근모드 도움말 조회 실패: {exc}{_RST}")
+            return
+        for line in text.splitlines():
+            _cprint(f"  {line}")
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -7803,6 +7936,42 @@ class HermesCLI:
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
     
+    _WORKFLOW_SKILL_WRAPPER_COMMANDS = frozenset({
+        "autopilot",
+        "ralplan",
+        "deep-interview",
+        "verify",
+        "ultraqa",
+        "trace",
+        "deepsearch",
+        "devflow",
+        "tdd",
+    })
+
+    def _handle_workflow_skill_command(self, cmd_original: str, canonical: str) -> None:
+        """Load a workflow skill from a built-in slash-command wrapper."""
+        user_instruction = cmd_original.split(None, 1)[1].strip() if len(cmd_original.split(None, 1)) > 1 else ""
+        skill_cmds = get_skill_commands()
+        cmd_key = resolve_skill_command_key(canonical)
+        if cmd_key is None:
+            ChatConsole().print(
+                f"[bold red]Workflow skill '/{canonical}' is not installed or is disabled.[/]"
+            )
+            ChatConsole().print("[dim]Run /reload-skills after installing or enabling skills.[/]")
+            return
+        msg = build_skill_invocation_message(
+            cmd_key,
+            user_instruction,
+            task_id=self.session_id,
+        )
+        if msg:
+            skill_name = skill_cmds.get(cmd_key, {}).get("name", canonical)
+            print(f"\n⚡ Loading skill: {skill_name}")
+            if hasattr(self, '_pending_input'):
+                self._pending_input.put(msg)
+        else:
+            ChatConsole().print(f"[bold red]Failed to load skill for /{canonical}[/]")
+
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -8110,6 +8279,14 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "agents":
             self._handle_agents_command()
+        elif canonical == "afterwork":
+            self._handle_afterwork_command(cmd_original)
+        elif canonical == "office":
+            self._handle_office_command(cmd_original)
+        elif canonical == "commute":
+            self._handle_commute_command()
+        elif canonical in self._WORKFLOW_SKILL_WRAPPER_COMMANDS:
+            self._handle_workflow_skill_command(cmd_original, canonical)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
@@ -10665,42 +10842,210 @@ class HermesCLI:
         import time as _time
 
         with self._approval_lock:
-            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
+            try:
+                from hermes_cli.config import load_config as _load_full_config
+                _approvals_cfg = (_load_full_config().get("approvals") or {})
+            except Exception:
+                _approvals_cfg = {}
+            try:
+                timeout = int(_approvals_cfg.get("timeout", 60) or 60)
+            except (TypeError, ValueError):
+                timeout = 60
+            notify_target = str(_approvals_cfg.get("notify_target", "") or "").strip()
             response_queue = queue.Queue()
 
+            choices = self._approval_choices(command, allow_permanent=allow_permanent)
             self._approval_state = {
                 "command": command,
                 "description": description,
-                "choices": self._approval_choices(command, allow_permanent=allow_permanent),
+                "choices": choices,
                 "selected": 0,
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout
 
+            broker_request_id = None
+            try:
+                from tools.shared_approval_broker import register_cli_approval
+
+                title = self._resolve_approval_session_title()
+                try:
+                    cwd = os.getcwd()
+                except Exception:
+                    cwd = "unknown"
+                broker_request_id = register_cli_approval(
+                    {
+                        "session_key": f"cli:{getattr(self, 'session_id', '') or os.getpid()}",
+                        "session_id": str(getattr(self, "session_id", "") or "unknown"),
+                        "title": title,
+                        "cwd": cwd,
+                        "pid": os.getpid(),
+                        "command": command,
+                        "description": description,
+                        "allow_permanent": allow_permanent,
+                        "notify_target": notify_target,
+                    },
+                    ttl_seconds=timeout,
+                )
+            except Exception as exc:
+                logger.debug("Failed to register shared CLI approval: %s", exc)
+
             self._invalidate()
+            if notify_target:
+                self._send_approval_notification(notify_target, command, description, timeout)
 
             _last_countdown_refresh = _time.monotonic()
-            while True:
-                try:
-                    result = response_queue.get(timeout=1)
-                    self._approval_state = None
-                    self._approval_deadline = 0
-                    self._invalidate()
-                    return result
-                except queue.Empty:
-                    remaining = self._approval_deadline - _time.monotonic()
-                    if remaining <= 0:
-                        break
-                    now = _time.monotonic()
-                    if now - _last_countdown_refresh >= 5.0:
-                        _last_countdown_refresh = now
+            try:
+                while True:
+                    try:
+                        result = response_queue.get(timeout=1)
+                        self._approval_state = None
+                        self._approval_deadline = 0
                         self._invalidate()
+                        return result
+                    except queue.Empty:
+                        if broker_request_id:
+                            try:
+                                from tools.shared_approval_broker import wait_for_cli_approval
+
+                                remote_choice = wait_for_cli_approval(
+                                    broker_request_id,
+                                    timeout_seconds=0,
+                                    poll_interval=0.01,
+                                )
+                            except Exception as exc:
+                                logger.debug("Failed to poll shared CLI approval: %s", exc)
+                                remote_choice = None
+                            if remote_choice:
+                                if remote_choice == "always" and not allow_permanent:
+                                    remote_choice = "session"
+                                self._approval_state = None
+                                self._approval_deadline = 0
+                                self._invalidate()
+                                _cprint(f"\n{_DIM}  ✓ Remote approval received: {remote_choice}{_RST}")
+                                return remote_choice
+                        remaining = self._approval_deadline - _time.monotonic()
+                        if remaining <= 0:
+                            break
+                        now = _time.monotonic()
+                        if now - _last_countdown_refresh >= 5.0:
+                            _last_countdown_refresh = now
+                            self._invalidate()
+            finally:
+                if broker_request_id:
+                    try:
+                        from tools.shared_approval_broker import clear_cli_approval
+
+                        clear_cli_approval(broker_request_id)
+                    except Exception:
+                        pass
 
             self._approval_state = None
             self._approval_deadline = 0
             self._invalidate()
             _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
             return "deny"
+
+    def _resolve_approval_session_title(self) -> str:
+        """Return a human-readable title for approval notifications."""
+        session_id = str(getattr(self, "session_id", "") or "unknown")
+        title = str(getattr(self, "_pending_title", "") or "").strip()
+        session_db = getattr(self, "_session_db", None)
+        if not title and session_db is not None:
+            try:
+                session_meta = session_db.get_session(session_id) or {}
+                title = str(session_meta.get("title") or "").strip()
+            except Exception:
+                title = ""
+        return title or "제목 없음"
+
+    def _build_approval_notification_message(self, command: str, description: str, timeout: int, notify_target: str = "") -> str:
+        """Build the out-of-band CLI approval notification body."""
+        cmd = command.strip().replace("\n", " ")
+        if len(cmd) > 900:
+            cmd = cmd[:900] + "…"
+        desc = (description or "권한 승인이 필요합니다.").strip()
+        if len(desc) > 500:
+            desc = desc[:500] + "…"
+
+        session_id = str(getattr(self, "session_id", "") or "unknown")
+        title = self._resolve_approval_session_title()
+
+        try:
+            cwd = os.getcwd()
+        except Exception:
+            cwd = "unknown"
+
+        if cwd and cwd != "unknown":
+            project = os.path.basename(cwd.rstrip(os.sep)) or cwd
+        else:
+            project = "unknown"
+
+        try:
+            pid = os.getpid()
+        except Exception:
+            pid = "unknown"
+
+        remote_enabled = ":" in str(notify_target or "")
+        if remote_enabled:
+            answer_lines = textwrap.dedent("""\
+            답변 방법:
+            - 이번 1회만 승인: /approve
+            - 이 세션 동안 같은 유형 승인: /approve session
+            - 항상 승인 규칙 저장: /approve always
+            - 거절: /deny
+            """).strip()
+        else:
+            answer_lines = textwrap.dedent("""\
+            답변 방법:
+            - 이 알림은 확인용입니다.
+            - 승인/거절은 현재 열려 있는 Hermes 터미널에서 선택해야 합니다.
+            - 원격 승인을 쓰려면 approvals.notify_target을 telegram:<chat_id>처럼 특정 채팅으로 지정하세요.
+            """).strip()
+
+        return "\n".join([
+            "[Hermes 승인 요청]",
+            "",
+            "무엇을 승인하나요?",
+            f"- 안건: {desc}",
+            f"- 실행 명령: {cmd}",
+            f"- 제한시간: {timeout}초",
+            "",
+            "어디서 요청했나요?",
+            f"- 프로젝트: {project}",
+            f"- 작업 위치: {cwd}",
+            f"- 세션: {title}",
+            f"- 세션 ID: {session_id}",
+            f"- 프로세스: {pid}",
+            "",
+            answer_lines,
+            "",
+            "참고:",
+            "- 자연어 '승인'은 명령이 아닙니다. 위 slash command로 답하세요.",
+            "- 터미널에서도 기존처럼 once/session/always/deny를 직접 선택할 수 있습니다.",
+        ]).strip()
+
+    def _send_approval_notification(self, target: str, command: str, description: str, timeout: int) -> None:
+        """Best-effort out-of-band notification for dangerous-command approvals.
+
+        This notifies the user that the terminal is waiting for approval.  The
+        CLI also registers the pending request in the shared broker, so an
+        authenticated gateway /approve or /deny can resolve it remotely.
+        """
+        def _worker() -> None:
+            try:
+                from tools.send_message_tool import send_message_tool as _send_message_tool
+
+                message = self._build_approval_notification_message(command, description, timeout, target)
+                _send_message_tool({"action": "send", "target": target, "message": message})
+            except Exception:
+                pass
+
+        try:
+            import threading as _threading
+            _threading.Thread(target=_worker, name="hermes-approval-notify", daemon=True).start()
+        except Exception:
+            pass
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True) -> list[str]:
         """Return approval choices for a dangerous command prompt."""
@@ -12159,6 +12504,21 @@ class HermesCLI:
                 # agent.steer() is thread-safe (holds _pending_steer_lock).
                 if self._should_handle_steer_command_inline(text, has_images=has_images):
                     self.process_command(text)
+                    event.app.current_buffer.reset(append_to_history=True)
+                    return
+
+                # Handle away-mode commands before busy-input routing. Plain
+                # Korean commands like "퇴근모드" must not be treated as a
+                # normal busy message, because the default busy mode interrupts
+                # the running task.
+                if self._should_handle_afterwork_command_inline(text, has_images=has_images):
+                    if self._looks_like_afterwork_plaintext(text):
+                        command_text = "/afterwork all"
+                    elif self._looks_like_office_plaintext(text):
+                        command_text = "/office all"
+                    else:
+                        command_text = text
+                    self.process_command(command_text)
                     event.app.current_buffer.reset(append_to_history=True)
                     return
 

@@ -356,6 +356,15 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     )
     _is_tokenhub = base_url_host_matches(agent._base_url_lower, "tokenhub.tencentmaas.com")
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
+    try:
+        from agent.model_sampling_registry import resolve_sampling_profile
+        _sampling_profile = resolve_sampling_profile(
+            provider=agent.provider,
+            base_url=agent.base_url,
+            model=agent.model,
+        )
+    except Exception:
+        _sampling_profile = None
 
     # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
     # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -419,7 +428,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
-        return _ct.build_kwargs(
+        _kwargs = _ct.build_kwargs(
             model=agent.model,
             messages=api_messages,
             tools=tools_for_api,
@@ -440,6 +449,13 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
         )
+        if not agent.request_overrides:
+            try:
+                from agent.model_sampling_registry import apply_sampling_defaults
+                _kwargs = apply_sampling_defaults(_kwargs, _sampling_profile)
+            except Exception:
+                pass
+        return _kwargs
 
     # ── Legacy flag path ────────────────────────────────────────────
     # Reached only when get_provider_profile() returns None — i.e. a
@@ -451,7 +467,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
-    return _ct.build_kwargs(
+    _kwargs = _ct.build_kwargs(
         model=agent.model,
         messages=_msgs_for_chat,
         tools=tools_for_api,
@@ -487,6 +503,13 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
     )
+    if not agent.request_overrides:
+        try:
+            from agent.model_sampling_registry import apply_sampling_defaults
+            _kwargs = apply_sampling_defaults(_kwargs, _sampling_profile)
+        except Exception:
+            pass
+    return _kwargs
 
 
 

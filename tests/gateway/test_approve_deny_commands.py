@@ -262,6 +262,32 @@ class TestApproveCommand:
         assert "No pending command" in result
 
     @pytest.mark.asyncio
+    async def test_approve_falls_back_to_shared_cli_broker(self):
+        """When no gateway-thread approval is pending, /approve can resolve CLI prompts."""
+        from tools import shared_approval_broker as broker
+
+        runner = _make_runner()
+        request_id = broker.register_cli_approval(
+            {
+                "session_key": "cli-session-for-gateway",
+                "session_id": "sid-cli",
+                "title": "CLI session",
+                "cwd": "/tmp",
+                "pid": os.getpid(),
+                "command": "rm -rf /tmp/demo",
+                "description": "delete demo",
+                "notify_target": "telegram:c1",
+            },
+            ttl_seconds=600,
+        )
+
+        result = await runner._handle_approve_command(_make_event("/approve session"))
+
+        assert "CLI" in result or "remote" in result.lower()
+        assert broker.get_cli_approval(request_id)["choice"] == "session"
+
+
+    @pytest.mark.asyncio
     async def test_approve_stale_old_style_pending(self):
         """Old-style _pending_approvals without blocking event reports expired."""
         runner = _make_runner()
@@ -324,6 +350,31 @@ class TestDenyCommand:
         runner = _make_runner()
         result = await runner._handle_deny_command(_make_event("/deny"))
         assert "No pending command" in result
+
+    @pytest.mark.asyncio
+    async def test_deny_falls_back_to_shared_cli_broker(self):
+        """When no gateway-thread approval is pending, /deny can resolve CLI prompts."""
+        from tools import shared_approval_broker as broker
+
+        runner = _make_runner()
+        request_id = broker.register_cli_approval(
+            {
+                "session_key": "cli-session-for-gateway-deny",
+                "session_id": "sid-cli-deny",
+                "title": "CLI session",
+                "cwd": "/tmp",
+                "pid": os.getpid(),
+                "command": "git reset --hard",
+                "description": "reset tree",
+                "notify_target": "telegram:c1",
+            },
+            ttl_seconds=600,
+        )
+
+        result = await runner._handle_deny_command(_make_event("/deny"))
+
+        assert "CLI" in result or "remote" in result.lower()
+        assert broker.get_cli_approval(request_id)["choice"] == "deny"
 
 
 # ------------------------------------------------------------------

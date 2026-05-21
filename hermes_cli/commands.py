@@ -113,6 +113,40 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("projects", "List Telegram-routable tmux/project sessions", "Session",
+               gateway_only=True),
+    CommandDef("switch", "Switch the active Telegram project session", "Session",
+               gateway_only=True, args_hint="<number|name>"),
+    CommandDef("current", "Show the active Telegram project session", "Session",
+               gateway_only=True),
+    CommandDef("psend", "Send a prompt to the active Telegram project tmux pane", "Session",
+               gateway_only=True, args_hint="<prompt>"),
+    CommandDef("afterwork", "Put current/all project sessions into away mode", "Session",
+               aliases=("awaymode", "퇴근", "퇴근모드"), args_hint="[current|all]"),
+    CommandDef("office", "Return project sessions to terminal-only office mode", "Session",
+               aliases=("morning", "출근", "출근모드"), args_hint="[current|all]"),
+    CommandDef("commute", "Show 퇴근모드/출근모드 remote-control help", "Session",
+               aliases=("away-help", "commute-help", "퇴근도움말")),
+
+    # Workflow skill wrappers
+    CommandDef("autopilot", "Run the autopilot goal-completion workflow skill", "Workflow",
+               args_hint="<instruction>"),
+    CommandDef("ralplan", "Create a rigorous action/implementation plan", "Workflow",
+               args_hint="<topic>"),
+    CommandDef("deep-interview", "Run a structured requirements interview", "Workflow",
+               aliases=("deepinterview",), args_hint="<topic>"),
+    CommandDef("verify", "Verify completion against acceptance criteria", "Workflow",
+               args_hint="<target>"),
+    CommandDef("ultraqa", "Iterate on tests/build/lint/typecheck until clean or blocked", "Workflow",
+               args_hint="<target>"),
+    CommandDef("trace", "Trace a bug, request path, or data/control flow", "Workflow",
+               args_hint="<target>"),
+    CommandDef("deepsearch", "Run a deep source-grounded research workflow", "Workflow",
+               args_hint="<question>"),
+    CommandDef("devflow", "Run plan/verify -> develop -> verify workflow", "Workflow",
+               args_hint="<task>"),
+    CommandDef("tdd", "Run strict RED-GREEN-REFACTOR development workflow", "Workflow",
+               args_hint="<task>"),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
@@ -490,8 +524,16 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
+    menu_excluded = {"debug", "insights", "platform", "update"}
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.category == "Workflow":
+            continue
+        if cmd.name in menu_excluded:
+            # Control-plane commands that are mainly typed via aliases/hooks do
+            # not need a Telegram menu slot, and keeping them out preserves
+            # Slack parity under Slack's 50-command cap.
             continue
         # Built-in arg-taking commands are included — their handlers show
         # usage text when invoked without arguments, and hiding them from
@@ -986,6 +1028,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     gets dropped by the clamp or for free-form questions.
     """
     overrides = _resolve_config_gates()
+    menu_excluded: set[str] = set()
     entries: list[tuple[str, str, str]] = []
     seen: set[str] = set()
 
@@ -1005,15 +1048,33 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
 
-    # First pass: canonical names (so they win slots if we hit the cap).
+    # Preserve compact high-value aliases before the generic canonical pass so
+    # Slack's 50-command cap cannot silently evict them when new gateway
+    # commands are added.
+    priority_aliases = {"btw", "bg", "q", "reset"}
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        _add(cmd.name, cmd.description, cmd.args_hint or "")
+        if cmd.category == "Workflow" or cmd.name in menu_excluded:
+            continue
+        for alias in cmd.aliases:
+            if alias in priority_aliases:
+                _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # First pass: canonical names (so they win slots after the reserved aliases
+    # above if we hit the cap).
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.category == "Workflow" or cmd.name in menu_excluded:
+            continue
+        _add(cmd.name, cmd.description, cmd.args_hint or "")
+
+    # Second pass: remaining aliases.
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.category == "Workflow" or cmd.name in menu_excluded:
             continue
         for alias in cmd.aliases:
             # Skip aliases that only differ from canonical by case/punctuation

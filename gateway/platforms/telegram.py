@@ -2948,10 +2948,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
+                session_key = self._approval_state.get(approval_id)
                 if not session_key:
                     await query.answer(text="This approval has already been resolved.")
                     return
+
+                # Resolve the approval first.  The same pending command can also
+                # be resolved by typed /approve or /deny; in that case the button
+                # state may still exist, but resolve_gateway_approval() returns 0.
+                try:
+                    from tools.approval import resolve_gateway_approval
+                    count = resolve_gateway_approval(session_key, choice)
+                except Exception as exc:
+                    logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+                    await query.answer(text="Failed to resolve approval.")
+                    return
+
+                if not count:
+                    self._approval_state.pop(approval_id, None)
+                    await query.answer(text="This approval has already been resolved.")
+                    return
+
+                self._approval_state.pop(approval_id, None)
 
                 # Map choice to human-readable label
                 label_map = {
@@ -2975,24 +2993,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception:
                     pass  # non-fatal if edit fails
 
-                # Resolve the approval — unblocks the agent thread
-                try:
-                    from tools.approval import resolve_gateway_approval
-                    count = resolve_gateway_approval(session_key, choice)
-                    logger.info(
-                        "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                        count, session_key, choice, user_display,
-                    )
-                except Exception as exc:
-                    logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
-                    count = 0
+                logger.info(
+                    "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                    count, session_key, choice, user_display,
+                )
 
                 # Resume the typing indicator — paused when the approval was
                 # sent (gateway/run.py).  The text /approve and /deny paths
                 # call resume_typing_for_chat here too; without it, typing
                 # stays paused for the rest of the turn after an inline
                 # button click.
-                if count and query_chat_id is not None:
+                if query_chat_id is not None:
                     self.resume_typing_for_chat(str(query_chat_id))
             return
 

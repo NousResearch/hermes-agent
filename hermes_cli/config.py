@@ -667,6 +667,17 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # RTK-inspired terminal output optimizer. Default off to preserve legacy
+        # behavior exactly. When enabled, Hermes may compact noisy foreground
+        # terminal output after ANSI stripping/secret redaction while preserving
+        # a sanitized raw-output file for recovery.
+        "output_optimizer": {
+            "enabled": False,
+            "min_chars": 4000,
+            "target_chars": 12000,
+            "raw_output": "preserve",  # preserve | off
+            "storage_dir": "/tmp/hermes-terminal-raw",
+        },
     },
 
     "web": {
@@ -779,6 +790,11 @@ DEFAULT_CONFIG = {
     "tool_loop_guardrails": {
         "warnings_enabled": True,
         "hard_stop_enabled": False,
+        # Forge-style prerequisite nudges warn when a tool is called before
+        # its recommended discovery/list/snapshot step. Hard-stop mode is
+        # separate and off by default to preserve legacy cross-turn workflows.
+        "prerequisite_checks_enabled": True,
+        "prerequisite_hard_stop_enabled": False,
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,
@@ -789,6 +805,16 @@ DEFAULT_CONFIG = {
             "same_tool_failure": 8,
             "idempotent_no_progress": 5,
         },
+    },
+
+    # Workflow guardrails add Forge-style required-step awareness above the
+    # raw tool loop. Default is opt-in/off to preserve legacy final-response
+    # text exactly. Set final_gate_mode to 'advisory', 'nudge', or 'block'
+    # for stricter autonomous/workflow sessions.
+    "workflow_guardrails": {
+        "enabled": False,
+        "final_gate_mode": "off",  # off | advisory | nudge | block
+        "max_nudges": 1,
     },
 
     "compression": {

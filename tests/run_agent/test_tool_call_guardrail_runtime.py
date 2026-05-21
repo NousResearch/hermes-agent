@@ -136,6 +136,40 @@ def test_config_enabled_hard_stop_blocks_repeated_exact_failure_before_execution
     assert "repeated_exact_failure_block" in messages[0]["content"]
 
 
+def test_default_sequential_path_appends_missing_prerequisite_warning_but_executes_tool():
+    agent = _make_agent("patch")
+    args = {"path": "a.py", "old_string": "x", "new_string": "y"}
+    tc = _mock_tool_call("patch", json.dumps(args), "c-prereq")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=json.dumps({"success": True})) as mock_hfc:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    mock_hfc.assert_called_once()
+    assert len(messages) == 1
+    assert messages[0]["tool_call_id"] == "c-prereq"
+    assert "missing_tool_prerequisite_warning" in messages[0]["content"]
+    assert "read_file" in messages[0]["content"]
+
+
+def test_config_enabled_prerequisite_hard_stop_blocks_without_execution():
+    config = _hard_stop_config(prerequisite_hard_stop_enabled=True)
+    agent = _make_agent("browser_click", config=config)
+    tc = _mock_tool_call("browser_click", json.dumps({"ref": "@e1"}), "c-prereq-block")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    mock_hfc.assert_not_called()
+    assert len(messages) == 1
+    assert messages[0]["tool_call_id"] == "c-prereq-block"
+    assert "missing_tool_prerequisite_block" in messages[0]["content"]
+    assert "browser_snapshot" in messages[0]["content"]
+
+
 def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_messages():
     agent = _make_agent("web_search")
     args = {"query": "same"}

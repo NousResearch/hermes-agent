@@ -38,6 +38,8 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
 
     assert cfg.warnings_enabled is True
     assert cfg.hard_stop_enabled is False
+    assert cfg.prerequisite_checks_enabled is True
+    assert cfg.prerequisite_hard_stop_enabled is False
     assert cfg.exact_failure_warn_after == 2
     assert cfg.same_tool_failure_warn_after == 3
     assert cfg.no_progress_warn_after == 2
@@ -51,6 +53,8 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
         {
             "warnings_enabled": False,
             "hard_stop_enabled": True,
+            "prerequisite_checks_enabled": False,
+            "prerequisite_hard_stop_enabled": True,
             "warn_after": {
                 "exact_failure": 3,
                 "same_tool_failure": 4,
@@ -66,12 +70,109 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
 
     assert cfg.warnings_enabled is False
     assert cfg.hard_stop_enabled is True
+    assert cfg.prerequisite_checks_enabled is False
+    assert cfg.prerequisite_hard_stop_enabled is True
     assert cfg.exact_failure_warn_after == 3
     assert cfg.same_tool_failure_warn_after == 4
     assert cfg.no_progress_warn_after == 5
     assert cfg.exact_failure_block_after == 6
     assert cfg.same_tool_failure_halt_after == 7
     assert cfg.no_progress_block_after == 8
+
+
+def test_missing_prerequisite_warns_by_default_without_blocking_execution():
+    controller = ToolCallGuardrailController()
+
+    decision = controller.before_call("patch", {"path": "a.py", "old_string": "x", "new_string": "y"})
+
+    assert decision.action == "warn"
+    assert decision.code == "missing_tool_prerequisite_warning"
+    assert "read_file" in decision.message
+    assert "search_files" in decision.message
+    assert decision.allows_execution is True
+
+
+def test_successful_prerequisite_satisfies_later_tool_call():
+    controller = ToolCallGuardrailController()
+
+    controller.after_call("read_file", {"path": "a.py"}, "contents", failed=False)
+
+    decision = controller.before_call("patch", {"path": "a.py", "old_string": "x", "new_string": "y"})
+    assert decision.action == "allow"
+
+
+def test_prerequisite_hard_stop_blocks_before_execution_when_explicitly_enabled():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(prerequisite_hard_stop_enabled=True)
+    )
+
+    decision = controller.before_call("browser_click", {"ref": "@e1"})
+
+    assert decision.action == "block"
+    assert decision.code == "missing_tool_prerequisite_block"
+    assert "browser_snapshot" in decision.message
+    assert decision.should_halt is True
+    assert controller.halt_decision == decision
+
+
+def test_argument_sensitive_prerequisites_require_list_actions():
+    controller = ToolCallGuardrailController()
+
+    named_send = controller.before_call("send_message", {"action": "send", "target": "discord:#ops"})
+    assert named_send.action == "warn"
+    assert "send_message:list" in named_send.message
+
+    controller.after_call("send_message", {"action": "list"}, '{"targets": []}', failed=False)
+    assert controller.before_call("send_message", {"action": "send", "target": "discord:#ops"}).action == "allow"
+
+    cron = ToolCallGuardrailController()
+    assert cron.before_call("cronjob", {"action": "remove", "job_id": "abc"}).action == "warn"
+    cron.after_call("cronjob", {"action": "list"}, '{"jobs": []}', failed=False)
+    assert cron.before_call("cronjob", {"action": "remove", "job_id": "abc"}).action == "allow"
+
+
+def test_prerequisite_checks_can_be_disabled_for_legacy_sessions():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(prerequisite_checks_enabled=False)
+    )
+
+    assert controller.before_call("patch", {"path": "a.py"}).action == "allow"
+
+
+def test_warnings_disabled_suppresses_soft_prerequisite_warnings():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(warnings_enabled=False)
+    )
+
+    assert controller.before_call("patch", {"path": "a.py"}).action == "allow"
+
+
+def test_prerequisite_warning_does_not_mask_existing_hard_stop_block():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=2,
+            prerequisite_hard_stop_enabled=False,
+        )
+    )
+    args = {"path": "a.py", "old_string": "x", "new_string": "y"}
+    controller.after_call("patch", args, '{"error":"boom"}', failed=True)
+    controller.after_call("patch", args, '{"error":"boom"}', failed=True)
+
+    decision = controller.before_call("patch", args)
+
+    assert decision.action == "block"
+    assert decision.code == "repeated_exact_failure_block"
+
+
+def test_append_toolguard_guidance_leaves_non_string_results_unchanged():
+    controller = ToolCallGuardrailController()
+    decision = controller.before_call("patch", {"path": "a.py"})
+    result = {"_multimodal": True, "content": [{"type": "text", "text": "ok"}]}
+
+    from agent.tool_guardrails import append_toolguard_guidance
+
+    assert append_toolguard_guidance(result, decision) is result
 
 
 def test_default_repeated_identical_failed_call_warns_without_blocking():
@@ -165,6 +266,21 @@ def test_same_tool_varying_args_warns_by_default_without_halting():
     assert "diagnose before retrying" in second.message
     assert "different tool" in second.message
     assert controller.halt_decision is None
+
+
+def test_patch_failure_warning_recommends_reread_and_smaller_context():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(same_tool_failure_warn_after=2, same_tool_failure_halt_after=99)
+    )
+
+    controller.after_call("patch", {"path": "a.py", "old_string": "x1", "new_string": "y"}, '{"error":"not found"}', failed=True)
+    decision = controller.after_call("patch", {"path": "a.py", "old_string": "x2", "new_string": "y"}, '{"error":"not found"}', failed=True)
+
+    assert decision.action == "warn"
+    assert decision.code == "same_tool_failure_warning"
+    assert "Re-read" in decision.message
+    assert "smaller exact context" in decision.message
+    assert "write_file only" in decision.message
 
 
 def test_hard_stop_enabled_halts_same_tool_varying_args_failure_streak():

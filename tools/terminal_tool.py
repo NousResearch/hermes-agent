@@ -2099,7 +2099,38 @@ def terminal_tool(
             except Exception:
                 pass
             
-            # Truncate output if too long, keeping both head and tail
+            # Strip ANSI escape sequences before any optimizer/raw preservation
+            # so saved terminal artifacts never contain control codes.
+            from tools.ansi_strip import strip_ansi
+            output = strip_ansi(output)
+
+            # Redact secrets from command output (catches env/printenv leaking keys)
+            # before optional raw preservation. This is intentionally before the
+            # legacy head/tail cap so the optimizer can preserve complete
+            # sanitized output instead of an already-truncated fragment.
+            from agent.redact import redact_sensitive_text
+            output = redact_sensitive_text(output.strip()) if output else ""
+
+            # Optional RTK-inspired terminal output optimization. This runs only
+            # after ANSI stripping and secret redaction, never changes the
+            # command/exit code/error fields, and fails open to the original
+            # sanitized output when raw preservation is unavailable.
+            try:
+                from tools.terminal_output_optimizer import optimize_terminal_output
+
+                output = optimize_terminal_output(
+                    command=command,
+                    output=output,
+                    returncode=returncode,
+                    env=locals().get("env"),
+                ).output
+            except Exception:
+                pass
+
+            # Legacy terminal output cap remains after optional optimization as
+            # a final safety net. If optimization is disabled or not beneficial,
+            # behavior is still bounded; if optimization succeeds, this should
+            # normally be a no-op because target_chars is below max_bytes.
             from tools.tool_output_limits import get_max_bytes
             MAX_OUTPUT_CHARS = get_max_bytes()
             if len(output) > MAX_OUTPUT_CHARS:
@@ -2111,15 +2142,6 @@ def terminal_tool(
                     f"out of {len(output)} total] ...\n\n"
                 )
                 output = output[:head_chars] + truncated_notice + output[-tail_chars:]
-
-            # Strip ANSI escape sequences so the model never sees terminal
-            # formatting — prevents it from copying escapes into file writes.
-            from tools.ansi_strip import strip_ansi
-            output = strip_ansi(output)
-
-            # Redact secrets from command output (catches env/printenv leaking keys)
-            from agent.redact import redact_sensitive_text
-            output = redact_sensitive_text(output.strip()) if output else ""
 
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")

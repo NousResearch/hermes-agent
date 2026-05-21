@@ -96,6 +96,54 @@ class TestCliApprovalUi:
         assert cli._app.current_buffer.text == "draft command"
         assert cli._app.current_buffer.cursor_position == 5
 
+    def test_approval_notification_identifies_cli_session_and_terminal_only_flow(self):
+        cli = _make_cli_stub()
+        cli.session_id = "20260512_151213_8a0a60"
+        cli._pending_title = "업무 환경 상황 파악"
+        cli._session_db = None
+
+        with patch("os.getcwd", return_value="/tmp/hermes-work"):
+            message = cli._build_approval_notification_message(
+                "rm -rf /tmp/demo",
+                "recursive delete",
+                600,
+            )
+
+        assert "[Hermes 승인 요청]" in message
+        assert "무엇을 승인하나요?" in message
+        assert "어디서 요청했나요?" in message
+        assert "- 안건: recursive delete" in message
+        assert "- 프로젝트: hermes-work" in message
+        assert "- 세션: 업무 환경 상황 파악" in message
+        assert "- 세션 ID: 20260512_151213_8a0a60" in message
+        assert "- 작업 위치: /tmp/hermes-work" in message
+        assert "승인/거절은 현재 열려 있는 Hermes 터미널" in message
+        assert "telegram:<chat_id>" in message
+        assert "rm -rf /tmp/demo" in message
+
+    def test_approval_notification_lists_remote_telegram_reply_commands(self):
+        cli = _make_cli_stub()
+        cli.session_id = "20260512_151213_8a0a60"
+        cli._pending_title = "llm-eval-pipeline"
+        cli._session_db = None
+
+        with patch("os.getcwd", return_value="/workspace/work/llm-eval-pipeline"):
+            message = cli._build_approval_notification_message(
+                "python run_benchmark.py --target demo",
+                "benchmark execution",
+                600,
+                "telegram:8584626899",
+            )
+
+        assert "- 프로젝트: llm-eval-pipeline" in message
+        assert "- 세션: llm-eval-pipeline" in message
+        assert "- 안건: benchmark execution" in message
+        assert "- 이번 1회만 승인: /approve" in message
+        assert "- 이 세션 동안 같은 유형 승인: /approve session" in message
+        assert "- 항상 승인 규칙 저장: /approve always" in message
+        assert "- 거절: /deny" in message
+        assert "자연어 '승인'은 명령이 아닙니다" in message
+
     def test_approval_callback_includes_view_for_long_commands(self):
         cli = _make_cli_stub()
         command = "sudo dd if=/tmp/githubcli-keyring.gpg of=/usr/share/keyrings/githubcli-archive-keyring.gpg bs=4M status=progress"
@@ -117,6 +165,49 @@ class TestCliApprovalUi:
         cli._approval_state["response_queue"].put("deny")
         thread.join(timeout=2)
         assert result["value"] == "deny"
+
+    def test_approval_callback_accepts_shared_broker_resolution(self):
+        cli = _make_cli_stub()
+        cli.session_id = "sid-remote-approval"
+        cli._pending_title = "Remote approval test"
+        cli._session_db = None
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/demo", "delete demo")
+
+        with patch.object(cli_module, "_cprint"), patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"timeout": 60, "notify_target": "telegram:chat-1"}},
+        ):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cli._approval_state is not None
+
+            from tools import shared_approval_broker as broker
+
+            deadline = time.time() + 2
+            while (
+                not broker.list_resolvable_cli_approvals(
+                    {"platform": "telegram", "chat_id": "chat-1"}
+                )
+                and time.time() < deadline
+            ):
+                time.sleep(0.01)
+
+            assert broker.resolve_oldest_cli_approval(
+                "session",
+                source={"platform": "telegram", "chat_id": "chat-1"},
+            ) == 1
+            thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert result["value"] == "session"
 
     def test_handle_approval_selection_view_expands_in_place(self):
         cli = _make_cli_stub()

@@ -61,6 +61,55 @@ MUTATING_TOOL_NAMES = frozenset(
 
 
 @dataclass(frozen=True)
+class ToolPrerequisiteRule:
+    """A lightweight Forge-style prerequisite for tool calls.
+
+    Rules are intentionally coarse and advisory by default. They nudge the
+    model toward proven tool order without breaking existing sessions that
+    legitimately carry prerequisite context from a previous user turn.
+    """
+
+    required_any: tuple[str, ...]
+    message: str
+
+
+DEFAULT_PREREQUISITE_RULES: dict[str, ToolPrerequisiteRule] = {
+    "browser_back": ToolPrerequisiteRule(
+        required_any=("browser_navigate",),
+        message="Call browser_navigate before browser_back so there is browser history to go back through.",
+    ),
+    "browser_click": ToolPrerequisiteRule(
+        required_any=("browser_navigate", "browser_snapshot", "browser_vision"),
+        message="Get a fresh browser snapshot or navigate first so element refs are valid before clicking.",
+    ),
+    "browser_type": ToolPrerequisiteRule(
+        required_any=("browser_navigate", "browser_snapshot", "browser_vision"),
+        message="Get a fresh browser snapshot or navigate first so the input ref is valid before typing.",
+    ),
+    "browser_press": ToolPrerequisiteRule(
+        required_any=("browser_navigate", "browser_snapshot", "browser_vision"),
+        message="Navigate or inspect the page before sending keyboard input.",
+    ),
+    "browser_scroll": ToolPrerequisiteRule(
+        required_any=("browser_navigate", "browser_snapshot", "browser_vision"),
+        message="Navigate or inspect the page before scrolling it.",
+    ),
+    "browser_console": ToolPrerequisiteRule(
+        required_any=("browser_navigate",),
+        message="Open a browser page with browser_navigate before reading console output.",
+    ),
+    "browser_get_images": ToolPrerequisiteRule(
+        required_any=("browser_navigate",),
+        message="Open a browser page with browser_navigate before listing images.",
+    ),
+    "patch": ToolPrerequisiteRule(
+        required_any=("read_file", "search_files"),
+        message="Inspect the target with read_file or search_files before patching so the edit is grounded.",
+    ),
+}
+
+
+@dataclass(frozen=True)
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
 
@@ -71,6 +120,8 @@ class ToolCallGuardrailConfig:
 
     warnings_enabled: bool = True
     hard_stop_enabled: bool = False
+    prerequisite_checks_enabled: bool = True
+    prerequisite_hard_stop_enabled: bool = False
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
@@ -97,6 +148,14 @@ class ToolCallGuardrailConfig:
         return cls(
             warnings_enabled=_as_bool(data.get("warnings_enabled"), defaults.warnings_enabled),
             hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled),
+            prerequisite_checks_enabled=_as_bool(
+                data.get("prerequisite_checks_enabled"),
+                defaults.prerequisite_checks_enabled,
+            ),
+            prerequisite_hard_stop_enabled=_as_bool(
+                data.get("prerequisite_hard_stop_enabled"),
+                defaults.prerequisite_hard_stop_enabled,
+            ),
             exact_failure_warn_after=_positive_int(
                 warn_after.get("exact_failure", data.get("exact_failure_warn_after")),
                 defaults.exact_failure_warn_after,
@@ -232,6 +291,8 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._successful_tools: set[str] = set()
+        self._successful_tool_actions: set[tuple[str, str]] = set()
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -239,46 +300,55 @@ class ToolCallGuardrailController:
         return self._halt_decision
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
-        signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
-        if not self.config.hard_stop_enabled:
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+        args = _coerce_args(args)
+        signature = ToolCallSignature.from_call(tool_name, args)
+        prereq_decision = self._check_prerequisite(tool_name, args, signature)
 
-        exact_count = self._exact_failure_counts.get(signature, 0)
-        if exact_count >= self.config.exact_failure_block_after:
-            decision = ToolGuardrailDecision(
-                action="block",
-                code="repeated_exact_failure_block",
-                message=(
-                    f"Blocked {tool_name}: the same tool call failed {exact_count} "
-                    "times with identical arguments. Stop retrying it unchanged; "
-                    "change strategy or explain the blocker."
-                ),
-                tool_name=tool_name,
-                count=exact_count,
-                signature=signature,
-            )
-            self._halt_decision = decision
-            return decision
+        # Existing hard-stop loop breakers must keep priority over new soft
+        # prerequisite nudges. Otherwise a missing-prerequisite warning could
+        # mask a repeated exact-failure block for the same call.
+        if self.config.hard_stop_enabled:
+            exact_count = self._exact_failure_counts.get(signature, 0)
+            if exact_count >= self.config.exact_failure_block_after:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="repeated_exact_failure_block",
+                    message=(
+                        f"Blocked {tool_name}: the same tool call failed {exact_count} "
+                        "times with identical arguments. Stop retrying it unchanged; "
+                        "change strategy or explain the blocker."
+                    ),
+                    tool_name=tool_name,
+                    count=exact_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
 
-        if self._is_idempotent(tool_name):
-            record = self._no_progress.get(signature)
-            if record is not None:
-                _result_hash, repeat_count = record
-                if repeat_count >= self.config.no_progress_block_after:
-                    decision = ToolGuardrailDecision(
-                        action="block",
-                        code="idempotent_no_progress_block",
-                        message=(
-                            f"Blocked {tool_name}: this read-only call returned the same "
-                            f"result {repeat_count} times. Stop repeating it unchanged; "
-                            "use the result already provided or try a different query."
-                        ),
-                        tool_name=tool_name,
-                        count=repeat_count,
-                        signature=signature,
-                    )
-                    self._halt_decision = decision
-                    return decision
+            if self._is_idempotent(tool_name):
+                record = self._no_progress.get(signature)
+                if record is not None:
+                    _result_hash, repeat_count = record
+                    if repeat_count >= self.config.no_progress_block_after:
+                        decision = ToolGuardrailDecision(
+                            action="block",
+                            code="idempotent_no_progress_block",
+                            message=(
+                                f"Blocked {tool_name}: this read-only call returned the same "
+                                f"result {repeat_count} times. Stop repeating it unchanged; "
+                                "use the result already provided or try a different query."
+                            ),
+                            tool_name=tool_name,
+                            count=repeat_count,
+                            signature=signature,
+                        )
+                        self._halt_decision = decision
+                        return decision
+
+        if prereq_decision is not None:
+            if prereq_decision.should_halt:
+                self._halt_decision = prereq_decision
+            return prereq_decision
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -344,6 +414,7 @@ class ToolCallGuardrailController:
 
             return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
 
+        self._record_success(tool_name, args)
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
@@ -379,6 +450,95 @@ class ToolCallGuardrailController:
             return False
         return tool_name in self.config.idempotent_tools
 
+    def _check_prerequisite(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any],
+        signature: ToolCallSignature,
+    ) -> ToolGuardrailDecision | None:
+        if not self.config.prerequisite_checks_enabled:
+            return None
+
+        if not self.config.prerequisite_hard_stop_enabled and not self.config.warnings_enabled:
+            return None
+
+        rule = _dynamic_prerequisite_rule(tool_name, args) or DEFAULT_PREREQUISITE_RULES.get(tool_name)
+        if rule is None:
+            return None
+        if any(self._has_successful_requirement(required) for required in rule.required_any):
+            return None
+
+        action = "block" if self.config.prerequisite_hard_stop_enabled else "warn"
+        code = (
+            "missing_tool_prerequisite_block"
+            if self.config.prerequisite_hard_stop_enabled
+            else "missing_tool_prerequisite_warning"
+        )
+        required = ", ".join(rule.required_any)
+        return ToolGuardrailDecision(
+            action=action,
+            code=code,
+            message=(
+                f"{tool_name} is being called before its recommended prerequisite "
+                f"tool(s): {required}. {rule.message} If the prerequisite was "
+                "already satisfied in earlier conversation context, proceed carefully; "
+                "otherwise call the prerequisite first."
+            ),
+            tool_name=tool_name,
+            count=0,
+            signature=signature,
+        )
+
+    def _record_success(self, tool_name: str, args: Mapping[str, Any]) -> None:
+        self._successful_tools.add(tool_name)
+        action = args.get("action")
+        if isinstance(action, str) and action:
+            self._successful_tool_actions.add((tool_name, action))
+
+    def _has_successful_requirement(self, requirement: str) -> bool:
+        if ":" not in requirement:
+            return requirement in self._successful_tools
+        tool_name, action = requirement.split(":", 1)
+        return (tool_name, action) in self._successful_tool_actions
+
+
+def _dynamic_prerequisite_rule(
+    tool_name: str,
+    args: Mapping[str, Any],
+) -> ToolPrerequisiteRule | None:
+    """Return argument-sensitive prerequisite rules.
+
+    These capture Hermes-specific workflow contracts from the tool docs without
+    needing a separate workflow engine.
+    """
+    if tool_name == "send_message":
+        action = str(args.get("action") or "send")
+        target = str(args.get("target") or "")
+        named_target = ":" in target or "#" in target
+        if action == "send" and named_target:
+            return ToolPrerequisiteRule(
+                required_any=("send_message:list",),
+                message="Use send_message(action='list') before sending to a named channel/person so the target is verified.",
+            )
+
+    if tool_name == "cronjob":
+        action = str(args.get("action") or "")
+        if action in {"update", "pause", "resume", "remove", "run"}:
+            return ToolPrerequisiteRule(
+                required_any=("cronjob:list",),
+                message="Use cronjob(action='list') before managing an existing job so the job_id is verified.",
+            )
+
+    if tool_name == "process":
+        action = str(args.get("action") or "")
+        if action and action != "list":
+            return ToolPrerequisiteRule(
+                required_any=("terminal", "process"),
+                message="Use process(action='list') or start/observe a terminal background process before acting on a process session_id.",
+            )
+
+    return None
+
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     """Build a synthetic role=tool content string for a blocked tool call."""
@@ -391,9 +551,15 @@ def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     )
 
 
-def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> str:
-    """Append runtime guidance to the current tool result content."""
+def append_toolguard_guidance(result: Any, decision: ToolGuardrailDecision) -> Any:
+    """Append runtime guidance to the current tool result content.
+
+    Most tool results are strings. Multimodal results may be dict/list payloads;
+    leave them unchanged rather than corrupting the structured content.
+    """
     if decision.action not in {"warn", "halt"} or not decision.message:
+        return result
+    if not isinstance(result, str):
         return result
     label = "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
     suffix = (
@@ -415,6 +581,12 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
             "For terminal failures, run a small diagnostic such as `pwd && ls -la` "
             "in the same tool, then try an absolute path, a simpler command, a different "
             "working directory, or a different tool such as read_file/write_file/patch."
+        )
+    if tool_name == "patch":
+        return common + (
+            "For repeated patch failures, stop trying the same old_string. Re-read the "
+            "target with read_file/search_files, choose a smaller exact context, or switch "
+            "to write_file only when replacing the whole file is safer and scoped."
         )
     return common + (
         "Try different arguments, a narrower query/path, an absolute path when relevant, "

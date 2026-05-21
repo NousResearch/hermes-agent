@@ -173,6 +173,13 @@ terminal:
   lifetime_seconds: 300
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
+  # Optional RTK-inspired terminal output optimizer. Default off to preserve legacy behavior.
+  output_optimizer:
+    enabled: false
+    min_chars: 4000
+    target_chars: 12000
+    raw_output: preserve  # preserve | off
+    storage_dir: /tmp/hermes-terminal-raw
 
 # -----------------------------------------------------------------------------
 # OPTION 2: SSH remote execution
@@ -326,6 +333,11 @@ browser:
 tool_loop_guardrails:
   warnings_enabled: true
   hard_stop_enabled: false
+  # Forge-style prerequisite nudges warn when a tool is called before its
+  # recommended discovery/list/snapshot step. Keep hard-stop mode off unless
+  # you want autonomous sessions to block such calls instead of warning.
+  prerequisite_checks_enabled: true
+  prerequisite_hard_stop_enabled: false
   warn_after:
     exact_failure: 2
     same_tool_failure: 3
@@ -334,6 +346,17 @@ tool_loop_guardrails:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+
+# =============================================================================
+# Workflow Guardrails
+# =============================================================================
+# Forge-style required-step awareness above the raw tool loop. Default is
+# opt-in/off to preserve legacy final-response text exactly. Set
+# final_gate_mode to advisory, nudge, or block for stricter autonomous sessions.
+workflow_guardrails:
+  enabled: false
+  final_gate_mode: off  # off | advisory | nudge | block
+  max_nudges: 1
 
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)

@@ -64,6 +64,11 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.workflow_guardrails import (
+    append_workflow_advisory,
+    workflow_block_response,
+    workflow_nudge_message,
+)
 from hermes_constants import display_hermes_home as _dhh_fn
 from hermes_logging import set_session_context
 from tools.schema_sanitizer import strip_pattern_and_format
@@ -380,6 +385,11 @@ def run_conversation(
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
+    try:
+        _wf_turn_msg = original_user_message if isinstance(original_user_message, str) else ""
+        agent._workflow_guardrails.reset_for_turn(_wf_turn_msg)
+    except Exception:
+        pass
 
     # Track memory nudge trigger (turn-based, checked here).
     # Skill trigger is checked AFTER the agent loop completes, based on
@@ -3718,8 +3728,32 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
+
+                try:
+                    _wf_decision = agent._workflow_guardrails.evaluate_final_response(final_response)
+                except Exception:
+                    _wf_decision = None
+                if _wf_decision is not None and _wf_decision.action == "nudge":
+                    nudge_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                    nudge_msg["_workflow_guardrail_nudge"] = True
+                    messages.append(nudge_msg)
+                    messages.append(workflow_nudge_message(_wf_decision))
+                    agent._emit_status(
+                        f"⚠️ Workflow guardrail nudged: {_wf_decision.workflow_key}"
+                    )
+                    continue
+                if _wf_decision is not None and _wf_decision.action == "block":
+                    final_response = workflow_block_response(_wf_decision)
+                    messages.append({"role": "assistant", "content": final_response})
+                    _turn_exit_reason = f"workflow_guardrail_block({_wf_decision.workflow_key})"
+                    break
+                if _wf_decision is not None and _wf_decision.action == "advisory":
+                    final_response = append_workflow_advisory(final_response, _wf_decision)
+                    _turn_exit_reason = f"workflow_guardrail_advisory({_wf_decision.workflow_key})"
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                if _wf_decision is not None and _wf_decision.action == "advisory":
+                    final_msg["content"] = final_response
 
                 # Pop thinking-only prefill and empty-response retry
                 # scaffolding before appending the final response.  These
@@ -3738,7 +3772,8 @@ def run_conversation(
 
                 messages.append(final_msg)
                 
-                _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+                if not (_wf_decision is not None and _wf_decision.action == "advisory"):
+                    _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                 break
@@ -4019,6 +4054,14 @@ def run_conversation(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    try:
+        _wf_active = getattr(agent._workflow_guardrails, "active_workflows", ())
+        if _wf_active:
+            result["workflow_guardrail"] = {
+                "active": [wf.key for wf in _wf_active],
+            }
+    except Exception:
+        pass
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

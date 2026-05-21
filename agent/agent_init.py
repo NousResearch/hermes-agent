@@ -49,6 +49,10 @@ from agent.tool_guardrails import (
     ToolCallGuardrailController,
     ToolGuardrailDecision,
 )
+from agent.workflow_guardrails import (
+    WorkflowGuardrailConfig,
+    WorkflowGuardrailController,
+)
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
@@ -342,6 +346,7 @@ def init_agent(
     # even when stream consumers are registered (no tokens streaming then)
     agent._executing_tools = False
     agent._tool_guardrails = ToolCallGuardrailController()
+    agent._workflow_guardrails = WorkflowGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
 
     # Interrupt mechanism for breaking out of tool loops
@@ -961,6 +966,14 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+    try:
+        agent._workflow_guardrails = WorkflowGuardrailController(
+            WorkflowGuardrailConfig.from_mapping(
+                _agent_cfg.get("workflow_guardrails", {})
+            )
+        )
+    except Exception as _wfg_err:
+        _ra().logger.warning("Workflow guardrail config ignored: %s", _wfg_err)
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

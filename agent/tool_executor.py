@@ -29,7 +29,7 @@ from agent.display import (
     get_tool_emoji as _get_tool_emoji,
     _detect_tool_failure,
 )
-from agent.tool_guardrails import ToolGuardrailDecision
+from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -124,6 +124,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         block_result = None
         blocked_by_guardrail = False
+        pre_execution_decision: ToolGuardrailDecision | None = None
         try:
             from hermes_cli.plugins import get_pre_tool_call_block_message
             block_message = get_pre_tool_call_block_message(
@@ -139,14 +140,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if not guardrail_decision.allows_execution:
                 block_result = agent._guardrail_block_result(guardrail_decision)
                 blocked_by_guardrail = True
+            elif guardrail_decision.action == "warn":
+                pre_execution_decision = guardrail_decision
 
-        parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
+        parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail, pre_execution_decision))
 
     # ── Logging / callbacks ──────────────────────────────────────────
-    tool_names_str = ", ".join(name for _, name, _, _, _ in parsed_calls)
+    tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
     if not agent.quiet_mode:
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
-        for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls, 1):
+        for i, (tc, name, args, block_result, blocked_by_guardrail, pre_execution_decision) in enumerate(parsed_calls, 1):
             args_str = json.dumps(args, ensure_ascii=False)
             if agent.verbose_logging:
                 print(f"  📞 Tool {i}: {name}({list(args.keys())})")
@@ -155,7 +158,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 args_preview = args_str[:agent.log_prefix_chars] + "..." if len(args_str) > agent.log_prefix_chars else args_str
                 print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
 
-    for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
+    for tc, name, args, block_result, blocked_by_guardrail, pre_execution_decision in parsed_calls:
         if block_result is not None:
             continue
         if agent.tool_progress_callback:
@@ -165,7 +168,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
-    for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
+    for tc, name, args, block_result, blocked_by_guardrail, pre_execution_decision in parsed_calls:
         if block_result is not None:
             continue
         if agent.tool_start_callback:
@@ -177,7 +180,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag)
     results = [None] * num_tools
-    for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
+    for i, (tc, name, args, block_result, blocked_by_guardrail, pre_execution_decision) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True)
 
@@ -279,7 +282,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     try:
         runnable_calls = [
             (i, tc, name, args)
-            for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls)
+            for i, (tc, name, args, block_result, blocked_by_guardrail, pre_execution_decision) in enumerate(parsed_calls)
             if block_result is None
         ]
         futures = []
@@ -346,7 +349,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
     # ── Post-execution: display per-tool results ─────────────────────
-    for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
+    for i, (tc, name, args, block_result, blocked_by_guardrail, pre_execution_decision) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
         if r is None:
@@ -366,6 +369,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     function_result,
                     failed=is_error,
                 )
+                if pre_execution_decision is not None:
+                    function_result = append_toolguard_guidance(
+                        function_result,
+                        pre_execution_decision,
+                    )
 
             if is_error:
                 _err_text = _multimodal_text_summary(function_result)
@@ -376,6 +384,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             # `blocked` calls never actually ran — don't let a guardrail
             # block count as either a failure or a success.
             if not blocked:
+                try:
+                    agent._workflow_guardrails.record_tool_result(
+                        function_name,
+                        failed=is_error,
+                    )
+                except Exception:
+                    pass
                 try:
                     agent._record_file_mutation_result(
                         function_name, function_args, function_result, is_error,
@@ -507,10 +522,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
+        _guardrail_warn_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
+            elif guardrail_decision.action == "warn":
+                _guardrail_warn_decision = guardrail_decision
 
         _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
 
@@ -797,6 +815,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result,
                 failed=_is_error_result,
             )
+            if _guardrail_warn_decision is not None:
+                function_result = append_toolguard_guidance(
+                    function_result,
+                    _guardrail_warn_decision,
+                )
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
             )
@@ -810,6 +833,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # the same state so the footer reflects every tool call in the
         # turn, not just the parallel ones.
         if not _execution_blocked:
+            try:
+                agent._workflow_guardrails.record_tool_result(
+                    function_name,
+                    failed=_is_error_result,
+                )
+            except Exception:
+                pass
             try:
                 agent._record_file_mutation_result(
                     function_name, function_args, function_result, _is_error_result,

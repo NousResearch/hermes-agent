@@ -59,5 +59,45 @@ class TestApprovalHeartbeat:
                 os.environ[k] = v
         _clear_approval_state()
 
+    def test_gateway_timeout_zero_waits_until_explicit_resolution(self):
+        """gateway_timeout=0 means no approval timeout, not immediate deny."""
+        from tools import approval as mod
+
+        notified = threading.Event()
+        result_box = {}
+
+        def notify(_approval_data):
+            notified.set()
+
+        def worker():
+            result_box["result"] = mod.check_all_command_guards(
+                "git reset --hard",
+                "local",
+            )
+
+        mod.register_gateway_notify(self.SESSION_KEY, notify)
+        with patch.object(
+            mod,
+            "_get_approval_config",
+            return_value={"mode": "manual", "gateway_timeout": 0},
+        ):
+            thread = threading.Thread(target=worker)
+            thread.start()
+            try:
+                assert notified.wait(2), "approval prompt was not registered"
+                # Old behavior treated 0 as an already-expired deadline and
+                # returned BLOCKED immediately.  Give that regression a chance
+                # to happen before resolving.
+                time.sleep(0.05)
+                assert thread.is_alive()
+                assert mod.resolve_gateway_approval(self.SESSION_KEY, "once") == 1
+                thread.join(2)
+            finally:
+                if thread.is_alive():
+                    mod.resolve_gateway_approval(self.SESSION_KEY, "deny", resolve_all=True)
+                    thread.join(2)
+
+        assert not thread.is_alive()
+        assert result_box["result"]["approved"] is True
 
 

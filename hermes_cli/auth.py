@@ -2093,7 +2093,9 @@ def get_gemini_oauth_auth_status() -> Dict[str, Any]:
         "logged_in": True,
         "auth_file": str(auth_path),
         "source": "google-oauth",
-        "api_key": creds.access_token,
+        # Do not expose bearer tokens in status/auth-list payloads. Runtime
+        # resolution returns the token via resolve_gemini_oauth_runtime_credentials().
+        "api_key_present": bool(creds.access_token),
         "expires_at_ms": creds.expires_ms,
         "email": creds.email,
         "project_id": creds.project_id,

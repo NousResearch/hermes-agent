@@ -1253,13 +1253,21 @@ def check_all_command_guards(command: str, env_type: str,
                 touch_activity_if_due = None
 
             _now = time.monotonic()
-            _deadline = _now + max(timeout, 0)
+            # gateway_timeout <= 0 means wait indefinitely.  This mirrors the
+            # agent inactivity timeout semantics (0 == unlimited) and is useful
+            # for out-of-band approval surfaces where the user may respond much
+            # later than a fixed 5-minute window.  We still poll in 1s slices so
+            # activity heartbeats keep the gateway run alive while waiting.
+            _deadline = None if timeout <= 0 else _now + timeout
             _activity_state = {"last_touch": _now, "start": _now}
             resolved = False
             while True:
-                _remaining = _deadline - time.monotonic()
-                if _remaining <= 0:
-                    break
+                if _deadline is None:
+                    _remaining = 1.0
+                else:
+                    _remaining = _deadline - time.monotonic()
+                    if _remaining <= 0:
+                        break
                 # 1s poll slice — the event is set immediately when the
                 # user responds, so slice length only controls heartbeat
                 # cadence, not user-visible responsiveness.

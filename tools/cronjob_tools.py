@@ -343,16 +343,23 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
-    Scripts must be relative paths that resolve within HERMES_HOME/scripts/.
+    Scripts must be relative paths that resolve within HERMES_HOME/scripts/
+    *and* exist on the scheduler host's filesystem at validation time.
     Absolute paths and ~ expansion are rejected to prevent arbitrary script
     execution via prompt injection.
+
+    The existence check catches the surprise documented in #29849: cron
+    scripts always run on the scheduler host, independent of
+    ``terminal.backend`` — silently scheduling a job that points at a file
+    only present on a remote backend means the job fails at runtime with
+    a generic "Script not found" instead of at creation.
 
     Returns an error string if blocked, else None (valid).
     """
     if not script or not script.strip():
         return None  # empty/None = clearing the field, always OK
 
-    from hermes_constants import get_hermes_home
+    from hermes_constants import display_hermes_home, get_hermes_home
 
     raw = script.strip()
 
@@ -360,9 +367,9 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     # Only relative paths within ~/.hermes/scripts/ are allowed.
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
+            f"Script path must be relative to {display_hermes_home()}/scripts/. "
             f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename."
+            f"Place scripts in {display_hermes_home()}/scripts/ and use just the filename."
         )
 
     # Validate containment after resolution
@@ -374,6 +381,18 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     if containment_error:
         return (
             f"Script path escapes the scripts directory via traversal: {raw!r}"
+        )
+
+    # Existence check on the scheduler host — cron scripts always execute
+    # locally, so the file must be present here even when terminal.backend
+    # points elsewhere (see #29849).
+    resolved = (scripts_dir / raw).resolve()
+    if not resolved.exists():
+        return (
+            f"Script not found on scheduler host: {display_hermes_home()}/scripts/{raw}. "
+            "Cron scripts always execute on the scheduler host; "
+            "`terminal.backend` (SSH/Docker/etc.) is not honoured for cron scripts. "
+            f"Place the file in {display_hermes_home()}/scripts/ on this host before scheduling the job."
         )
 
     return None
@@ -754,7 +773,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "script": {
                 "type": "string",
-                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
+                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. The script must exist on the scheduler host at creation time — cron scripts always execute locally, independent of `terminal.backend` (SSH/Docker/etc.). ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
             },
             "no_agent": {
                 "type": "boolean",

@@ -222,6 +222,8 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "monitor.py").write_text("print('hi')\n")
+
         result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
@@ -234,6 +236,8 @@ class TestCronjobToolScript:
     def test_update_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
+
+        (cron_env / "scripts" / "new_script.py").write_text("print('hi')\n")
 
         create_result = json.loads(cronjob(
             action="create",
@@ -253,6 +257,8 @@ class TestCronjobToolScript:
     def test_clear_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
+
+        (cron_env / "scripts" / "some_script.py").write_text("print('hi')\n")
 
         create_result = json.loads(cronjob(
             action="create",
@@ -274,6 +280,8 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "data_collector.py").write_text("print('hi')\n")
+
         cronjob(
             action="create",
             schedule="every 1h",
@@ -285,6 +293,60 @@ class TestCronjobToolScript:
         assert list_result["success"] is True
         assert len(list_result["jobs"]) == 1
         assert list_result["jobs"][0]["script"] == "data_collector.py"
+
+
+class TestScriptMissingOnSchedulerHost:
+    """Regression tests for #29849 — script existence on the scheduler host.
+
+    `terminal.backend` (SSH/Docker/etc.) is not honoured for cron scripts;
+    they always execute locally. Surface this at both the API boundary
+    (creation time) and the runtime "Script not found" message so users
+    targeting a remote backend get a clear diagnostic instead of a generic
+    file-not-found at the next tick.
+    """
+
+    def test_create_missing_script_rejected_with_scheduler_host_hint(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="missing.sh",
+        ))
+        assert result["success"] is False
+        msg = result.get("error", "")
+        assert "Script not found on scheduler host" in msg
+        assert "terminal.backend" in msg
+
+    def test_update_missing_script_rejected(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        create_result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+        ))
+        job_id = create_result["job_id"]
+
+        update_result = json.loads(cronjob(
+            action="update",
+            job_id=job_id,
+            script="never_written.py",
+        ))
+        assert update_result["success"] is False
+        assert "Script not found on scheduler host" in update_result.get("error", "")
+
+    def test_run_missing_script_message_mentions_scheduler_host(self, cron_env):
+        """Runtime path is also self-explaining when a script was deleted between create and tick."""
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("disappeared.sh")
+        assert success is False
+        assert "Script not found on scheduler host" in output
+        assert "terminal.backend" in output
 
 
 class TestScriptPathContainment:
@@ -441,6 +503,8 @@ class TestCronjobToolScriptValidation:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "monitor.py").write_text("print('hi')\n")
+
         result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
@@ -473,6 +537,8 @@ class TestCronjobToolScriptValidation:
         """Clearing a script (empty string) should always be permitted."""
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
+
+        (cron_env / "scripts" / "monitor.py").write_text("print('hi')\n")
 
         create_result = json.loads(cronjob(
             action="create",

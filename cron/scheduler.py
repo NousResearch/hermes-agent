@@ -896,7 +896,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         )
 
     if not path.exists():
-        return False, f"Script not found: {path}"
+        return False, (
+            f"Script not found on scheduler host: {path}. "
+            "Cron scripts always execute on the scheduler host; "
+            "`terminal.backend` (SSH/Docker/etc.) is not honoured for cron scripts."
+        )
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 

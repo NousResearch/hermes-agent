@@ -48,6 +48,7 @@ from gateway.platforms.base import (
     safe_url_for_log,
     cache_document_from_bytes,
 )
+from hermes_constants import get_hermes_home
 
 
 logger = logging.getLogger(__name__)
@@ -324,6 +325,12 @@ class SlackAdapter(BasePlatformAdapter):
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
+        # Channel-scoped, persisted form of the same participation signal.
+        # _bot_message_ts is intentionally kept for backward compatibility and
+        # cheap in-process checks; _bot_thread_keys survives gateway restarts
+        # and avoids cross-channel timestamp collisions.
+        self._bot_thread_keys: set[Tuple[str, str]] = set()
+        self._bot_thread_keys_loaded = False
         self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
         # Track threads where the bot has been @mentioned — once mentioned,
         # respond to ALL subsequent messages in that thread automatically.
@@ -810,17 +817,14 @@ class SlackAdapter(BasePlatformAdapter):
                 await self.stop_typing(chat_id)
 
             # Track the sent message ts so we can auto-respond to thread
-            # replies without requiring @mention.
+            # replies without requiring @mention. Persist the channel/thread
+            # roots so outbound-created support threads survive restarts.
             sent_ts = last_result.get("ts") if last_result else None
             if sent_ts:
-                self._bot_message_ts.add(sent_ts)
+                self._record_bot_thread_participation(chat_id, sent_ts)
                 # Also register the thread root so replies-to-my-replies work
                 if thread_ts:
-                    self._bot_message_ts.add(thread_ts)
-                if len(self._bot_message_ts) > self._BOT_TS_MAX:
-                    excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
-                    for old_ts in list(self._bot_message_ts)[:excess]:
-                        self._bot_message_ts.discard(old_ts)
+                    self._record_bot_thread_participation(chat_id, thread_ts)
 
             return SendResult(
                 success=True,
@@ -1143,15 +1147,76 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
 
-    def _record_uploaded_file_thread(self, chat_id: str, thread_ts: Optional[str]) -> None:
-        """Treat successful file uploads as bot participation in a thread."""
+    def _slack_participating_threads_path(self) -> _Path:
+        """Persistent store for Slack thread roots the bot participated in."""
+        return get_hermes_home() / "gateway" / "slack_participating_threads.json"
+
+    def _load_bot_thread_keys(self) -> None:
+        if self._bot_thread_keys_loaded:
+            return
+        self._bot_thread_keys_loaded = True
+        path = self._slack_participating_threads_path()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+
+        entries = payload.get("threads", []) if isinstance(payload, dict) else []
+        loaded: set[Tuple[str, str]] = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            channel_id = str(entry.get("channel_id") or "").strip()
+            thread_ts = str(entry.get("thread_ts") or "").strip()
+            if channel_id and thread_ts:
+                loaded.add((channel_id, thread_ts))
+        self._bot_thread_keys.update(loaded)
+
+    def _persist_bot_thread_keys(self) -> None:
+        path = self._slack_participating_threads_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            entries = [
+                {"channel_id": channel_id, "thread_ts": thread_ts}
+                for channel_id, thread_ts in sorted(self._bot_thread_keys)
+            ]
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(
+                json.dumps({"version": 1, "threads": entries}, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+        except Exception:
+            logger.debug("[Slack] Failed to persist participating threads", exc_info=True)
+
+    def _record_bot_thread_participation(self, chat_id: str, thread_ts: Optional[str]) -> None:
+        """Treat a successful bot post/upload as participation in a Slack thread."""
         if not thread_ts:
             return
+
         self._bot_message_ts.add(thread_ts)
+        self._load_bot_thread_keys()
+        if chat_id:
+            self._bot_thread_keys.add((chat_id, thread_ts))
         if len(self._bot_message_ts) > self._BOT_TS_MAX:
             excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
             for old_ts in list(self._bot_message_ts)[:excess]:
                 self._bot_message_ts.discard(old_ts)
+        if len(self._bot_thread_keys) > self._BOT_TS_MAX:
+            excess = len(self._bot_thread_keys) - self._BOT_TS_MAX // 2
+            for old_key in list(self._bot_thread_keys)[:excess]:
+                self._bot_thread_keys.discard(old_key)
+        self._persist_bot_thread_keys()
+
+    def _is_bot_participating_thread(self, channel_id: str, thread_ts: Optional[str]) -> bool:
+        if not channel_id or not thread_ts:
+            return False
+        self._load_bot_thread_keys()
+        return (channel_id, thread_ts) in self._bot_thread_keys
+
+    def _record_uploaded_file_thread(self, chat_id: str, thread_ts: Optional[str]) -> None:
+        """Treat successful file uploads as bot participation in a thread."""
+        self._record_bot_thread_participation(chat_id, thread_ts)
 
     def _is_retryable_upload_error(self, exc: Exception) -> bool:
         """Best-effort detection for transient Slack upload failures."""
@@ -1977,7 +2042,11 @@ class SlackAdapter(BasePlatformAdapter):
                 return  # Strict mode: ignore until @-mentioned again
             elif not is_mentioned:
                 reply_to_bot_thread = (
-                    is_thread_reply and event_thread_ts in self._bot_message_ts
+                    is_thread_reply
+                    and (
+                        event_thread_ts in self._bot_message_ts
+                        or self._is_bot_participating_thread(channel_id, event_thread_ts)
+                    )
                 )
                 in_mentioned_thread = (
                     event_thread_ts is not None

@@ -2049,6 +2049,61 @@ class TestThreadReplyHandling:
         assert msg_event.text == "Follow-up question"
 
     @pytest.mark.asyncio
+    async def test_thread_reply_without_mention_to_persisted_bot_thread_processed(
+        self, tmp_path, monkeypatch, mock_session_store
+    ):
+        """Outbound-created bot threads should survive gateway restarts.
+
+        Webhook/cron deliveries can create Slack support threads without an
+        inbound Slack session. After a restart, the in-memory _bot_message_ts
+        set is empty, but replies in that specific bot-created thread should
+        still route to Hermes without requiring @mention.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        first = SlackAdapter(PlatformConfig(enabled=True, token="***"))
+        first._app = MagicMock()
+        first._app.client = AsyncMock()
+        first._app.client.chat_postMessage = AsyncMock(return_value={"ts": "999.001"})
+        first._bot_user_id = "U_BOT"
+        first._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        first.stop_typing = AsyncMock()
+
+        await first.send(
+            chat_id="C123",
+            content="HelpScout triage summary",
+            metadata={"thread_id": "123.000"},
+        )
+
+        restarted = SlackAdapter(PlatformConfig(enabled=True, token="***"))
+        restarted._app = MagicMock()
+        restarted._app.client = AsyncMock()
+        restarted._bot_user_id = "U_BOT"
+        restarted._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        restarted._running = True
+        restarted.handle_message = AsyncMock()
+        restarted._resolve_user_name = AsyncMock(return_value="User")
+        restarted._fetch_thread_parent_text = AsyncMock(return_value=None)
+        restarted.set_session_store(mock_session_store)
+
+        event = {
+            "text": "make code change and create pr",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+
+        await restarted._handle_slack_message(event)
+
+        restarted.handle_message.assert_called_once()
+        msg_event = restarted.handle_message.call_args[0][0]
+        assert msg_event.text == "make code change and create pr"
+        assert msg_event.source.thread_id == "123.000"
+
+    @pytest.mark.asyncio
     async def test_thread_reply_with_mention_strips_bot_id(
         self, adapter_with_session_store, mock_session_store
     ):

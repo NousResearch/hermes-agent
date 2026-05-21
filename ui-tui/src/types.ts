@@ -1,8 +1,12 @@
 export interface ActiveTool {
   context?: string
+  duration?: number    // duration in seconds
+  error?: string       // error message if tool failed
   id: string
   name: string
+  result?: string      // full raw tool output for expandable display
   startedAt?: number
+  summary?: string     // one-line summary shown in collapsed view
 }
 
 export interface TodoItem {
@@ -117,7 +121,7 @@ export interface Msg {
   thinking?: string
   thinkingTokens?: number
   toolTokens?: number
-  tools?: string[]
+  tools?: ActiveTool[]   // was string[], now holds full ActiveTool objects for expandable UI
   todos?: TodoItem[]
   todoIncomplete?: boolean
   todoCollapsedByDefault?: boolean

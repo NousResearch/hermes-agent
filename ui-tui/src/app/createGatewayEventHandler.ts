@@ -503,7 +503,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'tool.progress':
         if (ev.payload?.preview && ev.payload.name) {
-          turnController.recordToolProgress(ev.payload.name, ev.payload.preview)
+          const toolId = ev.payload.tool_id ?? ev.payload.name
+          turnController.recordToolProgress(toolId, ev.payload.preview)
         }
 
         return
@@ -530,7 +531,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.tool_id,
             ev.payload.name,
             ev.payload.error,
-            ev.payload.duration_s
+            ev.payload.duration_s,
+            ev.payload.result
           )
         } else {
           turnController.recordToolComplete(
@@ -539,7 +541,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.error,
             ev.payload.summary,
             ev.payload.duration_s,
-            ev.payload.todos
+            ev.payload.todos,
+            ev.payload.result
           )
         }
 

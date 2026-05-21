@@ -1512,6 +1512,8 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     session = _sessions.get(sid)
     if session is not None:
+        # Store stable tool_call_id keyed by tool name for later lookup in progress events
+        session.setdefault("tool_id_by_name", {})[name] = tool_call_id
         try:
             from agent.display import capture_local_edit_snapshot
 
@@ -1521,6 +1523,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         except Exception:
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
+        # Store name→tool_id mapping for progress events that only carry name
     if _tool_progress_enabled(sid):
         # tool.complete is the source of truth for todos (full list from the
         # tool result). args.todos here may be a partial merge update.
@@ -1539,6 +1542,8 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if session is not None:
         snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None)
         started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None)
+        # Clean up the name→tool_id mapping to avoid session leak
+        session.setdefault("tool_id_by_name", {}).pop(name, None)
     duration_s = time.time() - started_at if started_at else None
     if duration_s is not None:
         payload["duration_s"] = duration_s
@@ -1566,6 +1571,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             payload["inline_diff"] = "\n".join(rendered)
     except Exception:
         pass
+    payload["result"] = result  # full raw output for expandable display
     if _tool_progress_enabled(sid) or payload.get("inline_diff"):
         _emit("tool.complete", sid, payload)
 
@@ -1581,7 +1587,10 @@ def _on_tool_progress(
     if not _tool_progress_enabled(sid):
         return
     if event_type == "tool.started" and name:
-        _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
+        # Look up the tool_id from the mapping established by _on_tool_start
+        session = _sessions.get(sid)
+        tool_id = session.get("tool_id_by_name", {}).get(name) if session else None
+        _emit("tool.progress", sid, {"tool_id": tool_id, "name": name, "preview": preview or ""})
         return
     if event_type == "reasoning.available" and preview:
         _emit("reasoning.available", sid, {"text": str(preview)})
@@ -1946,6 +1955,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "tool_progress_mode": _load_tool_progress_mode(),
         "edit_snapshots": {},
         "tool_started_at": {},
+        "tool_id_by_name": {},
         # Pin async event emissions to whichever transport created the
         # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
         "transport": current_transport() or _stdio_transport,

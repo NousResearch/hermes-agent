@@ -22,10 +22,12 @@ export const messageHeightKey = (msg: Msg) => {
 
   const introSig = msg.kind === 'intro' ? (msg.info?.version ?? '') : ''
 
+  const toolsStr = msg.tools ? msg.tools.map(t => JSON.stringify(t)).join('\n') : ''
   return [
     msg.role,
     msg.kind ?? '',
-    hashText([msg.text, msg.thinking ?? '', msg.tools?.join('\n') ?? '', todoSig, panelSig, introSig].join('\0'))
+    toolsStr,
+    hashText([msg.text, msg.thinking ?? '', toolsStr, todoSig, panelSig, introSig].join('\0'))
   ].join(':')
 }
 

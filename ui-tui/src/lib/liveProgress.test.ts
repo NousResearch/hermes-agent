@@ -21,44 +21,44 @@ describe('isTodoDone', () => {
 describe('tool shelf helpers', () => {
   it('recognizes contextual thinking shelves as holders', () => {
     expect(canHoldToolShelf({ kind: 'trail', role: 'system', text: '', thinking: 'plan' })).toBe(true)
-    expect(canHoldToolShelf({ kind: 'trail', role: 'system', text: '', tools: ['one ✓'] })).toBe(true)
+    expect(canHoldToolShelf({ kind: 'trail', role: 'system', text: '', tools: [{ id: 't-one', name: 'one', context: '' }] })).toBe(true)
     expect(canHoldToolShelf({ role: 'assistant', text: 'done' })).toBe(false)
   })
 
   it('merges source rows into an existing shelf', () => {
     expect(
       mergeToolShelfInto(
-        { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓'] },
-        { kind: 'trail', role: 'system', text: '', tools: ['two ✓'] }
+        { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: [{ id: 't-one', name: 'one', context: '' }] },
+        { kind: 'trail', role: 'system', text: '', tools: [{ id: 't-two', name: 'two', context: '' }] }
       )
-    ).toEqual({ kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓', 'two ✓'] })
+    ).toEqual({ kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: [{ id: 't-one', name: 'one', context: '' }, { id: 't-two', name: 'two', context: '' }] })
   })
 })
 
 describe('appendToolShelfMessage', () => {
   it('merges adjacent tool shelves into one contextual shelf', () => {
-    const merged = appendToolShelfMessage([{ kind: 'trail', role: 'system', text: '', tools: ['one ✓'] }], {
+    const merged = appendToolShelfMessage([{ kind: 'trail', role: 'system', text: '', tools: [{ id: 't-one', name: 'one', context: '' }] }], {
       kind: 'trail',
       role: 'system',
       text: '',
-      tools: ['two ✓']
+      tools: [{ id: 't-two', name: 'two', context: '' }]
     })
 
-    expect(merged).toEqual([{ kind: 'trail', role: 'system', text: '', tools: ['one ✓', 'two ✓'] }])
+    expect(merged).toEqual([{ kind: 'trail', role: 'system', text: '', tools: [{ id: 't-one', name: 'one', context: '' }, { id: 't-two', name: 'two', context: '' }] }])
   })
 
   it('adds tools to the nearest contextual thinking shelf', () => {
     const merged = appendToolShelfMessage(
-      [{ kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓'] }],
-      { kind: 'trail', role: 'system', text: '', tools: ['two ✓'] }
+      [{ kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: [{ id: 't-one', name: 'one', context: '' }] }],
+      { kind: 'trail', role: 'system', text: '', tools: [{ id: 't-two', name: 'two', context: '' }] }
     )
 
-    expect(merged).toEqual([{ kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓', 'two ✓'] }])
+    expect(merged).toEqual([{ kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: [{ id: 't-one', name: 'one', context: '' }, { id: 't-two', name: 'two', context: '' }] }])
   })
 
   it('merges through intervening thinking-only rows back into the nearest holder', () => {
     const prev: Msg[] = [
-      { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓'] },
+      { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: [{ id: 't-one', name: 'one', context: '' }] },
       { kind: 'trail', role: 'system', text: '', thinking: 'more plan' }
     ]
 
@@ -66,7 +66,7 @@ describe('appendToolShelfMessage', () => {
       kind: 'trail',
       role: 'system',
       text: '',
-      tools: ['two ✓']
+      tools: [{ id: 't-two', name: 'two', context: '' }]
     })
 
     expect(merged).toHaveLength(2)
@@ -75,7 +75,7 @@ describe('appendToolShelfMessage', () => {
       role: 'system',
       text: '',
       thinking: 'plan',
-      tools: ['one ✓', 'two ✓']
+      tools: [{ id: 't-one', name: 'one', context: '' }, { id: 't-two', name: 'two', context: '' }]
     })
     expect(merged[1]).toEqual({ kind: 'trail', role: 'system', text: '', thinking: 'more plan' })
   })
@@ -83,10 +83,10 @@ describe('appendToolShelfMessage', () => {
   it('collapses a chronological thinking/tool/thinking/tool stream into one shelf', () => {
     const events: Msg[] = [
       { kind: 'trail', role: 'system', text: '', thinking: 'plan' },
-      { kind: 'trail', role: 'system', text: '', tools: ['one ✓'] },
+      { kind: 'trail', role: 'system', text: '', tools: [{ id: 't-one', name: 'one', context: '' }] },
       { kind: 'trail', role: 'system', text: '', thinking: 'more plan' },
-      { kind: 'trail', role: 'system', text: '', tools: ['two ✓'] },
-      { kind: 'trail', role: 'system', text: '', tools: ['three ✓'] }
+      { kind: 'trail', role: 'system', text: '', tools: [{ id: 't-two', name: 'two', context: '' }] },
+      { kind: 'trail', role: 'system', text: '', tools: [{ id: 't-three', name: 'three', context: '' }] }
     ]
 
     const reduced = events.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])
@@ -97,7 +97,7 @@ describe('appendToolShelfMessage', () => {
       role: 'system',
       text: '',
       thinking: 'plan',
-      tools: ['one ✓', 'two ✓', 'three ✓']
+      tools: [{ id: 't-one', name: 'one', context: '' }, { id: 't-two', name: 'two', context: '' }, { id: 't-three', name: 'three', context: '' }]
     })
     expect(reduced[1]).toEqual({ kind: 'trail', role: 'system', text: '', thinking: 'more plan' })
   })
@@ -105,10 +105,10 @@ describe('appendToolShelfMessage', () => {
   it('starts a new shelf across assistant text boundaries', () => {
     const merged = appendToolShelfMessage(
       [
-        { kind: 'trail', role: 'system', text: '', tools: ['one ✓'] },
+        { kind: 'trail', role: 'system', text: '', tools: [{ id: 't-one', name: 'one', context: '' }] },
         { role: 'assistant', text: 'done' }
       ],
-      { kind: 'trail', role: 'system', text: '', tools: ['two ✓'] }
+      { kind: 'trail', role: 'system', text: '', tools: [{ id: 't-two', name: 'two', context: '' }] }
     )
 
     expect(merged).toHaveLength(3)

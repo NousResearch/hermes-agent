@@ -223,7 +223,7 @@ describe('createGatewayEventHandler', () => {
       type: 'tool.start'
     } as any)
     onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
+      payload: { name: 'search', preview: 'hero cards', tool_id: 'tool-1' },
       type: 'tool.progress'
     } as any)
     onEvent({
@@ -238,7 +238,7 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(2)
     expect(appended[0]).toMatchObject({ kind: 'trail', role: 'system', text: '', thinking: 'mapped the page' })
     expect(appended[0]?.tools).toHaveLength(1)
-    expect(appended[0]?.tools?.[0]).toContain('hero cards')
+    expect(appended[0]?.tools?.[0].context).toBe('hero cards')
     expect(appended[0]?.toolTokens).toBeGreaterThan(0)
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
@@ -264,8 +264,8 @@ describe('createGatewayEventHandler', () => {
     const toolTrails = appended.filter(msg => msg.kind === 'trail' && msg.tools?.length)
     expect(toolTrails).toHaveLength(1)
     expect(toolTrails[0]?.tools).toHaveLength(2)
-    expect(toolTrails[0]?.tools?.[0]).toContain('Search Files')
-    expect(toolTrails[0]?.tools?.[1]).toContain('Read File')
+    expect(toolTrails[0]?.tools?.[0].name).toBe('search_files')
+    expect(toolTrails[0]?.tools?.[1].name).toBe('read_file')
   })
 
   it('keeps tool tokens across handler recreation mid-turn', () => {
@@ -281,7 +281,7 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
+      payload: { name: 'search', preview: 'hero cards', tool_id: 'tool-1' },
       type: 'tool.progress'
     } as any)
     onEvent({
@@ -471,7 +471,7 @@ describe('createGatewayEventHandler', () => {
         kind: 'diff',
         role: 'assistant',
         text: block,
-        tools: [expect.stringMatching(/^Patch\("foo\.ts"\)(?: \([^)]+\))? ✓$/)]
+        tools: [expect.objectContaining({ id: expect.any(String), name: 'patch', context: 'foo.ts' })]
       }
     ])
 
@@ -480,7 +480,7 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(4)
     expect(appended[0]?.text).toBe('Editing the file')
     expect(appended[1]).toMatchObject({ kind: 'diff', text: block })
-    expect(appended[1]?.tools?.[0]).toContain('Patch')
+    expect(appended[1]?.tools?.[0].name).toBe('patch')
     expect(appended[3]?.text).toBe('patch applied')
     expect(appended[3]?.text).not.toContain('```diff')
   })
@@ -498,7 +498,7 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { text: 'Before edit. After edit.' }, type: 'message.complete' } as any)
 
     expect(appended.map(msg => msg.text.trim()).filter(Boolean)).toEqual(['Before edit.', block, 'After edit.'])
-    expect(appended[1]?.tools?.[0]).toContain('Patch')
+    expect(appended[1]?.tools?.[0].name).toBe('patch')
   })
 
   it('drops the diff segment when the final assistant text narrates the same diff', () => {
@@ -530,7 +530,7 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.kind).toBe('diff')
     expect(appended[0]?.text).not.toContain('┊ review diff')
     expect(appended[0]?.text).toContain('--- a/foo.ts')
-    expect(appended[0]?.tools?.[0]).toContain('Tool')
+    expect(appended[0]?.tools?.[0].name).toBe('tool')
     expect(appended[1]?.text).toBe('done')
   })
 
@@ -567,8 +567,9 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(2)
     expect(appended[0]?.kind).toBe('diff')
     expect(appended[0]?.text).toContain('```diff')
-    expect(appended[0]?.tools?.[0]).toContain('Review Diff')
-    expect(appended[0]?.tools?.[0]).not.toContain('--- a/foo.ts')
+    expect(appended[0]?.tools?.[0].name).toBe('review_diff')
+    // Summary is cleared for inline diffs; ensure no diff content leaks into tool row
+    expect(appended[0]?.tools?.[0].summary).toBe('')
     expect(appended[1]?.text).toBe('done')
     expect(appended[1]?.tools ?? []).toEqual([])
   })

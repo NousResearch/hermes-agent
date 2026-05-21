@@ -5,7 +5,7 @@ import type { Msg } from '../types.js'
 
 describe('virtual height estimates', () => {
   it('uses stable content keys across resumed message objects', () => {
-    const msg: Msg = { role: 'assistant', text: 'same text', tools: ['Search Files [long message]'] }
+    const msg: Msg = { role: 'assistant', text: 'same text', tools: [{ id: 't1', name: 'Search Files', context: '[long message]' }] }
 
     expect(messageHeightKey(msg)).toBe(messageHeightKey({ ...msg }))
   })
@@ -25,7 +25,7 @@ describe('virtual height estimates', () => {
   })
 
   it('includes detail sections when visible', () => {
-    const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'line 1\nline 2', tools: ['Tool A', 'Tool B'] }
+    const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'line 1\nline 2', tools: [{ id: 'a', name: 'Tool A' }, { id: 'b', name: 'Tool B' }] }
 
     expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBeGreaterThan(
       estimatedMsgHeight(msg, 80, { compact: false, details: false })

@@ -21,7 +21,7 @@ import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
-import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
+import { sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
@@ -464,7 +464,7 @@ export function useMainApp(gw: GatewayClient) {
             kind: 'trail',
             role: 'system',
             text: '',
-            tools: [buildToolTrailLine('clarify', clarify.question)]
+            tools: [{ id: `clarify-${Date.now()}-${Math.random().toString(36).slice(2)}`, name: 'clarify', context: clarify.question }]
           })
           appendMessage({ role: 'user', text: answer })
           patchUiState({ status: 'running…' })

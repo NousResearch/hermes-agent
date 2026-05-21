@@ -23,7 +23,7 @@ describe('toTranscriptMessages', () => {
       ['assistant', 'first answer'],
       ['user', 'second prompt']
     ])
-    expect(toTranscriptMessages(rows)[1]?.tools?.[0]).toContain('Search Files')
+    expect(toTranscriptMessages(rows)[1]?.tools?.[0].name).toBe('search_files')
   })
 })
 

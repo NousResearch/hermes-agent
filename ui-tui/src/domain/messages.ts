@@ -1,6 +1,6 @@
 import { LONG_MSG } from '../config/limits.js'
-import { buildToolTrailLine, fmtK } from '../lib/text.js'
-import type { Msg, SessionInfo } from '../types.js'
+import { fmtK } from '../lib/text.js'
+import type { ActiveTool, Msg, Role, SessionInfo } from '../types.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 
@@ -37,7 +37,8 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
   }
 
   const out: Msg[] = []
-  let pending: string[] = []
+  let pending: ActiveTool[] = []
+  let toolIndex = 0
 
   for (const row of rows) {
     if (!row || typeof row !== 'object') {
@@ -47,8 +48,11 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     const { context, name, role, text } = row as TranscriptRow
 
     if (role === 'tool') {
-      pending.push(buildToolTrailLine(name ?? 'tool', context ?? ''))
-
+      pending.push({
+        id: `tool-${toolIndex++}`,
+        name: name ?? 'tool',
+        context: context ?? '',
+      })
       continue
     }
 

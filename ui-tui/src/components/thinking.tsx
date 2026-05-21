@@ -37,6 +37,8 @@ import type {
   SubagentProgress,
   ThinkingMode
 } from '../types.js'
+import { ExpandableToolCall } from './ExpandableToolCall.js'
+import { TreeRow, TreeTextRow, nextTreeRails, treeLead, type TreeBranch, type TreeRails } from './treeRow.js'
 
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
@@ -45,81 +47,6 @@ const fmtElapsed = (ms: number) => {
   const sec = Math.max(0, ms) / 1000
 
   return sec < 10 ? `${sec.toFixed(1)}s` : `${Math.round(sec)}s`
-}
-
-type TreeBranch = 'mid' | 'last'
-type TreeRails = readonly boolean[]
-
-const nextTreeRails = (rails: TreeRails, branch: TreeBranch) => [...rails, branch === 'mid']
-
-const treeLead = (rails: TreeRails, branch: TreeBranch) =>
-  `${rails.map(on => (on ? '│ ' : '  ')).join('')}${branch === 'mid' ? '├─ ' : '└─ '}`
-
-// ── Primitives ───────────────────────────────────────────────────────
-
-function TreeRow({
-  branch,
-  children,
-  rails = [],
-  stemColor,
-  stemDim = true,
-  t
-}: {
-  branch: TreeBranch
-  children: ReactNode
-  rails?: TreeRails
-  stemColor?: string
-  stemDim?: boolean
-  t: Theme
-}) {
-  const lead = treeLead(rails, branch)
-
-  return (
-    <Box>
-      <NoSelect flexShrink={0} fromLeftEdge width={lead.length}>
-        <Text color={stemColor ?? t.color.muted} dim={stemDim}>
-          {lead}
-        </Text>
-      </NoSelect>
-      <Box flexDirection="column" flexGrow={1}>
-        {children}
-      </Box>
-    </Box>
-  )
-}
-
-function TreeTextRow({
-  branch,
-  color,
-  content,
-  dimColor,
-  rails = [],
-  t,
-  wrap = 'wrap-trim'
-}: {
-  branch: TreeBranch
-  color: string
-  content: ReactNode
-  dimColor?: boolean
-  rails?: TreeRails
-  t: Theme
-  wrap?: 'truncate-end' | 'wrap' | 'wrap-trim'
-}) {
-  const text = dimColor ? (
-    <Text color={color} dim wrap={wrap}>
-      {content}
-    </Text>
-  ) : (
-    <Text color={color} wrap={wrap}>
-      {content}
-    </Text>
-  )
-
-  return (
-    <TreeRow branch={branch} rails={rails} t={t}>
-      {text}
-    </TreeRow>
-  )
 }
 
 function TreeNode({
@@ -133,7 +60,7 @@ function TreeNode({
   t
 }: {
   branch: TreeBranch
-  children?: (rails: boolean[]) => ReactNode
+  children?: (rails: TreeRails) => ReactNode
   header: ReactNode
   open: boolean
   rails?: TreeRails
@@ -246,12 +173,12 @@ function Chevron({
   title: string
   tone?: 'dim' | 'error' | 'warn'
 }) {
-  const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.muted
+  const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.dim
 
   return (
     <Box onClick={(e: any) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
       <Text color={color} dim={tone === 'dim'}>
-        <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
+        <Text color={t.color.amber}>{open ? '▾ ' : '▸ '}</Text>
         {title}
         {typeof count === 'number' ? ` (${count})` : ''}
         {suffix ? (
@@ -266,7 +193,7 @@ function Chevron({
 }
 
 function heatColor(node: SubagentNode, peak: number, theme: Theme): string | undefined {
-  const palette = [theme.color.border, theme.color.accent, theme.color.primary, theme.color.warn, theme.color.error]
+  const palette = [theme.color.bronze, theme.color.amber, theme.color.gold, theme.color.warn, theme.color.error]
   const idx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
 
   // Below the median bucket we keep the default dim stem so cool branches
@@ -398,13 +325,13 @@ function SubagentAccordion({
   const hasTools = item.tools.length > 0
   const noteRows = [...(summary ? [summary] : []), ...item.notes]
   const hasNotes = noteRows.length > 0
-  const noteColor = statusTone === 'error' ? t.color.error : statusTone === 'warn' ? t.color.warn : t.color.muted
+  const noteColor = statusTone === 'error' ? t.color.error : statusTone === 'warn' ? t.color.warn : t.color.dim
 
   const sections: {
     header: ReactNode
     key: string
     open: boolean
-    render: (rails: boolean[]) => ReactNode
+    render: (rails: TreeRails) => ReactNode
   }[] = []
 
   if (hasThinking) {
@@ -464,10 +391,10 @@ function SubagentAccordion({
           {item.tools.map((line, index) => (
             <TreeTextRow
               branch={index === item.tools.length - 1 ? 'last' : 'mid'}
-              color={t.color.text}
+              color={t.color.cornsilk}
               content={
                 <>
-                  <Text color={t.color.accent}>● </Text>
+                  <Text color={t.color.amber}>● </Text>
                   {line}
                 </>
               }
@@ -653,22 +580,22 @@ export const Thinking = memo(function Thinking({
         {preview ? (
           mode === 'full' ? (
             lines.map((line, index) => (
-              <Text color={t.color.muted} key={index} wrap="wrap-trim">
+              <Text color={t.color.dim} key={index} wrap="wrap-trim">
                 {line || ' '}
                 {index === lines.length - 1 ? (
-                  <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
+                  <StreamCursor color={t.color.dim} streaming={streaming} visible={active} />
                 ) : null}
               </Text>
             ))
           ) : (
-            <Text color={t.color.muted} wrap="truncate-end">
+            <Text color={t.color.dim} wrap="truncate-end">
               {preview}
-              <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
+              <StreamCursor color={t.color.dim} streaming={streaming} visible={active} />
             </Text>
           )
         ) : (
-          <Text color={t.color.muted}>
-            <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
+          <Text color={t.color.dim}>
+            <StreamCursor color={t.color.dim} streaming={streaming} visible={active} />
           </Text>
         )}
       </Box>
@@ -684,6 +611,7 @@ interface Group {
   details: DetailRow[]
   key: string
   label: string
+  toolId?: string  // set for tool groups to enable per-tool expansion
 }
 
 export const ToolTrail = memo(function ToolTrail({
@@ -742,6 +670,8 @@ export const ToolTrail = memo(function ToolTrail({
   const [openSubagents, setOpenSubagents] = useState(visible.subagents === 'expanded')
   const [deepSubagents, setDeepSubagents] = useState(visible.subagents === 'expanded')
   const [openMeta, setOpenMeta] = useState(visible.activity === 'expanded')
+  // Per-tool expansion state: Set of tool IDs whose result details are shown
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     if (!tools.length || (visible.tools !== 'expanded' && !openTools)) {
@@ -796,7 +726,7 @@ export const ToolTrail = memo(function ToolTrail({
 
     if (parsed) {
       groups.push({
-        color: parsed.mark === '✗' ? t.color.error : t.color.text,
+        color: parsed.mark === '✗' ? t.color.error : t.color.cornsilk,
         content: parsed.call,
         details: [],
         key: `tr-${i}`,
@@ -805,7 +735,7 @@ export const ToolTrail = memo(function ToolTrail({
 
       if (parsed.detail) {
         pushDetail({
-          color: parsed.mark === '✗' ? t.color.error : t.color.muted,
+          color: parsed.mark === '✗' ? t.color.error : t.color.dim,
           content: parsed.detail,
           dimColor: parsed.mark !== '✗',
           key: `tr-${i}-d`
@@ -819,9 +749,9 @@ export const ToolTrail = memo(function ToolTrail({
       const label = toolTrailLabel(line.slice(9).replace(/…$/, '').trim())
 
       groups.push({
-        color: t.color.text,
+        color: t.color.cornsilk,
         content: label,
-        details: [{ color: t.color.muted, content: 'drafting...', dimColor: true, key: `tr-${i}-d` }],
+        details: [{ color: t.color.dim, content: 'drafting...', dimColor: true, key: `tr-${i}-d` }],
         key: `tr-${i}`,
         label
       })
@@ -831,12 +761,12 @@ export const ToolTrail = memo(function ToolTrail({
 
     if (line === 'analyzing tool output…') {
       pushDetail({
-        color: t.color.muted,
+        color: t.color.dim,
         dimColor: true,
         key: `tr-${i}`,
         content: groups.length ? (
           <>
-            <Spinner color={t.color.accent} variant="think" /> {line}
+            <Spinner color={t.color.amber} variant="think" /> {line}
           </>
         ) : (
           line
@@ -846,29 +776,49 @@ export const ToolTrail = memo(function ToolTrail({
       continue
     }
 
-    meta.push({ color: t.color.muted, content: line, dimColor: true, key: `tr-${i}` })
+    meta.push({ color: t.color.dim, content: line, dimColor: true, key: `tr-${i}` })
   }
 
-  for (const tool of tools) {
-    const label = formatToolCall(tool.name, tool.context || '')
+   for (const tool of tools) {
+     const label = formatToolCall(tool.name, tool.context || '')
+     const isExpanded = expandedTools.has(tool.id)
 
-    groups.push({
-      color: t.color.text,
-      key: tool.id,
-      label,
-      details: [],
-      content: (
-        <>
-          <Spinner color={t.color.accent} variant="tool" /> {label}
-          {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
-        </>
-      )
-    })
-  }
+     // Build details: full tool result (if any)
+     const details: DetailRow[] = []
+     if (tool.result) {
+       details.push({
+         color: tool.error ? t.color.error : t.color.dim,
+         content: tool.result,
+         dimColor: !tool.error,
+         key: `tool-${tool.id}-result`
+       })
+     }
+
+     groups.push({
+       color: t.color.cornsilk,
+       key: tool.id,
+       toolId: tool.id,
+       label,
+       details,
+       content: (
+         <>
+           <Text color={t.color.amber}>{isExpanded ? '▾' : '▸'}</Text>
+           <Text> </Text>
+           <Spinner color={t.color.amber} variant="tool" />
+           <Text> {label}</Text>
+            {tool.duration != null ? (
+              <Text color={t.color.dim}> ({tool.duration}s)</Text>
+            ) : tool.startedAt != null ? (
+              <Text color={t.color.dim}> ({fmtElapsed(now - tool.startedAt)})</Text>
+            ) : null}
+         </>
+       )
+     })
+   }
 
   for (const item of activity.slice(-4)) {
     const glyph = item.tone === 'error' ? '✗' : item.tone === 'warn' ? '!' : '·'
-    const color = item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.muted
+    const color = item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.dim
     meta.push({ color, content: `${glyph} ${item.text}`, dimColor: item.tone === 'info', key: `a-${item.id}` })
   }
 
@@ -877,7 +827,7 @@ export const ToolTrail = memo(function ToolTrail({
   const hasTools = groups.length > 0
   const hasSubagents = subagents.length > 0
   const hasMeta = meta.length > 0
-  const hasThinking = !!cot || reasoningActive || reasoningStreaming
+  const hasThinking = !!cot || reasoningActive || busy
   const thinkingLive = reasoningActive || reasoningStreaming
 
   const tokenCount =
@@ -942,24 +892,39 @@ export const ToolTrail = memo(function ToolTrail({
   // Shift+click on any chevron expands every NON-hidden section at once —
   // hidden sections stay hidden so the override is honoured.
 
-  const expandAll = () => {
-    if (visible.thinking !== 'hidden') {
-      setOpenThinking(true)
-    }
+   const expandAll = () => {
+     if (visible.thinking !== 'hidden') {
+       setOpenThinking(true)
+     }
 
-    if (visible.tools !== 'hidden') {
-      setOpenTools(true)
-    }
+     if (visible.tools !== 'hidden') {
+       setOpenTools(true)
+       // Also expand all individual tool results
+       const allToolIds = tools.map(t => t.id)
+       setExpandedTools(new Set(allToolIds))
+     }
 
-    if (visible.subagents !== 'hidden') {
-      setOpenSubagents(true)
-      setDeepSubagents(true)
-    }
+     if (visible.subagents !== 'hidden') {
+       setOpenSubagents(true)
+       setDeepSubagents(true)
+     }
 
-    if (visible.activity !== 'hidden') {
-      setOpenMeta(true)
-    }
-  }
+     if (visible.activity !== 'hidden') {
+       setOpenMeta(true)
+     }
+   }
+
+   const toggleTool = (toolId: string) => {
+     setExpandedTools(prev => {
+       const next = new Set(prev)
+       if (next.has(toolId)) {
+         next.delete(toolId)
+       } else {
+         next.add(toolId)
+       }
+       return next
+     })
+   }
 
   const metaTone: 'dim' | 'error' | 'warn' = activity.some(i => i.tone === 'error')
     ? 'error'
@@ -967,7 +932,7 @@ export const ToolTrail = memo(function ToolTrail({
       ? 'warn'
       : 'dim'
 
-  const renderSubagentList = (rails: boolean[]) => (
+  const renderSubagentList = (rails: TreeRails) => (
     <Box flexDirection="column">
       {spawnTree.map((node, index) => (
         <SubagentAccordion
@@ -987,7 +952,7 @@ export const ToolTrail = memo(function ToolTrail({
     header: ReactNode
     key: string
     open: boolean
-    render: (rails: boolean[]) => ReactNode
+    render: (rails: TreeRails) => ReactNode
   }[] = []
 
   if (hasThinking && visible.thinking !== 'hidden') {
@@ -1002,14 +967,14 @@ export const ToolTrail = memo(function ToolTrail({
             }
           }}
         >
-          <Text color={t.color.muted} dim={!thinkingLive}>
-            <Text color={t.color.accent}>{openThinking ? '▾ ' : '▸ '}</Text>
+          <Text color={t.color.dim} dim={!thinkingLive}>
+            <Text color={t.color.amber}>{openThinking ? '▾ ' : '▸ '}</Text>
             {thinkingLive ? (
-              <Text bold color={t.color.text}>
+              <Text bold color={t.color.cornsilk}>
                 Thinking
               </Text>
             ) : (
-              <Text color={t.color.muted} dim>
+              <Text color={t.color.dim} dim>
                 Thinking
               </Text>
             )}
@@ -1064,31 +1029,77 @@ export const ToolTrail = memo(function ToolTrail({
             const branch: TreeBranch = index === groups.length - 1 ? 'last' : 'mid'
             const childRails = nextTreeRails(rails, branch)
             const hasInlineSubagents = inlineDelegateKey === group.key
+            const isTool = !!group.toolId
+            const isToolExpanded = isTool && expandedTools.has(group.toolId!)
+            const tool = tools.find(t => t.id === group.toolId)!
+            // Tool details only shown when section is open AND this tool is expanded.
+            // Non-tool groups (trail/drafting) always show their details.
+            const showDetails = !isTool || (openTools && isToolExpanded)
 
             return (
               <Box flexDirection="column" key={group.key}>
-                <TreeTextRow
-                  branch={branch}
-                  color={group.color}
-                  content={
-                    <>
-                      <Text color={t.color.accent}>● </Text>
-                      {toolLabel(group)}
-                    </>
-                  }
-                  rails={rails}
-                  t={t}
-                />
-                {group.details.map((detail, detailIndex) => (
-                  <Detail
-                    {...detail}
-                    branch={detailIndex === group.details.length - 1 && !hasInlineSubagents ? 'last' : 'mid'}
-                    key={detail.key}
-                    rails={childRails}
+                {isTool ? (
+                  <ExpandableToolCall
+                    tool={tool}
+                    isExpanded={isToolExpanded}
+                    onToggle={() => toggleTool(group.toolId!)}
                     t={t}
+                    branch={branch}
+                    rails={childRails}
+                    hasInlineSubagents={hasInlineSubagents}
+                    details={[
+                      ...(tool?.context
+                        ? [{ color: t.color.cornsilk, content: tool.context, key: 'ctx' }]
+                        : []),
+                      ...(tool?.result
+                        ? [{ color: t.color.default, content: tool.result, dimColor: true, key: 'res' }]
+                        : []),
+                      ...(tool?.error
+                        ? [{ color: t.color.error, content: tool.error, key: 'err' }]
+                        : []),
+                    ]}
                   />
-                ))}
-                {hasInlineSubagents ? renderSubagentList(childRails) : null}
+                ) : (
+                  <>
+                    <TreeTextRow
+                      branch={branch}
+                      color={group.color}
+                      content={
+                        <Box
+                          onClick={(e: React.MouseEvent) => {
+                            if (e.button === 0) {
+                              if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                                // Shift/ctrl+click on any row expands all tools
+                                e.stopPropagation()
+                                const allIds = tools.map(t => t.id)
+                                setExpandedTools(new Set(allIds))
+                              } else if (isTool) {
+                                // Left-click on tool row toggles just that tool
+                                e.stopPropagation()
+                                toggleTool(group.toolId!)
+                              }
+                            }
+                          }}
+                          style={{ cursor: isTool ? 'pointer' : 'default' }}
+                        >
+                          {group.content}
+                        </Box>
+                      }
+                      rails={rails}
+                      t={t}
+                    />
+                    {showDetails && group.details.map((detail, detailIndex) => (
+                      <Detail
+                        {...detail}
+                        branch={detailIndex === group.details.length - 1 && !hasInlineSubagents ? 'last' : 'mid'}
+                        key={detail.key}
+                        rails={childRails}
+                        t={t}
+                      />
+                    ))}
+                    {showDetails && hasInlineSubagents ? renderSubagentList(childRails) : null}
+                  </>
+                )}
               </Box>
             )
           })}
@@ -1186,7 +1197,7 @@ export const ToolTrail = memo(function ToolTrail({
           color={t.color.statusFg}
           content={
             <>
-              <Text color={t.color.accent}>Σ </Text>
+              <Text color={t.color.amber}>Σ </Text>
               {totalTokensLabel}
             </>
           }
@@ -1196,7 +1207,7 @@ export const ToolTrail = memo(function ToolTrail({
       ) : null}
       {outcome ? (
         <Box marginTop={1}>
-          <Text color={t.color.muted} dim>
+          <Text color={t.color.dim} dim>
             · {outcome}
           </Text>
         </Box>

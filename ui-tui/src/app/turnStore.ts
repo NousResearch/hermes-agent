@@ -73,13 +73,13 @@ export interface TurnState {
   reasoningActive: boolean
   reasoningStreaming: boolean
   reasoningTokens: number
-  streamPendingTools: string[]
+  streamPendingTools: ActiveTool[]  // tools in the pending segment (expandable)
   streamSegments: Msg[]
   streaming: string
   subagents: SubagentProgress[]
   todoCollapsed: boolean
   todos: TodoItem[]
   toolTokens: number
-  tools: ActiveTool[]
-  turnTrail: string[]
+  tools: ActiveTool[]  // currently active tools
+  turnTrail: string[]   // historical labels
 }

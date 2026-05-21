@@ -1149,10 +1149,16 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "local_command" | "mega-asr" | "groq" | "openai" (Whisper API) | "mistral" | "xai"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+        },
+        "mega_asr": {
+            "repo_dir": "",  # optional Mega-ASR checkout; if empty, MegaASR must be importable
+            "ckpt_dir": "~/.hermes/models/Mega-ASR",  # contains Qwen3-ASR-1.7B, mega-asr-merged, audio_quality_router
+            "routing_enabled": True,
+            "language": "",  # auto-detect by default; set to "en", "zh", etc. to force
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe

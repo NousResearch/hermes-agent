@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -11,6 +11,8 @@ Provides speech-to-text transcription with six providers:
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
+  - **mega-asr** — optional local Mega-ASR checkout/weights for robust
+    in-the-wild audio; requires the upstream repo, model weights, and heavy ML deps.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -31,6 +33,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -73,6 +76,7 @@ def _safe_find_spec(module_name: str) -> bool:
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
+_HAS_TORCH = _safe_find_spec("torch")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -84,6 +88,8 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_MEGA_ASR_CKPT_DIR = os.getenv("MEGA_ASR_CKPT_DIR", "~/.hermes/models/Mega-ASR")
+DEFAULT_MEGA_ASR_REPO_DIR = os.getenv("MEGA_ASR_REPO_DIR", "")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -103,6 +109,10 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
+
+# Singleton for optional Mega-ASR — loaded once, reused across calls
+_mega_asr_model: Optional[object] = None
+_mega_asr_model_key: Optional[tuple] = None
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -172,6 +182,60 @@ def _has_local_command() -> bool:
     return _get_local_command_template() is not None
 
 
+def _resolve_mega_asr_paths(stt_config: Optional[dict] = None) -> dict:
+    """Resolve optional Mega-ASR checkout and checkpoint paths from config/env."""
+    stt_config = stt_config or _load_stt_config()
+    cfg = stt_config.get("mega_asr", {}) or stt_config.get("mega-asr", {}) or {}
+    ckpt_dir = Path(
+        cfg.get("ckpt_dir")
+        or cfg.get("checkpoint_dir")
+        or DEFAULT_MEGA_ASR_CKPT_DIR
+    ).expanduser()
+    repo_dir_value = cfg.get("repo_dir") or DEFAULT_MEGA_ASR_REPO_DIR
+    repo_dir = Path(repo_dir_value).expanduser() if repo_dir_value else None
+    return {
+        "repo_dir": repo_dir,
+        "ckpt_dir": ckpt_dir,
+        "model_path": Path(cfg.get("model_path") or ckpt_dir / "Qwen3-ASR-1.7B").expanduser(),
+        "lora_dir": Path(cfg.get("lora_dir") or ckpt_dir / "mega-asr-merged").expanduser(),
+        "router_checkpoint": Path(
+            cfg.get("router_checkpoint") or ckpt_dir / "audio_quality_router" / "best_acc_model.safetensors"
+        ).expanduser(),
+        "routing_enabled": is_truthy_value(cfg.get("routing_enabled", True), default=True),
+        "quality_threshold": float(cfg.get("quality_threshold", cfg.get("threshold", 0.5))),
+        "device_map": cfg.get("device_map") or None,
+        "quality_device": cfg.get("quality_device") or None,
+        "keep_delta_on_gpu": is_truthy_value(cfg.get("keep_delta_on_gpu", True), default=True),
+        "language": cfg.get("language") or None,
+    }
+
+
+def _has_mega_asr_backend(stt_config: Optional[dict] = None) -> tuple[bool, str]:
+    """Check whether Mega-ASR is usable without downloading/importing heavy model code."""
+    if not _HAS_TORCH:
+        return False, "torch is not installed"
+
+    paths = _resolve_mega_asr_paths(stt_config)
+    repo_dir = paths["repo_dir"]
+    if repo_dir:
+        if not (repo_dir / "src" / "MegaASR" / "model" / "megaASR.py").is_file():
+            return False, f"Mega-ASR repo_dir is invalid: {repo_dir}"
+    elif not _safe_find_spec("MegaASR"):
+        return False, "Mega-ASR Python package not importable; set stt.mega_asr.repo_dir or MEGA_ASR_REPO_DIR"
+
+    missing = []
+    if not (paths["model_path"] / "config.json").is_file():
+        missing.append(str(paths["model_path"] / "config.json"))
+    if not paths["lora_dir"].is_dir():
+        missing.append(str(paths["lora_dir"]))
+    if paths["routing_enabled"] and not paths["router_checkpoint"].is_file():
+        missing.append(str(paths["router_checkpoint"]))
+    if missing:
+        return False, "Mega-ASR weights/checkpoints missing: " + ", ".join(missing)
+
+    return True, ""
+
+
 def _normalize_local_model(model_name: Optional[str]) -> str:
     """Return a valid faster-whisper model size, mapping cloud-only names to the default.
 
@@ -233,6 +297,13 @@ def _get_provider(stt_config: dict) -> str:
             logger.warning(
                 "STT provider 'local_command' configured but unavailable"
             )
+            return "none"
+
+        if provider in {"mega-asr", "mega_asr"}:
+            ok, reason = _has_mega_asr_backend(stt_config)
+            if ok:
+                return "mega_asr"
+            logger.warning("STT provider 'mega-asr' configured but unavailable: %s", reason)
             return "none"
 
         if provider == "groq":
@@ -552,6 +623,86 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
+# Provider: Mega-ASR (optional local upstream checkout)
+# ---------------------------------------------------------------------------
+
+
+def _load_mega_asr_model(stt_config: dict) -> Any:
+    """Load Mega-ASR lazily from an optional upstream checkout or installed package."""
+    global _mega_asr_model, _mega_asr_model_key
+
+    paths = _resolve_mega_asr_paths(stt_config)
+    repo_dir = paths["repo_dir"]
+    key = (
+        str(repo_dir) if repo_dir else "installed",
+        str(paths["model_path"]),
+        str(paths["lora_dir"]),
+        str(paths["router_checkpoint"]),
+        paths["routing_enabled"],
+        paths["quality_threshold"],
+        paths["device_map"],
+        paths["quality_device"],
+        paths["keep_delta_on_gpu"],
+    )
+    if _mega_asr_model is not None and _mega_asr_model_key == key:
+        return _mega_asr_model
+
+    if repo_dir:
+        src_dir = str(repo_dir / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+
+    from MegaASR.model.megaASR import MegaASR  # type: ignore[import-not-found]
+
+    logger.info("Loading Mega-ASR model from %s", paths["model_path"])
+    _mega_asr_model = MegaASR(
+        model_path=str(paths["model_path"]),
+        lora_dir=str(paths["lora_dir"]),
+        router_checkpoint=str(paths["router_checkpoint"]),
+        routing_enabled=paths["routing_enabled"],
+        quality_threshold=paths["quality_threshold"],
+        device_map=paths["device_map"],
+        quality_device=paths["quality_device"],
+        keep_delta_on_gpu=paths["keep_delta_on_gpu"],
+    )
+    _mega_asr_model_key = key
+    return _mega_asr_model
+
+
+def _normalize_mega_asr_text(result: Any) -> str:
+    if isinstance(result, dict):
+        return _normalize_mega_asr_text(result.get("text", ""))
+    if isinstance(result, (list, tuple)):
+        return " ".join(_normalize_mega_asr_text(item) for item in result).strip()
+    if hasattr(result, "text"):
+        return str(getattr(result, "text", "")).strip()
+    return str(result).strip()
+
+
+def _transcribe_mega_asr(file_path: str) -> Dict[str, Any]:
+    """Transcribe with Mega-ASR when explicitly configured and locally installed."""
+    stt_config = _load_stt_config()
+    ok, reason = _has_mega_asr_backend(stt_config)
+    if not ok:
+        return {"success": False, "transcript": "", "error": f"Mega-ASR unavailable: {reason}"}
+
+    try:
+        paths = _resolve_mega_asr_paths(stt_config)
+        model = _load_mega_asr_model(stt_config)
+        result = model.infer(file_path, language=paths["language"])
+        transcript_text = _normalize_mega_asr_text(result)
+        if not transcript_text:
+            return {"success": False, "transcript": "", "error": "Mega-ASR returned empty transcript"}
+        logger.info("Transcribed %s via Mega-ASR (%d chars)", Path(file_path).name, len(transcript_text))
+        return {"success": True, "transcript": transcript_text, "provider": "mega_asr"}
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("Mega-ASR transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Mega-ASR transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Provider: groq (Whisper API — free tier)
 # ---------------------------------------------------------------------------
 
@@ -860,6 +1011,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         )
         return _transcribe_local_command(file_path, model_name)
 
+    if provider == "mega_asr":
+        return _transcribe_mega_asr(file_path)
+
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL
         return _transcribe_groq(file_path, model_name)
@@ -886,6 +1040,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "error": (
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
+            "configure stt.provider: mega-asr with a Mega-ASR checkout and weights, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
             "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."

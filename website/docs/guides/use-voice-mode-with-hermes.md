@@ -181,6 +181,20 @@ tts:
 
 This is a good conservative default for most people.
 
+For experimental robust local ASR, you can explicitly route STT to a prepared [Mega-ASR](https://github.com/xzf-thu/Mega-ASR) checkout:
+
+```yaml
+stt:
+  provider: "mega-asr"
+  mega_asr:
+    repo_dir: "/path/to/Mega-ASR"
+    ckpt_dir: "~/.hermes/models/Mega-ASR"
+    routing_enabled: true
+    language: ""   # auto-detect; set "en", "zh", etc. to force
+```
+
+Mega-ASR is not auto-installed by Hermes because it pulls heavy ML dependencies and model weights. Prepare it separately with its upstream install/download instructions; `ckpt_dir` must contain `Qwen3-ASR-1.7B/`, `mega-asr-merged/`, and `audio_quality_router/best_acc_model.safetensors`. If anything is missing, Hermes fails closed instead of falling back to another provider silently.
+
 If you want local TTS instead, switch the `tts` block to:
 
 ```yaml

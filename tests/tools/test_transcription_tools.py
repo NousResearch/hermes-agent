@@ -86,6 +86,37 @@ class TestGetProviderGroq:
 class TestGetProviderFallbackPriority:
     """Auto-detect fallback priority and explicit provider behaviour."""
 
+    def test_explicit_mega_asr_when_backend_ready(self, tmp_path):
+        repo_dir = tmp_path / "Mega-ASR"
+        ckpt_dir = tmp_path / "ckpt"
+        (repo_dir / "src" / "MegaASR" / "model").mkdir(parents=True)
+        (repo_dir / "src" / "MegaASR" / "model" / "megaASR.py").write_text("# stub\n")
+        (ckpt_dir / "Qwen3-ASR-1.7B").mkdir(parents=True)
+        (ckpt_dir / "Qwen3-ASR-1.7B" / "config.json").write_text("{}")
+        (ckpt_dir / "mega-asr-merged").mkdir()
+        (ckpt_dir / "audio_quality_router").mkdir()
+        (ckpt_dir / "audio_quality_router" / "best_acc_model.safetensors").write_bytes(b"stub")
+
+        with patch("tools.transcription_tools._HAS_TORCH", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({
+                "provider": "mega-asr",
+                "mega_asr": {"repo_dir": str(repo_dir), "ckpt_dir": str(ckpt_dir)},
+            }) == "mega_asr"
+
+    def test_explicit_mega_asr_no_fallback_when_missing(self, tmp_path):
+        repo_dir = tmp_path / "Mega-ASR"
+        (repo_dir / "src" / "MegaASR" / "model").mkdir(parents=True)
+        (repo_dir / "src" / "MegaASR" / "model" / "megaASR.py").write_text("# stub\n")
+
+        with patch("tools.transcription_tools._HAS_TORCH", True), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({
+                "provider": "mega-asr",
+                "mega_asr": {"repo_dir": str(repo_dir), "ckpt_dir": str(tmp_path / "missing")},
+            }) == "none"
+
     def test_auto_detect_prefers_local(self):
         """Auto-detect prefers local over any cloud provider."""
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
@@ -201,6 +232,41 @@ class TestExplicitProviderRespected:
             from tools.transcription_tools import _get_provider
             result = _get_provider({})
             assert result == "groq"
+
+
+# ============================================================================
+# _transcribe_mega_asr
+# ============================================================================
+
+class TestTranscribeMegaASR:
+    def test_successful_transcription_with_mocked_model(self, sample_wav):
+        fake_model = MagicMock()
+        fake_model.infer.return_value = {"text": " mega transcript "}
+        cfg = {
+            "provider": "mega-asr",
+            "mega_asr": {
+                "repo_dir": "/tmp/Mega-ASR",
+                "ckpt_dir": "/tmp/ckpt",
+                "language": "en",
+            },
+        }
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg), \
+             patch("tools.transcription_tools._has_mega_asr_backend", return_value=(True, "")), \
+             patch("tools.transcription_tools._load_mega_asr_model", return_value=fake_model):
+            from tools.transcription_tools import _transcribe_mega_asr
+            result = _transcribe_mega_asr(sample_wav)
+
+        assert result == {"success": True, "transcript": "mega transcript", "provider": "mega_asr"}
+        fake_model.infer.assert_called_once_with(sample_wav, language="en")
+
+    def test_unavailable_backend_reports_reason(self, sample_wav):
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._has_mega_asr_backend", return_value=(False, "weights missing")):
+            from tools.transcription_tools import _transcribe_mega_asr
+            result = _transcribe_mega_asr(sample_wav)
+
+        assert result["success"] is False
+        assert "weights missing" in result["error"]
 
 
 # ============================================================================

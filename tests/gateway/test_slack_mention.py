@@ -495,6 +495,32 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
     ) == "171.000"
 
 
+def test_config_bridges_slack_reply_in_thread_surface_knobs(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  reply_in_thread_dm: true\n"
+        "  reply_in_thread_channel: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+    config = load_gateway_config()
+
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.extra.get("reply_in_thread_dm") is True
+    assert slack_config.extra.get("reply_in_thread_channel") is False
+
+    adapter = SlackAdapter(slack_config)
+    assert adapter._resolve_thread_ts(reply_to="171.000", metadata={}, chat_id="D123") == "171.000"
+    assert adapter._resolve_thread_ts(reply_to="172.000", metadata={}, chat_id="C123") is None
+
+
 def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
     from gateway.config import load_gateway_config
 

@@ -2713,6 +2713,42 @@ class TestProgressMessageThread:
     ts) so they appear in the thread instead of the DM root.
     """
 
+    def test_resolve_thread_ts_splits_dm_and_channel_defaults(self, adapter):
+        """Top-level DMs reply directly; top-level channels still thread."""
+        assert adapter._resolve_thread_ts(
+            reply_to="111.000",
+            metadata={"thread_id": "111.000", "message_id": "111.000", "chat_type": "dm"},
+            chat_id="D_DM",
+        ) is None
+
+        assert adapter._resolve_thread_ts(
+            reply_to="222.000",
+            metadata={"thread_id": "222.000", "message_id": "222.000", "chat_type": "group"},
+            chat_id="C_CHAN",
+        ) == "222.000"
+
+    def test_resolve_thread_ts_honors_existing_threads(self, adapter):
+        """Existing Slack threads stay threaded regardless of surface defaults."""
+        assert adapter._resolve_thread_ts(
+            reply_to="111.500",
+            metadata={"thread_id": "111.000", "message_id": "111.500", "chat_type": "dm"},
+            chat_id="D_DM",
+        ) == "111.000"
+
+        assert adapter._resolve_thread_ts(
+            reply_to="222.500",
+            metadata={"thread_id": "222.000", "message_id": "222.500", "chat_type": "group"},
+            chat_id="C_CHAN",
+        ) == "222.000"
+
+    def test_resolve_thread_ts_legacy_reply_in_thread_overrides_both_surfaces(self, adapter):
+        """Legacy reply_in_thread remains a backcompat override for both knobs."""
+        adapter.config.extra["reply_in_thread"] = True
+        assert adapter._resolve_thread_ts(reply_to="111.000", metadata={}, chat_id="D_DM") == "111.000"
+
+        adapter.config.extra["reply_in_thread"] = False
+        assert adapter._resolve_thread_ts(reply_to="222.000", metadata={}, chat_id="C_CHAN") is None
+
     @pytest.mark.asyncio
     async def test_dm_toplevel_progress_uses_message_ts_as_thread(self, adapter):
         """Progress messages for a top-level DM should go into the reply thread."""

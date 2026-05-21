@@ -784,7 +784,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Split long messages, preserving code block boundaries
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             last_result = None
 
             # reply_broadcast: also post thread replies to the main channel.
@@ -848,7 +848,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         try:
             formatted = self.format_message(content)
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             kwargs = {
                 "channel": chat_id,
                 "user": user_id,
@@ -962,39 +962,67 @@ class SlackAdapter(BasePlatformAdapter):
         self,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
     ) -> Optional[str]:
         """Resolve the correct thread_ts for a Slack API call.
 
         Prefers metadata thread_id (the thread parent's ts, set by the
         gateway) over reply_to (which may be a child message's ts).
 
-        When ``reply_in_thread`` is ``false`` in the platform extra config,
-        top-level channel messages receive direct channel replies instead of
-        thread replies.  Messages that originate inside an existing thread are
-        always replied to in-thread to preserve conversation context.
+        ``reply_in_thread_dm`` and ``reply_in_thread_channel`` control
+        top-level replies by surface.  Legacy ``reply_in_thread`` overrides
+        both for backcompat.  Messages that originate inside an existing
+        thread are always replied to in-thread to preserve context.
         """
-        # When reply_in_thread is disabled (default: True for backward compat),
-        # only thread messages that are already part of an existing thread.
-        # For top-level channel messages, the inbound handler sets
-        # metadata.thread_id to the message's own ts as a session-keying
-        # fallback (see the `thread_ts = event.get("thread_ts") or ts` branch),
-        # so metadata alone can't distinguish a real thread reply from a
-        # top-level message. reply_to is the incoming message's own id, so
-        # when thread_id == reply_to the "thread" is synthetic and we reply
-        # directly in the channel instead.
-        if not self.config.extra.get("reply_in_thread", True):
-            md = metadata or {}
-            existing_thread = md.get("thread_id") or md.get("thread_ts")
-            if existing_thread and reply_to and existing_thread == reply_to:
-                existing_thread = None
-            return existing_thread or None
+        md = metadata or {}
+        existing_thread = md.get("thread_id") or md.get("thread_ts")
+        anchor = reply_to or md.get("message_id")
+        synthetic_thread = bool(existing_thread and anchor and existing_thread == anchor)
 
-        if metadata:
-            if metadata.get("thread_id"):
-                return metadata["thread_id"]
-            if metadata.get("thread_ts"):
-                return metadata["thread_ts"]
-        return reply_to
+        if existing_thread and not synthetic_thread:
+            return existing_thread
+
+        top_level_thread = None if synthetic_thread else existing_thread
+        if top_level_thread:
+            return top_level_thread
+
+        if self._reply_in_thread_enabled_for_surface(md, chat_id):
+            return reply_to
+        return None
+
+    def _reply_in_thread_enabled_for_surface(
+        self,
+        metadata: Dict[str, Any],
+        chat_id: Optional[str],
+    ) -> bool:
+        """Return whether top-level Slack replies should thread on this surface."""
+        legacy = self.config.extra.get("reply_in_thread")
+        if legacy is None:
+            legacy = getattr(self.config, "reply_in_thread", None)
+        if legacy is not None:
+            return str(legacy).strip().lower() in {"1", "true", "yes", "on"}
+
+        channel_type = str(
+            metadata.get("channel_type")
+            or metadata.get("chat_type")
+            or metadata.get("platform_kind")
+            or ""
+        ).lower()
+        is_dm = channel_type in {"dm", "im", "mpim", "direct", "direct_message"}
+        if not channel_type and chat_id:
+            is_dm = str(chat_id).startswith("D")
+
+        if is_dm:
+            value = self.config.extra.get(
+                "reply_in_thread_dm",
+                getattr(self.config, "reply_in_thread_dm", False),
+            )
+        else:
+            value = self.config.extra.get(
+                "reply_in_thread_channel",
+                getattr(self.config, "reply_in_thread_channel", True),
+            )
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
     async def _upload_file(
         self,
@@ -1011,7 +1039,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
         last_exc = None
         for attempt in range(3):
             try:
@@ -1067,7 +1095,7 @@ class SlackAdapter(BasePlatformAdapter):
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
             return
 
-        thread_ts = self._resolve_thread_ts(None, metadata)
+        thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id)
 
         CHUNK = 10
         chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
@@ -1445,7 +1473,7 @@ class SlackAdapter(BasePlatformAdapter):
                 response = await client.get(image_url)
                 response.raise_for_status()
 
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             result = await self._get_client(chat_id).files_upload_v2(
                 channel=chat_id,
                 content=response.content,
@@ -1512,7 +1540,7 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Video file not found: {video_path}")
 
         try:
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             last_exc = None
             for attempt in range(3):
                 try:
@@ -1569,7 +1597,7 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
         display_name = file_name or os.path.basename(file_path)
-        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
 
         try:
             last_exc = None
@@ -2187,6 +2215,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
+            message_id=ts,
         )
 
         # Per-channel ephemeral prompt
@@ -2254,7 +2283,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         try:
             cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
-            thread_ts = self._resolve_thread_ts(None, metadata)
+            thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id)
 
             blocks = [
                 {
@@ -2329,7 +2358,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         try:
             body = message[:2900] + "..." if len(message) > 2900 else message
-            thread_ts = self._resolve_thread_ts(None, metadata)
+            thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id)
             # Encode session_key and confirm_id into the button value so the
             # callback handler can resolve without extra bookkeeping.
             value = f"{session_key}|{confirm_id}"

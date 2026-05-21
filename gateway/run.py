@@ -13368,6 +13368,11 @@ class GatewayRunner:
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
+        if getattr(source, "platform", None) == Platform.SLACK:
+            metadata["chat_type"] = getattr(source, "chat_type", None)
+            anchor = reply_to_message_id or getattr(source, "message_id", None)
+            if anchor is not None:
+                metadata["message_id"] = str(anchor)
         if (
             getattr(source, "platform", None) == Platform.TELEGRAM
             and getattr(source, "chat_type", None) == "dm"

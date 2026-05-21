@@ -291,6 +291,12 @@ class PlatformConfig:
     # - "all": All chunks in multi-part replies thread to user's message
     reply_to_mode: str = "first"
 
+    # Slack/Telegram legacy reply-thread toggle. ``None`` means use the
+    # platform-specific defaults below; when set, it applies to both surfaces.
+    reply_in_thread: Optional[bool] = None
+    reply_in_thread_dm: bool = False
+    reply_in_thread_channel: bool = True
+
     # Whether the gateway is allowed to send "♻️ Gateway online" /
     # "♻ Gateway restarted" lifecycle notifications on this platform.
     # Default True preserves prior behavior. Set False on platforms used
@@ -306,8 +312,12 @@ class PlatformConfig:
             "enabled": self.enabled,
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
+            "reply_in_thread_dm": self.reply_in_thread_dm,
+            "reply_in_thread_channel": self.reply_in_thread_channel,
             "gateway_restart_notification": self.gateway_restart_notification,
         }
+        if self.reply_in_thread is not None:
+            result["reply_in_thread"] = self.reply_in_thread
         if self.token:
             result["token"] = self.token
         if self.api_key:
@@ -330,14 +340,30 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        extra = data.get("extra", {})
+        _rit = data.get("reply_in_thread")
+        if _rit is None:
+            _rit = extra.get("reply_in_thread")
+        _rit_dm = data.get("reply_in_thread_dm")
+        if _rit_dm is None:
+            _rit_dm = extra.get("reply_in_thread_dm")
+        _rit_channel = data.get("reply_in_thread_channel")
+        if _rit_channel is None:
+            _rit_channel = extra.get("reply_in_thread_channel")
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_in_thread=(
+                _coerce_bool(_rit, True) if _rit is not None else None
+            ),
+            reply_in_thread_dm=_coerce_bool(_rit_dm, False),
+            reply_in_thread_channel=_coerce_bool(_rit_channel, True),
             gateway_restart_notification=_coerce_bool(_grn, True),
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 
@@ -826,6 +852,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
                 if "reply_in_thread" in platform_cfg:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
+                if "reply_in_thread_dm" in platform_cfg:
+                    bridged["reply_in_thread_dm"] = platform_cfg["reply_in_thread_dm"]
+                if "reply_in_thread_channel" in platform_cfg:
+                    bridged["reply_in_thread_channel"] = platform_cfg["reply_in_thread_channel"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:

@@ -196,14 +196,13 @@ class TestCodexBuildKwargs:
         )
         # xAI Responses receives reasoning.effort on the allowlisted models.
         assert kw.get("reasoning") == {"effort": "high"}
-        # As of May 2026 we deliberately do NOT request
-        # reasoning.encrypted_content back from xAI — the OAuth/SuperGrok
-        # surface rejects replayed encrypted reasoning items on turn 2+
-        # (the multi-turn "Expected to have received response.created
-        # before error" failure).  Grok still reasons natively each turn;
-        # we just don't try to thread the prior turn's encrypted blob back
-        # in.  See tests/run_agent/test_codex_xai_oauth_recovery.py.
-        assert "reasoning.encrypted_content" not in kw.get("include", [])
+        # As of May 2026 (post-revert of PR #26644) we DO request
+        # reasoning.encrypted_content back from xAI so we can replay it
+        # across turns for cross-turn coherence — xAI explicitly relies
+        # on this for their partnership integration.  See
+        # tests/run_agent/test_codex_xai_oauth_recovery.py for the
+        # full history.
+        assert "reasoning.encrypted_content" in kw.get("include", [])
 
     def test_xai_reasoning_disabled_no_reasoning_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
@@ -229,9 +228,9 @@ class TestCodexBuildKwargs:
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
     # on grok-4 / grok-4-fast / grok-3 / grok-code-fast / grok-4.20-0309-*.
     # Those models reason natively but don't expose the dial. The transport
-    # must omit the `reasoning` key for them.  As of May 2026 we also no
-    # longer request ``reasoning.encrypted_content`` back from xAI on ANY
-    # model — see test_xai_reasoning_effort_passed for the rationale.
+    # must omit the `reasoning` key for them.  As of May 2026 we DO request
+    # ``reasoning.encrypted_content`` back from xAI on every model —
+    # see test_xai_reasoning_effort_passed for the rationale.
 
     def test_xai_grok_4_omits_reasoning_effort(self, transport):
         """grok-4 / grok-4-0709 reject reasoning.effort with HTTP 400."""
@@ -245,9 +244,9 @@ class TestCodexBuildKwargs:
             assert "reasoning" not in kw, (
                 f"{model} must not receive a reasoning key (xAI rejects it)"
             )
-            # We no longer ask xAI for encrypted_content back (see comment
-            # above) — verify the include list is empty.
-            assert "reasoning.encrypted_content" not in kw.get("include", [])
+            # Even without the effort dial we still ask xAI to echo back
+            # encrypted reasoning content so it can be replayed next turn.
+            assert "reasoning.encrypted_content" in kw.get("include", [])
 
     def test_xai_grok_4_fast_omits_reasoning_effort(self, transport):
         """grok-4-fast and grok-4-1-fast variants reject reasoning.effort."""

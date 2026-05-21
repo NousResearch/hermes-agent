@@ -155,7 +155,7 @@ def stage_merge(upstream_ref: str, strategy_file: Path, *, conflict_preference: 
         )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sync upstream Hermes + OpenClaw vendor.")
     parser.add_argument("--dry-run", action="store_true", help="Inventory + classify only.")
     parser.add_argument("--inventory-only", action="store_true", help="Only write diff inventory.")
@@ -188,7 +188,15 @@ def parse_args() -> argparse.Namespace:
         default="merge: sync upstream/main + OpenClaw vendor with fork policy",
     )
     parser.add_argument("--skip-fetch", action="store_true")
-    return parser.parse_args()
+    parser.add_argument(
+        "--allow-preflight-blockers",
+        action="store_true",
+        help=(
+            "Continue into --merge when the policy dry-run reports manual overlay "
+            "blockers. The blocker list is still recorded in the report."
+        ),
+    )
+    return parser.parse_args(argv)
 
 
 def main() -> int:
@@ -252,13 +260,15 @@ def main() -> int:
         report["preflight_blockers"] = blockers
         report["steps"].append("dry-run classify")
 
-        if blockers:
+        if blockers and not args.allow_preflight_blockers:
             path = _write_report("sync-all-blocked", report)
             print(f"Preflight blockers ({len(blockers)}). Manual overlay required.")
             print(f"Report: {path}")
             for item in blockers[:25]:
                 print(f"  - {item}")
             return 2
+        if blockers:
+            report["steps"].append("preflight blockers allowed for explicit merge")
 
         if args.dry_run and not args.merge:
             path = _write_report("sync-all-dry-run-ok", report)

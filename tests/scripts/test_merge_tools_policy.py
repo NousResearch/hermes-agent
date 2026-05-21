@@ -52,6 +52,16 @@ def test_upstream_only_defaults_upstream(strategy):
     assert item.action == "upstream"
 
 
+def test_removed_gateway_restart_test_follows_upstream(strategy):
+    item = classify_path_with_context(
+        "tests/hermes_cli/test_update_gateway_restart.py",
+        strategy,
+        touched_upstream=True,
+        touched_custom=True,
+    )
+    assert item.action == "upstream"
+
+
 def test_strategy_json_valid():
     path = MERGE_TOOLS / "hermes-merge-conflict-strategies.json"
     payload = json.loads(path.read_text(encoding="utf-8"))

@@ -820,13 +820,12 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     # Re-sync the wizard's config dict from what cmd_model saved to disk.
     # This is critical: cmd_model writes to disk via its own load/save cycle,
     # and the wizard's final save_config(config) must not overwrite those
-    # changes with stale values (#4172).
+    # changes with stale values (#4172). Refresh the dict in place so callers
+    # that keep the same object see every section the shared model picker may
+    # have changed (model, custom_providers, auxiliary, provider metadata, etc.).
     _refreshed = load_config()
-    config["model"] = _refreshed.get("model", config.get("model"))
-    if "custom_providers" in _refreshed:
-        config["custom_providers"] = _refreshed["custom_providers"]
-    else:
-        config.pop("custom_providers", None)
+    config.clear()
+    config.update(_refreshed)
 
     # Derive the selected provider for downstream steps (vision setup).
     selected_provider = None
@@ -2823,7 +2822,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         # has already started setup and we shouldn't force the section to rerun.
         configured = [
             _gateway_platform_short_label(plat["label"])
-            for plat in _all_platforms()
+            for plat in _all_platforms(include_hidden=True)
             if _platform_status(plat) and _platform_status(plat) != "not configured"
         ]
         if configured:

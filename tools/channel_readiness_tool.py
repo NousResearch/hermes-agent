@@ -11,9 +11,13 @@ from tools.registry import registry
 
 
 def channel_readiness_check(config_path: str = "") -> str:
-    cfg = Path(config_path).expanduser() if config_path else default_openclaw_config_path()
-    state_root = cfg.parent if cfg.is_file() else default_openclaw_state_root()
-    if not cfg.is_file():
+    if config_path:
+        cfg = Path(config_path).expanduser()
+        state_root = cfg.parent
+    else:
+        cfg = default_openclaw_config_path()
+        state_root = cfg.parent if cfg.is_file() else default_openclaw_state_root()
+    if not cfg.is_file() and not config_path:
         cfg = state_root / "openclaw.json"
     result = build_channel_readiness(cfg, state_root)
     return json.dumps(result, ensure_ascii=False)

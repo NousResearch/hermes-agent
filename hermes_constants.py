@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import sysconfig
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -139,6 +140,23 @@ def get_default_hermes_root() -> Path:
     return env_path
 
 
+def _get_packaged_data_dir(name: str) -> Path | None:
+    """Return an installed data-files directory if one exists.
+
+    Used to discover bundled skills/optional-skills when Hermes is installed
+    from a wheel that emitted them via setuptools data_files.
+    """
+    candidates = []
+    for scheme in ("data", "purelib", "platlib"):
+        raw = sysconfig.get_path(scheme)
+        if raw:
+            candidates.append(Path(raw) / name)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 
@@ -148,9 +166,32 @@ def get_optional_skills_dir(default: Path | None = None) -> Path:
     override = os.getenv("HERMES_OPTIONAL_SKILLS", "").strip()
     if override:
         return Path(override)
+    packaged = _get_packaged_data_dir("optional-skills")
+    if packaged is not None:
+        return packaged
     if default is not None:
         return default
     return get_hermes_home() / "optional-skills"
+
+
+def get_bundled_skills_dir(default: Path | None = None) -> Path:
+    """Return the bundled skills directory for source and packaged installs.
+
+    Resolution order:
+        1. ``HERMES_BUNDLED_SKILLS`` env var (Nix wrapper / explicit override)
+        2. Wheel-installed ``<sysconfig data>/skills`` (pip install path)
+        3. Caller-supplied ``default`` (typically the source-checkout path)
+        4. ``<HERMES_HOME>/skills`` last-resort
+    """
+    override = os.getenv("HERMES_BUNDLED_SKILLS", "").strip()
+    if override:
+        return Path(override)
+    packaged = _get_packaged_data_dir("skills")
+    if packaged is not None:
+        return packaged
+    if default is not None:
+        return default
+    return get_hermes_home() / "skills"
 
 
 def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
@@ -192,6 +233,26 @@ def display_hermes_home() -> str:
         return "~/" + str(home.relative_to(Path.home()))
     except ValueError:
         return str(home)
+
+
+def secure_parent_dir(path: Path) -> None:
+    """Chmod ``0o700`` on the parent directory of *path*, but only if safe.
+
+    Refuses to chmod ``/`` or any top-level directory (resolved parent with
+    fewer than 3 parts, i.e. ``/`` or any direct child like ``/usr``) to
+    prevent catastrophic host bricking when ``HERMES_HOME`` or other path
+    env vars resolve to an unexpected location.
+
+    See https://github.com/NousResearch/hermes-agent/issues/25821.
+    """
+    parent = path.parent.resolve()
+    # Refuse root and its direct children (/usr, /home, /var, /tmp, …).
+    if parent == Path("/") or len(parent.parts) < 3:
+        return
+    try:
+        os.chmod(parent, 0o700)
+    except OSError:
+        pass
 
 
 def get_subprocess_home() -> str | None:

@@ -70,6 +70,49 @@ _CRON_INVISIBLE_CHARS = {
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
 }
 
+# U+200D Zero-Width Joiner is also a legitimate, required part of many
+# Unicode emoji sequences (for example 👨‍👩‍👧, 🏳️‍🌈, ❤️‍🩹, 🧑‍💻).
+# We should still block ZWJ when it is hiding between plain text characters,
+# but not when it is clearly part of an emoji grapheme cluster.
+_EMOJI_NEIGHBOUR_CP_RANGES = (
+    (0x1F000, 0x1FFFF),
+    (0x2600, 0x27BF),
+    (0x2300, 0x23FF),
+    (0x1F1E6, 0x1F1FF),
+    (0x20E3, 0x20E3),
+)
+_VARIATION_SELECTOR_CP = 0xFE0F
+
+
+def _is_emoji_cp(cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in _EMOJI_NEIGHBOUR_CP_RANGES)
+
+
+def _zwj_has_emoji_neighbour(text: str, idx: int) -> bool:
+    """Return True when the ZWJ at text[idx] appears inside an emoji sequence."""
+    left = idx - 1
+    while left >= 0 and ord(text[left]) == _VARIATION_SELECTOR_CP:
+        left -= 1
+    right = idx + 1
+    while right < len(text) and ord(text[right]) == _VARIATION_SELECTOR_CP:
+        right += 1
+    return (
+        left >= 0 and right < len(text)
+        and _is_emoji_cp(ord(text[left]))
+        and _is_emoji_cp(ord(text[right]))
+    )
+
+
+def _strip_legitimate_emoji_zwj(prompt: str) -> str:
+    if '\u200d' not in prompt:
+        return prompt
+    cleaned: list[str] = []
+    for idx, ch in enumerate(prompt):
+        if ch == '\u200d' and _zwj_has_emoji_neighbour(prompt, idx):
+            continue
+        cleaned.append(ch)
+    return ''.join(cleaned)
+
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
@@ -84,8 +127,9 @@ def _scan_cron_prompt(prompt: str) -> str:
         # Allow the bundled GitHub skill fallback shape without opening a
         # blanket exemption for arbitrary Authorization-header exfiltration.
         prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
+    prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt_to_scan)
     for char in _CRON_INVISIBLE_CHARS:
-        if char in prompt_to_scan:
+        if char in prompt_for_invisible_scan:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
     for pattern, pid in _CRON_THREAT_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):

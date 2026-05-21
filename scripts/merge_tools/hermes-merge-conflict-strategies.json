@@ -191,6 +191,12 @@
       "context": "overlap_only"
     },
     {
+      "pattern": "tests/hermes_cli/test_update_gateway_restart.py",
+      "action": "upstream",
+      "note": "Official upstream removed the legacy gateway restart test path.",
+      "context": "overlap_only"
+    },
+    {
       "pattern": "AGENTS.md",
       "action": "official_with_overlay",
       "note": "Merge official AGENTS.md; retain fork Windows/profile notes.",

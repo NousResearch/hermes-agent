@@ -1895,7 +1895,7 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
         )
-        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
+        adapter._fetch_reply_context = AsyncMock(return_value=("父消息内容", [], []))
         message = SimpleNamespace(
             chat_id="oc_chat",
             thread_id=None,
@@ -4360,7 +4360,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"
         adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
-        adapter._fetch_message_text = AsyncMock(return_value=None)
+        adapter._fetch_reply_context = AsyncMock(return_value=(None, [], []))
         adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
@@ -4548,7 +4548,7 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         adapter._build_get_message_request = Mock(return_value=object())
         return adapter
 
-    def test_fetch_message_text_renders_mentions_without_hint_prefix(self):
+    def test_fetch_reply_context_renders_mentions_without_hint_prefix(self):
         adapter = self._build_adapter()
 
         alice_mention = SimpleNamespace(
@@ -4567,10 +4567,10 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         response.data = SimpleNamespace(items=[parent])
         adapter._client.im.v1.message.get = Mock(return_value=response)
 
-        result = asyncio.run(adapter._fetch_message_text("m_parent"))
-        self.assertEqual(result, "@Alice hi")
+        result_text, result_media, _ = asyncio.run(adapter._fetch_reply_context("m_parent"))
+        self.assertEqual(result_text, "@Alice hi")
         # No [Mentioned:] wrapper — reply-context path intentionally skips the hint.
-        self.assertNotIn("[Mentioned:", result)
+        self.assertNotIn("[Mentioned:", result_text)
 
     def test_extract_text_from_raw_content_accepts_mentions_kwarg(self):
         from gateway.platforms.feishu import FeishuAdapter
@@ -4594,7 +4594,7 @@ class TestFeishuFetchMessageText(unittest.TestCase):
             "@Alice hello",
         )
 
-    def test_fetch_message_text_marks_is_self_via_string_id_shape(self):
+    def test_fetch_reply_context_marks_is_self_via_string_id_shape(self):
         """History-path Mention objects carry id as str + id_type; is_self must still work."""
         adapter = self._build_adapter()
         # bot_name is empty — is_self must be detected via open_id alone
@@ -4617,8 +4617,8 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         adapter._client.im.v1.message.get = Mock(return_value=response)
 
         # The rendered text should still have the bot name substituted.
-        result = asyncio.run(adapter._fetch_message_text("m_parent"))
-        self.assertEqual(result, "@Hermes hi")
+        result_text, result_media, _ = asyncio.run(adapter._fetch_reply_context("m_parent"))
+        self.assertEqual(result_text, "@Hermes hi")
 
     def test_build_mentions_map_string_id_shape(self):
         """_build_mentions_map accepts the reply-history shape (id as str +
@@ -4650,7 +4650,7 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"
         adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
-        adapter._fetch_message_text = AsyncMock(return_value=None)
+        adapter._fetch_reply_context = AsyncMock(return_value=(None, [], []))
         adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}

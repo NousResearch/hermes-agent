@@ -119,12 +119,73 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     return elements
 
 
+def _window_matches_app(window: Dict[str, Any], app: str) -> bool:
+    """Return True when *app* matches a window's app name or bundle id."""
+    app_lower = app.lower()
+    return (
+        app_lower in str(window.get("app_name", "")).lower()
+        or app_lower in str(window.get("bundle_id", "")).lower()
+    )
+
+
+def _extract_window_state_payload(out: Dict[str, Any]) -> Tuple[str, str, int, int, int, int]:
+    """Normalize cua-driver get_window_state output.
+
+    New cua-driver versions return a JSON object with ``tree_markdown`` and
+    screenshot metadata. Older builds returned markdown text directly. Support
+    both so Hermes does not silently lose dimensions or labels when the driver
+    payload shape changes.
+    """
+    data = out.get("data")
+    if isinstance(data, dict):
+        tree = str(data.get("tree_markdown") or "")
+        summary = f"✅ {data.get('name', '')} — {data.get('element_count', 0)} elements"
+        width = int(data.get("screenshot_width") or data.get("screenshot_original_width") or 0)
+        height = int(data.get("screenshot_height") or data.get("screenshot_original_height") or 0)
+        original_width = int(data.get("screenshot_original_width") or width or 0)
+        original_height = int(data.get("screenshot_original_height") or height or 0)
+        return summary, tree, width, height, original_width, original_height
+    text = data if isinstance(data, str) else ""
+    summary, tree = _split_tree_text(text)
+    return summary, tree, 0, 0, 0, 0
+
+
 def _split_tree_text(full_text: str) -> Tuple[str, str]:
     """Split get_window_state text into (summary_line, tree_markdown)."""
     lines = full_text.split("\n", 1)
     summary = lines[0]
     tree = lines[1] if len(lines) > 1 else ""
     return summary, tree
+
+
+def _image_dimensions(raw: bytes) -> Tuple[int, int]:
+    """Return (width, height) for PNG/JPEG bytes without third-party deps."""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
+        return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+    if raw.startswith(b"\xff\xd8"):
+        i = 2
+        while i + 9 < len(raw):
+            while i < len(raw) and raw[i] == 0xFF:
+                i += 1
+            if i >= len(raw):
+                break
+            marker = raw[i]
+            i += 1
+            if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                continue
+            if i + 2 > len(raw):
+                break
+            seg_len = int.from_bytes(raw[i:i + 2], "big")
+            if seg_len < 2 or i + seg_len > len(raw):
+                break
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                if seg_len >= 7:
+                    height = int.from_bytes(raw[i + 3:i + 5], "big")
+                    width = int.from_bytes(raw[i + 5:i + 7], "big")
+                    return width, height
+                break
+            i += seg_len
+    return 0, 0
 
 
 def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
@@ -359,6 +420,7 @@ class CuaDriverBackend(ComputerUseBackend):
             windows = [
                 {
                     "app_name": w.get("app_name", ""),
+                    "bundle_id": w.get("bundle_id", ""),
                     "pid": int(w["pid"]),
                     "window_id": int(w["window_id"]),
                     "off_screen": not w.get("is_on_screen", True),
@@ -377,12 +439,19 @@ class CuaDriverBackend(ComputerUseBackend):
             return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
                                  elements=[], app="", window_title="", png_bytes_len=0)
 
-        # Filter by app name (case-insensitive substring) if requested.
+        # Filter by app name / bundle id if requested. Do not silently fall
+        # back to another window: that can make a safe app-scoped command hit
+        # the wrong foreground app.
         if app:
-            app_lower = app.lower()
-            filtered = [w for w in windows if app_lower in w["app_name"].lower()]
-            if filtered:
-                windows = filtered
+            filtered = [w for w in windows if _window_matches_app(w, app)]
+            if not filtered:
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None, elements=[],
+                    app=app,
+                    window_title=f"No on-screen window found for app '{app}'",
+                    png_bytes_len=0,
+                )
+            windows = filtered
 
         # Pick first on-screen window (sorted by z_index / z-order above).
         target = next((w for w in windows if not w["off_screen"]), windows[0])
@@ -393,8 +462,10 @@ class CuaDriverBackend(ComputerUseBackend):
         # Step 2: capture.
         png_b64: Optional[str] = None
         elements: List[UIElement] = []
-        width = height = 0
-        window_title = ""
+        bounds = target.get("bounds") or {}
+        width = int(bounds.get("width", 0)) if isinstance(bounds, dict) else 0
+        height = int(bounds.get("height", 0)) if isinstance(bounds, dict) else 0
+        window_title = str(target.get("title", "") or "")
 
         if mode == "vision":
             # screenshot tool: just the PNG, no AX walk.
@@ -410,8 +481,7 @@ class CuaDriverBackend(ComputerUseBackend):
                 "get_window_state",
                 {"pid": self._active_pid, "window_id": self._active_window_id},
             )
-            text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
-            summary, tree = _split_tree_text(text)
+            summary, tree, width, height, original_width, original_height = _extract_window_state_payload(gws_out)
 
             # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
             m = re.search(r'(\d+)\s+elements?', summary)
@@ -426,11 +496,23 @@ class CuaDriverBackend(ComputerUseBackend):
             wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
             if wt:
                 window_title = wt.group(1)
+            elif target.get("title"):
+                window_title = str(target.get("title") or "")
+
+            if not width and original_width:
+                width = original_width
+            if not height and original_height:
+                height = original_height
 
         png_bytes_len = 0
         if png_b64:
             try:
-                png_bytes_len = len(base64.b64decode(png_b64, validate=False))
+                raw_image = base64.b64decode(png_b64, validate=False)
+                png_bytes_len = len(raw_image)
+                if not width or not height:
+                    img_width, img_height = _image_dimensions(raw_image)
+                    width = width or img_width
+                    height = height or img_height
             except Exception:
                 png_bytes_len = len(png_b64) * 3 // 4
 
@@ -497,9 +579,24 @@ class CuaDriverBackend(ComputerUseBackend):
         button: str = "left",
         modifiers: Optional[List[str]] = None,
     ) -> ActionResult:
-        # cua-driver does not expose a drag tool.
-        return ActionResult(ok=False, action="drag",
-                            message="drag is not supported by the cua-driver backend.")
+        pid = self._active_pid
+        if pid is None:
+            return ActionResult(ok=False, action="drag",
+                                message="No active window — call capture() first.")
+        if from_xy is None or to_xy is None:
+            return ActionResult(ok=False, action="drag",
+                                message="drag requires from_coordinate and to_coordinate with cua-driver.")
+        args: Dict[str, Any] = {
+            "pid": pid,
+            "from_x": from_xy[0],
+            "from_y": from_xy[1],
+            "to_x": to_xy[0],
+            "to_y": to_xy[1],
+            "button": button,
+        }
+        if modifiers:
+            args["modifier"] = modifiers
+        return self._action("drag", args)
 
     def scroll(
         self,
@@ -534,10 +631,10 @@ class CuaDriverBackend(ComputerUseBackend):
         if pid is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        # Safari WebKit AXTextField does not accept AX attribute writes (type_text),
-        # so use type_text_chars which synthesises individual key events instead.
-        # This works universally across all macOS apps in background mode.
-        return self._action("type_text_chars", {"pid": pid, "text": text})
+        args: Dict[str, Any] = {"pid": pid, "text": text}
+        if self._active_window_id is not None:
+            args["window_id"] = self._active_window_id
+        return self._action("type_text", args)
 
     def key(self, keys: str) -> ActionResult:
         pid = self._active_pid
@@ -613,6 +710,7 @@ class CuaDriverBackend(ComputerUseBackend):
             windows = [
                 {
                     "app_name": w.get("app_name", ""),
+                    "bundle_id": w.get("bundle_id", ""),
                     "pid": int(w["pid"]),
                     "window_id": int(w["window_id"]),
                     "z_index": w.get("z_index", 0),
@@ -624,9 +722,8 @@ class CuaDriverBackend(ComputerUseBackend):
             raw_text = lw_out["data"] if isinstance(lw_out["data"], str) else ""
             windows = _parse_windows_from_text(raw_text)
 
-        app_lower = app.lower()
-        matched = [w for w in windows if app_lower in w["app_name"].lower()]
-        target = matched[0] if matched else (windows[0] if windows else None)
+        matched = [w for w in windows if _window_matches_app(w, app)]
+        target = matched[0] if matched else None
         if target:
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]

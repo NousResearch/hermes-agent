@@ -467,6 +467,24 @@ class TestMarkJobRun:
         updated = get_job(job["id"])
         assert updated["last_delivery_error"] is None
 
+    def test_delivery_results_are_persisted(self, tmp_cron_dir):
+        """Successful delivery metadata is stored for permalink-driven handoff flows."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(
+            job["id"],
+            success=True,
+            delivery_results=[{
+                "platform": "slack",
+                "chat_id": "D123",
+                "thread_id": None,
+                "message_id": "177.123",
+                "permalink": "https://example.slack.com/archives/D123/p177123",
+            }],
+        )
+        updated = get_job(job["id"])
+        assert updated["last_delivery_results"][0]["message_id"] == "177.123"
+        assert updated["last_delivery_results"][0]["permalink"].startswith("https://example.slack.com/")
+
     def test_both_agent_and_delivery_error(self, tmp_cron_dir):
         """Agent fails AND delivery fails — both errors recorded."""
         job = create_job(prompt="Report", schedule="every 1h")

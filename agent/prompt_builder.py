@@ -185,6 +185,24 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+CONVERSATION_TOKEN_GOVERNOR_GUIDANCE = (
+    "# Conversation Token Governor\n"
+    "Use the smallest context that can honestly answer the user. Spend tokens "
+    "proportional to task risk and ambiguity, not curiosity.\n"
+    "- Before using tools, state the minimum missing evidence internally and "
+    "fetch only that; stop once the answer is grounded.\n"
+    "- Prefer metadata, search, targeted offsets/limits, and summarized outputs "
+    "over dumping full files, logs, directories, JSON, pages, or histories.\n"
+    "- For multi-step investigation, batch independent lookups in one tool/script "
+    "and print only the decision-relevant summary.\n"
+    "- Load skills and memories only when they materially change execution; when "
+    "many could match, load the narrowest one first.\n"
+    "- Keep final answers concise by default; expand only when the user asks or "
+    "the task needs evidence, tradeoffs, or verification details.\n"
+    "- Do not continue browsing or tool-calling for optional background after the "
+    "requested answer is already supported."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

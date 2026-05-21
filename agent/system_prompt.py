@@ -31,6 +31,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    CONVERSATION_TOKEN_GOVERNOR_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -99,6 +100,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+
+    # Always-on conversation token governor: keep ordinary chat and
+    # investigations from expanding context unnecessarily. This is a small,
+    # stable prompt block so it preserves prefix caching while influencing
+    # every new session.
+    stable_parts.append(CONVERSATION_TOKEN_GOVERNOR_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []

@@ -156,6 +156,100 @@ class TestDispatch:
         assert click_kw["button"] == "right"
 
 
+class TestCuaDriverBackendCompatibility:
+    """Regression tests for cua-driver 0.1.x MCP tool names/payloads."""
+
+    class FakeSession:
+        def __init__(self, responses=None):
+            self.calls = []
+            self.responses = responses or {}
+
+        def call_tool(self, name, args, timeout=30.0):
+            self.calls.append((name, args))
+            response = self.responses.get(name)
+            if callable(response):
+                return response(args)
+            return response or {"data": {}, "images": [], "structuredContent": None, "isError": False}
+
+    def _backend(self, responses=None):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend.__new__(CuaDriverBackend)
+        backend._session = self.FakeSession(responses)
+        backend._active_pid = 123
+        backend._active_window_id = 456
+        return backend
+
+    def test_type_uses_current_cua_driver_type_text_tool(self):
+        backend = self._backend()
+        backend.type_text("BIM")
+        assert backend._session.calls[-1] == (
+            "type_text",
+            {"pid": 123, "text": "BIM", "window_id": 456},
+        )
+
+    def test_drag_routes_to_current_cua_driver_drag_tool(self):
+        backend = self._backend()
+        backend.drag(from_xy=(10, 20), to_xy=(30, 40), button="left")
+        assert backend._session.calls[-1] == (
+            "drag",
+            {"pid": 123, "from_x": 10, "from_y": 20, "to_x": 30, "to_y": 40, "button": "left"},
+        )
+
+    def test_capture_with_missing_app_does_not_fallback_to_frontmost_window(self):
+        responses = {
+            "list_windows": {
+                "data": None,
+                "images": [],
+                "isError": False,
+                "structuredContent": {"windows": [{
+                    "app_name": "Obsidian", "pid": 123, "window_id": 456,
+                    "is_on_screen": True, "title": "Note", "z_index": 1,
+                }]},
+            }
+        }
+        backend = self._backend(responses)
+        cap = backend.capture(mode="som", app="Finder")
+        assert cap.app == "Finder"
+        assert cap.window_title == "No on-screen window found for app 'Finder'"
+        assert [name for name, _ in backend._session.calls] == ["list_windows"]
+
+    def test_capture_parses_structured_get_window_state_dimensions_and_tree(self):
+        responses = {
+            "list_windows": {
+                "data": None,
+                "images": [],
+                "isError": False,
+                "structuredContent": {"windows": [{
+                    "app_name": "Obsidian", "pid": 123, "window_id": 456,
+                    "is_on_screen": True, "title": "Note", "z_index": 1,
+                    "bounds": {"width": 1920, "height": 1050},
+                }]},
+            },
+            "get_window_state": {
+                "data": {
+                    "name": "Obsidian",
+                    "element_count": 1,
+                    "screenshot_width": 1568,
+                    "screenshot_height": 857,
+                    "screenshot_original_width": 1920,
+                    "screenshot_original_height": 1050,
+                    "tree_markdown": '- [0] AXWindow "Note"\n  - [1] AXButton "More"',
+                },
+                "images": ["iVBORw0KGgo="],
+                "structuredContent": None,
+                "isError": False,
+            },
+        }
+        backend = self._backend(responses)
+        cap = backend.capture(mode="som", app="Obsidian")
+        assert (cap.width, cap.height) == (1568, 857)
+        assert cap.window_title == "Note"
+        assert [(e.index, e.role, e.label) for e in cap.elements] == [
+            (0, "AXWindow", "Note"),
+            (1, "AXButton", "More"),
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Safety guards (type / key block lists)
 # ---------------------------------------------------------------------------

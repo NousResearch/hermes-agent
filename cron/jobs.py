@@ -855,7 +855,8 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 delivery_results: Optional[List[Dict[str, Any]]] = None):
     """
     Mark a job as having been run.
     
@@ -875,6 +876,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                job["last_delivery_results"] = delivery_results or []
                 
                 # Increment completed count
                 if job.get("repeat"):

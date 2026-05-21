@@ -975,6 +975,13 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
 
+    def test_always_includes_conversation_token_governor(self, agent):
+        from agent.prompt_builder import CONVERSATION_TOKEN_GOVERNOR_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+        assert CONVERSATION_TOKEN_GOVERNOR_GUIDANCE in prompt
+        assert "smallest context" in prompt
+
     def test_can_use_soul_identity_even_when_context_files_are_skipped(self):
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),

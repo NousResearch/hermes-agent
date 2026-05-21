@@ -832,6 +832,30 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def get_permalink(self, chat_id: str, message_ts: str) -> str:
+        """Return a Slack permalink for a sent message timestamp.
+
+        Cron/gateway handoff flows need the message permalink immediately after
+        ``send()`` returns. Keep the Slack API call encapsulated in the adapter
+        so callers do not need to know which workspace client owns ``chat_id``.
+        """
+        if not self._app:
+            return ""
+        if not chat_id or not message_ts:
+            return ""
+        try:
+            result = await self._get_client(chat_id).chat_getPermalink(
+                channel=chat_id,
+                message_ts=message_ts,
+            )
+            if hasattr(result, "get"):
+                return str(result.get("permalink") or "")
+            if isinstance(result, dict):
+                return str(result.get("permalink") or "")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.debug("[Slack] Permalink lookup failed: %s", e)
+        return ""
+
     async def send_private_notice(
         self,
         chat_id: str,

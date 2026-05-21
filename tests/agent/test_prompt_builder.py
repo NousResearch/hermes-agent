@@ -26,6 +26,7 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    CONVERSATION_TOKEN_GOVERNOR_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -48,6 +49,12 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_conversation_token_governor_discourages_context_bloat(self):
+        assert "smallest context" in CONVERSATION_TOKEN_GOVERNOR_GUIDANCE
+        assert "targeted offsets/limits" in CONVERSATION_TOKEN_GOVERNOR_GUIDANCE
+        assert "Do not continue browsing" in CONVERSATION_TOKEN_GOVERNOR_GUIDANCE
+        assert len(CONVERSATION_TOKEN_GOVERNOR_GUIDANCE) < 1200
 
 
 # =========================================================================

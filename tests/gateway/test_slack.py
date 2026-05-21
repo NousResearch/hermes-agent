@@ -72,7 +72,8 @@ from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 @pytest.fixture()
 def adapter():
-    config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+    # Isolate routing tests from the developer machine's SLACK_ALLOWED_CHANNELS.
+    config = PlatformConfig(enabled=True, token="***", extra={"allowed_channels": ""})
     a = SlackAdapter(config)
     # Mock the Slack app client
     a._app = MagicMock()
@@ -90,6 +91,26 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
+
+
+# ---------------------------------------------------------------------------
+# TestPermalinkLookup
+# ---------------------------------------------------------------------------
+
+class TestPermalinkLookup:
+    @pytest.mark.asyncio
+    async def test_get_permalink_calls_slack_api(self, adapter):
+        adapter._app.client.chat_getPermalink = AsyncMock(
+            return_value={"ok": True, "permalink": "https://example.slack.com/archives/D123/p1779159999000100"}
+        )
+
+        permalink = await adapter.get_permalink("D123", "1779159999.000100")
+
+        assert permalink == "https://example.slack.com/archives/D123/p1779159999000100"
+        adapter._app.client.chat_getPermalink.assert_awaited_once_with(
+            channel="D123",
+            message_ts="1779159999.000100",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1993,7 +2014,7 @@ class TestThreadReplyHandling:
     @pytest.fixture()
     def adapter_with_session_store(self, mock_session_store):
         """Create an adapter with a mock session store attached."""
-        config = PlatformConfig(enabled=True, token="***")
+        config = PlatformConfig(enabled=True, token="***", extra={"allowed_channels": ""})
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()
@@ -2133,7 +2154,7 @@ class TestAssistantThreadLifecycle:
 
     @pytest.fixture()
     def assistant_adapter(self, mock_session_store):
-        config = PlatformConfig(enabled=True, token="***")
+        config = PlatformConfig(enabled=True, token="***", extra={"allowed_channels": ""})
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()

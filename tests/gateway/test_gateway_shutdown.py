@@ -96,7 +96,10 @@ async def test_gateway_stop_drains_running_agents_before_disconnect():
     adapter.disconnect = disconnect_mock
 
     running_agent = MagicMock()
-    runner._running_agents = {"session": running_agent}
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    runner._cache_session_source(session_key, source)
+    runner._running_agents = {session_key: running_agent}
 
     async def finish_agent():
         await asyncio.sleep(0.05)
@@ -105,11 +108,13 @@ async def test_gateway_stop_drains_running_agents_before_disconnect():
     asyncio.create_task(finish_agent())
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
-        await runner.stop()
+        await runner.stop(restart=True)
 
     running_agent.interrupt.assert_not_called()
     disconnect_mock.assert_awaited_once()
     assert runner._shutdown_event.is_set() is True
+    assert any("waiting" in message.lower() for message in adapter.sent)
+    assert not any("will be interrupted" in message.lower() for message in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -121,7 +126,10 @@ async def test_gateway_stop_interrupts_after_drain_timeout():
     adapter.disconnect = disconnect_mock
 
     running_agent = MagicMock()
-    runner._running_agents = {"session": running_agent}
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    runner._cache_session_source(session_key, source)
+    runner._running_agents = {session_key: running_agent}
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
         await runner.stop()
@@ -129,6 +137,8 @@ async def test_gateway_stop_interrupts_after_drain_timeout():
     running_agent.interrupt.assert_called_once_with("Gateway shutting down")
     disconnect_mock.assert_awaited_once()
     assert runner._shutdown_event.is_set() is True
+    assert any("waiting" in message.lower() for message in adapter.sent)
+    assert any("will be interrupted" in message.lower() for message in adapter.sent)
 
 
 @pytest.mark.asyncio

@@ -42,6 +42,8 @@ class TestMem0FiltersV2:
     def _make_provider(self, monkeypatch, client):
         provider = Mem0MemoryProvider()
         provider.initialize("test-session")
+        provider._mode = "platform"
+        provider._sync_turn_enabled = True
         provider._user_id = "u123"
         provider._agent_id = "hermes"
         monkeypatch.setattr(provider, "_get_client", lambda: client)
@@ -225,3 +227,84 @@ class TestMem0Defaults:
         provider.initialize("test")
 
         assert provider._agent_id == "hermes"
+
+
+# ---------------------------------------------------------------------------
+# Local shadow mode
+# ---------------------------------------------------------------------------
+
+
+class TestMem0LocalShadowMode:
+    """Local Mem0 mode should work without Mem0 Platform and stay candidate-only."""
+
+    def test_local_mode_available_without_api_key(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(json.dumps({"mode": "local"}))
+
+        provider = Mem0MemoryProvider()
+
+        assert provider.is_available() is True
+
+    def test_local_config_uses_fastembed_bm25_defaults(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(json.dumps({"mode": "local"}))
+
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session", hermes_home=str(tmp_path), user_id="u123")
+        cfg = provider._build_local_memory_config()
+
+        assert cfg["embedder"]["provider"] == "fastembed"
+        assert cfg["embedder"]["config"]["model"] == "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        assert cfg["vector_store"]["provider"] == "qdrant"
+        assert cfg["vector_store"]["config"]["embedding_model_dims"] == 384
+        assert "local-mem0-shadow" in cfg["vector_store"]["config"]["path"]
+        assert "reranker" not in cfg
+
+    def test_local_config_uses_qdrant_server_url_when_configured(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(json.dumps({
+            "mode": "local",
+            "local_qdrant_url": "http://127.0.0.1:6333",
+        }))
+
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session", hermes_home=str(tmp_path), user_id="u123")
+        qdrant_cfg = provider._build_local_memory_config()["vector_store"]["config"]
+
+        assert qdrant_cfg["url"] == "http://127.0.0.1:6333"
+        assert "path" not in qdrant_cfg
+        assert "on_disk" not in qdrant_cfg
+
+    def test_local_shadow_sync_turn_is_disabled_by_default(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(json.dumps({"mode": "local"}))
+        client = FakeClientV2()
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session", hermes_home=str(tmp_path), user_id="u123")
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+
+        provider.sync_turn("user said this", "assistant replied", session_id="s1")
+
+        assert client.captured_add == []
+
+    def test_on_memory_write_mirrors_builtin_memory_with_metadata(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("MEM0_AGENT_ID", raising=False)
+        (tmp_path / "mem0.json").write_text(json.dumps({"mode": "local"}))
+        client = FakeClientV2()
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session", hermes_home=str(tmp_path), user_id="u123")
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+
+        provider.on_memory_write("add", "user", "Javan prefers Traditional Chinese", metadata={"source": "test"})
+
+        assert len(client.captured_add) == 1
+        call = client.captured_add[0]
+        assert call["messages"] == [{"role": "user", "content": "Javan prefers Traditional Chinese"}]
+        assert call["user_id"] == "u123"
+        assert call["agent_id"] == "hermes"
+        assert call["infer"] is False
+        assert call["metadata"]["authority_target"] == "user"
+        assert call["metadata"]["memory_action"] == "add"
+        assert call["metadata"]["source"] == "test"

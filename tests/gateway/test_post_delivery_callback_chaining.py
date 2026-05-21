@@ -6,6 +6,9 @@ registration API chains them rather than clobbering. Per-callback
 exceptions are swallowed so one bad callback can't sabotage the others.
 Stale-generation registrations are rejected.
 """
+import asyncio
+import inspect
+
 import pytest
 
 from gateway.config import Platform, PlatformConfig
@@ -26,6 +29,12 @@ class _MinAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+def _fire(callback):
+    result = callback()
+    if inspect.isawaitable(result):
+        asyncio.run(result)
+
+
 @pytest.fixture
 def adapter():
     return _MinAdapter(PlatformConfig(enabled=True), Platform.TELEGRAM)
@@ -36,7 +45,7 @@ class TestPostDeliveryCallbackChaining:
         fired = []
         adapter.register_post_delivery_callback("s", lambda: fired.append("A"))
         cb = adapter.pop_post_delivery_callback("s")
-        cb()
+        _fire(cb)
         assert fired == ["A"]
 
     def test_two_callbacks_chain_in_order(self, adapter):
@@ -44,7 +53,7 @@ class TestPostDeliveryCallbackChaining:
         adapter.register_post_delivery_callback("s", lambda: fired.append("A"))
         adapter.register_post_delivery_callback("s", lambda: fired.append("B"))
         cb = adapter.pop_post_delivery_callback("s")
-        cb()
+        _fire(cb)
         assert fired == ["A", "B"]
 
     def test_three_callbacks_chain_in_order(self, adapter):
@@ -55,7 +64,7 @@ class TestPostDeliveryCallbackChaining:
                 "s", lambda x=label: fired.append(x)
             )
         cb = adapter.pop_post_delivery_callback("s")
-        cb()
+        _fire(cb)
         assert fired == ["A", "B", "C"]
 
     def test_exception_in_one_callback_does_not_block_next(self, adapter):
@@ -67,7 +76,7 @@ class TestPostDeliveryCallbackChaining:
         adapter.register_post_delivery_callback("s", boom)
         adapter.register_post_delivery_callback("s", lambda: fired.append("survived"))
         cb = adapter.pop_post_delivery_callback("s")
-        cb()
+        _fire(cb)
         assert fired == ["survived"]
 
     def test_same_generation_chains(self, adapter):
@@ -79,8 +88,31 @@ class TestPostDeliveryCallbackChaining:
             "s", lambda: fired.append("B"), generation=5
         )
         cb = adapter.pop_post_delivery_callback("s", generation=5)
-        cb()
+        _fire(cb)
         assert fired == ["A", "B"]
+
+    def test_async_callbacks_chain_and_are_awaited(self, adapter):
+        """Long-turn Slack notice uses an async post-delivery callback.
+
+        If another feature has already registered a callback for the same
+        session, chaining must await both callbacks instead of returning an
+        unawaited coroutine and silently skipping the notice.
+        """
+        fired = []
+
+        async def first():
+            await asyncio.sleep(0)
+            fired.append("async-A")
+
+        async def second():
+            await asyncio.sleep(0)
+            fired.append("async-B")
+
+        adapter.register_post_delivery_callback("s", first, generation=5)
+        adapter.register_post_delivery_callback("s", second, generation=5)
+        cb = adapter.pop_post_delivery_callback("s", generation=5)
+        _fire(cb)
+        assert fired == ["async-A", "async-B"]
 
     def test_stale_generation_registration_rejected(self, adapter):
         """A registration with an older generation than the existing
@@ -93,7 +125,7 @@ class TestPostDeliveryCallbackChaining:
             "s", lambda: fired.append("stale_gen3"), generation=3
         )
         cb = adapter.pop_post_delivery_callback("s", generation=7)
-        cb()
+        _fire(cb)
         assert fired == ["gen7"]
 
     def test_pop_at_wrong_generation_returns_none(self, adapter):

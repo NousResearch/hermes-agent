@@ -44,6 +44,51 @@ from hermes_time import now as _hermes_now
 logger = logging.getLogger(__name__)
 
 
+CRON_STATUS_ERROR_MARKER = "CRON_STATUS=error"
+
+
+def _write_cron_model_tag(model: str, reasoning_config: dict | None) -> None:
+    """Write the runtime model tag visible to cron agent system prompts.
+
+    Cron runs do not pass through the Slack gateway's model-router hook, so the
+    global ``state.d/model_tag.txt`` can otherwise contain only a stale routing
+    tier (or no model at all).  Several user/system prompts require the first
+    line to include the actual model; write the job-level runtime model before
+    the AIAgent starts so cron responses don't fall back to ``Model: unknown``.
+    """
+    try:
+        effort = "medium"
+        if isinstance(reasoning_config, dict):
+            effort = str(reasoning_config.get("effort") or reasoning_config.get("reasoning_effort") or "medium")
+        model_label = str(model or "unknown").strip() or "unknown"
+        state_dir = _get_hermes_home() / "state.d"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "model_tag.txt").write_text(
+            f"🤖 Model: {model_label} | Reasoning: {effort}",
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.debug("Could not write cron model tag: %s", exc)
+
+
+def _extract_cron_status_error(final_response: str) -> str | None:
+    """Return an error payload when the agent explicitly reports task failure.
+
+    Some cron jobs are LLM-orchestrated wrappers around shell scripts.  The
+    scheduler can see the agent completed successfully, but not whether the
+    script the agent ran returned non-zero unless the response carries a stable
+    marker.  ``CRON_STATUS=error`` lets prompts opt into scheduler-level failure
+    accounting without brittle natural-language parsing.
+    """
+    if CRON_STATUS_ERROR_MARKER not in (final_response or ""):
+        return None
+    cleaned = "\n".join(
+        line for line in str(final_response).splitlines()
+        if line.strip() != CRON_STATUS_ERROR_MARKER
+    ).strip()
+    return cleaned or "agent reported cron task failure"
+
+
 class CronPromptInjectionBlocked(Exception):
     """Raised by _build_job_prompt when the fully-assembled prompt trips the
     injection scanner. Caught in run_job so the operator sees a clean
@@ -130,6 +175,7 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+NO_REPLY_MARKER = "NO_REPLY"
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -566,6 +612,29 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _delivery_metadata(platform_name: str, chat_id: str, thread_id: Optional[str], send_result=None, standalone_result=None, permalink: str = "") -> dict:
+    """Build a compact, JSON-safe delivery metadata record for persisted jobs."""
+    message_id = None
+    raw = None
+    if send_result is not None:
+        message_id = getattr(send_result, "message_id", None)
+        raw = getattr(send_result, "raw_response", None)
+    if standalone_result is not None:
+        message_id = (standalone_result or {}).get("message_id") or message_id
+        raw = standalone_result
+
+    if not permalink and hasattr(raw, "get"):
+        permalink = str(raw.get("permalink") or "")
+
+    return {
+        "platform": str(platform_name),
+        "chat_id": str(chat_id),
+        "thread_id": None if thread_id is None else str(thread_id),
+        "message_id": None if message_id is None else str(message_id),
+        "permalink": str(permalink or ""),
+    }
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -575,7 +644,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
 
-    Returns None on success, or an error string on failure.
+    Returns None on success, or an error string on failure. Successful delivery
+    metadata is written into ``job['_last_delivery_results']`` for the caller to
+    persist via ``mark_job_run``.
     """
     targets = _resolve_delivery_targets(job)
     if not targets:
@@ -623,6 +694,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         return msg
 
     delivery_errors = []
+    delivery_results = []
+    job["_last_delivery_results"] = delivery_results
 
     for target in targets:
         platform_name = target["platform"]
@@ -667,6 +740,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
+            send_result = None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -719,6 +793,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
                 if adapter_ok:
+                    permalink = ""
+                    message_id = getattr(send_result, "message_id", None) if send_result is not None else None
+                    if message_id and str(platform_name).lower() == "slack" and hasattr(runtime_adapter, "get_permalink"):
+                        future = asyncio.run_coroutine_threadsafe(
+                            runtime_adapter.get_permalink(chat_id, str(message_id)),
+                            loop,
+                        )
+                        try:
+                            permalink = future.result(timeout=30) or ""
+                        except TimeoutError:
+                            future.cancel()
+                            logger.debug("Job '%s': Slack permalink lookup timed out", job["id"])
+                        except Exception as e:
+                            logger.debug("Job '%s': Slack permalink lookup failed: %s", job["id"], e)
+                    delivery_results.append(_delivery_metadata(platform_name, chat_id, thread_id, send_result=send_result, permalink=permalink))
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
             except Exception as e:
@@ -753,6 +842,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.append(msg)
                 continue
 
+            delivery_results.append(_delivery_metadata(platform_name, chat_id, thread_id, standalone_result=result))
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
 
     if delivery_errors:
@@ -1042,9 +1132,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "the output yourself. Just produce your report/output as your "
         "final response and the system handles the rest. "
         "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "with exactly \"[SILENT]\" or \"NO_REPLY\" (nothing else) to suppress delivery. "
+        "Never combine these markers with content — either report your "
+        "findings normally, or say one marker and nothing more.]\n\n"
     )
     prompt = cron_hint + prompt
     if skills is None:
@@ -1584,6 +1674,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+        _write_cron_model_tag(model, reasoning_config)
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
@@ -1695,6 +1786,25 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             raise RuntimeError(_err_text)
 
         final_response = result.get("final_response", "") or ""
+        explicit_task_error = _extract_cron_status_error(final_response)
+        if explicit_task_error:
+            output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Prompt
+
+{prompt}
+
+## Response
+
+{explicit_task_error}
+"""
+            logger.warning("Job '%s' reported explicit task failure marker", job_name)
+            return False, output, "", explicit_task_error
+
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
@@ -1874,9 +1984,20 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
-                should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                stripped_delivery = deliver_content.strip()
+                should_deliver = bool(stripped_delivery)
+                upper_delivery = stripped_delivery.upper()
+                suppress_delivery = (
+                    SILENT_MARKER in upper_delivery
+                    or upper_delivery == NO_REPLY_MARKER
+                )
+                if should_deliver and success and suppress_delivery:
+                    logger.info(
+                        "Job '%s': agent returned no-delivery marker (%s/%s) — skipping delivery",
+                        job["id"],
+                        SILENT_MARKER,
+                        NO_REPLY_MARKER,
+                    )
                     should_deliver = False
 
                 delivery_error = None
@@ -1894,7 +2015,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                mark_job_run(
+                    job["id"],
+                    success,
+                    error,
+                    delivery_error=delivery_error,
+                    delivery_results=job.get("_last_delivery_results") or [],
+                )
                 return True
 
             except Exception as e:

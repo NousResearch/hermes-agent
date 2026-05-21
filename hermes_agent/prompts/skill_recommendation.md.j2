@@ -1,0 +1,65 @@
+You are an AI assistant analyzing patterns in Hermes agent task history to recommend new reusable skills.
+
+## Context
+
+Hermes is an AI agent system. Skills are reusable instruction templates (SKILL.md files) that encode recurring task patterns so the agent executes them efficiently without reasoning from scratch each time.
+
+You have been given a cluster of {{ cluster_size }} similar task instances observed over the past {{ window_days }} days. These tasks share a common pattern but have NO existing Hermes skill covering them.
+
+## Observed Task Cluster
+
+**Suggested skill name:** `{{ suggested_name }}`
+
+**Task instances ({{ cluster_size }} examples):**
+
+{% for example in cluster_examples %}
+### Example {{ loop.index }}
+**Summary:** {{ example.summary }}
+**Timestamp:** {{ example.timestamp }}
+{% if example.turn_content %}
+**Turn content (excerpt):**
+```
+{{ example.turn_content[:500] }}
+```
+{% endif %}
+
+{% endfor %}
+
+## Your Task
+
+Generate a complete SKILL.md file for this task pattern following the hermes-agent skill format.
+
+### Required SKILL.md format:
+
+```markdown
+---
+name: {{ suggested_name }}
+description: [1-2 sentence description, max 1024 chars]
+version: 1.0.0
+metadata:
+  hermes:
+    tags: [tag1, tag2]
+    related_skills: []
+    auto_generated: true
+    source: plan-004-recommender
+---
+
+# [Skill Title]
+
+[Full instructions for executing this task pattern. Be specific about:
+- What inputs the agent receives
+- What steps to execute
+- What output format is expected
+- Any tool calls or integrations required
+- Edge cases to handle]
+```
+
+### Constraints:
+- The `name` field must exactly match: `{{ suggested_name }}`
+- Description must be concise (max 1024 chars)
+- Instructions must be actionable and self-contained
+- Do NOT hallucinate specific tool names that may not exist; use general descriptions
+- Mention any external dependencies or credentials the skill needs
+- If the task pattern is too vague to generate a specific skill, respond with INSUFFICIENT_PATTERN instead of generating a low-quality skill
+
+Respond with ONLY the SKILL.md content (including the YAML frontmatter) or INSUFFICIENT_PATTERN if the pattern is too vague.

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "/home/arrenchulz/.hermes/bin/hermes-mcp-serve",
+      "args": []
+    }
+  }
+}

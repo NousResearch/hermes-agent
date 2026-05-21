@@ -1,0 +1,21 @@
+#!/bin/bash
+# Hermes MCP Server launcher
+# Activates the venv and starts the MCP server for Cursor/Claude integration
+
+set -e
+
+HERMES_HOME="${HERMES_HOME:=$HOME/.hermes}"
+HERMES_REPO="${HERMES_REPO:=$HERMES_HOME/hermes-agent}"
+
+# Activate venv
+if [ -f "$HERMES_REPO/.venv/bin/activate" ]; then
+    source "$HERMES_REPO/.venv/bin/activate"
+else
+    echo "Error: venv not found at $HERMES_REPO/.venv" >&2
+    echo "Run: cd $HERMES_REPO && uv venv && uv sync" >&2
+    exit 1
+fi
+
+# Start MCP server
+cd "$HERMES_REPO"
+exec hermes mcp serve "$@"

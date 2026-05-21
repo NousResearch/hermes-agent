@@ -200,10 +200,7 @@ def _voice_realtime_api_key(provider: str) -> str:
 
 def _voice_realtime_model(provider: str) -> str:
     default = "grok-voice-think-fast-1.0" if provider == "xai" else "gpt-realtime-2"
-    configured = os.environ.get("VOICE_CALL_REALTIME_MODEL", "").strip()
-    if provider == "openai" and configured in {"gpt-realtime", "gpt-realtime-1.5"}:
-        return default
-    return configured or default
+    return os.environ.get("VOICE_CALL_REALTIME_MODEL", default).strip() or default
 
 
 def _voice_realtime_voice(provider: str) -> str:

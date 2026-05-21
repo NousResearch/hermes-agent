@@ -221,4 +221,3 @@ When no palette is specified, the style's built-in Color Palette is used.
 3. Palette colors **replace** style's default Color Palette
 4. Palette Background **replaces** style's default Background color
 5. Style's texture description is preserved
-

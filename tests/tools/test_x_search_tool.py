@@ -700,8 +700,6 @@ def test_x_search_not_degraded_when_filter_returns_top_level_citations(monkeypat
 
     assert result["degraded"] is False
     assert result["degraded_reason"] is None
-
-
 def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     """A broad query that returns no citations isn't necessarily degraded.
 
@@ -722,4 +720,3 @@ def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     assert result["success"] is True
     assert result["degraded"] is False
     assert result["degraded_reason"] is None
-

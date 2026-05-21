@@ -621,6 +621,15 @@ def _get_or_create_env(task_id: str):
                 "vercel_runtime": config.get("vercel_runtime", ""),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                # Local patch (2026-05-18): upstream omitted docker_env /
+                # docker_forward_env / docker_extra_args here, so execute_code
+                # spawned containers without env vars or extra flags even when
+                # terminal_tool spawns had them. Symptom: himalaya keyring
+                # failed inside execute_code containers (docker-default
+                # AppArmor blocking D-Bus method calls to host gnome-keyring).
+                "docker_env": config.get("docker_env", {}),
+                "docker_forward_env": config.get("docker_forward_env", []),
+                "docker_extra_args": config.get("docker_extra_args", []),
             }
 
         ssh_config = None

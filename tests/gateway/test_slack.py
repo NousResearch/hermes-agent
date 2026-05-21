@@ -738,6 +738,15 @@ class TestBangPrefixCommands:
         assert msg_event.message_type == MessageType.COMMAND
 
     @pytest.mark.asyncio
+    async def test_bang_command_with_leading_space_is_rewritten(self, adapter):
+        """Leading whitespace before ``!model`` still dispatches."""
+        await adapter._handle_slack_message(self._make_event(" !model gpt-5.5"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/model gpt-5.5")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
     async def test_bang_works_inside_thread(self, adapter):
         """The whole point: ``!stop`` inside a thread reply dispatches."""
         evt = self._make_event("!stop", thread_ts="1111111111.000001")
@@ -748,6 +757,17 @@ class TestBangPrefixCommands:
         assert msg_event.message_type == MessageType.COMMAND
         # thread_id is preserved on the source so the reply lands in the
         # same thread.
+        assert msg_event.source.thread_id == "1111111111.000001"
+
+    @pytest.mark.asyncio
+    async def test_bang_command_with_leading_newline_tab_works_inside_thread(self, adapter):
+        """Leading newline/tab before ``!stop`` still dispatches in threads."""
+        evt = self._make_event("\n\t!stop", thread_ts="1111111111.000001")
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/stop")
+        assert msg_event.message_type == MessageType.COMMAND
         assert msg_event.source.thread_id == "1111111111.000001"
 
     @pytest.mark.asyncio

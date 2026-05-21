@@ -1806,17 +1806,18 @@ class SlackAdapter(BasePlatformAdapter):
         # gateway dispatcher) handles it like a normal slash command.  Only
         # rewrite when the first token resolves to a known gateway command
         # so casual messages like "!nice work" pass through unchanged.
-        if original_text.startswith("!"):
+        bang_candidate = original_text.lstrip()
+        if bang_candidate.startswith("!"):
             try:
                 from hermes_cli.commands import is_gateway_known_command
-                first_token = original_text[1:].split(maxsplit=1)[0]
+                first_token = bang_candidate[1:].split(maxsplit=1)[0]
                 # Strip "@suffix" the same way get_command() does, so
                 # forms like ``!stop@hermes`` still resolve.
                 cmd_name = first_token.split("@", 1)[0].lower()
                 if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
-                    original_text = "/" + original_text[1:]
+                    original_text = "/" + bang_candidate[1:]
             except Exception:  # pragma: no cover - defensive
-                pass
+                logger.warning("[Slack] Failed to rewrite bang-prefixed command", exc_info=True)
 
         text = original_text
 

@@ -858,9 +858,10 @@ refactor/description   # Code restructuring
 ### Before submitting
 
 1. **Run tests**: `scripts/run_tests.sh` (recommended; same as CI) or `pytest tests/ -v` with the project venv activated
-2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
-4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
+2. **Check for existing PRs**: Before creating a new pull request, search open PRs (`is:pr is:open <keyword>`) to verify nobody else has already submitted the same fix or feature. Duplicate PRs split review attention and delay all contributors. If an existing PR covers your topic, consider reviewing or testing it instead.
+3. **Test manually**: Run `hermes` and exercise the code path you changed
+4. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
+5. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
 
 ### PR description
 
@@ -904,7 +905,7 @@ test(tools): add unit tests for file_operations
 - Use [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
 - Include: OS, Python version, Hermes version (`hermes version`), full error traceback
 - Include steps to reproduce
-- Check existing issues before creating duplicates
+- Check existing [issues](https://github.com/NousResearch/hermes-agent/issues) and [pull requests](https://github.com/NousResearch/hermes-agent/pulls) before creating duplicates
 - For security vulnerabilities, please report privately
 
 ---

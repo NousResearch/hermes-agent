@@ -13354,7 +13354,7 @@ Examples:
             # via the same lazy import path (#16856).
             from tools.mcp_tool import discover_mcp_tools
 
-            discover_mcp_tools()
+            discover_mcp_tools(startup_timeout=5.0, continue_in_background=True)
         except Exception:
             logger.debug(
                 "MCP tool discovery failed at CLI startup",

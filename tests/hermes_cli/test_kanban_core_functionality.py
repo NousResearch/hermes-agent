@@ -4267,3 +4267,29 @@ def test_dispatch_once_with_empty_selected_task_ids_spawns_nothing(kanban_home, 
         assert kb.get_task(conn, tid).status == "ready"
     finally:
         conn.close()
+
+def test_dispatch_once_passes_worker_env_to_spawn_fn(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    seen = {}
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="autopilot worker", assignee="default")
+
+        def spawn_with_env(task, workspace, *, board=None, worker_env=None):
+            seen["task_id"] = task.id
+            seen["workspace"] = workspace
+            seen["board"] = board
+            seen["worker_env"] = worker_env
+            return 12345
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=spawn_with_env,
+            board="brain-os",
+            worker_env={"HERMES_KANBAN_REVIEW_READY_PR_REQUIRED": "1"},
+        )
+
+    assert result.spawned == [(task_id, "default", seen.get("workspace"))]
+    assert seen["task_id"] == task_id
+    assert seen["board"] == "brain-os"
+    assert seen["worker_env"] == {"HERMES_KANBAN_REVIEW_READY_PR_REQUIRED": "1"}

@@ -1189,3 +1189,19 @@ class TestOpenAIModelExecutionGuidance:
 
 
 
+
+
+def test_autopilot_kanban_guidance_overrides_generic_review_required_block():
+    from agent.prompt_builder import build_kanban_guidance
+
+    guidance = build_kanban_guidance(
+        {
+            "HERMES_KANBAN_REVIEW_READY_PR_REQUIRED": "1",
+            "HERMES_KANBAN_EXPECTED_REPO_FULL_NAME": "chriskim12/whystarve",
+        }
+    )
+
+    assert "Autopilot-spawned review-ready contract" in guidance
+    assert "Do not stop at `review-required` merely because the code needs review" in guidance
+    assert "open PR URL" in guidance
+    assert "chriskim12/whystarve" in guidance

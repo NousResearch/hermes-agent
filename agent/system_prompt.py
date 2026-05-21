@@ -39,6 +39,7 @@ from agent.prompt_builder import (
     SKILLS_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    build_kanban_guidance,
 )
 
 
@@ -113,7 +114,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
     # this block.
     if "kanban_show" in agent.valid_tool_names:
-        tool_guidance.append(KANBAN_GUIDANCE)
+        tool_guidance.append(build_kanban_guidance())
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
 

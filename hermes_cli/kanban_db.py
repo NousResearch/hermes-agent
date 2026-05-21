@@ -4549,6 +4549,7 @@ def dispatch_once(
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     board: Optional[str] = None,
     task_ids: Optional[list[str]] = None,
+    worker_env: Optional[dict[str, str]] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -4579,6 +4580,10 @@ def dispatch_once(
     ``task_ids`` optionally restricts the ready scan to a pre-selected subset;
     Autopilot uses this to hand only selector-approved tasks to the existing
     dispatcher without creating a second claim/spawn implementation.
+    ``worker_env`` is an optional, tightly-scoped environment overlay for the
+    spawned worker. Autopilot uses it to mark selector-owned runs that must
+    produce a PR-backed review_ready handoff instead of a generic local
+    review-required block.
     """
     # Reap zombie children from previously spawned workers.
     # The gateway-embedded dispatcher is the parent of every worker spawned
@@ -4717,10 +4722,12 @@ def dispatch_once(
             import inspect
             try:
                 sig = inspect.signature(_spawn)
+                kwargs = {}
                 if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
-                    pid = _spawn(claimed, str(workspace))
+                    kwargs["board"] = board
+                if "worker_env" in sig.parameters:
+                    kwargs["worker_env"] = worker_env
+                pid = _spawn(claimed, str(workspace), **kwargs)
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
@@ -4890,6 +4897,7 @@ def _default_spawn(
     workspace: str,
     *,
     board: Optional[str] = None,
+    worker_env: Optional[dict[str, str]] = None,
 ) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -4970,6 +4978,11 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+    for key, value in (worker_env or {}).items():
+        key_s = str(key).strip()
+        if not key_s.startswith("HERMES_KANBAN_"):
+            continue
+        env[key_s] = str(value)
 
     cmd = [
         *_resolve_hermes_argv(),

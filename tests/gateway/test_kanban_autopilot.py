@@ -1188,3 +1188,51 @@ def test_autopilot_parent_scope_still_limits_continuous_tick(tmp_path, monkeypat
     assert result["scope"]["parent_public_id"] == "BO-114"
     assert captured == ["BO-134"]
     assert result["single_flight"]["selected"]["public_id"] == "BO-134"
+
+
+def test_autopilot_dispatch_injects_review_ready_pr_worker_env(monkeypatch):
+    from gateway import kanban_autopilot
+
+    captured = {}
+
+    class DummyConn:
+        def close(self):
+            captured["closed"] = True
+
+    class DummyDispatchResult:
+        reclaimed = []
+        crashed = []
+        timed_out = []
+        auto_blocked = []
+        promoted = []
+        spawned = [("t_ws012", "default", "/tmp/ws012")]
+        skipped_unassigned = []
+        skipped_nonspawnable = []
+
+    def fake_connect(*, board=None):
+        captured["board"] = board
+        return DummyConn()
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return DummyDispatchResult()
+
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.setattr(kb, "connect", fake_connect)
+    monkeypatch.setattr(kb, "dispatch_once", fake_dispatch_once)
+
+    result = kanban_autopilot.dispatch_selected_once(
+        {
+            "task_id": "t_ws012",
+            "repo_full_name": "chriskim12/whystarve",
+            "public_id": "WS-012",
+        },
+        board="brain-os",
+    )
+
+    assert result["dispatched"] is True
+    worker_env = captured["worker_env"]
+    assert worker_env["HERMES_KANBAN_AUTOPILOT"] == "1"
+    assert worker_env["HERMES_KANBAN_REVIEW_READY_PR_REQUIRED"] == "1"
+    assert worker_env["HERMES_KANBAN_EXPECTED_REPO_FULL_NAME"] == "chriskim12/whystarve"

@@ -398,12 +398,20 @@ def dispatch_selected_once(
     conn = None
     try:
         conn = kb.connect(board=board)
+        worker_env = {
+            "HERMES_KANBAN_AUTOPILOT": "1",
+            "HERMES_KANBAN_REVIEW_READY_PR_REQUIRED": "1",
+        }
+        repo_full_name = str(candidate.get("repo_full_name") or "").strip()
+        if repo_full_name:
+            worker_env["HERMES_KANBAN_EXPECTED_REPO_FULL_NAME"] = repo_full_name
         result = kb.dispatch_once(
             conn,
             max_spawn=1,
             failure_limit=failure_limit,
             board=board,
             task_ids=[task_id],
+            worker_env=worker_env,
         )
     except Exception as exc:
         return {"dispatched": False, "reason": "dispatcher_error", "error": str(exc), "spawned": []}

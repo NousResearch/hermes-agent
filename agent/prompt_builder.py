@@ -251,6 +251,40 @@ KANBAN_GUIDANCE = (
     "cross-agent handoffs that outlive one API loop."
 )
 
+
+AUTOPILOT_KANBAN_REVIEW_READY_GUIDANCE = (
+    "\n\n## Autopilot-spawned review-ready contract\n"
+    "This worker was spawned by the Autopilot selector, so the generic "
+    "`review-required` block is not enough for ordinary code-review handoff. "
+    "Do not stop at `review-required` merely because the code needs review. "
+    "For code changes, create/push a task branch and open a PR when repository "
+    "authority and credentials allow it, then hand off with review-ready "
+    "metadata that includes repo_full_name, commit/head_sha, task_branch, "
+    "open PR URL, pr_base, pr_head, checks_passed, worktree_clean, "
+    "kanban_worker_done, and boundaries_confirmed. Merge/release/deploy, "
+    "gateway restart/reload, and env/secret/provider mutation remain forbidden "
+    "without current-turn human approval. If PR creation is impossible, block "
+    "with the exact missing authority/credential as the blocker — not merely "
+    "because human review is needed."
+)
+
+
+def build_kanban_guidance(env: dict | None = None) -> str:
+    """Return Kanban worker guidance, with Autopilot review-ready additions."""
+
+    import os
+
+    source = os.environ if env is None else env
+    guidance = KANBAN_GUIDANCE
+    flag = str(source.get("HERMES_KANBAN_REVIEW_READY_PR_REQUIRED") or "").strip().lower()
+    if flag in {"1", "true", "yes", "on"}:
+        expected_repo = str(source.get("HERMES_KANBAN_EXPECTED_REPO_FULL_NAME") or "").strip()
+        guidance += AUTOPILOT_KANBAN_REVIEW_READY_GUIDANCE
+        if expected_repo:
+            guidance += f" Expected repository for the PR package: `{expected_repo}`."
+    return guidance
+
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

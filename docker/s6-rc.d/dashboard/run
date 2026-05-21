@@ -1,0 +1,30 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Dashboard service. Always declared so s6 has a supervised slot; if
+# HERMES_DASHBOARD isn't set to a truthy value we sleep forever and do
+# nothing. See OQ3-A in the plan.
+
+case "${HERMES_DASHBOARD:-}" in
+    1|true|TRUE|True|yes|YES|Yes) ;;
+    *) exec sleep infinity ;;
+esac
+
+cd /opt/data
+# shellcheck disable=SC1091
+. /opt/hermes/.venv/bin/activate
+
+dash_host="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
+dash_port="${HERMES_DASHBOARD_PORT:-9119}"
+
+# Binding to anything other than localhost requires --insecure — the
+# dashboard refuses otherwise because it exposes API keys. Inside a
+# container this is the expected deployment.
+insecure=""
+case "$dash_host" in
+    127.0.0.1|localhost) ;;
+    *) insecure="--insecure" ;;
+esac
+
+# shellcheck disable=SC2086  # word-splitting of $insecure is intentional
+exec s6-setuidgid hermes hermes dashboard \
+    --host "$dash_host" --port "$dash_port" --no-open $insecure

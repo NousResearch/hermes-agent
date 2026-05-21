@@ -4783,6 +4783,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not msg:
             return
         if not self._should_process_message(msg):
+            if self._should_observe_unmentioned_group_message(msg):
+                self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
             return
 
         venue = getattr(msg, "venue", None)
@@ -4812,6 +4814,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
         event.text = "\n".join(parts)
+        event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
 
     # ------------------------------------------------------------------
@@ -4956,8 +4959,23 @@ class TelegramAdapter(BasePlatformAdapter):
         if not update.message:
             return
         if not self._should_process_message(update.message):
+            if self._should_observe_unmentioned_group_message(update.message):
+                _m = update.message
+                if _m.sticker:
+                    _observe_type = MessageType.STICKER
+                elif _m.photo:
+                    _observe_type = MessageType.PHOTO
+                elif _m.video:
+                    _observe_type = MessageType.VIDEO
+                elif _m.audio:
+                    _observe_type = MessageType.AUDIO
+                elif _m.voice:
+                    _observe_type = MessageType.VOICE
+                else:
+                    _observe_type = MessageType.DOCUMENT
+                self._observe_unmentioned_group_message(_m, _observe_type, update_id=update.update_id)
             return
-        
+
         msg = update.message
         
         # Determine media type
@@ -4985,9 +5003,14 @@ class TelegramAdapter(BasePlatformAdapter):
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
             await self._handle_sticker(msg, event)
+            event = self._apply_telegram_group_observe_attribution(event)
             await self.handle_message(event)
             return
-        
+
+        # Apply observe attribution after caption is set; sticker is handled above
+        # because _handle_sticker overwrites event.text with its vision description.
+        event = self._apply_telegram_group_observe_attribution(event)
+
         # Download photo to local image cache so the vision tool can access it
         # even after Telegram's ephemeral file URLs expire (~1 hour).
         if msg.photo:

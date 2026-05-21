@@ -1218,6 +1218,168 @@ class TestRunJobSessionPersistence:
         assert error is None
         assert final_response == "all good"
 
+    def test_run_job_activates_unattended_website_policy_during_agent_run(self, tmp_path, monkeypatch):
+        from tools.website_policy import _unattended_strict_enabled
+
+        monkeypatch.delenv("HERMES_UNATTENDED_STRICT_WEBSITE_POLICY", raising=False)
+        job = {
+            "id": "website-policy-active-job",
+            "name": "website policy active",
+            "prompt": "check policy",
+        }
+        fake_db = MagicMock()
+        seen = {}
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, prompt):
+                seen["strict"] = _unattended_strict_enabled()
+                return {"final_response": "ok", "completed": True}
+
+            def close(self):
+                pass
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent):
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert seen["strict"] is True
+        assert _unattended_strict_enabled() is False
+
+    def test_run_job_does_not_activate_unattended_website_policy_for_no_agent(self, tmp_path, monkeypatch):
+        from tools.website_policy import _unattended_strict_enabled
+
+        monkeypatch.delenv("HERMES_UNATTENDED_STRICT_WEBSITE_POLICY", raising=False)
+        job = {
+            "id": "website-policy-no-agent-job",
+            "name": "website policy no agent",
+            "script": "script.py",
+            "no_agent": True,
+        }
+        seen = {}
+
+        def fake_script(_script_path):
+            seen["strict"] = _unattended_strict_enabled()
+            return True, "script output"
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._run_job_script", side_effect=fake_script):
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "script output"
+        assert seen["strict"] is False
+        assert _unattended_strict_enabled() is False
+
+    def test_run_job_resets_unattended_website_policy_after_wake_gate_skip(self, tmp_path, monkeypatch):
+        from tools.website_policy import _unattended_strict_enabled, set_unattended_strict_website_policy
+
+        monkeypatch.delenv("HERMES_UNATTENDED_STRICT_WEBSITE_POLICY", raising=False)
+        job = {
+            "id": "website-policy-wake-skip-job",
+            "name": "website policy wake skip",
+            "prompt": "check policy",
+            "script": "wake_gate.py",
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._run_job_script", return_value=(True, '{"wakeAgent": false}')):
+            success, _output, final_response, error = run_job(job)
+
+        leaked = _unattended_strict_enabled()
+        set_unattended_strict_website_policy(False)
+
+        assert success is True
+        assert error is None
+        assert final_response == SILENT_MARKER
+        assert leaked is False
+
+    def test_run_job_resets_unattended_website_policy_after_prompt_injection_block(self, tmp_path, monkeypatch):
+        import cron.scheduler as scheduler
+        from tools.website_policy import _unattended_strict_enabled, set_unattended_strict_website_policy
+
+        monkeypatch.delenv("HERMES_UNATTENDED_STRICT_WEBSITE_POLICY", raising=False)
+        job = {
+            "id": "website-policy-injection-job",
+            "name": "website policy injection",
+            "prompt": "check policy",
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch(
+                 "cron.scheduler._build_job_prompt",
+                 side_effect=scheduler.CronPromptInjectionBlocked("blocked"),
+             ):
+            success, _output, final_response, error = run_job(job)
+
+        leaked = _unattended_strict_enabled()
+        set_unattended_strict_website_policy(False)
+
+        assert success is False
+        assert final_response == ""
+        assert error == "blocked"
+        assert leaked is False
+
+    def test_run_job_resets_unattended_website_policy_after_prompt_none_skip(self, tmp_path, monkeypatch):
+        from tools.website_policy import _unattended_strict_enabled, set_unattended_strict_website_policy
+
+        monkeypatch.delenv("HERMES_UNATTENDED_STRICT_WEBSITE_POLICY", raising=False)
+        job = {
+            "id": "website-policy-prompt-none-job",
+            "name": "website policy prompt none",
+            "prompt": "check policy",
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._build_job_prompt", return_value=None):
+            success, _output, final_response, error = run_job(job)
+
+        leaked = _unattended_strict_enabled()
+        set_unattended_strict_website_policy(False)
+
+        assert success is True
+        assert error is None
+        assert final_response == SILENT_MARKER
+        assert leaked is False
+
+    def test_run_job_resets_unattended_website_policy_after_pre_agent_exception(self, tmp_path, monkeypatch):
+        from tools.website_policy import _unattended_strict_enabled, set_unattended_strict_website_policy
+
+        monkeypatch.delenv("HERMES_UNATTENDED_STRICT_WEBSITE_POLICY", raising=False)
+        job = {
+            "id": "website-policy-pre-agent-error-job",
+            "name": "website policy pre agent error",
+            "prompt": "check policy",
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._build_job_prompt", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                run_job(job)
+
+        leaked = _unattended_strict_enabled()
+        set_unattended_strict_website_policy(False)
+
+        assert leaked is False
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.

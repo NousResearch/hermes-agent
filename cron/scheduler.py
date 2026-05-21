@@ -1135,7 +1135,21 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job, applying any per-job profile override."""
     job_id = job["id"]
     with _job_profile_context(job_id, job.get("profile")):
-        return _run_job_impl(job)
+        # LLM-driven cron jobs are unattended web-capable agent runs. Enable
+        # strict website policy around the entire implementation path so every
+        # pre-agent short-circuit and exception resets cleanly in one place.
+        if job.get("no_agent"):
+            return _run_job_impl(job)
+        from tools.website_policy import (
+            reset_unattended_strict_website_policy,
+            set_unattended_strict_website_policy,
+        )
+
+        unattended_policy_token = set_unattended_strict_website_policy(True)
+        try:
+            return _run_job_impl(job)
+        finally:
+            reset_unattended_strict_website_policy(unattended_policy_token)
 
 
 def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:

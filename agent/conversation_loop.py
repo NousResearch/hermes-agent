@@ -228,6 +228,27 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _pool_may_recover_from_rate_limit_local(
+    pool, *, provider: str | None = None, base_url: str | None = None
+) -> bool:
+    """Decide whether credential-pool rotation can recover a provider limit.
+
+    run_agent exports the same helper in the monolithic runtime, but some
+    packaged/extracted conversation-loop paths can reach this module without
+    that symbol available on run_agent. Keep the fallback decision local so
+    provider failures classify cleanly instead of cascading into an internal
+    NameError/AttributeError.
+    """
+    if pool is None:
+        return False
+    if not pool.has_available():
+        return False
+    if provider == "google-gemini-cli" or str(base_url or "").startswith("cloudcode-pa://"):
+        return False
+    return len(pool.entries()) > 1
+
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -2760,7 +2781,12 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
                     # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
+                    _pool_recovery_check = getattr(
+                        _ra(),
+                        "_pool_may_recover_from_rate_limit",
+                        _pool_may_recover_from_rate_limit_local,
+                    )
+                    pool_may_recover = _pool_recovery_check(
                         agent._credential_pool,
                         provider=agent.provider,
                         base_url=getattr(agent, "base_url", None),

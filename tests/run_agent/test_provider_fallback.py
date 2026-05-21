@@ -7,6 +7,7 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+from agent.conversation_loop import _pool_may_recover_from_rate_limit_local
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -220,6 +221,22 @@ class TestPoolRotationRoom:
 
     def test_many_credentials_available_returns_true(self):
         assert _pool_may_recover_from_rate_limit(_pool(10)) is True
+
+
+class TestConversationLoopPoolRecoveryLocal:
+    def test_local_helper_matches_pool_rotation_room_rules(self):
+        """conversation_loop keeps a local fallback when run_agent lacks the helper."""
+        assert _pool_may_recover_from_rate_limit_local(None) is False
+        assert _pool_may_recover_from_rate_limit_local(_pool(1)) is False
+        assert _pool_may_recover_from_rate_limit_local(_pool(2)) is True
+        assert _pool_may_recover_from_rate_limit_local(_pool(2), provider="google-gemini-cli") is False
+        assert (
+            _pool_may_recover_from_rate_limit_local(
+                _pool(2),
+                base_url="cloudcode-pa://project",
+            )
+            is False
+        )
 
 
 # ── Skip-self dedup (#22548) ───────────────────────────────────────────────

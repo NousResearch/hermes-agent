@@ -27,4 +27,3 @@ def test_usage_limit_context_matches_codex_plus_message():
 
 def test_usage_limit_context_rejects_generic_rate_limit():
     assert not guard.is_usage_limit_context({"message": "Too many requests"})
-

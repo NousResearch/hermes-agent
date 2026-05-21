@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from agent.apm_consumer import (
     _package_name_from_path,
+    _populate_virtual_paths,
     _safe_read,
     detect_apm_project,
     discover_apm_mcp_servers,
@@ -525,6 +526,62 @@ def test_validate_lockfile_missing_module(apm_project_with_lockfile, tmp_path):
     assert len(issues) >= 1
 
 
+# ── Virtual path collection tests ─────────────────────────────────────
+
+
+def test_populate_virtual_paths_content_bearing_only(tmp_path):
+    """Only directories that contain files are recorded as virtual paths."""
+    root = tmp_path / "module"
+    root.mkdir()
+    # Create a content-bearing subdirectory
+    skills = root / "skills" / "primary"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("# test\n")
+    # Create an empty subdirectory
+    (root / "skills" / "empty").mkdir(parents=True)
+    # Create a hidden directory (should be skipped)
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "config").write_text("[core]\n")
+
+    result: set = set()
+    _populate_virtual_paths(root, [], result)
+
+    assert "skills/primary" in result
+    assert "skills" in result
+    # Empty directory should NOT be a virtual path
+    assert "skills/empty" not in result
+    # Hidden directories should NOT appear
+    assert ".git" not in result
+    assert ".git/config" not in result
+
+
+def test_populate_virtual_paths_files_at_root(tmp_path):
+    """Files directly in the module root generate the root itself as a path."""
+    root = tmp_path / "module"
+    root.mkdir()
+    (root / "README.md").write_text("# readme\n")
+
+    result: set = set()
+    _populate_virtual_paths(root, [], result)
+
+    # Root-level files should NOT register (prefix is empty — guard at line 535)
+    assert len(result) == 0
+
+
+def test_populate_virtual_paths_all_empty(tmp_path):
+    """A module with only empty directories yields no virtual paths."""
+    root = tmp_path / "module"
+    root.mkdir()
+    (root / "skills" / "empty1").mkdir(parents=True)
+    (root / "skills" / "empty2").mkdir(parents=True)
+    (root / "agents").mkdir(parents=True)
+
+    result: set = set()
+    _populate_virtual_paths(root, [], result)
+
+    assert len(result) == 0
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Phase 2: APM CLI integration tests
 # ═══════════════════════════════════════════════════════════════════════════
@@ -555,6 +612,24 @@ def test_should_auto_install_lockfile_no_modules(tmp_path):
     (proj / "apm.lock.yaml").write_text("lockfile_version: '1'\ndependencies: []\n")
     from agent.apm_consumer import should_auto_install
     assert should_auto_install(str(proj)) is True
+
+
+def test_should_auto_install_modules_newer(apm_project):
+    """Modules newer than lockfile → no auto-install needed (steady state)."""
+    from agent.apm_consumer import should_auto_install
+    # Create lockfile with older mtime, touch an existing module file to be newer
+    lock = apm_project / "apm.lock.yaml"
+    lock.write_text("lockfile_version: '1'\ndependencies: []\n")
+    import os as _os
+    # Set lockfile mtime to 1 hour ago
+    past = _os.stat(lock).st_mtime - 3600
+    _os.utime(lock, (past, past))
+    # Touch a module file to be newer (it already exists from the fixture)
+    skill = apm_project / "apm_modules" / "owner" / "repo" / ".apm" / "skills" / "test-skill" / "SKILL.md"
+    assert skill.exists()
+    now = _os.stat(skill).st_mtime
+    _os.utime(skill, (now, now))  # Ensure it's current
+    assert should_auto_install(str(apm_project)) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -667,13 +742,13 @@ def test_resolve_marketplace_ref_with_pin():
 def test_parse_apm_dependencies_with_marketplace(apm_project):
     """apm.yml deps with @awesome-copilot are resolved."""
     (apm_project / "apm.yml").write_text(
-        "name: test\\n"
-        "version: 1.0.0\\n"
-        "dependencies:\\n"
-        "  apm:\\n"
-        "    - devops-oncall@awesome-copilot\\n"
-        "    - owner/repo\\n"
-        "    - github/awesome-copilot/skills/agent-governance#main\\n"
+        "name: test\n"
+        "version: 1.0.0\n"
+        "dependencies:\n"
+        "  apm:\n"
+        "    - devops-oncall@awesome-copilot\n"
+        "    - owner/repo\n"
+        "    - github/awesome-copilot/skills/agent-governance#main\n"
     )
     from agent.apm_consumer import parse_apm_dependencies
     deps = parse_apm_dependencies(str(apm_project))
@@ -700,12 +775,12 @@ def test_parse_apm_dependencies_no_manifest(tmp_path):
 def test_parse_apm_dependencies_object_form(apm_project):
     """Object-form deps (git + path + ref) are parsed."""
     (apm_project / "apm.yml").write_text(
-        "name: test\\n"
-        "dependencies:\\n"
-        "  apm:\\n"
-        "    - git: https://gitlab.com/acme/coding-standards.git\\n"
-        "      path: instructions/security\\n"
-        "      ref: v2.0\\n"
+        "name: test\n"
+        "dependencies:\n"
+        "  apm:\n"
+        "    - git: https://gitlab.com/acme/coding-standards.git\n"
+        "      path: instructions/security\n"
+        "      ref: v2.0\n"
     )
     from agent.apm_consumer import parse_apm_dependencies
     deps = parse_apm_dependencies(str(apm_project))

@@ -28,6 +28,10 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Timeouts for APM CLI subprocess calls (seconds).
+_APM_INSTALL_TIMEOUT = 120
+_APM_AUDIT_TIMEOUT = 60
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Detection
 # ═══════════════════════════════════════════════════════════════════════════
@@ -475,7 +479,7 @@ def validate_lockfile_against_modules(
             except ValueError:
                 continue
             disk_modules.setdefault(repo_key, set())
-            _populate_virtual_paths(repo_root, set(), disk_modules[repo_key])
+            _populate_virtual_paths(repo_root, [], disk_modules[repo_key])
 
     for dep in lock_data.get("dependencies", []):
         repo = dep.get("repo_url", "")
@@ -484,6 +488,8 @@ def validate_lockfile_against_modules(
         # Check if the repo exists on disk.  repo_url from the lockfile
         # can be "owner/repo" or "github.com/owner/repo".  We match
         # against the relative path from apm_modules/ to the repo root.
+        # ``disk_key.endswith("/" + repo)`` handles the host-prefix form
+        # (e.g. "github.com/owner/repo" matches lockfile "owner/repo").
         matched = False
         for disk_key in disk_modules:
             if disk_key == repo or disk_key.endswith("/" + repo):
@@ -508,17 +514,32 @@ def validate_lockfile_against_modules(
 
 
 def _populate_virtual_paths(
-    root: Path, prefix: set, result: set
-) -> None:
-    """Recursively collect virtual path segments under a module directory."""
+    root: Path, prefix: list, result: set
+) -> bool:
+    """Recursively collect virtual path segments under a module directory.
+
+    Only directories that contain at least one file (directly or in a
+    descendant) are recorded as virtual paths.  Empty namespace
+    directories are excluded so that ``validate_lockfile_against_modules``
+    does not falsely report a virtual path as present.
+
+    Returns:
+        True if this subtree contains any files.
+    """
+    has_content = False
     for entry in sorted(root.iterdir()):
         if entry.name.startswith("."):
             continue
         if entry.is_dir():
-            new_prefix = prefix | {entry.name}
-            _populate_virtual_paths(entry, new_prefix, result)
+            new_prefix = prefix + [entry.name]
+            if _populate_virtual_paths(entry, new_prefix, result):
+                has_content = True
+                result.add("/".join(new_prefix))
         else:
-            result.add("/".join(sorted(prefix)))
+            has_content = True
+    if has_content and prefix:
+        result.add("/".join(prefix))
+    return has_content
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -715,7 +736,7 @@ def install_apm_dependencies(
             cwd=workdir,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_APM_INSTALL_TIMEOUT,
         )
         output = result.stdout.strip() or result.stderr.strip()
         success = result.returncode == 0
@@ -805,7 +826,7 @@ def filter_by_policy(
     deny_pkgs = policy_data.get("deny_packages", [])
     if isinstance(deny_pkgs, list):
         for dp in deny_pkgs:
-            if pkg.startswith(dp) or qualified_name.startswith(dp):
+            if pkg == dp or pkg.startswith(dp + "/") or qualified_name == dp or qualified_name.startswith(dp + "/"):
                 return False
 
     # Check allow lists (if non-empty, it's an allow-list)
@@ -829,9 +850,11 @@ def resolve_transitive_deps(
 ) -> List[Dict]:
     """Parse lockfile dependency tree and resolve transitive relationships.
 
-    Each lockfile entry may declare ``depends_on`` or be grouped by
-    ``repo_url``. This function builds a flat list with resolved
-    relationships.
+    Dependencies sharing the same ``repo_url`` and grouped as multiple
+    virtual paths are classified: the first is primary, subsequent
+    entries are marked transitive with ``required_by`` pointing to the
+    repo.  This is a heuristic — explicit ``depends_on`` support is a
+    future enhancement.
 
     Returns:
         List of dicts with keys: ``repo_url``, ``virtual_path``,
@@ -989,12 +1012,12 @@ def run_apm_audit(
             cwd=workdir,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=_APM_AUDIT_TIMEOUT,
         )
     except FileNotFoundError:
         return True, []
     except subprocess.TimeoutExpired:
-        logger.warning("apm audit timed out after 60s")
+        logger.warning("apm audit timed out after %ds", _APM_AUDIT_TIMEOUT)
         return False, ["APM audit timed out — results incomplete"]
     except Exception as exc:
         logger.warning("apm audit failed: %s", exc)

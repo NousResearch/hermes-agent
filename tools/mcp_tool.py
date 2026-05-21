@@ -3164,10 +3164,14 @@ def discover_mcp_tools() -> List[str]:
         apm_cwd = os.environ.get("TERMINAL_CWD")
         apm_servers = discover_apm_mcp_servers(apm_cwd)
         if apm_servers:
+            logger.debug(
+                "APM: discovered %d MCP server(s): %s",
+                len(apm_servers), ", ".join(apm_servers.keys()),
+            )
             # Config-defined servers take precedence over APM
             servers = {**apm_servers, **servers}
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("APM MCP server discovery failed: %s", exc)
 
     if not servers:
         logger.debug("No MCP servers configured")

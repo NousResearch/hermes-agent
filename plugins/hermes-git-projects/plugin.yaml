@@ -1,0 +1,7 @@
+name: hermes-git-projects
+version: 0.1.0
+description: "Dashboard plugin for importing Git repository URLs as Hermes projects, keeping local clones, scanning source-control status, logging project issues, creating Kanban todos, and managing suggested skills for issue resolution."
+author: Hermes Agent
+kind: standalone
+provides_tools: []
+provides_hooks: []

@@ -63,6 +63,25 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getProjects: () => fetchJSON<ProjectsResponse>("/api/projects"),
+  importProject: (request: ProjectImportRequest) =>
+    fetchJSON<ProjectImportResponse>("/api/projects/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    }),
+  projectSourceControl: (projectId: string, request: ProjectSourceControlRequest) =>
+    fetchJSON<ProjectSourceControlResponse>(`/api/projects/${encodeURIComponent(projectId)}/source-control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    }),
+  createProjectIssue: (projectId: string, issue: ProjectIssueCreateRequest) =>
+    fetchJSON<ProjectIssueCreateResponse>(`/api/projects/${encodeURIComponent(projectId)}/issues`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(issue),
+    }),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -342,6 +361,102 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
 };
+
+export interface ProjectIssueTodo {
+  system: string;
+  task_id?: string;
+  assignee?: string;
+  skills?: string[];
+  workspace_kind?: string;
+  workspace_path?: string;
+  recommended_branch?: string;
+  parents?: string[];
+  error?: string;
+}
+
+export interface ProjectIssue {
+  id: string;
+  project_id: string;
+  project_name: string;
+  title: string;
+  body: string;
+  kind: string;
+  severity: string;
+  labels: string[];
+  status: string;
+  created_at: string;
+  source: string;
+  todo?: ProjectIssueTodo;
+  github_new_issue_url?: string;
+}
+
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  path: string;
+  branch: string | null;
+  dirty: boolean;
+  remote_url: string | null;
+  repo_url: string | null;
+  issues_url: string | null;
+  releases_url: string | null;
+  new_issue_url: string | null;
+  branches: string[];
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  managed: boolean;
+  latest_commit: string | null;
+  latest_commit_message: string | null;
+  last_commit_at: string | null;
+  issue_counts: { open: number; bugs: number; total: number };
+  issues: ProjectIssue[];
+}
+
+export interface ProjectsResponse {
+  projects: ProjectInfo[];
+  roots: string[];
+  issue_store_path: string;
+  scan_limit: number;
+}
+
+export interface ProjectImportRequest {
+  repo_url: string;
+  branch?: string;
+}
+
+export interface ProjectImportResponse {
+  ok: boolean;
+  project: ProjectInfo;
+  message: string;
+}
+
+export interface ProjectSourceControlRequest {
+  action: "fetch" | "pull" | "push" | "checkout" | "create_branch";
+  branch?: string;
+  create_from?: string;
+}
+
+export interface ProjectSourceControlResponse {
+  ok: boolean;
+  project: ProjectInfo;
+  stdout: string;
+  stderr: string;
+}
+
+export interface ProjectIssueCreateRequest {
+  title: string;
+  body?: string;
+  kind?: string;
+  severity?: string;
+  labels?: string[];
+  parent_task_ids?: string[];
+}
+
+export interface ProjectIssueCreateResponse {
+  ok: boolean;
+  issue: ProjectIssue;
+}
 
 export interface ActionResponse {
   name: string;

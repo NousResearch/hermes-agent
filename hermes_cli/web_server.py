@@ -11,10 +11,12 @@ Usage:
 
 import asyncio
 import hmac
+import hashlib
 import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -474,6 +476,350 @@ class ModelAssignment(BaseModel):
     task: str = ""
 
 
+class ProjectIssueCreate(BaseModel):
+    title: str
+    body: str = ""
+    kind: str = "issue"
+    severity: str = "normal"
+    labels: List[str] = []
+    parent_task_ids: List[str] = []
+
+
+class ProjectImportRequest(BaseModel):
+    repo_url: str
+    branch: str = ""
+
+
+class ProjectSourceControlRequest(BaseModel):
+    action: str
+    branch: str = ""
+    create_from: str = ""
+
+
+_PROJECT_SCAN_SKIP_DIRS: frozenset[str] = frozenset({
+    ".git", ".hg", ".svn", ".cache", ".pytest_cache", ".mypy_cache",
+    "__pycache__", "node_modules", "venv", ".venv", "env", ".env",
+    "dist", "build", "out", "target", "bin", "obj", "coverage",
+})
+_PROJECT_SCAN_MAX_DEPTH = 4
+_PROJECT_SCAN_MAX_REPOS = 120
+
+
+def _managed_project_root() -> Path:
+    return Path(get_hermes_home()) / "dashboard-projects"
+
+
+def _repo_slug_from_url(repo_url: str) -> str:
+    cleaned = repo_url.strip().rstrip("/").removesuffix(".git")
+    match = re.search(r"github\.com[:/]([^/]+)/([^/#?]+)$", cleaned)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}"
+    tail = re.sub(r"[^A-Za-z0-9_.-]+", "-", cleaned.split("/")[-1] or "project")
+    return tail.strip("-._") or f"project-{secrets.token_hex(3)}"
+
+
+def _validate_repo_url(repo_url: str) -> str:
+    repo_url = repo_url.strip()
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="Repository URL is required")
+    if re.match(r"^(https://|git@)[^\s]+$", repo_url):
+        return repo_url
+    raise HTTPException(status_code=400, detail="Use an HTTPS or SSH git repository URL")
+
+
+def _project_issue_store_path() -> Path:
+    return Path(get_hermes_home()) / "dashboard-project-issues.json"
+
+
+def _load_project_issues() -> Dict[str, List[Dict[str, Any]]]:
+    path = _project_issue_store_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {str(k): v for k, v in data.items() if isinstance(v, list)}
+    except Exception as exc:
+        _log.warning("Failed to read dashboard project issue store %s: %s", path, exc)
+    return {}
+
+
+def _save_project_issues(data: Dict[str, List[Dict[str, Any]]]) -> None:
+    path = _project_issue_store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _project_id_for_path(path: Path) -> str:
+    return hashlib.sha1(str(path.resolve()).encode("utf-8", "ignore")).hexdigest()[:12]
+
+
+def _safe_git(path: Path, args: List[str], timeout: float = 2.5) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _normalise_github_remote(remote: str) -> Dict[str, str | None]:
+    remote = remote.strip()
+    if not remote:
+        return {"repo_url": None, "issues_url": None, "releases_url": None, "new_issue_url": None}
+
+    owner_repo: str | None = None
+    https_match = re.match(r"https://github\.com/([^/]+/[^/#]+?)(?:\.git)?/?$", remote)
+    ssh_match = re.match(r"git@github\.com:([^/]+/[^/#]+?)(?:\.git)?$", remote)
+    if https_match:
+        owner_repo = https_match.group(1)
+    elif ssh_match:
+        owner_repo = ssh_match.group(1)
+
+    if not owner_repo:
+        return {"repo_url": remote, "issues_url": None, "releases_url": None, "new_issue_url": None}
+
+    owner_repo = owner_repo.removesuffix(".git")
+    repo_url = f"https://github.com/{owner_repo}"
+    return {
+        "repo_url": repo_url,
+        "issues_url": f"{repo_url}/issues",
+        "releases_url": f"{repo_url}/releases",
+        "new_issue_url": f"{repo_url}/issues/new",
+    }
+
+
+def _default_project_roots() -> List[Path]:
+    roots: List[Path] = []
+    home = Path.home()
+    cwd = Path.cwd()
+    candidates = [
+        _managed_project_root(),
+        home / "projects",
+        home / "repos",
+        home / "workspace",
+        PROJECT_ROOT,
+        cwd,
+    ]
+    windows_users = Path("/mnt/c/Users")
+    if windows_users.exists():
+        for user_dir in windows_users.iterdir():
+            if not user_dir.is_dir():
+                continue
+            candidates.extend([
+                user_dir / "projects",
+                user_dir / "repos",
+                user_dir / "source" / "repos",
+                user_dir / "Documents" / "GitHub",
+            ])
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        key = str(resolved)
+        if key not in seen and resolved.exists() and resolved.is_dir():
+            seen.add(key)
+            roots.append(resolved)
+    return roots
+
+
+def _discover_git_repos() -> List[Path]:
+    repos: List[Path] = []
+    seen: set[str] = set()
+
+    def add_repo(path: Path) -> bool:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            return False
+        key = str(resolved)
+        if key in seen:
+            return False
+        seen.add(key)
+        repos.append(resolved)
+        return len(repos) >= _PROJECT_SCAN_MAX_REPOS
+
+    def walk(path: Path, depth: int) -> bool:
+        if depth > _PROJECT_SCAN_MAX_DEPTH:
+            return False
+        try:
+            entries = list(path.iterdir())
+        except Exception:
+            return False
+        if any(e.name == ".git" for e in entries):
+            return add_repo(path)
+        for entry in entries:
+            if len(repos) >= _PROJECT_SCAN_MAX_REPOS:
+                return True
+            if not entry.is_dir():
+                continue
+            if entry.name in _PROJECT_SCAN_SKIP_DIRS:
+                continue
+            if entry.name.startswith(".") and entry.name not in {".hermes"}:
+                continue
+            if walk(entry, depth + 1):
+                return True
+        return False
+
+    for root in _default_project_roots():
+        if len(repos) >= _PROJECT_SCAN_MAX_REPOS:
+            break
+        walk(root, 0)
+    return sorted(repos, key=lambda p: p.name.lower())
+
+
+def _project_from_repo(path: Path, issues: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    project_id = _project_id_for_path(path)
+    name = path.name
+    branch = _safe_git(path, ["branch", "--show-current"]) or _safe_git(path, ["rev-parse", "--short", "HEAD"])
+    remote = _safe_git(path, ["remote", "get-url", "origin"])
+    remote_links = _normalise_github_remote(remote)
+    latest_commit = _safe_git(path, ["log", "-1", "--format=%h"])
+    latest_commit_message = _safe_git(path, ["log", "-1", "--format=%s"])
+    last_commit_at = _safe_git(path, ["log", "-1", "--format=%cI"])
+    dirty = bool(_safe_git(path, ["status", "--porcelain"], timeout=3.5))
+    branches_raw = _safe_git(path, ["branch", "--format=%(refname:short)"], timeout=3.5)
+    branches = [line.strip() for line in branches_raw.splitlines() if line.strip()]
+    upstream = _safe_git(path, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], timeout=2.5)
+    ahead = behind = 0
+    if upstream:
+        counts = _safe_git(path, ["rev-list", "--left-right", "--count", f"{upstream}...HEAD"], timeout=3.5).split()
+        if len(counts) == 2:
+            try:
+                behind, ahead = int(counts[0]), int(counts[1])
+            except ValueError:
+                behind = ahead = 0
+    project_issues = issues.get(project_id, [])
+    open_issues = [i for i in project_issues if i.get("status", "open") == "open"]
+    bug_reports = [i for i in open_issues if i.get("kind") == "bug"]
+
+    return {
+        "id": project_id,
+        "name": name,
+        "path": str(path),
+        "branch": branch or None,
+        "dirty": dirty,
+        "remote_url": remote or None,
+        **remote_links,
+        "branches": branches,
+        "upstream": upstream or None,
+        "ahead": ahead,
+        "behind": behind,
+        "managed": str(path).startswith(str(_managed_project_root())),
+        "latest_commit": latest_commit or None,
+        "latest_commit_message": latest_commit_message or None,
+        "last_commit_at": last_commit_at or None,
+        "issue_counts": {
+            "open": len(open_issues),
+            "bugs": len(bug_reports),
+            "total": len(project_issues),
+        },
+        "issues": sorted(project_issues, key=lambda i: i.get("created_at", ""), reverse=True)[:8],
+    }
+
+
+def _project_by_id(project_id: str) -> Dict[str, Any] | None:
+    payload = _dashboard_projects_payload()
+    return next((p for p in payload["projects"] if p["id"] == project_id), None)
+
+
+def _infer_issue_skills(issue: ProjectIssueCreate, project: Dict[str, Any]) -> List[str]:
+    text = " ".join([issue.kind, issue.title, issue.body, " ".join(issue.labels)]).lower()
+    skills = ["zeo-development-superpowers"]
+    if any(word in text for word in ("bug", "error", "fail", "broken", "traceback", "exception", "regression")):
+        skills.append("systematic-debugging")
+    if any(word in text for word in ("test", "coverage", "acceptance", "feature", "task", "bug")):
+        skills.append("test-driven-development")
+    if project.get("repo_url"):
+        skills.append("github-pr-workflow")
+    skills.append("requesting-code-review")
+    deduped: List[str] = []
+    for skill in skills:
+        if skill not in deduped:
+            deduped.append(skill)
+    return deduped
+
+
+def _create_issue_todo(record: Dict[str, Any], project: Dict[str, Any], issue: ProjectIssueCreate) -> Dict[str, Any]:
+    skills = _infer_issue_skills(issue, project)
+    assignee = os.getenv("HERMES_DASHBOARD_PROJECT_ASSIGNEE", "default")
+    branch_slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", record["title"].lower()).strip("-._")[:48] or record["id"]
+    branch_name = f"issue/{record['id'].replace('local-', '')}-{branch_slug}"[:90]
+    body_parts = [
+        f"Resolve dashboard issue `{record['id']}` for project `{project['name']}`.",
+        f"Project path: {project['path']}",
+        f"Source branch now: {project.get('branch') or 'unknown'}",
+        f"Recommended working branch: {branch_name}",
+        "",
+        record["body"] or "No details provided.",
+    ]
+    try:
+        from hermes_cli import kanban_db
+
+        kanban_db.init_db()
+        conn = kanban_db.connect()
+        try:
+            task_id = kanban_db.create_task(
+                conn,
+                title=f"Resolve {project['name']}: {record['title']}",
+                body="\n".join(body_parts),
+                assignee=assignee,
+                created_by="dashboard",
+                workspace_kind="dir",
+                workspace_path=project["path"],
+                tenant=project["id"],
+                priority={"low": -1, "normal": 0, "high": 10, "critical": 25}.get(record["severity"], 0),
+                parents=tuple(pid.strip() for pid in issue.parent_task_ids if pid.strip()),
+                idempotency_key=f"dashboard-project-issue:{record['id']}",
+                skills=skills,
+            )
+        finally:
+            conn.close()
+        return {
+            "system": "kanban",
+            "task_id": task_id,
+            "assignee": assignee,
+            "skills": skills,
+            "workspace_kind": "dir",
+            "workspace_path": project["path"],
+            "recommended_branch": branch_name,
+            "parents": [pid.strip() for pid in issue.parent_task_ids if pid.strip()],
+        }
+    except Exception as exc:
+        _log.warning("Failed to create kanban todo for dashboard issue %s: %s", record.get("id"), exc)
+        return {
+            "system": "kanban",
+            "error": str(exc),
+            "assignee": assignee,
+            "skills": skills,
+            "workspace_kind": "dir",
+            "workspace_path": project["path"],
+            "recommended_branch": branch_name,
+        }
+
+
+def _dashboard_projects_payload() -> Dict[str, Any]:
+    issues = _load_project_issues()
+    projects = [_project_from_repo(path, issues) for path in _discover_git_repos()]
+    return {
+        "projects": projects,
+        "roots": [str(p) for p in _default_project_roots()],
+        "issue_store_path": str(_project_issue_store_path()),
+        "scan_limit": _PROJECT_SCAN_MAX_REPOS,
+    }
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -711,6 +1057,120 @@ def _tail_lines(path: Path, n: int) -> List[str]:
         return []
     lines = text.splitlines()
     return lines[-n:] if n > 0 else lines
+
+
+@app.get("/api/projects")
+async def list_projects():
+    """Discover accessible local git projects for the dashboard Projects tab."""
+    return _dashboard_projects_payload()
+
+
+@app.post("/api/projects/import")
+async def import_project(request: ProjectImportRequest):
+    repo_url = _validate_repo_url(request.repo_url)
+    root = _managed_project_root()
+    root.mkdir(parents=True, exist_ok=True)
+    dest = root / _repo_slug_from_url(repo_url)
+    if dest.exists() and not (dest / ".git").exists():
+        raise HTTPException(status_code=409, detail=f"Destination exists and is not a git repo: {dest}")
+
+    if (dest / ".git").exists():
+        result = subprocess.run(["git", "-C", str(dest), "fetch", "--all", "--prune"], capture_output=True, text=True, timeout=120)
+    else:
+        cmd = ["git", "clone"]
+        if request.branch.strip():
+            cmd.extend(["--branch", request.branch.strip()])
+        cmd.extend([repo_url, str(dest)])
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "git operation failed").strip()[-2000:]
+        raise HTTPException(status_code=400, detail=detail)
+
+    issues = _load_project_issues()
+    project = _project_from_repo(dest, issues)
+    return {"ok": True, "project": project, "message": "Repository is available locally"}
+
+
+@app.post("/api/projects/{project_id}/source-control")
+async def project_source_control(project_id: str, request: ProjectSourceControlRequest):
+    project = _project_by_id(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    path = Path(project["path"])
+    action = request.action.strip().lower()
+    branch = request.branch.strip()
+    allowed: Dict[str, List[str]] = {
+        "fetch": ["fetch", "--all", "--prune"],
+        "pull": ["pull", "--ff-only"],
+        "push": ["push", "-u", "origin", project.get("branch") or "HEAD"],
+    }
+    if action == "checkout":
+        if not branch:
+            raise HTTPException(status_code=400, detail="Branch is required")
+        cmd = ["checkout", branch]
+    elif action == "create_branch":
+        if not branch:
+            raise HTTPException(status_code=400, detail="Branch is required")
+        cmd = ["checkout", "-b", branch]
+        if request.create_from.strip():
+            cmd.append(request.create_from.strip())
+    elif action in allowed:
+        cmd = allowed[action]
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported source-control action")
+    result = subprocess.run(["git", "-C", str(path), *cmd], capture_output=True, text=True, timeout=180)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "git command failed").strip()[-2000:]
+        raise HTTPException(status_code=400, detail=detail)
+    refreshed = _project_by_id(project_id) or project
+    return {"ok": True, "project": refreshed, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
+
+
+@app.post("/api/projects/{project_id}/issues")
+async def create_project_issue(project_id: str, issue: ProjectIssueCreate):
+    title = issue.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Issue title is required")
+
+    payload = _dashboard_projects_payload()
+    project = next((p for p in payload["projects"] if p["id"] == project_id), None)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    labels = [str(label).strip() for label in issue.labels if str(label).strip()]
+    if issue.kind and issue.kind not in labels:
+        labels.insert(0, issue.kind)
+    record = {
+        "id": f"local-{int(time.time())}-{secrets.token_hex(3)}",
+        "project_id": project_id,
+        "project_name": project["name"],
+        "title": title,
+        "body": issue.body.strip(),
+        "kind": issue.kind.strip() or "issue",
+        "severity": issue.severity.strip() or "normal",
+        "labels": labels,
+        "status": "open",
+        "created_at": now,
+        "source": "dashboard",
+    }
+    record["todo"] = _create_issue_todo(record, project, issue)
+
+    data = _load_project_issues()
+    data.setdefault(project_id, []).append(record)
+    _save_project_issues(data)
+
+    repo_new_issue_url = project.get("new_issue_url")
+    if repo_new_issue_url:
+        body = record["body"]
+        if body:
+            body = f"{body}\n\nLogged locally in Hermes dashboard as `{record['id']}`."
+        else:
+            body = f"Logged locally in Hermes dashboard as `{record['id']}`."
+        qs = urllib.parse.urlencode({"title": title, "body": body, "labels": ",".join(labels)})
+        record["github_new_issue_url"] = f"{repo_new_issue_url}?{qs}"
+
+    return {"ok": True, "issue": record}
 
 
 @app.post("/api/gateway/restart")

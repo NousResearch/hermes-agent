@@ -1,0 +1,13 @@
+{
+  "name": "hermes-git-projects",
+  "label": "Git Projects",
+  "description": "Import Git repos as Hermes-ready projects with local clones, issue-to-todo automation, source-control actions, and selectable suggested skills.",
+  "icon": "Code",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/git-projects",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

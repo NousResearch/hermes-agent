@@ -221,6 +221,10 @@ def _get_langfuse() -> Optional[Langfuse]:
 
 def _trace_key(task_id: str, session_id: str) -> str:
     if task_id:
+        # In ACP mode, task_id == session_id, so all turns on the same thread
+        # get the same key and traces collapse. Differentiate by thread ID.
+        if task_id == session_id:
+            return f"acp:{threading.get_ident()}"
         return task_id
     if session_id:
         return f"session:{session_id}"

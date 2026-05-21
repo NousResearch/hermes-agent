@@ -1,3 +1,4 @@
+import inspect
 import os
 
 import pytest
@@ -44,3 +45,10 @@ def test_get_env_config_env_vars_override_shared_terminal_defaults(monkeypatch):
     assert config["timeout"] == 77
     assert config["lifetime_seconds"] == 88
     assert config["container_memory"] == 1024
+
+
+def test_terminal_diagnostic_timeout_default_does_not_use_stale_literal():
+    """The operator-facing diagnostic script should not duplicate old timeout defaults."""
+    source = inspect.getsource(terminal_tool)
+
+    assert "os.getenv('TERMINAL_TIMEOUT', '60')" not in source

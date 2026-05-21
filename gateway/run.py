@@ -616,6 +616,9 @@ if _config_path.exists():
             terminal_env_values,
         )
 
+        _has_explicit_terminal_config = "terminal" in _cfg or any(
+            _terminal_alias in _cfg for _terminal_alias in ("backend", "cwd")
+        )
         _terminal_raw = _cfg.get("terminal", {})
         if not isinstance(_terminal_raw, dict):
             _terminal_raw = {}
@@ -635,8 +638,13 @@ if _config_path.exists():
             existing_env=os.environ,
             messaging_cwd=os.getenv("MESSAGING_CWD"),
         )
-        for _env_var, _env_value in terminal_env_values(_terminal_cfg).items():
-            os.environ[_env_var] = _env_value
+        if _has_explicit_terminal_config:
+            for _env_var, _env_value in terminal_env_values(_terminal_cfg).items():
+                os.environ[_env_var] = _env_value
+        else:
+            _existing_terminal_cwd = os.getenv("TERMINAL_CWD", "").strip().lower()
+            if _existing_terminal_cwd in {"", ".", "auto", "cwd"}:
+                os.environ["TERMINAL_CWD"] = _terminal_cfg["cwd"]
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
         # Auxiliary model/direct-endpoint overrides (vision, web_extract).

@@ -2318,21 +2318,22 @@ if __name__ == "__main__":
     print("  result = terminal_tool(command='python server.py', background=True)")
 
     print("\nEnvironment Variables:")
-    default_img = "nikolaik/python-nodejs:python3.11-nodejs20"
+    terminal_defaults = default_terminal_config()
+    default_img = str(terminal_defaults["docker_image"])
     print(
         "  TERMINAL_ENV: "
-        f"{os.getenv('TERMINAL_ENV', 'local')} "
+        f"{os.getenv('TERMINAL_ENV', str(terminal_defaults['env_type']))} "
         "(local/docker/singularity/modal/daytona/vercel_sandbox/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
-    print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
-    print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
-    print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
+    print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', str(terminal_defaults['singularity_image']))}")
+    print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', str(terminal_defaults['modal_image']))}")
+    print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', str(terminal_defaults['daytona_image']))}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
     from hermes_constants import display_hermes_home as _dhh
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
-    print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
-    print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
+    print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', str(terminal_defaults['timeout']))}")
+    print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', str(terminal_defaults['lifetime_seconds']))}")
 
 
 # ---------------------------------------------------------------------------

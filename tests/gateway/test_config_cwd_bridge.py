@@ -34,6 +34,10 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             env[key] = str(val)
 
     # --- Replicate the gateway's shared terminal config bridge. ---
+    explicit_terminal_config = "terminal" in cfg or any(
+        alias_key in cfg for alias_key in ("backend", "cwd")
+    )
+
     terminal_raw = cfg.get("terminal", {})
     if not isinstance(terminal_raw, Mapping):
         terminal_raw = {}
@@ -53,7 +57,12 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
         messaging_cwd=env.get("MESSAGING_CWD"),
         home=os.path.expanduser("~"),
     )
-    env.update(terminal_env_values(terminal_cfg))
+    if explicit_terminal_config:
+        env.update(terminal_env_values(terminal_cfg))
+    else:
+        existing_cwd = str(env.get("TERMINAL_CWD", "")).strip().lower()
+        if existing_cwd in {"", ".", "auto", "cwd"}:
+            env["TERMINAL_CWD"] = terminal_cfg["cwd"]
 
     return env
 
@@ -144,6 +153,22 @@ class TestTopLevelCwdAlias:
         cfg = {}
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/home/hermes/projects"})
         assert result["TERMINAL_CWD"] == "/home/hermes/projects"
+
+    def test_config_without_terminal_settings_preserves_inherited_terminal_env(self):
+        """Config without terminal settings must not clobber inherited TERMINAL_* env."""
+        cfg = {"model": "some-model"}
+        result = _simulate_config_bridge(
+            cfg,
+            {
+                "TERMINAL_ENV": "docker",
+                "TERMINAL_TIMEOUT": "77",
+                "TERMINAL_CWD": "/from-env",
+            },
+        )
+
+        assert result["TERMINAL_ENV"] == "docker"
+        assert result["TERMINAL_TIMEOUT"] == "77"
+        assert result["TERMINAL_CWD"] == "/from-env"
 
     def test_top_level_cwd_beats_messaging_cwd(self):
         """Explicit top-level cwd should take precedence over MESSAGING_CWD."""

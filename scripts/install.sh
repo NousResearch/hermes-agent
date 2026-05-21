@@ -602,12 +602,16 @@ install_node() {
 
     # Resolve the latest v22.x.x tarball name from the index page
     local index_url="https://nodejs.org/dist/latest-v${NODE_VERSION}.x/"
-    local tarball_name
-    tarball_name=$(curl -fsSL "$index_url" \
-        | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
-        | head -1)
+    local tarball_name=""
 
-    # Fallback to .tar.gz if .tar.xz not available
+    # Only try .tar.xz if xz is available on the system
+    if command -v xz &> /dev/null; then
+        tarball_name=$(curl -fsSL "$index_url" \
+            | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
+            | head -1)
+    fi
+
+    # Fallback to .tar.gz if .tar.xz not available or xz missing
     if [ -z "$tarball_name" ]; then
         tarball_name=$(curl -fsSL "$index_url" \
             | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.gz" \
@@ -728,6 +732,17 @@ install_system_packages() {
         need_ffmpeg=true
     fi
 
+    HAS_XZ=false
+    local need_xz=false
+
+    log_info "Checking xz (Node.js tarball extraction)..."
+    if command -v xz &> /dev/null; then
+        log_success "xz found"
+        HAS_XZ=true
+    else
+        need_xz=true
+    fi
+
     # Termux always needs the Android build toolchain for the tested pip path,
     # even when ripgrep/ffmpeg are already present.
     if [ "$DISTRO" = "termux" ]; then
@@ -753,7 +768,7 @@ install_system_packages() {
     fi
 
     # Nothing to install — done
-    if [ "$need_ripgrep" = false ] && [ "$need_ffmpeg" = false ]; then
+    if [ "$need_ripgrep" = false ] && [ "$need_ffmpeg" = false ] && [ "$need_xz" = false ]; then
         return 0
     fi
 
@@ -768,6 +783,13 @@ install_system_packages() {
         desc_parts+=("ffmpeg for TTS voice messages")
         pkgs+=("ffmpeg")
     fi
+    if [ "$need_xz" = true ]; then
+        desc_parts+=("xz for Node.js tarball extraction")
+        case "$OS" in
+            macos) pkgs+=("xz") ;;
+            *)     pkgs+=("xz-utils") ;;
+        esac
+    fi
     local description
     description=$(IFS=" and "; echo "${desc_parts[*]}")
 
@@ -778,6 +800,7 @@ install_system_packages() {
             if brew install "${pkgs[@]}"; then
                 [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                 [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                [ "$need_xz" = true ]      && HAS_XZ=true      && log_success "xz installed"
                 return 0
             fi
         fi
@@ -808,6 +831,7 @@ install_system_packages() {
             if $install_cmd; then
                 [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                 [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                [ "$need_xz" = true ]      && HAS_XZ=true      && log_success "xz installed"
                 return 0
             fi
         # Passwordless sudo — just install
@@ -816,6 +840,7 @@ install_system_packages() {
             if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd; then
                 [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
                 [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                [ "$need_xz" = true ]      && HAS_XZ=true      && log_success "xz installed"
                 return 0
             fi
         # sudo needs password — ask once for everything
@@ -873,6 +898,9 @@ install_system_packages() {
     if [ "$HAS_FFMPEG" = false ] && [ "$need_ffmpeg" = true ]; then
         log_warn "ffmpeg not installed (TTS voice messages will be limited)"
         show_manual_install_hint "ffmpeg"
+    fi
+    if [ "$HAS_XZ" = false ] && [ "$need_xz" = true ]; then
+        log_warn "xz not installed (Node.js will use .tar.gz fallback if available)"
     fi
 }
 

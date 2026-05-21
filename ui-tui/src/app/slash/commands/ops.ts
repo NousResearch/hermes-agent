@@ -45,6 +45,7 @@ interface SkillsInstallResponse {
 
 interface SkillsBrowseItem {
   description?: string
+  identifier?: string
   name: string
   source?: string
   trust?: string
@@ -618,10 +619,12 @@ export const opsCommands: SlashCommand[] = [
                 return sys(`no skills on page ${pageNum}${r.total ? ` (total ${r.total})` : ''}`)
               }
 
-              const rows: [string, string][] = items.map(s => [
-                s.trust ? `${s.name} · ${s.trust}` : s.name,
-                String(s.description ?? '').slice(0, 160)
-              ])
+              const rows: [string, string][] = items.map(s => {
+                const description = String(s.description ?? '').slice(0, 160)
+                const details = s.identifier ? `${s.identifier} - ${description}` : description
+
+                return [s.trust ? `${s.name} · ${s.trust}` : s.name, details]
+              })
 
               const footer: string[] = []
 

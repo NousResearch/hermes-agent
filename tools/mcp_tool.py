@@ -2248,7 +2248,8 @@ def _load_mcp_config() -> Dict[str, dict]:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        servers = config.get("mcp_servers")
+        # Check both top-level mcp_servers and nested mcp.mcp_servers
+        servers = config.get("mcp_servers") or config.get("mcp", {}).get("mcp_servers")
         if not servers or not isinstance(servers, dict):
             return {}
         # Ensure .env vars are available for interpolation

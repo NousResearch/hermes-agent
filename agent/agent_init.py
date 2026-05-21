@@ -322,6 +322,15 @@ def init_agent(
     else:
         agent.api_mode = "chat_completions"
 
+    if (
+        agent.provider == "custom"
+        and agent.api_mode == "chat_completions"
+        and "/codex" in agent._base_url_lower
+    ):
+        # Custom Codex proxies need Responses semantics even when the
+        # persisted/explicit api_mode is stale.
+        agent.api_mode = "codex_responses"
+
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
     try:

@@ -1327,6 +1327,11 @@ def run_doctor(args):
             check_info(step)
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
+
+    if _is_termux():
+        check_info("Termux compatibility fallbacks:")
+        for note in _termux_install_all_fallback_notes():
+            check_info(note)
     
     # npm audit for all Node.js packages
     _npm_bin = _safe_which("npm")

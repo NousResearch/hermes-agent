@@ -87,6 +87,11 @@ from agent.usage_pricing import (
     format_duration_compact,
     format_token_count_compact,
 )
+from agent.markdown_tables import (
+    is_table_divider,
+    looks_like_table_row,
+    realign_markdown_tables,
+)
 from hermes_cli.banner import _format_context_length
 from hermes_cli.harness import ensure_harness_running
 

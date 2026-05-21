@@ -1016,9 +1016,14 @@ DEFAULT_CONFIG = {
         "tui_auto_resume_recent": False,
         "bell_on_complete": False,
         "show_reasoning": False,
+        "interim_assistant_messages": True,
         "streaming": False,
         "timestamps": False,      # Show [HH:MM] on user and assistant labels
         "final_response_markdown": "strip",  # render | strip | raw
+        "user_message_preview": {
+            "first_lines": 2,
+            "last_lines": 2,
+        },
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
         # terminal resize full-screen clears. Disable if a terminal emulator
         # behaves badly with replayed scrollback.

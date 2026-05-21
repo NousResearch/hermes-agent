@@ -2189,6 +2189,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
+        profile_suffix = f" {profile_arg}" if profile_arg else ""
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2199,7 +2200,7 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli gateway run --replace
+ExecStart={python_path} -m hermes_cli{profile_suffix} gateway run --replace
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2229,6 +2230,7 @@ WantedBy=multi-user.target
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
+    profile_suffix = f" {profile_arg}" if profile_arg else ""
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2237,7 +2239,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli gateway run --replace
+ExecStart={python_path} -m hermes_cli{profile_suffix} gateway run --replace
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -2844,12 +2846,7 @@ def generate_launchd_plist() -> str:
 
     <key>ProgramArguments</key>
     <array>
-        <string>{python_path}</string>
-        <string>-m</string>
-        <string>hermes_cli</string>
-        <string>gateway</string>
-        <string>run</string>
-        <string>--replace</string>
+        {prog_args_xml}
     </array>
     
     <key>WorkingDirectory</key>

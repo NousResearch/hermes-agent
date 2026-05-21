@@ -902,7 +902,49 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # 4. Remove profile directory
     try:
-        shutil.rmtree(profile_dir)
+        def _make_writable(func, path, exc):
+            """onexc/onerror handler: add +w on PermissionError so rmtree can proceed.
+
+            Handles two cases on NixOS (and other systems with read-only
+            copies from immutable stores):
+            1. The path itself isn't writable (e.g. a file with mode 0444)
+            2. The *parent* directory isn't writable (e.g. mode 0555)
+
+            Compatible with both the ``onexc`` API (3.12+, receives an
+            exception instance) and the ``onerror`` API (3.11-, receives
+            ``sys.exc_info()`` tuple).
+            """
+            import stat as _stat
+            import sys as _sys
+
+            # Normalise the two callback signatures:
+            #   onexc(func, path, exc_instance)   — 3.12+
+            #   onerror(func, path, exc_info_tuple) — 3.11
+            if isinstance(exc, tuple):
+                exc = exc[1]  # exc_info → actual exception object
+
+            if isinstance(exc, PermissionError):
+                # Make the path writable
+                try:
+                    os.chmod(path, os.stat(path).st_mode | _stat.S_IWUSR)
+                except OSError:
+                    pass
+                # Also make the parent writable (needed for unlink/rmdir)
+                parent = os.path.dirname(path)
+                if parent:
+                    try:
+                        os.chmod(parent, os.stat(parent).st_mode | _stat.S_IWUSR)
+                    except OSError:
+                        pass
+                func(path)
+            else:
+                raise
+
+        # ``onexc`` was added in 3.12; fall back to ``onerror`` on 3.11.
+        try:
+            shutil.rmtree(profile_dir, onexc=_make_writable)
+        except TypeError:
+            shutil.rmtree(profile_dir, onerror=_make_writable)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")

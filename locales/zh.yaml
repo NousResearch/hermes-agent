@@ -349,3 +349,22 @@ gateway:
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+
+background_review:
+  self_improvement:     "💾 自我改进：{summary}"
+  memory_label:         "记忆"
+  user_profile_label:   "用户档案"
+  memory_updated:       "记忆 已更新"
+  user_profile_updated: "用户档案 已更新"
+
+tools:
+  memory:
+    entry_added:     "条目已添加。"
+    entry_replaced:  "条目已替换。"
+    entry_removed:   "条目已移除。"
+    entry_duplicate: "条目已存在（未重复添加）。"
+  skills:
+    created:      "技能 '{name}' 已创建。"
+    updated:      "技能 '{name}' 已更新。"
+    deleted:      "技能 '{name}' 已删除。"
+    file_removed: "文件 '{file_path}' 已从技能 '{name}' 移除。"

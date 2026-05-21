@@ -349,3 +349,22 @@ gateway:
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
     session_not_found:           "데이터베이스에서 세션을 찾을 수 없습니다."
     warn_passthrough:            "⚠️ {error}"
+
+background_review:
+  self_improvement:     "💾 Self-improvement review: {summary}"
+  memory_label:         "Memory"
+  user_profile_label:   "User profile"
+  memory_updated:       "Memory updated"
+  user_profile_updated: "User profile updated"
+
+tools:
+  memory:
+    entry_added:     "Entry added."
+    entry_replaced:  "Entry replaced."
+    entry_removed:   "Entry removed."
+    entry_duplicate: "Entry already exists (no duplicate added)."
+  skills:
+    created:      "Skill '{name}' created."
+    updated:      "Skill '{name}' updated."
+    deleted:      "Skill '{name}' deleted."
+    file_removed: "File '{file_path}' removed from skill '{name}'."

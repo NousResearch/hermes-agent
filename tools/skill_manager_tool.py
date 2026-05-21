@@ -45,6 +45,8 @@ from typing import Dict, Any, Optional, Tuple
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 # Import security scanner — external hub installs always get scanned;
@@ -414,7 +416,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
     result = {
         "success": True,
-        "message": f"Skill '{name}' created.",
+        "message": t("tools.skills.created", name=name),
         "path": str(skill_dir.relative_to(SKILLS_DIR)),
         "skill_md": str(skill_md),
     }
@@ -455,7 +457,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     return {
         "success": True,
-        "message": f"Skill '{name}' updated.",
+        "message": t("tools.skills.updated", name=name),
         "path": str(existing["path"]),
     }
 
@@ -601,7 +603,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if parent != skills_root and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
 
-    message = f"Skill '{name}' deleted."
+    message = t("tools.skills.deleted", name=name)
     if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
         message += f" Content absorbed into '{absorbed_into.strip()}'."
 
@@ -702,7 +704,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
     return {
         "success": True,
-        "message": f"File '{file_path}' removed from skill '{name}'.",
+        "message": t("tools.skills.file_removed", name=name, file_path=file_path),
     }
 
 

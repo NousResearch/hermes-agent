@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as an email assistant via IMAP/SMTP"
 
 # Email Setup
 
-Hermes can receive and reply to emails using standard IMAP and SMTP protocols. Send an email to the agent's address and it replies in-thread — no special client or bot API needed. Works with Gmail, Outlook, Yahoo, Fastmail, or any provider that supports IMAP/SMTP.
+Hermes can receive and reply to emails using standard IMAP and SMTP protocols. Send an email to the agent's address and it replies in-thread — no special client or bot API needed. Works with Gmail, Outlook, Yahoo, Fastmail, AgentMail, or any provider that supports IMAP/SMTP.
 
 :::info No External Dependencies
 The Email adapter uses Python's built-in `imaplib`, `smtplib`, and `email` modules. No additional packages or external services are required.
@@ -19,6 +19,7 @@ The Email adapter uses Python's built-in `imaplib`, `smtplib`, and `email` modul
 - **A dedicated email account** for your Hermes agent (don't use your personal email)
 - **IMAP enabled** on the email account
 - **An app password** if using Gmail or another provider with 2FA
+- **An API key** if using AgentMail
 
 ### Gmail Setup
 
@@ -33,6 +34,11 @@ The Email adapter uses Python's built-in `imaplib`, `smtplib`, and `email` modul
 2. Enable 2FA if not already active
 3. Create an App Password under "Additional security options"
 4. IMAP host: `outlook.office365.com`, SMTP host: `smtp.office365.com`
+
+### AgentMail
+
+1. IMAP host: `imap.agentmail.to`, SMTP host: `smtp.agentmail.to`
+2. Use an existing API key or [create one](https://console.agentmail.to/api-keys) for the password
 
 ### Other Providers
 

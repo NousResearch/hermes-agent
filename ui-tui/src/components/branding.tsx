@@ -43,82 +43,21 @@ export function ArtLines({ lines }: { lines: [string, string][] }) {
   )
 }
 
-// Responsive Banner: full art → compact rule → text → hidden.
-//
-// Terminals can't scale glyphs, so "responsive" means picking a layout that
-// fits the available columns. Thresholds are picked so each tier reads
-// comfortably without forcing wrap or truncation drift on box-drawing edges.
-const TAG_FULL = 'Nous Research · Messenger of the Digital Gods'
-const TAG_MID = 'Messenger of the Digital Gods'
-const TAG_TINY = 'Nous Research'
-const HIDE_BELOW = 34
-const COMPACT_FROM = 58
-
-const clip = (s: string, w: number) =>
-  w <= 0 ? '' : s.length > w ? `${s.slice(0, Math.max(0, w - 1))}…` : s
-
-const centerIn = (s: string, w: number) => {
-  const f = clip(s, w)
-  const slack = Math.max(0, w - f.length)
-  const left = slack >> 1
-
-  return `${' '.repeat(left)}${f}${' '.repeat(slack - left)}`
-}
-
-const ruleIn = (label: string, w: number) => {
-  const f = clip(label, Math.max(1, w - 4))
-  const slack = Math.max(0, w - f.length - 2)
-  const left = slack >> 1
-
-  return `${'─'.repeat(left)} ${f} ${'─'.repeat(slack - left)}`
-}
-
-function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
-  // -4 keeps a margin so exact-edge rows don't trip terminal pending-wrap.
-  const w = Math.max(28, cols - 4)
-
-  return (
-    <Box flexDirection="column" height={3} marginBottom={1} opaque width={w}>
-      <Text bold color={t.color.primary}>{ruleIn(t.brand.name, w)}</Text>
-      <Text color={t.color.muted}>{centerIn(TAG_FULL, w)}</Text>
-      <Text color={t.color.primary}>{'─'.repeat(w)}</Text>
-    </Box>
-  )
-}
-
-export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
-  const term = useStdout().stdout?.columns ?? 80
-  const cols = Math.max(1, Math.min(term, maxWidth ?? term))
-
-  if (cols < HIDE_BELOW) {
-    return null
-  }
-
+export function Banner({ t }: { t: Theme }) {
+  const cols = useStdout().stdout?.columns ?? 80
   const logoLines = logo(t.color, t.bannerLogo || undefined)
-  const logoW = t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH
-
-  if (cols >= logoW + 2) {
-    return (
-      <Box flexDirection="column" marginBottom={1}>
-        <ArtLines lines={logoLines} />
-        <Text color={t.color.muted} wrap="truncate-end">
-          {t.brand.icon} {TAG_FULL}
-        </Text>
-      </Box>
-    )
-  }
-
-  if (cols >= COMPACT_FROM) {
-    return <CompactBanner cols={cols} t={t} />
-  }
-
-  const name = cols >= 52 ? t.brand.name : (t.brand.name.split(' ')[0] ?? t.brand.name)
-  const tag = cols >= 64 ? TAG_FULL : cols >= 46 ? TAG_MID : TAG_TINY
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text bold color={t.color.primary} wrap="truncate-end">{t.brand.icon} {name}</Text>
-      <Text color={t.color.muted} wrap="truncate-end">{t.brand.icon} {tag}</Text>
+      {cols >= (t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH) ? (
+        <ArtLines lines={logoLines} />
+      ) : (
+        <Text bold color={t.color.primary}>
+          {t.brand.icon} NOUS HERMES
+        </Text>
+      )}
+
+      <Text color={t.color.muted}>{t.brand.icon} Nous Research · Messenger of the Digital Gods</Text>
     </Box>
   )
 }
@@ -161,9 +100,8 @@ function CollapseToggle({
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
-export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
-  const term = useStdout().stdout?.columns ?? 100
-  const cols = Math.max(20, Math.min(term, maxWidth ?? term))
+export function SessionPanel({ info, sid, t }: SessionPanelProps) {
+  const cols = useStdout().stdout?.columns ?? 100
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
   const narrowHeroLines = caduceus(t.color, t.bannerHeroSmall || undefined)
   const artW = artWidth(heroLines) || CADUCEUS_WIDTH
@@ -324,41 +262,21 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       )}
 
       <Box flexDirection="column" width={w}>
-        {wide ? (
-          <Box justifyContent="center" marginBottom={1}>
-            <Text bold color={t.color.primary}>
-              {t.brand.name}
-              {info.version ? ` v${info.version}` : ''}
-              {info.release_date ? ` (${info.release_date})` : ''}
-            </Text>
-          </Box>
-        ) : (
-          // Narrow layout hides the hero column; surface model/cwd/session
-          // here so they aren't lost.
+        <Box justifyContent="center" marginBottom={1}>
+          <Text bold color={t.color.primary}>
+            {t.brand.name}
+            {info.version ? ` v${info.version}` : ''}
+            {info.release_date ? ` (${info.release_date})` : ''}
+          </Text>
+        </Box>
+        {!wide && t.bannerHeroSmall && (
           <Box flexDirection="column" marginBottom={1}>
-            {t.bannerHeroSmall && (
-              <Box flexDirection="column" marginBottom={1}>
-                {narrowCenteredLines.map(([c, text], i) =>
-                  text.includes('\x1b[') ? (
-                    <Box key={i}><Ansi>{text}</Ansi></Box>
-                  ) : (
-                    <Text color={c} key={i}>{text}</Text>
-                  )
-                )}
-              </Box>
-            )}
-            <Text color={t.color.accent} wrap="truncate-end">
-              {info.model.split('/').pop()}
-              <Text color={t.color.muted}> · Nous Research</Text>
-            </Text>
-            <Text color={t.color.muted} wrap="truncate-end">
-              {info.cwd || process.cwd()}
-            </Text>
-            {sid && (
-              <Text wrap="truncate-end">
-                <Text color={t.color.sessionLabel}>Session: </Text>
-                <Text color={t.color.sessionBorder}>{sid}</Text>
-              </Text>
+            {narrowCenteredLines.map(([c, text], i) =>
+              text.includes('\x1b[') ? (
+                <Box key={i}><Ansi>{text}</Ansi></Box>
+              ) : (
+                <Text color={c} key={i}>{text}</Text>
+              )
             )}
           </Box>
         )}
@@ -426,19 +344,6 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Text color={t.color.muted}>/help for commands</Text>
         </Text>
 
-        {/* ── Optimization indicators ── */}
-        {(info.skill_filter_active || info.index_format !== 'full' || info.max_tokens || info.cost_awareness) && (
-          <Text color={t.color.muted}>
-            <Text color={t.color.accent}>⚡ opt: </Text>
-            {info.skill_filter_active && <Text color={t.color.text}>filtered </Text>}
-            {info.index_format && info.index_format !== 'full' && (
-              <Text color={t.color.text}>{info.index_format} </Text>
-            )}
-            {info.max_tokens && <Text color={t.color.text}>cap={info.max_tokens} </Text>}
-            {info.cost_awareness && <Text color={t.color.text}>lean</Text>}
-          </Text>
-        )}
-
         {typeof info.update_behind === 'number' && info.update_behind > 0 && (
           <Text bold color={t.color.warn}>
             ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
@@ -505,7 +410,6 @@ interface PanelProps {
 
 interface SessionPanelProps {
   info: SessionInfo
-  maxWidth?: number
   sid?: string | null
   t: Theme
 }

@@ -107,5 +107,42 @@ class TestCheckSensitivePathMacOSBypass:
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
 
+class TestNixOSConfigException:
+    """NixOS users manage /etc/nixos/ as personal dotfiles — file tools
+    should allow writes when the config tree is user-owned."""
+
+    def test_nixos_config_allowed(self, tmp_path, monkeypatch):
+        """User-owned /etc/nixos/ tree should allow writes."""
+        from tools import file_tools
+        etc_nixos = tmp_path / "etc" / "nixos"
+        etc_nixos.mkdir(parents=True)
+        path = etc_nixos / "config.nix"
+        path.touch()
+        monkeypatch.setattr(file_tools, "_NIXOS_ETC_PREFIX", str(tmp_path / "etc") + "/")
+        assert file_tools._is_sensitive_nixos_config(str(path)) is True
+
+    def test_nixos_new_file_allowed(self, tmp_path, monkeypatch):
+        """Non-existent file under user-owned /etc/nixos/ should be allowed."""
+        from tools import file_tools
+        etc_nixos = tmp_path / "etc" / "nixos"
+        etc_nixos.mkdir(parents=True)
+        new_file = etc_nixos / "new-module.nix"
+        monkeypatch.setattr(file_tools, "_NIXOS_ETC_PREFIX", str(tmp_path / "etc") + "/")
+        assert file_tools._is_sensitive_nixos_config(str(new_file)) is True
+
+    def test_non_nixos_etc_blocked(self):
+        """Paths outside /etc/nixos/ should never match."""
+        from tools.file_tools import _is_sensitive_nixos_config
+        assert _is_sensitive_nixos_config("/etc/passwd") is False
+        assert _is_sensitive_nixos_config("/etc/ssh/sshd_config") is False
+        assert _is_sensitive_nixos_config("/etc/foo") is False
+
+    def test_nonexistent_etc_nixos_safe_default(self, monkeypatch):
+        """When /etc/nixos/ doesn't exist, return False (safe default)."""
+        from tools import file_tools
+        monkeypatch.setattr(file_tools, "_NIXOS_ETC_PREFIX", "/nonexistent/path/")
+        assert file_tools._is_sensitive_nixos_config("/nonexistent/path/imaginary.nix") is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

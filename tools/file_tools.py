@@ -153,7 +153,30 @@ _SENSITIVE_PATH_PREFIXES = (
     "/private/etc/", "/private/var/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+_NIXOS_ETC_PREFIX = "/etc/nixos/"
 
+
+def _is_sensitive_nixos_config(path: str) -> bool:
+    """Return True if *path* lives under /etc/nixos/ AND is user-owned.
+
+    The prefix check uses the literal path so symlinks (e.g. /etc/nixos →
+    /home/user/config/nixos) are still recognised.  Ownership is determined
+    by climbing to the deepest existing parent — os.stat() follows symlinks
+    automatically, so chown'd directories and symlinked user directories
+    both work correctly.  When /etc/nixos/ doesn't exist at all (non-NixOS
+    systems), returns False → the default sensitive-path guard applies.
+    """
+    if not path.startswith(_NIXOS_ETC_PREFIX):
+        return False
+    p = Path(path)
+    for c in [p] + list(p.parents):
+        try:
+            return c.stat().st_uid == os.getuid()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+    return False
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
@@ -168,7 +191,14 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
+            # Allow writes under /etc/nixos/ when the config dir is user-owned.
+            # NixOS users manage /etc/nixos/ as personal dotfiles — it's not a
+            # system path in the traditional sense.  Check the deepest existing
+            # parent's ownership to avoid weakening the guard for root-owned
+            # /etc/ entries (passwd, shadow, ssh/, sudoers, etc.).
+            if (not _is_sensitive_nixos_config(resolved)
+                    and not _is_sensitive_nixos_config(normalized)):
+                return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
     return None

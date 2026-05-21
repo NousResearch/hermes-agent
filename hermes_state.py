@@ -195,6 +195,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     model_config TEXT,
     system_prompt TEXT,
     parent_session_id TEXT,
+    session_kind TEXT DEFAULT 'main',
+    root_session_id TEXT,
+    creator_kind TEXT,
+    creator_tool_name TEXT,
+    creator_tool_call_id TEXT,
+    creator_task_index INTEGER,
+    creator_command TEXT,
+    is_user_facing INTEGER DEFAULT 1,
     started_at REAL NOT NULL,
     ended_at REAL,
     end_reason TEXT,
@@ -704,13 +712,44 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        session_kind: str = "main",
+        root_session_id: Optional[str] = None,
+        creator_kind: Optional[str] = None,
+        creator_tool_name: Optional[str] = None,
+        creator_tool_call_id: Optional[str] = None,
+        creator_task_index: Optional[int] = None,
+        creator_command: Optional[str] = None,
+        is_user_facing: bool = True,
     ) -> None:
-        """Shared INSERT OR IGNORE for session rows."""
+        """Shared INSERT OR IGNORE for session rows.
+
+        Provenance fields are optional for legacy callers. Root sessions default
+        to ``session_kind='main'`` and ``root_session_id=session_id``; child
+        sessions inherit the parent's stored root when the caller does not pass
+        one explicitly.
+        """
         def _do(conn):
+            resolved_root_session_id = root_session_id
+            if resolved_root_session_id is None:
+                if parent_session_id:
+                    parent_row = conn.execute(
+                        "SELECT COALESCE(root_session_id, id) AS root_session_id "
+                        "FROM sessions WHERE id = ?",
+                        (parent_session_id,),
+                    ).fetchone()
+                    resolved_root_session_id = (
+                        parent_row["root_session_id"] if parent_row else parent_session_id
+                    )
+                else:
+                    resolved_root_session_id = session_id
+
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT OR IGNORE INTO sessions (
+                   id, source, user_id, model, model_config, system_prompt,
+                   parent_session_id, session_kind, root_session_id, creator_kind,
+                   creator_tool_name, creator_tool_call_id, creator_task_index,
+                   creator_command, is_user_facing, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -719,6 +758,14 @@ class SessionDB:
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
                     parent_session_id,
+                    session_kind or "main",
+                    resolved_root_session_id,
+                    creator_kind,
+                    creator_tool_name,
+                    creator_tool_call_id,
+                    creator_task_index,
+                    creator_command,
+                    1 if is_user_facing else 0,
                     time.time(),
                 ),
             )
@@ -1185,9 +1232,9 @@ class SessionDB:
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
-        Returns dicts with keys: id, source, model, title, started_at, ended_at,
-        message_count, preview (first 60 chars of first user message),
-        last_active (timestamp of last message).
+        Returns dicts with the stored session row fields (including provenance
+        such as ``session_kind`` and ``creator_*``), plus preview (first 60 chars
+        of first user message) and last_active (timestamp of last message).
 
         Uses a single query with correlated subqueries instead of N+2 queries.
 
@@ -2418,9 +2465,10 @@ class SessionDB:
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source.
 
-        Returns rows enriched with a computed ``last_active`` column (latest
-        message timestamp for the session, falling back to ``started_at``),
-        ordered by most-recently-used first.
+        Returns stored session row fields (including provenance such as
+        ``session_kind`` and ``creator_*``) enriched with a computed
+        ``last_active`` column (latest message timestamp for the session,
+        falling back to ``started_at``), ordered by most-recently-used first.
         """
         select_with_last_active = (
             "SELECT s.*, COALESCE(m.last_active, s.started_at) AS last_active "

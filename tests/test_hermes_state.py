@@ -136,6 +136,82 @@ class TestSessionLifecycle:
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
 
+    def test_session_provenance_defaults_to_main(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        session = db.get_session("s1")
+        assert session["session_kind"] == "main"
+        assert session["root_session_id"] == "s1"
+        assert session["creator_kind"] is None
+        assert session["creator_tool_name"] is None
+        assert session["creator_tool_call_id"] is None
+        assert session["creator_task_index"] is None
+        assert session["creator_command"] is None
+        assert session["is_user_facing"] == 1
+
+    def test_create_session_persists_provenance_fields(self, db):
+        db.create_session(session_id="root", source="cli")
+        db.create_session(session_id="parent", source="cli", parent_session_id="root")
+        db.create_session(
+            session_id="child",
+            source="cli",
+            parent_session_id="parent",
+            session_kind="delegate_child",
+            root_session_id="root",
+            creator_kind="tool_call",
+            creator_tool_name="delegate_task",
+            creator_tool_call_id="call_abc123",
+            creator_task_index=1,
+            creator_command=None,
+            is_user_facing=False,
+        )
+
+        session = db.get_session("child")
+        assert session["session_kind"] == "delegate_child"
+        assert session["root_session_id"] == "root"
+        assert session["creator_kind"] == "tool_call"
+        assert session["creator_tool_name"] == "delegate_task"
+        assert session["creator_tool_call_id"] == "call_abc123"
+        assert session["creator_task_index"] == 1
+        assert session["creator_command"] is None
+        assert session["is_user_facing"] == 0
+
+    def test_child_session_derives_root_session_id_from_parent(self, db):
+        db.create_session(session_id="root", source="cli")
+        db.create_session(
+            session_id="parent",
+            source="cli",
+            parent_session_id="root",
+            session_kind="branch",
+        )
+        db.create_session(
+            session_id="child",
+            source="cli",
+            parent_session_id="parent",
+            session_kind="delegate_child",
+        )
+
+        assert db.get_session("parent")["root_session_id"] == "root"
+        assert db.get_session("child")["root_session_id"] == "root"
+
+    def test_session_list_exposes_provenance_fields(self, db):
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            session_kind="background_command",
+            creator_kind="command",
+            creator_command="/background",
+            is_user_facing=False,
+        )
+
+        sessions = db.list_sessions_rich(include_children=True)
+        listed = next(s for s in sessions if s["id"] == "s1")
+        assert listed["session_kind"] == "background_command"
+        assert listed["root_session_id"] == "s1"
+        assert listed["creator_kind"] == "command"
+        assert listed["creator_command"] == "/background"
+        assert listed["is_user_facing"] == 0
+
 
 # =========================================================================
 # Message storage
@@ -1902,11 +1978,31 @@ class TestSchemaInit:
         # Open with SessionDB — reconciliation should add the missing column
         migrated_db = SessionDB(db_path=db_path)
 
+        conn2 = migrated_db._conn
+        assert conn2 is not None
         msg_cols = {
             r[1]
-            for r in migrated_db._conn.execute("PRAGMA table_info(messages)").fetchall()
+            for r in conn2.execute("PRAGMA table_info(messages)").fetchall()
         }
         assert "reasoning_content" in msg_cols
+        session_cols = {
+            r[1]
+            for r in conn2.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        assert {
+            "session_kind",
+            "root_session_id",
+            "creator_kind",
+            "creator_tool_name",
+            "creator_tool_call_id",
+            "creator_task_index",
+            "creator_command",
+            "is_user_facing",
+        }.issubset(session_cols)
+        legacy_session = migrated_db.get_session("s1")
+        assert legacy_session is not None
+        assert legacy_session["session_kind"] == "main"
+        assert legacy_session["is_user_facing"] == 1
 
         # The query that used to crash must now work
         cursor = migrated_db._conn.execute(

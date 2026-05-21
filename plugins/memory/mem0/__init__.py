@@ -1,7 +1,8 @@
 """Mem0 memory plugin — MemoryProvider interface.
 
 Server-side LLM fact extraction, semantic search with reranking, and
-automatic deduplication via the Mem0 Platform API.
+automatic deduplication via the Mem0 Platform API. Also supports a
+local shadow mode using the Mem0 Python library + local Qdrant storage.
 
 Original PR #2933 by kartik-mem0, adapted to MemoryProvider ABC.
 
@@ -20,6 +21,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -47,11 +49,32 @@ def _load_config() -> dict:
     from hermes_constants import get_hermes_home
 
     config = {
+        "mode": os.environ.get("MEM0_MODE", "platform"),
         "api_key": os.environ.get("MEM0_API_KEY", ""),
         "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
         "keyword_search": False,
+        # Local shadow defaults: candidate recall only, no automatic turn
+        # extraction.  Durable authority writes can be mirrored via
+        # on_memory_write() with infer=False.
+        "shadow": True,
+        "sync_turn": False,
+        "local_path": "",
+        "local_collection": "jarvis_local_mem0_shadow",
+        "local_embedder_provider": "fastembed",
+        "local_embedder_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "local_embedding_dims": 384,
+        "local_llm_provider": "ollama",
+        "local_llm_model": "qwen3.5:4b",
+        "local_ollama_base_url": "http://localhost:11434",
+        # Optional Qdrant server settings. When set, these replace embedded
+        # Qdrant ``path`` storage so multiple Hermes processes can share the
+        # same Mem0 vector store without local file locks.
+        "local_qdrant_url": os.environ.get("MEM0_LOCAL_QDRANT_URL", ""),
+        "local_qdrant_host": os.environ.get("MEM0_LOCAL_QDRANT_HOST", ""),
+        "local_qdrant_port": os.environ.get("MEM0_LOCAL_QDRANT_PORT", ""),
+        "local_qdrant_api_key": os.environ.get("MEM0_LOCAL_QDRANT_API_KEY", ""),
     }
 
     config_path = get_hermes_home() / "mem0.json"
@@ -123,10 +146,14 @@ class Mem0MemoryProvider(MemoryProvider):
         self._config = None
         self._client = None
         self._client_lock = threading.Lock()
+        self._mode = "platform"
         self._api_key = ""
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
+        self._shadow = True
+        self._sync_turn_enabled = True
+        self._hermes_home = None
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
@@ -141,6 +168,13 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         cfg = _load_config()
+        mode = str(cfg.get("mode") or "platform").lower()
+        if mode == "local":
+            try:
+                import mem0  # noqa: F401
+                return True
+            except ImportError:
+                return False
         return bool(cfg.get("api_key"))
 
     def save_config(self, values, hermes_home):
@@ -159,11 +193,74 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def get_config_schema(self):
         return [
+            {"key": "mode", "description": "Mem0 mode: platform or local", "default": "platform", "choices": ["platform", "local"]},
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+            {"key": "shadow", "description": "Treat Mem0 recall as candidate-only, not authority", "default": "true", "choices": ["true", "false"]},
         ]
+
+    @staticmethod
+    def _as_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _build_local_memory_config(self) -> dict:
+        """Build Mem0's local ``Memory.from_config`` configuration."""
+        from hermes_constants import get_hermes_home
+
+        hermes_home = Path(self._hermes_home or get_hermes_home())
+        base_path = self._config.get("local_path") or str(hermes_home / "local-mem0-shadow")
+        base = Path(base_path).expanduser()
+        dims = int(self._config.get("local_embedding_dims") or 384)
+        ollama_base_url = self._config.get("local_ollama_base_url") or "http://localhost:11434"
+
+        qdrant_config = {
+            "collection_name": self._config.get("local_collection") or "jarvis_local_mem0_shadow",
+            "embedding_model_dims": dims,
+        }
+        qdrant_url = str(self._config.get("local_qdrant_url") or "").strip()
+        qdrant_host = str(self._config.get("local_qdrant_host") or "").strip()
+        qdrant_port = self._config.get("local_qdrant_port")
+        qdrant_api_key = str(self._config.get("local_qdrant_api_key") or "").strip()
+        if qdrant_url:
+            qdrant_config["url"] = qdrant_url
+        elif qdrant_host and qdrant_port:
+            qdrant_config["host"] = qdrant_host
+            qdrant_config["port"] = int(qdrant_port)
+        else:
+            qdrant_config["path"] = str(base / "qdrant")
+            qdrant_config["on_disk"] = True
+        if qdrant_api_key:
+            qdrant_config["api_key"] = qdrant_api_key
+
+        return {
+            "vector_store": {
+                "provider": "qdrant",
+                "config": qdrant_config,
+            },
+            "llm": {
+                "provider": self._config.get("local_llm_provider") or "ollama",
+                "config": {
+                    "model": self._config.get("local_llm_model") or "qwen3.5:4b",
+                    "ollama_base_url": ollama_base_url,
+                    "temperature": 0.0,
+                    "max_tokens": 1200,
+                },
+            },
+            "embedder": {
+                "provider": self._config.get("local_embedder_provider") or "fastembed",
+                "config": {
+                    "model": self._config.get("local_embedder_model") or "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                    "embedding_dims": dims,
+                },
+            },
+            "history_db_path": str(base / "history.db"),
+        }
 
     def _get_client(self):
         """Thread-safe client accessor with lazy initialization."""
@@ -171,8 +268,12 @@ class Mem0MemoryProvider(MemoryProvider):
             if self._client is not None:
                 return self._client
             try:
-                from mem0 import MemoryClient
-                self._client = MemoryClient(api_key=self._api_key)
+                if self._mode == "local":
+                    from mem0 import Memory
+                    self._client = Memory.from_config(self._build_local_memory_config())
+                else:
+                    from mem0 import MemoryClient
+                    self._client = MemoryClient(api_key=self._api_key)
                 return self._client
             except ImportError:
                 raise RuntimeError("mem0 package not installed. Run: pip install mem0ai")
@@ -202,12 +303,16 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
+        self._mode = str(self._config.get("mode") or "platform").lower()
         self._api_key = self._config.get("api_key", "")
         # Prefer gateway-provided user_id for per-user memory scoping;
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
         self._agent_id = self._config.get("agent_id", "hermes")
-        self._rerank = self._config.get("rerank", True)
+        self._rerank = self._as_bool(self._config.get("rerank"), True)
+        self._shadow = self._as_bool(self._config.get("shadow"), self._mode == "local")
+        self._sync_turn_enabled = self._as_bool(self._config.get("sync_turn"), self._mode != "local")
+        self._hermes_home = kwargs.get("hermes_home")
 
     def _read_filters(self) -> Dict[str, Any]:
         """Filters for search/get_all — scoped to user only for cross-session recall."""
@@ -227,6 +332,15 @@ class Mem0MemoryProvider(MemoryProvider):
         return []
 
     def system_prompt_block(self) -> str:
+        if self._shadow:
+            return (
+                "# Mem0 Candidate Recall\n"
+                f"Active in {self._mode} shadow mode. User: {self._user_id}.\n"
+                "Mem0 results are candidate recall only; verify against AGENTS, "
+                "MEMORY, user profile, and skills before treating them as authority. "
+                "Use mem0_search to find candidate memories, mem0_conclude to mirror "
+                "explicit durable facts."
+            )
         return (
             "# Mem0 Memory\n"
             f"Active. User: {self._user_id}.\n"
@@ -242,6 +356,8 @@ class Mem0MemoryProvider(MemoryProvider):
             self._prefetch_result = ""
         if not result:
             return ""
+        if self._shadow:
+            return f"## Mem0 Candidate Recall (non-authoritative; verify before use)\n{result}"
         return f"## Mem0 Memory\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
@@ -271,6 +387,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
+        if not self._sync_turn_enabled:
+            return
         if self._is_breaker_open():
             return
 
@@ -293,6 +411,38 @@ class Mem0MemoryProvider(MemoryProvider):
 
         self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
         self._sync_thread.start()
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        """Mirror explicit built-in memory writes into Mem0 as candidate recall.
+
+        This is intentionally verbatim/infer=False so the authority memory layer
+        remains the source of truth and Mem0 cannot independently invent or
+        mutate durable facts.
+        """
+        if action == "remove" or not content:
+            return
+        if self._is_breaker_open():
+            return
+        try:
+            client = self._get_client()
+            meta = dict(metadata or {})
+            meta.update({"authority_target": target, "memory_action": action})
+            client.add(
+                [{"role": "user", "content": content}],
+                **self._write_filters(),
+                infer=False,
+                metadata=meta,
+            )
+            self._record_success()
+        except Exception as e:
+            self._record_failure()
+            logger.debug("Mem0 on_memory_write mirror failed: %s", e)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]

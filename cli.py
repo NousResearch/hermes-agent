@@ -7812,6 +7812,12 @@ class HermesCLI:
             except Exception:
                 pass  # never break resize handling
             _original_on_resize()
+            # Explicitly clear the console completely and let prompt_toolkit redraw.
+            # This wipes out any garbage that patch_stdout and resizing left behind.
+            app.output.erase_screen()
+            app.output.cursor_goto(0, 0)
+            app.output.flush()
+            app.invalidate()
 
         app._on_resize = _resize_clear_ghosts
 

@@ -74,6 +74,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "radio_frequency_capability" -> radioRow(row)
                 "sensor_vector" -> sensorRow(row)
                 "motion_sensor_history" -> motionSensorHistoryRow(row)
+                "motion_pose_estimate" -> motionPoseEstimateRow(row)
                 "sensor_capability" -> sensorCapabilityRow(row)
                 "agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness",
                 "wifi_analyzer_feature_matrix", "wifi_analyzer_workflow_routes", "wifi_scan_policy_matrix",
@@ -469,6 +470,50 @@ private fun motionSensorHistoryRow(row: JSONObject): DiagnosticGraphRow? {
         valueLabel = "${formatDecimal(currentMagnitude, 2)}${unit?.let { " $it" }.orEmpty()} $trendLabel",
         detail = detail.ifBlank { "Motion sensor history" },
         fraction = (currentMagnitude / 20.0).toFloat().coerceIn(0.05f, 1f),
+    )
+}
+
+private fun motionPoseEstimateRow(row: JSONObject): DiagnosticGraphRow {
+    val label = row.optString("label").takeIf { it.isNotBlank() }
+        ?: row.optString("pose_type").ifBlank { "Motion pose" }.replace('_', ' ')
+    val poseSource = row.optString("pose_source").takeIf { it.isNotBlank() }
+    val confidence = row.optString("confidence_label").takeIf { it.isNotBlank() }
+    val heading = row.optString("heading_label").takeIf { it.isNotBlank() }
+    val motionState = row.optString("motion_state_label").takeIf { it.isNotBlank() }
+    val roll = row.optNumber("roll_degrees")?.toDouble()
+    val pitch = row.optNumber("pitch_degrees")?.toDouble()
+    val tilt = row.optNumber("tilt_degrees")?.toDouble()
+    val azimuth = row.optNumber("azimuth_degrees")?.toDouble()
+    val angularVelocity = row.optNumber("angular_velocity_rad_s")?.toDouble()
+    val accelerationDelta = row.optNumber("acceleration_delta_from_gravity")?.toDouble()
+    val sourceSensors = joinJsonStrings(row.optJSONArray("source_sensors"), 4)
+    val valueLabel = row.optString("value_label").takeIf { it.isNotBlank() }
+        ?: row.optString("pose_label").takeIf { it.isNotBlank() }?.replace('_', ' ')
+        ?: motionState?.replace('_', ' ')
+        ?: "pose"
+    val detail = listOfNotNull(
+        poseSource?.let { "source $it" },
+        sourceSensors.takeIf { it.isNotBlank() }?.let { "sensors $it" },
+        confidence?.let { "confidence $it" },
+        roll?.let { "roll ${formatDecimal(it, 1)} deg" },
+        pitch?.let { "pitch ${formatDecimal(it, 1)} deg" },
+        tilt?.let { "tilt ${formatDecimal(it, 1)} deg" },
+        azimuth?.let { "azimuth ${formatDecimal(it, 1)} deg" },
+        heading?.let { "heading $it" },
+        angularVelocity?.let { "angular ${formatDecimal(it, 2)} rad/s" },
+        accelerationDelta?.let { "movement ${formatDecimal(it, 2)} m/s^2" },
+        motionState?.replace('_', ' '),
+        row.optString("workflow_hint").takeIf { it.isNotBlank() },
+    ).joinToString(" | ")
+    val fraction = row.optNumber("fraction")?.toFloat()
+        ?: angularVelocity?.let { (it / 2.0).toFloat() }
+        ?: accelerationDelta?.let { (it / 4.0).toFloat() }
+        ?: 0.55f
+    return DiagnosticGraphRow(
+        label = label,
+        valueLabel = valueLabel,
+        detail = detail.ifBlank { "Motion pose estimate" },
+        fraction = fraction.coerceIn(0.05f, 1f),
     )
 }
 

@@ -669,6 +669,51 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesMotionPoseEstimateRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Motion Pose Estimate")
+                        .put("body", "Pose rows.")
+                        .put("graph_type", "motion_pose_estimate")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("pose_type", "device_pose")
+                                    .put("label", "Device pose estimate")
+                                    .put("value_label", "face up | heading E")
+                                    .put("pose_source", "accelerometer+magnetic_field")
+                                    .put("source_sensors", JSONArray().put("accelerometer").put("magnetic_field"))
+                                    .put("roll_degrees", 0.0)
+                                    .put("pitch_degrees", 0.0)
+                                    .put("tilt_degrees", 0.0)
+                                    .put("azimuth_degrees", 90.0)
+                                    .put("heading_label", "E")
+                                    .put("confidence_label", "high")
+                                    .put("workflow_hint", "Use for heading-aware workflows.")
+                                    .put("fraction", 0.9),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("Device pose estimate", row.label)
+        assertEquals("face up | heading E", row.valueLabel)
+        assertTrue(row.detail.contains("source accelerometer+magnetic_field"))
+        assertTrue(row.detail.contains("sensors accelerometer, magnetic_field"))
+        assertTrue(row.detail.contains("confidence high"))
+        assertTrue(row.detail.contains("azimuth 90.0 deg"))
+        assertTrue(row.detail.contains("heading E"))
+        assertTrue(row.fraction > 0.8f)
+    }
+
+    @Test
     fun parsesSensorCapabilityRowsWithHardwareMetadata() {
         val content = JSONObject()
             .put(

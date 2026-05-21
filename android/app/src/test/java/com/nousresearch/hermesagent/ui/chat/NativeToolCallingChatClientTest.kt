@@ -110,6 +110,17 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsExplicitMotionPoseDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=motion_pose sensor_types=accelerometer,magnetic_field,gyroscope",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("motion_pose", parsed.getString("action"))
+        assertEquals("accelerometer,magnetic_field,gyroscope", parsed.getString("sensor_types"))
+    }
+
+    @Test
     fun extractsExplicitRadioAnalyzerDiagnosticQuickActionArguments() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=radio_analyzer_report",
@@ -887,6 +898,50 @@ class NativeToolCallingChatClientTest {
         assertEquals(19.6, first.getDouble("maximum_range"), 0.01)
         assertEquals("continuous", first.getString("reporting_mode"))
         assertTrue(first.getBoolean("wake_up"))
+    }
+
+    @Test
+    fun compactsMotionPoseEstimatesWithoutDroppingFusionMetadata() {
+        val poses = JSONArray()
+        repeat(12) { index ->
+            poses.put(
+                JSONObject()
+                    .put("pose_type", if (index == 0) "device_pose" else "angular_motion")
+                    .put("label", if (index == 0) "Device pose estimate" else "Angular motion state $index")
+                    .put("value_label", if (index == 0) "face up | heading E" else "0.${index} rad/s steady")
+                    .put("pose_source", if (index == 0) "accelerometer+magnetic_field" else "gyroscope")
+                    .put("source_sensors", JSONArray().put("accelerometer").put("magnetic_field"))
+                    .put("roll_degrees", 0.0)
+                    .put("pitch_degrees", 0.0)
+                    .put("tilt_degrees", 0.0)
+                    .put("azimuth_degrees", 90.0)
+                    .put("heading_label", "E")
+                    .put("confidence_label", "high")
+                    .put("workflow_hint", "Use for heading-aware workflows.")
+                    .put("fraction", 0.9),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "sensor_snapshot")
+            .put("motion_pose_estimate_count", 12)
+            .put("motion_pose_estimates", poses)
+            .put("cards", JSONArray().put(JSONObject().put("title", "Motion Pose Estimate").put("body", "12 poses")))
+            .toString()
+
+        val compacted = NativeToolContextCompressor.compactToolResult(result)
+        val parsed = JSONObject(compacted)
+        val compactedPoses = parsed.getJSONObject("motion_pose_estimates")
+        val first = compactedPoses.getJSONArray("items").getJSONObject(0)
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(12, parsed.getInt("motion_pose_estimate_count"))
+        assertEquals(12, compactedPoses.getInt("original_count"))
+        assertEquals("device_pose", first.getString("pose_type"))
+        assertEquals("accelerometer+magnetic_field", first.getString("pose_source"))
+        assertEquals("E", first.getString("heading_label"))
+        assertEquals("high", first.getString("confidence_label"))
+        assertTrue(first.getJSONArray("source_sensors").toString().contains("magnetic_field"))
     }
 
     @Test

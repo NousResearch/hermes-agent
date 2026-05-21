@@ -45,10 +45,15 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.asin
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 object HermesDeviceDiagnosticsBridge {
@@ -80,6 +85,8 @@ object HermesDeviceDiagnosticsBridge {
                 sensorAnalyzerReportJson(appContext, arguments).toString()
             "motion_sensor_history", "motion_history", "sensor_history", "imu_history", "imu_sensor_history", "accelerometer_history", "gyroscope_history", "sensor_trends", "motion_sensor_trends" ->
                 motionSensorHistoryJson(appContext, arguments).toString()
+            "motion_pose", "orientation_snapshot", "pose_snapshot", "motion_orientation" ->
+                sensorSnapshotJson(appContext, motionPoseDefaultArguments(arguments)).toString()
             "sensor_snapshot", "sensors", "sensor_status", "sample_sensors", "motion_sensors" ->
                 sensorSnapshotJson(appContext, arguments).toString()
             "camera_status", "camera", "camera_capabilities" -> cameraStatusJson(appContext).toString()
@@ -769,6 +776,7 @@ object HermesDeviceDiagnosticsBridge {
         val observedAtMs = System.currentTimeMillis()
         val motionHistoryStore = updateMotionSensorHistory(appContext, samples, observedAtMs)
         val motionHistory = motionSensorHistoryRowsFromStore(motionHistoryStore, observedAtMs)
+        val motionPoseEstimates = motionPoseEstimateRows(samples, motionHistory)
         val sampledSensorCount = countSampledSensors(samples)
         return JSONObject()
             .put("success", true)
@@ -783,6 +791,8 @@ object HermesDeviceDiagnosticsBridge {
             .put("motion_sensor_count", countSensorCapabilities(capabilities, MOTION_SENSOR_TYPES))
             .put("motion_sensor_history", motionHistory)
             .put("motion_sensor_history_count", motionHistory.length())
+            .put("motion_pose_estimates", motionPoseEstimates)
+            .put("motion_pose_estimate_count", motionPoseEstimates.length())
             .put("wake_up_sensor_count", countSensorCapabilityFlag(capabilities, "wake_up"))
             .put("supported_watcher_types", JSONArray(SENSOR_TYPE_LABELS.keys))
             .put(
@@ -794,6 +804,14 @@ object HermesDeviceDiagnosticsBridge {
                             body = "${samples.length()} one-shot accelerometer, gyroscope, magnetic, light, or proximity rows captured for the agent.",
                             graphType = "sensor_vector",
                             rows = samples,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Motion Pose Estimate",
+                            body = "${motionPoseEstimates.length()} fused pose, heading, angular-motion, or acceleration row(s) derived from available IMU samples.",
+                            graphType = "motion_pose_estimate",
+                            rows = motionPoseEstimates,
                         ),
                     )
                     .put(
@@ -831,6 +849,8 @@ object HermesDeviceDiagnosticsBridge {
         }
         val historyRows = sampleResult?.optJSONArray("motion_sensor_history")
             ?: motionSensorHistoryRowsFromStore(readMotionSensorHistory(appContext))
+        val motionPoseEstimates = sampleResult?.optJSONArray("motion_pose_estimates")
+            ?: motionPoseEstimateRows(JSONArray(), historyRows)
         val capabilities = if (sensorManager != null) {
             sensorCapabilityRows(sensorManager, requested)
         } else {
@@ -848,11 +868,21 @@ object HermesDeviceDiagnosticsBridge {
             .put("sampled_sensor_count", sampleResult?.optInt("sampled_sensor_count") ?: 0)
             .put("motion_sensor_history", historyRows)
             .put("motion_sensor_history_count", historyRows.length())
+            .put("motion_pose_estimates", motionPoseEstimates)
+            .put("motion_pose_estimate_count", motionPoseEstimates.length())
             .put("sensor_capabilities", capabilities)
             .put("sensor_capability_count", capabilities.length())
             .put(
                 "cards",
                 JSONArray()
+                    .put(
+                        graphCard(
+                            title = "Motion Pose Estimate",
+                            body = "${motionPoseEstimates.length()} fused pose, heading, angular-motion, or acceleration row(s) derived from current or cached IMU data.",
+                            graphType = "motion_pose_estimate",
+                            rows = motionPoseEstimates,
+                        ),
+                    )
                     .put(
                         graphCard(
                             title = "Motion Sensor History",
@@ -889,6 +919,8 @@ object HermesDeviceDiagnosticsBridge {
         val samples = snapshot?.optJSONArray("sensor_samples") ?: JSONArray()
         val motionHistory = snapshot?.optJSONArray("motion_sensor_history")
             ?: motionSensorHistoryRowsFromStore(readMotionSensorHistory(appContext))
+        val motionPoseEstimates = snapshot?.optJSONArray("motion_pose_estimates")
+            ?: motionPoseEstimateRows(samples, motionHistory)
         val motionSensorCount = countSensorCapabilities(capabilities, MOTION_SENSOR_TYPES)
         val ambientSensorCount = countSensorCapabilities(capabilities, AMBIENT_SENSOR_TYPES)
         val wakeUpSensorCount = countSensorCapabilityFlag(capabilities, "wake_up")
@@ -913,6 +945,7 @@ object HermesDeviceDiagnosticsBridge {
             directChannelSensorCount = directChannelSensorCount,
             sampledSensorCount = samples.length(),
             motionHistoryCount = motionHistory.length(),
+            motionPoseEstimateCount = motionPoseEstimates.length(),
         )
         val routeRows = sensorAnalyzerWorkflowRows(
             availableSensors = available,
@@ -920,6 +953,7 @@ object HermesDeviceDiagnosticsBridge {
             ambientSensorCount = ambientSensorCount,
             capabilityCount = capabilities.length(),
             motionHistoryCount = motionHistory.length(),
+            motionPoseEstimateCount = motionPoseEstimates.length(),
         )
         val policyRows = sensorSamplingPolicyRows(
             sensorServiceAvailable = sensorManager != null,
@@ -966,6 +1000,14 @@ object HermesDeviceDiagnosticsBridge {
         if (snapshot == null && motionHistory.length() > 0) {
             cards.put(
                 graphCard(
+                    title = "Motion Pose Estimate",
+                    body = "${motionPoseEstimates.length()} cached pose, heading, angular-motion, or acceleration row(s) available without forcing another sample.",
+                    graphType = "motion_pose_estimate",
+                    rows = motionPoseEstimates,
+                ),
+            )
+            cards.put(
+                graphCard(
                     title = "Motion Sensor History",
                     body = "${motionHistory.length()} cached motion/IMU trend row(s) available without forcing another sample.",
                     graphType = "motion_sensor_history",
@@ -992,6 +1034,8 @@ object HermesDeviceDiagnosticsBridge {
             .put("cached_motion_sensor_history_count", motionHistory.length())
             .put("motion_sensor_history", motionHistory)
             .put("motion_sensor_history_count", motionHistory.length())
+            .put("motion_pose_estimates", motionPoseEstimates)
+            .put("motion_pose_estimate_count", motionPoseEstimates.length())
             .put("supported_watcher_types", JSONArray(SENSOR_TYPE_LABELS.keys))
             .put("sensor_analyzer_feature_matrix", featureRows)
             .put("sensor_analyzer_workflow_routes", routeRows)
@@ -1225,6 +1269,7 @@ object HermesDeviceDiagnosticsBridge {
         val cachedWifiHistory = wifiSignalHistoryRowsFromStore(readWifiSignalHistory(appContext))
         val cachedBluetoothHistory = bluetoothSignalHistoryRowsFromStore(readBluetoothSignalHistory(appContext))
         val cachedMotionHistory = motionSensorHistoryRowsFromStore(readMotionSensorHistory(appContext))
+        val cachedMotionPoseEstimates = motionPoseEstimateRows(JSONArray(), cachedMotionHistory)
         val awarenessRows = signalAwarenessRows(
             diagnostics = diagnostics,
             signalStatus = signalStatus,
@@ -1235,6 +1280,7 @@ object HermesDeviceDiagnosticsBridge {
             cachedWifiHistory = cachedWifiHistory,
             cachedBluetoothHistory = cachedBluetoothHistory,
             cachedMotionHistory = cachedMotionHistory,
+            cachedMotionPoseEstimates = cachedMotionPoseEstimates,
         )
         val workflowRows = signalWorkflowRouteRows(
             diagnostics = diagnostics,
@@ -1244,6 +1290,7 @@ object HermesDeviceDiagnosticsBridge {
             cachedWifiHistory = cachedWifiHistory,
             cachedBluetoothHistory = cachedBluetoothHistory,
             cachedMotionHistory = cachedMotionHistory,
+            cachedMotionPoseEstimates = cachedMotionPoseEstimates,
         )
         val constraintRows = signalConstraintRows(diagnostics, signalStatus, radioStatus)
         val radioBandCount = radioStatus.optJSONArray("radio_bands")?.length() ?: 0
@@ -1263,6 +1310,8 @@ object HermesDeviceDiagnosticsBridge {
             .put("cached_bluetooth_history_device_count", cachedBluetoothHistory.length())
             .put("cached_motion_sensor_history", cachedMotionHistory)
             .put("cached_motion_sensor_history_count", cachedMotionHistory.length())
+            .put("cached_motion_pose_estimates", cachedMotionPoseEstimates)
+            .put("cached_motion_pose_estimate_count", cachedMotionPoseEstimates.length())
             .put("radio_bands", radioStatus.optJSONArray("radio_bands") ?: JSONArray())
             .put("radio_band_plan_count", radioStatus.optInt("radio_band_plan_count", 0))
             .put("radio_signal_feature_matrix", radioStatus.optJSONArray("radio_signal_feature_matrix") ?: JSONArray())
@@ -1320,6 +1369,14 @@ object HermesDeviceDiagnosticsBridge {
                             body = "${cachedMotionHistory.length()} cached motion/IMU trend row(s) available to the signal-awareness report.",
                             graphType = "motion_sensor_history",
                             rows = cachedMotionHistory,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Motion Pose Estimate",
+                            body = "${cachedMotionPoseEstimates.length()} cached pose, heading, angular-motion, or acceleration row(s) available to the signal-awareness report.",
+                            graphType = "motion_pose_estimate",
+                            rows = cachedMotionPoseEstimates,
                         ),
                     ),
             )
@@ -1835,6 +1892,7 @@ object HermesDeviceDiagnosticsBridge {
         cachedWifiHistory: JSONArray,
         cachedBluetoothHistory: JSONArray,
         cachedMotionHistory: JSONArray,
+        cachedMotionPoseEstimates: JSONArray,
     ): JSONArray {
         val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
         val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
@@ -1919,6 +1977,18 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Run motion_sensor_history when diagnosing movement changes, orientation shifts, device handling, or sensor stability.",
                     fraction = if (cachedMotionHistory.length() > 0) (cachedMotionHistory.length() / MOTION_HISTORY_SENSOR_TYPES.size.toFloat()).coerceIn(0.35f, 1f) else 0.25f,
                     extra = JSONObject().put("tool_action", "motion_sensor_history"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_awareness",
+                    label = "Motion pose fusion",
+                    ready = cachedMotionPoseEstimates.length() > 0 || motionSensors.isNotEmpty(),
+                    valueLabel = if (cachedMotionPoseEstimates.length() > 0) "${cachedMotionPoseEstimates.length()} pose row(s)" else "sample needed",
+                    detail = "Hermes fuses accelerometer/gravity, magnetic-field, rotation-vector, gyroscope, and linear-acceleration rows into pose, heading, angular-motion, and acceleration-state context for Gemma.",
+                    recommendation = "Use motion_pose or sensor_snapshot with accelerometer, magnetic_field, rotation_vector, gyroscope, and linear_acceleration before orientation-aware automations.",
+                    fraction = if (cachedMotionPoseEstimates.length() > 0) 0.9f else if (motionSensors.isNotEmpty()) 0.55f else 0.2f,
+                    extra = JSONObject().put("tool_action", "motion_pose"),
                 ),
             )
             .put(
@@ -2606,6 +2676,7 @@ object HermesDeviceDiagnosticsBridge {
         directChannelSensorCount: Int,
         sampledSensorCount: Int,
         motionHistoryCount: Int,
+        motionPoseEstimateCount: Int,
     ): JSONArray {
         val hasAccelerometer = "accelerometer" in availableSensors
         val hasGyroscope = "gyroscope" in availableSensors
@@ -2684,6 +2755,20 @@ object HermesDeviceDiagnosticsBridge {
                     extra = JSONObject()
                         .put("feature_source", "Hermes motion sensor history")
                         .put("tool_action", "motion_sensor_history"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
+                    label = "Motion pose fusion rows",
+                    ready = motionPoseEstimateCount > 0 || hasAccelerometer || "rotation_vector" in availableSensors,
+                    valueLabel = if (motionPoseEstimateCount > 0) "$motionPoseEstimateCount pose row(s)" else "sample needed",
+                    detail = "Pose rows fuse accelerometer/gravity, magnetic-field, rotation-vector, gyroscope, and linear-acceleration values into roll, pitch, tilt, heading, angular-motion, and movement-state context.",
+                    recommendation = "Use motion_pose or sensor_snapshot when the workflow needs orientation claims rather than raw vector magnitudes.",
+                    fraction = if (motionPoseEstimateCount > 0) 0.95f else if (hasRotationContext || hasAccelerometer) 0.65f else 0.25f,
+                    extra = JSONObject()
+                        .put("feature_source", "Hermes IMU fusion")
+                        .put("tool_action", "motion_pose"),
                 ),
             )
             .put(
@@ -2776,6 +2861,7 @@ object HermesDeviceDiagnosticsBridge {
         ambientSensorCount: Int,
         capabilityCount: Int,
         motionHistoryCount: Int,
+        motionPoseEstimateCount: Int,
     ): JSONArray {
         val hasAccelerometer = "accelerometer" in availableSensors
         val hasGyroscope = "gyroscope" in availableSensors
@@ -2808,6 +2894,20 @@ object HermesDeviceDiagnosticsBridge {
                     extra = JSONObject()
                         .put("tool_action", "motion_sensor_history")
                         .put("sensor_types", "accelerometer,gyroscope,linear_acceleration,rotation_vector,magnetic_field"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_route",
+                    label = "Route motion pose fusion",
+                    ready = hasAccelerometer || hasRotationContext || motionPoseEstimateCount > 0,
+                    valueLabel = "motion_pose",
+                    detail = "Use for fused roll, pitch, tilt, heading, angular velocity, and acceleration-state rows that top cards and Gemma can read directly.",
+                    recommendation = "Prefer rotation_vector for high-confidence pose; otherwise combine accelerometer/gravity with magnetic_field and expose confidence.",
+                    fraction = if (motionPoseEstimateCount > 0) 0.95f else if (hasRotationContext) 0.85f else if (hasAccelerometer) 0.65f else 0.3f,
+                    extra = JSONObject()
+                        .put("tool_action", "motion_pose")
+                        .put("sensor_types", "accelerometer,gravity,magnetic_field,rotation_vector,gyroscope,linear_acceleration"),
                 ),
             )
             .put(
@@ -3005,6 +3105,7 @@ object HermesDeviceDiagnosticsBridge {
         cachedWifiHistory: JSONArray,
         cachedBluetoothHistory: JSONArray,
         cachedMotionHistory: JSONArray,
+        cachedMotionPoseEstimates: JSONArray,
     ): JSONArray {
         val wifiPermission = diagnostics.optJSONObject("wifi_scan_permission_status") ?: JSONObject()
         val bluetoothPermission = diagnostics.optJSONObject("bluetooth_scan_permission_status") ?: JSONObject()
@@ -3068,6 +3169,18 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Use sample=true only when a fresh bounded IMU reading is needed for the current workflow.",
                     fraction = if (cachedMotionHistory.length() > 0) 0.85f else if (sensorNames.any { it in MOTION_HISTORY_SENSOR_TYPES }) 0.65f else 0.3f,
                     extra = JSONObject().put("tool_action", "motion_sensor_history"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_route",
+                    label = "Route motion pose work",
+                    ready = sensorNames.any { it in setOf("accelerometer", "gravity", "magnetic_field", "rotation_vector", "gyroscope", "linear_acceleration") } || cachedMotionPoseEstimates.length() > 0,
+                    valueLabel = "motion_pose",
+                    detail = "Use fused pose rows when Gemma needs roll, pitch, tilt, heading, angular velocity, or movement state rather than raw IMU vectors alone.",
+                    recommendation = "Prefer rotation_vector when available; otherwise combine accelerometer/gravity with magnetic_field and expose confidence.",
+                    fraction = if (cachedMotionPoseEstimates.length() > 0) 0.9f else if (sensorNames.any { it in MOTION_HISTORY_SENSOR_TYPES }) 0.65f else 0.3f,
+                    extra = JSONObject().put("tool_action", "motion_pose"),
                 ),
             )
             .put(
@@ -4714,6 +4827,78 @@ object HermesDeviceDiagnosticsBridge {
         return JSONArray().also { array -> rows.forEach(array::put) }
     }
 
+    internal fun motionPoseEstimateRows(samples: JSONArray, motionHistoryRows: JSONArray = JSONArray()): JSONArray {
+        val vectors = latestMotionVectors(samples, motionHistoryRows)
+        val rows = JSONArray()
+        val rotationVector = vectors["rotation_vector"]?.takeIf { it.size >= 3 }
+        val gravitySource = if (vectors.containsKey("gravity")) "gravity" else "accelerometer"
+        val gravityVector = vectors["gravity"] ?: vectors["accelerometer"]
+        val magneticVector = vectors["magnetic_field"]?.takeIf { it.size >= 3 }
+        val pose = when {
+            rotationVector != null -> poseFromRotationVector(rotationVector)
+            gravityVector != null -> poseFromGravityMagnetic(gravitySource, gravityVector, magneticVector)
+            else -> null
+        }
+        if (pose != null) {
+            rows.put(
+                JSONObject()
+                    .put("pose_type", "device_pose")
+                    .put("label", "Device pose estimate")
+                    .put("value_label", pose.valueLabel)
+                    .put("pose_label", pose.faceOrientationLabel)
+                    .put("pose_source", pose.source)
+                    .put("source_sensors", jsonStringArray(pose.sourceSensors))
+                    .put("roll_degrees", roundedDegrees(pose.rollDegrees))
+                    .put("pitch_degrees", roundedDegrees(pose.pitchDegrees))
+                    .put("tilt_degrees", roundedDegrees(pose.tiltDegrees))
+                    .put("azimuth_degrees", pose.azimuthDegrees?.let(::roundedDegrees) ?: JSONObject.NULL)
+                    .put("heading_label", pose.headingLabel ?: JSONObject.NULL)
+                    .put("face_orientation_label", pose.faceOrientationLabel)
+                    .put("confidence_label", pose.confidenceLabel)
+                    .put("workflow_hint", pose.workflowHint)
+                    .put("fraction", pose.fraction),
+            )
+        }
+        vectors["gyroscope"]?.takeIf { it.isNotEmpty() }?.let { gyro ->
+            val angularVelocity = vectorMagnitude(gyro) ?: 0.0
+            val motionState = angularMotionStateLabel(angularVelocity)
+            rows.put(
+                JSONObject()
+                    .put("pose_type", "angular_motion")
+                    .put("label", "Angular motion state")
+                    .put("value_label", "${formatDecimal(angularVelocity, 2)} rad/s $motionState")
+                    .put("pose_source", "gyroscope")
+                    .put("source_sensors", jsonStringArray(listOf("gyroscope")))
+                    .put("angular_velocity_rad_s", angularVelocity)
+                    .put("motion_state_label", motionState)
+                    .put("confidence_label", "medium")
+                    .put("workflow_hint", "Use this row to decide whether orientation-sensitive work should wait for the phone to stop rotating.")
+                    .put("fraction", (angularVelocity / 2.0).toFloat().coerceIn(0.08f, 1f)),
+            )
+        }
+        val accelerationSource = if (vectors.containsKey("linear_acceleration")) "linear_acceleration" else "accelerometer"
+        vectors[accelerationSource]?.takeIf { it.isNotEmpty() }?.let { acceleration ->
+            val magnitude = vectorMagnitude(acceleration) ?: 0.0
+            val deltaFromGravity = if (accelerationSource == "accelerometer") abs(magnitude - STANDARD_GRAVITY) else magnitude
+            val motionState = accelerationMotionStateLabel(accelerationSource, deltaFromGravity)
+            rows.put(
+                JSONObject()
+                    .put("pose_type", "acceleration_state")
+                    .put("label", "Acceleration state")
+                    .put("value_label", "${formatDecimal(deltaFromGravity, 2)} m/s^2 $motionState")
+                    .put("pose_source", accelerationSource)
+                    .put("source_sensors", jsonStringArray(listOf(accelerationSource)))
+                    .put("acceleration_magnitude", magnitude)
+                    .put("acceleration_delta_from_gravity", deltaFromGravity)
+                    .put("motion_state_label", motionState)
+                    .put("confidence_label", if (accelerationSource == "linear_acceleration") "high" else "medium")
+                    .put("workflow_hint", "Use this row to distinguish steady handling from active movement before triggering motion-aware workflows.")
+                    .put("fraction", (deltaFromGravity / 4.0).toFloat().coerceIn(0.08f, 1f)),
+            )
+        }
+        return rows
+    }
+
     private fun bluetoothDistinctStringCount(devices: JSONArray, key: String): Int {
         val values = linkedSetOf<String>()
         for (index in 0 until devices.length()) {
@@ -4920,6 +5105,14 @@ object HermesDeviceDiagnosticsBridge {
             .distinct()
             .ifEmpty { DEFAULT_SENSOR_TYPES }
             .take(MAX_SENSOR_TYPES_PER_SAMPLE)
+    }
+
+    private fun motionPoseDefaultArguments(arguments: JSONObject): JSONObject {
+        val copy = JSONObject(arguments.toString())
+        if (!copy.has("sensor_types") && !copy.has("sensors") && !copy.has("sensor_type")) {
+            copy.put("sensor_types", DEFAULT_MOTION_POSE_SENSOR_TYPES.joinToString(","))
+        }
+        return copy
     }
 
     private fun requestedMotionHistorySensorTypes(arguments: JSONObject): List<String> {
@@ -6209,6 +6402,177 @@ object HermesDeviceDiagnosticsBridge {
         else -> 0.5
     }
 
+    private data class MotionPoseEstimate(
+        val source: String,
+        val sourceSensors: List<String>,
+        val rollDegrees: Double,
+        val pitchDegrees: Double,
+        val tiltDegrees: Double,
+        val azimuthDegrees: Double?,
+        val headingLabel: String?,
+        val faceOrientationLabel: String,
+        val confidenceLabel: String,
+        val valueLabel: String,
+        val workflowHint: String,
+        val fraction: Float,
+    )
+
+    private fun poseFromRotationVector(values: List<Double>): MotionPoseEstimate? {
+        val x = values.getOrNull(0) ?: return null
+        val y = values.getOrNull(1) ?: return null
+        val z = values.getOrNull(2) ?: return null
+        val w = values.getOrNull(3) ?: sqrt((1.0 - x * x - y * y - z * z).coerceAtLeast(0.0))
+        val roll = radiansToDegrees(atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)))
+        val pitch = radiansToDegrees(asin((2.0 * (w * y - z * x)).coerceIn(-1.0, 1.0)))
+        val azimuth = normalizeDegrees(
+            radiansToDegrees(atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))),
+        )
+        val tilt = poseTiltDegrees(roll, pitch)
+        val heading = headingLabel(azimuth)
+        val face = faceOrientationLabel(roll, pitch, tilt, null)
+        return MotionPoseEstimate(
+            source = "rotation_vector",
+            sourceSensors = listOf("rotation_vector"),
+            rollDegrees = roll,
+            pitchDegrees = pitch,
+            tiltDegrees = tilt,
+            azimuthDegrees = azimuth,
+            headingLabel = heading,
+            faceOrientationLabel = face,
+            confidenceLabel = "high",
+            valueLabel = listOf(face.replace('_', ' '), "heading $heading").joinToString(" | "),
+            workflowHint = "Use rotation-vector pose as the preferred orientation signal when it is available because Android has already fused IMU inputs.",
+            fraction = 0.95f,
+        )
+    }
+
+    private fun poseFromGravityMagnetic(
+        gravitySource: String,
+        gravityValues: List<Double>,
+        magneticValues: List<Double>?,
+    ): MotionPoseEstimate? {
+        val x = gravityValues.getOrNull(0) ?: return null
+        val y = gravityValues.getOrNull(1) ?: return null
+        val z = gravityValues.getOrNull(2) ?: return null
+        val magnitude = vectorMagnitude(gravityValues)?.takeIf { it > 0.01 } ?: return null
+        val roll = radiansToDegrees(atan2(y, z))
+        val pitch = radiansToDegrees(atan2(-x, sqrt(y * y + z * z)))
+        val tilt = radiansToDegrees(atan2(sqrt(x * x + y * y), abs(z)))
+        val heading = magneticValues
+            ?.takeIf { (vectorMagnitude(it) ?: 0.0) > 0.01 }
+            ?.let { magnetic -> tiltCompensatedHeadingDegrees(roll, pitch, magnetic) }
+        val face = faceOrientationLabel(roll, pitch, tilt, z)
+        val headingLabel = heading?.let(::headingLabel)
+        val sourceSensors = if (heading != null) listOf(gravitySource, "magnetic_field") else listOf(gravitySource)
+        return MotionPoseEstimate(
+            source = sourceSensors.joinToString("+"),
+            sourceSensors = sourceSensors,
+            rollDegrees = roll,
+            pitchDegrees = pitch,
+            tiltDegrees = tilt,
+            azimuthDegrees = heading,
+            headingLabel = headingLabel,
+            faceOrientationLabel = face,
+            confidenceLabel = if (heading != null) "high" else "medium",
+            valueLabel = listOfNotNull(face.replace('_', ' '), headingLabel?.let { "heading $it" }).joinToString(" | "),
+            workflowHint = if (heading != null) {
+                "Use this fused gravity and magnetic-field pose for heading-aware workflows, while keeping compass accuracy and nearby-metal interference in mind."
+            } else {
+                "Use this as tilt and face-orientation context only; heading needs magnetic_field or rotation_vector data."
+            },
+            fraction = if (heading != null && magnitude > 0.01) 0.9f else 0.65f,
+        )
+    }
+
+    private fun latestMotionVectors(samples: JSONArray, motionHistoryRows: JSONArray): Map<String, List<Double>> {
+        val vectors = linkedMapOf<String, List<Double>>()
+        fun addVector(row: JSONObject, key: String) {
+            val sensorType = canonicalSensorType(row.optString("sensor_type"))
+            if (sensorType !in MOTION_HISTORY_SENSOR_TYPES) return
+            val values = jsonDoubleList(row.optJSONArray(key))
+            if (values.isNotEmpty()) vectors[sensorType] = values
+        }
+        for (index in 0 until motionHistoryRows.length()) {
+            val row = motionHistoryRows.optJSONObject(index) ?: continue
+            addVector(row, "current_values")
+        }
+        for (index in 0 until samples.length()) {
+            val row = samples.optJSONObject(index) ?: continue
+            if (!row.optBoolean("available", true)) continue
+            if (row.has("sampled") && !row.optBoolean("sampled", false)) continue
+            addVector(row, "values")
+        }
+        return vectors
+    }
+
+    private fun vectorMagnitude(values: List<Double>): Double? {
+        if (values.isEmpty()) return null
+        var sum = 0.0
+        values.forEach { value -> sum += value * value }
+        return sqrt(sum)
+    }
+
+    private fun tiltCompensatedHeadingDegrees(rollDegrees: Double, pitchDegrees: Double, magneticValues: List<Double>): Double {
+        val roll = degreesToRadians(rollDegrees)
+        val pitch = degreesToRadians(pitchDegrees)
+        val mx = magneticValues.getOrElse(0) { 0.0 }
+        val my = magneticValues.getOrElse(1) { 0.0 }
+        val mz = magneticValues.getOrElse(2) { 0.0 }
+        val horizontalX = mx * cos(pitch) + mz * sin(pitch)
+        val horizontalY = mx * sin(roll) * sin(pitch) + my * cos(roll) - mz * sin(roll) * cos(pitch)
+        return normalizeDegrees(radiansToDegrees(atan2(horizontalY, horizontalX)))
+    }
+
+    private fun faceOrientationLabel(rollDegrees: Double, pitchDegrees: Double, tiltDegrees: Double, zAxis: Double?): String {
+        return when {
+            tiltDegrees <= 30.0 && zAxis != null && zAxis < 0.0 -> "face_down"
+            tiltDegrees <= 30.0 && zAxis != null -> "face_up"
+            tiltDegrees <= 30.0 -> "level"
+            abs(pitchDegrees) >= 60.0 -> if (pitchDegrees < 0.0) "portrait_upright" else "portrait_inverted"
+            abs(rollDegrees) >= 60.0 -> if (rollDegrees > 0.0) "landscape_right" else "landscape_left"
+            else -> "tilted"
+        }
+    }
+
+    private fun angularMotionStateLabel(angularVelocityRadS: Double): String = when {
+        angularVelocityRadS < 0.08 -> "steady"
+        angularVelocityRadS < 0.5 -> "minor_rotation"
+        angularVelocityRadS < 1.5 -> "rotating"
+        else -> "fast_rotation"
+    }
+
+    private fun accelerationMotionStateLabel(source: String, deltaFromGravity: Double): String = when {
+        source == "linear_acceleration" && deltaFromGravity < 0.2 -> "steady"
+        source == "linear_acceleration" && deltaFromGravity < 1.0 -> "light_movement"
+        source == "accelerometer" && deltaFromGravity < 0.4 -> "steady_with_gravity"
+        source == "accelerometer" && deltaFromGravity < 1.5 -> "moving"
+        deltaFromGravity < 4.0 -> "active_movement"
+        else -> "impact_or_fast_motion"
+    }
+
+    private fun poseTiltDegrees(rollDegrees: Double, pitchDegrees: Double): Double {
+        return sqrt(rollDegrees * rollDegrees + pitchDegrees * pitchDegrees).coerceIn(0.0, 180.0)
+    }
+
+    private fun degreesToRadians(value: Double): Double = value * PI / 180.0
+
+    private fun radiansToDegrees(value: Double): Double = value * 180.0 / PI
+
+    private fun normalizeDegrees(value: Double): Double {
+        val normalized = value % 360.0
+        return if (normalized < 0.0) normalized + 360.0 else normalized
+    }
+
+    private fun headingLabel(azimuthDegrees: Double): String {
+        val labels = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+        val index = Math.floorMod((normalizeDegrees(azimuthDegrees) / 45.0).roundToInt(), labels.size)
+        return labels[index]
+    }
+
+    private fun roundedDegrees(value: Double): Double = (value * 10.0).roundToInt() / 10.0
+
+    private fun formatDecimal(value: Double, places: Int): String = String.format(Locale.US, "%.${places}f", value)
+
     private fun motionSensorSortKey(sensorType: String): Int = when (canonicalSensorType(sensorType)) {
         "accelerometer" -> 0
         "gyroscope" -> 1
@@ -6282,6 +6646,25 @@ object HermesDeviceDiagnosticsBridge {
             copy.put(values.opt(index) ?: JSONObject.NULL)
         }
         return copy
+    }
+
+    private fun jsonStringArray(values: List<String>): JSONArray {
+        val array = JSONArray()
+        values.forEach(array::put)
+        return array
+    }
+
+    private fun jsonDoubleList(values: JSONArray?): List<Double> {
+        if (values == null) return emptyList()
+        return buildList {
+            for (index in 0 until values.length()) {
+                when (val value = values.opt(index)) {
+                    is Number -> value.toDouble()
+                    is String -> value.toDoubleOrNull()
+                    else -> null
+                }?.let(::add)
+            }
+        }
     }
 
     private fun countSampledSensors(samples: JSONArray): Int {
@@ -6586,6 +6969,7 @@ object HermesDeviceDiagnosticsBridge {
         "bluetooth_signal_history",
         "sensor_analyzer_report",
         "motion_sensor_history",
+        "motion_pose",
         "sensor_snapshot",
         "camera_status",
         "radio_signal_status",
@@ -6619,6 +7003,7 @@ object HermesDeviceDiagnosticsBridge {
     private val MOTION_HISTORY_SENSOR_TYPES = setOf("accelerometer", "gyroscope", "gravity", "linear_acceleration", "rotation_vector", "magnetic_field")
     private val DEFAULT_SENSOR_TYPES = listOf("accelerometer", "gyroscope", "magnetic_field", "light", "proximity")
     private val DEFAULT_MOTION_HISTORY_SENSOR_TYPES = listOf("accelerometer", "gyroscope", "linear_acceleration", "rotation_vector", "magnetic_field")
+    private val DEFAULT_MOTION_POSE_SENSOR_TYPES = listOf("accelerometer", "gravity", "magnetic_field", "rotation_vector", "gyroscope", "linear_acceleration")
     private const val DEFAULT_LIMIT = 5
     private const val MAX_LIMIT = 20
     private const val MAX_WIFI_RESULTS = 40
@@ -6655,6 +7040,7 @@ object HermesDeviceDiagnosticsBridge {
     private const val MAX_MOTION_HISTORY_SERIES_POINTS = 8
     private const val MOTION_SENSOR_HISTORY_PREFS = "hermes_motion_sensor_history"
     private const val MOTION_SENSOR_HISTORY_KEY = "motion_history"
+    private const val STANDARD_GRAVITY = 9.80665
     private const val MAX_SENSOR_TYPES_PER_SAMPLE = 8
     private const val DEFAULT_SENSOR_TIMEOUT_MS = 800L
     private const val MAX_SENSOR_TIMEOUT_MS = 3_000L

@@ -752,7 +752,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        if not self._client.user:
+                            return
+                        mention_texts = [f"<@{self._client.user.id}>", f"<@!{self._client.user.id}>"]
+                        if self._client.user not in message.mentions and not any(m in message.content for m in mention_texts):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -4469,11 +4472,13 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
-        if self._client.user and self._client.user in message.mentions:
-            mention_prefix = True
-            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
-            message.content = normalized_content
+        if self._client.user:
+            mention_texts = [f"<@{self._client.user.id}>", f"<@!{self._client.user.id}>"]
+            if self._client.user in message.mentions or any(m in normalized_content for m in mention_texts):
+                mention_prefix = True
+                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
+                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+                message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:

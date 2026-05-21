@@ -130,6 +130,126 @@ export const monoTheme: DashboardTheme = {
   },
 };
 
+export const paperMonoTheme: DashboardTheme = {
+  name: "paper-mono",
+  label: "Paper Mono",
+  description: "Light paper workspace -- readable and calm",
+  palette: {
+    background: { hex: "#f6f7f9", alpha: 1 },
+    midground: { hex: "#18202a", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(37, 99, 235, 0.08)",
+    noiseOpacity: 0.08,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: SYSTEM_SANS,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontDisplay: SYSTEM_SANS,
+    baseSize: "15px",
+    lineHeight: "1.58",
+    letterSpacing: "0",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.5rem",
+    density: "comfortable",
+  },
+  componentStyles: {
+    backdrop: {
+      baseBlendMode: "normal",
+      fillerOpacity: "0",
+      fillerBlendMode: "normal",
+    },
+    card: {
+      background: "#ffffff",
+      boxShadow: "0 1px 2px rgba(16, 24, 40, 0.06)",
+    },
+    header: {
+      background: "rgba(255, 255, 255, 0.94)",
+      brandColor: "#111827",
+      brandBlendMode: "normal",
+    },
+    sidebar: {
+      background: "rgba(255, 255, 255, 0.96)",
+    },
+    tab: {
+      clipPath: "none",
+    },
+  },
+  colorOverrides: {
+    card: "#ffffff",
+    cardForeground: "#18202a",
+    popover: "#ffffff",
+    popoverForeground: "#18202a",
+    primary: "#2563eb",
+    primaryForeground: "#ffffff",
+    secondary: "#eef1f5",
+    secondaryForeground: "#18202a",
+    muted: "#eef1f5",
+    mutedForeground: "#667085",
+    accent: "#dbeafe",
+    accentForeground: "#1e3a8a",
+    destructive: "#c2410c",
+    destructiveForeground: "#ffffff",
+    success: "#16803c",
+    warning: "#b7791f",
+    border: "#d7dde5",
+    input: "#cbd5e1",
+    ring: "#2563eb",
+  },
+  customCSS: `
+    body {
+      background: var(--background-base);
+      color: var(--midground-base);
+    }
+
+    .bg-black {
+      background-color: var(--background-base) !important;
+    }
+
+    .font-mondwest,
+    .font-display,
+    .font-expanded,
+    .font-compressed,
+    .font-serif {
+      font-family: var(--theme-font-sans) !important;
+    }
+
+    .font-mono,
+    .font-mono-ui,
+    code,
+    kbd,
+    pre,
+    samp {
+      font-family: var(--theme-font-mono) !important;
+    }
+
+    .uppercase {
+      text-transform: none !important;
+    }
+
+    .tracking-wide,
+    .tracking-wider,
+    .tracking-widest,
+    [class*="tracking-["] {
+      letter-spacing: 0 !important;
+    }
+
+    .blend-lighter {
+      mix-blend-mode: normal !important;
+    }
+
+    .theme-default-filler {
+      display: none !important;
+    }
+
+    small {
+      font-size: 0.875rem;
+    }
+  `,
+};
+
 export const cyberpunkTheme: DashboardTheme = {
   name: "cyberpunk",
   label: "Cyberpunk",
@@ -210,6 +330,7 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
+  "paper-mono": paperMonoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
 };

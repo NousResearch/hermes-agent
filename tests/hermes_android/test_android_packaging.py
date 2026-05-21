@@ -81,19 +81,19 @@ def test_fdroid_updatecheck_data_uses_literal_version_code_for_future_tags():
     expected_code = major * 1_000_000 + minor * 10_000 + patch * 100 + 90
     version_file = dict(
         line.split("=", 1)
-        for line in (REPO_ROOT / "fdroid/com.nousresearch.hermesagent.version")
+        for line in (REPO_ROOT / "fdroid/com.mobilefork.hermesagent.version")
         .read_text(encoding="utf-8")
         .splitlines()
         if line.strip()
     )
-    template = (REPO_ROOT / "fdroid/com.nousresearch.hermesagent.yml.template").read_text(encoding="utf-8")
+    template = (REPO_ROOT / "fdroid/com.mobilefork.hermesagent.yml.template").read_text(encoding="utf-8")
 
     assert version_file == {
         "versionName": version_name,
         "versionCode": str(expected_code),
     }
     assert "UpdateCheckMode: Tags" in template
-    assert "UpdateCheckData: fdroid/com.nousresearch.hermesagent.version|versionCode=(\\d+)|.|versionName=(.*)" in template
+    assert "UpdateCheckData: fdroid/com.mobilefork.hermesagent.version|versionCode=(\\d+)|.|versionName=(.*)" in template
 
 
 def test_android_anthropic_stub_matches_project_requirement_floor():
@@ -124,7 +124,7 @@ def test_android_runtime_requirements_pin_pre_jiter_openai_sdk():
 
 
 def test_runtime_service_enters_foreground_before_runtime_startup():
-    service = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/HermesRuntimeService.kt").read_text(encoding="utf-8")
+    service = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/HermesRuntimeService.kt").read_text(encoding="utf-8")
     start_body = service.split("private fun startOrRefreshForeground()", 1)[1].split("private fun buildNotification", 1)[0]
 
     assert start_body.index("promoteToForeground(runtime = null)") < start_body.index("HermesRuntimeManager.ensureStarted(")
@@ -177,11 +177,11 @@ def test_android_declares_shizuku_privileged_access_support():
     manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
     bridge = (
         REPO_ROOT
-        / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesPrivilegedAccessBridge.kt"
+        / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesPrivilegedAccessBridge.kt"
     ).read_text(encoding="utf-8")
     system_bridge = (
         REPO_ROOT
-        / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesSystemControlBridge.kt"
+        / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesSystemControlBridge.kt"
     ).read_text(encoding="utf-8")
 
     assert 'implementation("dev.rikka.shizuku:api:13.1.5")' in gradle
@@ -199,7 +199,7 @@ def test_android_declares_shizuku_privileged_access_support():
 
 def test_android_debug_version_code_tracks_project_semver():
     gradle = (REPO_ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
-    version_file = (REPO_ROOT / "fdroid/com.nousresearch.hermesagent.version").read_text(encoding="utf-8")
+    version_file = (REPO_ROOT / "fdroid/com.mobilefork.hermesagent.version").read_text(encoding="utf-8")
     project_metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project_version = project_metadata["project"]["version"]
     major, minor, patch = (int(part) for part in project_version.split("."))
@@ -234,4 +234,4 @@ def test_android_visual_harness_supports_wide_screenshots_and_clicks():
     assert "DEFAULT_READY_TEXT" in harness
     assert "wait_for_ui_text" in harness
     assert "No activities found" in harness
-    assert "com.nousresearch.hermesagent" in harness
+    assert "com.mobilefork.hermesagent" in harness

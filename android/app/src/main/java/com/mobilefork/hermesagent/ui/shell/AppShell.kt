@@ -1,0 +1,427 @@
+package com.mobilefork.hermesagent.ui.shell
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.mobilefork.hermesagent.R
+import com.mobilefork.hermesagent.ui.auth.AuthScreen
+import com.mobilefork.hermesagent.ui.auth.AuthViewModel
+import com.mobilefork.hermesagent.ui.boot.BootUiState
+import com.mobilefork.hermesagent.ui.chat.ChatScreen
+import com.mobilefork.hermesagent.ui.chat.ChatViewModel
+import com.mobilefork.hermesagent.ui.device.DeviceScreen
+import com.mobilefork.hermesagent.ui.device.DeviceViewModel
+import com.mobilefork.hermesagent.ui.portal.NousPortalScreen
+import com.mobilefork.hermesagent.ui.portal.NousPortalViewModel
+import com.mobilefork.hermesagent.ui.i18n.AppLanguage
+import com.mobilefork.hermesagent.ui.i18n.LocalHermesStrings
+import com.mobilefork.hermesagent.ui.i18n.hermesStringsFor
+import com.mobilefork.hermesagent.ui.settings.SettingsScreen
+import com.mobilefork.hermesagent.ui.settings.SettingsViewModel
+import com.mobilefork.hermesagent.ui.theme.HermesThemeConfig
+import com.mobilefork.hermesagent.ui.theme.HermesTheme
+
+@Composable
+fun AppShellScreen(
+    bootUiState: BootUiState,
+    onRetryHermes: () -> Unit,
+) {
+    var currentSection by rememberSaveable { mutableStateOf(AppSection.Hermes) }
+    var currentActions by remember { mutableStateOf<List<ShellActionItem>>(emptyList()) }
+    var showActionSheet by rememberSaveable { mutableStateOf(false) }
+
+    val settingsViewModel: SettingsViewModel = viewModel()
+    val settingsState by settingsViewModel.uiState.collectAsState()
+    val strings = hermesStringsFor(AppLanguage.fromTag(settingsState.languageTag))
+
+    fun setActions(actions: List<ShellActionItem>) {
+        currentActions = actions
+        if (actions.isEmpty()) {
+            showActionSheet = false
+        }
+    }
+
+    fun navigateToSection(section: AppSection) {
+        if (section == AppSection.Settings && currentSection != AppSection.Settings) {
+            settingsViewModel.reload()
+        }
+        currentSection = section
+    }
+
+    val pageBottomClearance = if (currentActions.isNotEmpty() && currentSection != AppSection.Hermes) 104.dp else 24.dp
+
+    LaunchedEffect(currentSection) {
+        setActions(emptyList())
+    }
+
+    HermesTheme(
+        config = HermesThemeConfig(
+            primaryHex = settingsState.themePrimaryHex,
+            secondaryHex = settingsState.themeSecondaryHex,
+            backgroundHex = settingsState.themeBackgroundHex,
+            surfaceHex = settingsState.themeSurfaceHex,
+            surfaceVariantHex = settingsState.themeSurfaceVariantHex,
+            cardShape = settingsState.themeCardShape,
+        ),
+    ) {
+        CompositionLocalProvider(LocalHermesStrings provides strings) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                containerColor = MaterialTheme.colorScheme.background,
+                topBar = {
+                    HermesTopBar(
+                        section = currentSection,
+                        bootUiState = bootUiState,
+                    )
+                },
+                bottomBar = {
+                    HermesBottomNavigation(
+                        currentSection = currentSection,
+                        onSelect = ::navigateToSection,
+                    )
+                },
+                floatingActionButton = {
+                    if (currentActions.isNotEmpty() && currentSection != AppSection.Hermes) {
+                        FloatingActionButton(onClick = { showActionSheet = true }) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_action_cog),
+                                contentDescription = strings.openPageActions,
+                            )
+                        }
+                    }
+                },
+            ) { innerPadding ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    when (currentSection) {
+                    AppSection.Hermes -> {
+                        val authViewModel: AuthViewModel = viewModel()
+                        val chatViewModel: ChatViewModel = viewModel()
+                        ChatScreen(
+                            modifier = Modifier.fillMaxSize(),
+                            viewModel = chatViewModel,
+                            settingsViewModel = settingsViewModel,
+                            authViewModel = authViewModel,
+                            onNavigateToSection = ::navigateToSection,
+                            onContextActionsChanged = ::setActions,
+                            onOpenContextActions = { showActionSheet = true },
+                        )
+                    }
+
+                    AppSection.Accounts -> {
+                        val authViewModel: AuthViewModel = viewModel()
+                        AuthScreen(
+                            modifier = Modifier.fillMaxSize(),
+                            viewModel = authViewModel,
+                            extraBottomSpacing = pageBottomClearance,
+                            onOpenSettings = { navigateToSection(AppSection.Settings) },
+                            onContextActionsChanged = ::setActions,
+                        )
+                    }
+
+                    AppSection.NousPortal -> {
+                        val portalViewModel: NousPortalViewModel = viewModel()
+                        NousPortalScreen(
+                            modifier = Modifier.fillMaxSize(),
+                            viewModel = portalViewModel,
+                            extraBottomSpacing = pageBottomClearance,
+                            onContextActionsChanged = ::setActions,
+                        )
+                    }
+
+                    AppSection.Device -> {
+                        val deviceViewModel: DeviceViewModel = viewModel()
+                        DeviceScreen(
+                            modifier = Modifier.fillMaxSize(),
+                            viewModel = deviceViewModel,
+                            extraBottomSpacing = pageBottomClearance,
+                            onContextActionsChanged = ::setActions,
+                        )
+                    }
+
+                    AppSection.Settings -> SettingsScreen(
+                        modifier = Modifier.fillMaxSize(),
+                        viewModel = settingsViewModel,
+                        extraBottomSpacing = pageBottomClearance,
+                        onContextActionsChanged = ::setActions,
+                    )
+                }
+            }
+
+            if (showActionSheet && currentActions.isNotEmpty()) {
+                ContextActionSheet(
+                    section = currentSection,
+                    actions = currentActions,
+                    onDismiss = { showActionSheet = false },
+                )
+            }
+        }
+    }
+}
+}
+
+@Composable
+private fun HermesTopBar(
+    section: AppSection,
+    bootUiState: BootUiState,
+) {
+    val strings = LocalHermesStrings.current
+    val subtitle = if (section == AppSection.Hermes && !bootUiState.ready) {
+        strings.runtimeSetupAndOnboarding.ifBlank { "Runtime setup and onboarding" }
+    } else {
+        section.subtitle(strings)
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        tonalElevation = 2.dp,
+    ) {
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 960.dp)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.hermes_agent_fork_logo),
+                    contentDescription = strings.hermesLogoDescription,
+                    modifier = Modifier.size(34.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = section.title(strings),
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TopBarStatusBadge(
+                        text = strings.alphaBadge,
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = MaterialTheme.colorScheme.onSecondary,
+                    )
+                    TopBarStatusBadge(
+                        text = strings.forkBadge(),
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TopBarStatusBadge(
+    text: String,
+    containerColor: Color,
+    contentColor: Color,
+) {
+    Surface(
+        color = containerColor,
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            color = contentColor,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun HermesBottomNavigation(
+    currentSection: AppSection,
+    onSelect: (AppSection) -> Unit,
+) {
+    val strings = LocalHermesStrings.current
+    NavigationBar(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding(),
+        tonalElevation = 8.dp,
+    ) {
+        AppSection.values().forEach { section ->
+            NavigationBarItem(
+                selected = currentSection == section,
+                onClick = { onSelect(section) },
+                modifier = Modifier.testTag("HermesNav${section.name}"),
+                icon = {
+                    Icon(
+                        painter = painterResource(id = section.iconRes),
+                        contentDescription = section.navigationLabel(strings),
+                    )
+                },
+                label = {
+                    Text(
+                        text = section.navigationLabel(strings),
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun HermesSetupScreen(
+    uiState: BootUiState,
+    onRetry: () -> Unit,
+    onOpenAccounts: () -> Unit,
+    onOpenPortal: () -> Unit,
+    onOpenDevice: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onContextActionsChanged: (List<ShellActionItem>) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val strings = LocalHermesStrings.current
+    LaunchedEffect(uiState.ready, uiState.error, uiState.status) {
+        onContextActionsChanged(
+            listOf(
+                ShellActionItem(
+                    label = strings.accounts.ifBlank { "Accounts" },
+                    description = "Connect Corr3xt and provider sign-ins.",
+                    iconRes = R.drawable.ic_nav_accounts,
+                    onClick = onOpenAccounts,
+                ),
+                ShellActionItem(
+                    label = strings.settings.ifBlank { "Settings" },
+                    description = "Configure provider, model, and API key.",
+                    iconRes = R.drawable.ic_nav_settings,
+                    onClick = onOpenSettings,
+                ),
+                // label = "Provider Portal"
+                ShellActionItem(
+                    label = strings.portalTitle.ifBlank { "Provider Portal" },
+                    description = "Open the portal page while Hermes boots.",
+                    iconRes = R.drawable.ic_nav_portal,
+                    onClick = onOpenPortal,
+                ),
+                // label = "Device"
+                ShellActionItem(
+                    label = strings.sectionDevice.ifBlank { "Device" },
+                    description = "Grant files, Linux tools, and phone controls.",
+                    iconRes = R.drawable.ic_nav_device,
+                    onClick = onOpenDevice,
+                ),
+            )
+        )
+    }
+
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.hermes_agent_fork_logo),
+            contentDescription = strings.hermesLogoDescription,
+            modifier = Modifier.size(72.dp),
+        )
+        Text(uiState.status, style = MaterialTheme.typography.headlineSmall)
+        if (uiState.baseUrl.isNotBlank()) {
+            Text(uiState.baseUrl, style = MaterialTheme.typography.bodySmall)
+        }
+        if (uiState.probeResult.isNotBlank()) {
+            Text(uiState.probeResult, style = MaterialTheme.typography.bodySmall)
+        }
+        if (uiState.error.isNotBlank()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                shape = MaterialTheme.shapes.large,
+            ) {
+                Text(
+                    text = uiState.error,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(14.dp),
+                )
+            }
+        }
+        Button(onClick = onRetry) {
+            Text(strings.retryHermes())
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.large,
+            tonalElevation = 1.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(strings.gettingStartedTitle(), style = MaterialTheme.typography.titleMedium)
+                Text(strings.gettingStartedStep(1))
+                Text(strings.gettingStartedStep(2))
+                Text(strings.gettingStartedStep(3))
+                Text(strings.gettingStartedStep(4))
+            }
+        }
+    }
+}

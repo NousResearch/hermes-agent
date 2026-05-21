@@ -1,5 +1,7 @@
-Hermes Agent is a mobile-first AI agent app from Nous Research for running local models and practical Android workflows on your phone.
+Hermes Agent Fork is an independent community fork for running local models and practical Android workflows on your phone.
+
+Fork status: this Android app is a fork. It is not official Nous Research or Teknium software, and it is published under the com.mobilefork.hermesagent application ID to avoid confusion with the original Hermes project.
 
 Use the app to chat with local Gemma LiteRT-LM or Qwen GGUF models, attach files, dictate by voice, and keep model downloads resumable through Android DownloadManager. A remote OpenAI-compatible provider can be configured when you want API-backed chat while local models are downloading or unavailable.
 
-Hermes includes native Android tool bridges for files, browser and portal fallback, app launch, accessibility-assisted UI actions, notifications, settings helpers, shortcuts, widgets, and automation records. The settings screens expose one-tap model downloads, local import, preferred-model selection, and offline controls so you can keep work local when needed.
+Hermes Agent Fork includes native Android tool bridges for files, browser and portal fallback, app launch, accessibility-assisted UI actions, notifications, settings helpers, shortcuts, widgets, and automation records. The settings screen repeats the fork status and exposes one-tap model downloads, local import, preferred-model selection, and offline controls so you can keep work local when needed.

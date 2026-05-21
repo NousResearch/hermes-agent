@@ -5,9 +5,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_settings_screen_wires_local_model_download_section_and_data_saver():
-    settings_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
-    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
-    app_settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AppSettingsStore.kt").read_text(encoding="utf-8")
+    settings_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    app_settings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/AppSettingsStore.kt").read_text(encoding="utf-8")
 
     assert 'LocalModelDownloadsSection(' in settings_screen
     assert 'dataSaverMode = uiState.dataSaverMode' in settings_screen
@@ -17,9 +17,9 @@ def test_settings_screen_wires_local_model_download_section_and_data_saver():
 
 
 def test_local_model_download_view_model_and_store_support_resumable_download_state():
-    downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
-    download_store = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/LocalModelDownloadStore.kt").read_text(encoding="utf-8")
-    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
+    downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
+    download_store = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/LocalModelDownloadStore.kt").read_text(encoding="utf-8")
+    download_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
 
     assert 'Saved Hugging Face token for private or gated model downloads' in downloads_view_model
     assert 'refreshDownloads()' in downloads_view_model
@@ -45,8 +45,8 @@ def test_local_model_download_view_model_and_store_support_resumable_download_st
 
 
 def test_model_catalog_prefers_verified_sub_5gb_litert_lm_mobile_models():
-    catalog = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/ModelManagerViewModel.kt").read_text(encoding="utf-8")
-    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
+    catalog = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/models/ModelManagerViewModel.kt").read_text(encoding="utf-8")
+    download_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
 
     assert 'gemma-4-e2b-litert-lm' in catalog
     assert 'litert-community/gemma-4-E2B-it-litert-lm' in catalog
@@ -83,9 +83,9 @@ def test_model_catalog_prefers_verified_sub_5gb_litert_lm_mobile_models():
 
 
 def test_local_model_download_ui_mentions_hugging_face_progress_resume_and_mobile_restart_guidance():
-    downloads_ui = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
-    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
-    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
+    downloads_ui = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+    download_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
 
     assert 'strings.localDownloadsExampleGuidance()' in downloads_ui
     assert 'strings.downloadManagerReliabilityDescription()' in downloads_ui
@@ -100,7 +100,7 @@ def test_local_model_download_ui_mentions_hugging_face_progress_resume_and_mobil
 
 
 def test_on_device_backend_preflights_required_model_extensions_before_launching_runtime():
-    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
+    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
 
     assert 'preferredCompletedDownload(context)' in backend_manager
     assert 'Download any repo or file and mark it as preferred' in backend_manager
@@ -114,7 +114,7 @@ def test_on_device_backend_preflights_required_model_extensions_before_launching
 
 
 def test_runtime_manager_rechecks_local_backend_instead_of_returning_stale_remote_cache():
-    runtime_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/HermesRuntimeManager.kt").read_text(encoding="utf-8")
+    runtime_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/HermesRuntimeManager.kt").read_text(encoding="utf-8")
 
     assert 'val selectedLocalBackend = BackendKind.fromPersistedValue(settings.onDeviceBackend)' in runtime_manager
     assert 'selectedLocalBackend == BackendKind.NONE' in runtime_manager
@@ -126,7 +126,7 @@ def test_runtime_manager_rechecks_local_backend_instead_of_returning_stale_remot
 
 
 def test_litert_runtime_rejects_web_task_flatbuffers_before_engine_start():
-    proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
+    proxy = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
 
     assert 'validateModelArtifact(modelPath)' in proxy
     assert "header[4] == 'T'.code.toByte()" in proxy
@@ -136,7 +136,7 @@ def test_litert_runtime_rejects_web_task_flatbuffers_before_engine_start():
 
 
 def test_litert_proxy_bounds_generation_with_executor_timeout_and_cancel():
-    proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
+    proxy = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
 
     assert 'Executors.newSingleThreadExecutor()' in proxy
     assert 'conversation.sendMessage(promptMessage, extraContext)' in proxy
@@ -150,8 +150,8 @@ def test_litert_proxy_bounds_generation_with_executor_timeout_and_cancel():
 
 
 def test_litert_proxy_attempts_gpu_on_real_arm_devices_with_cpu_fallback():
-    proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
-    hardware_profile = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAndroidHardwareProfile.kt").read_text(encoding="utf-8")
+    proxy = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
+    hardware_profile = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesAndroidHardwareProfile.kt").read_text(encoding="utf-8")
 
     assert 'val openClAvailable = hasLoadableOpenClLibrary()' in proxy
     assert 'val gpuPolicy = gpuBackendPolicy(context, openClAvailable)' in proxy
@@ -193,7 +193,7 @@ def test_litert_proxy_attempts_gpu_on_real_arm_devices_with_cpu_fallback():
 
 
 def test_on_device_backend_applies_edge_gallery_model_defaults_for_gemma_and_qwen():
-    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
+    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
 
     assert 'maxTokens = 4000' in backend_manager
     assert 'maxContextLength = 32000' in backend_manager
@@ -213,7 +213,7 @@ def test_litert_proxy_requests_optional_opencl_native_library_for_adreno():
 
 
 def test_native_tool_loop_allows_long_file_generation_prompts():
-    native_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    native_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
 
     assert 'timeoutMs: Long = NATIVE_TOOL_GENERATION_TIMEOUT_MS' in native_client
     assert '.put("timeout_ms", timeoutMs)' in native_client
@@ -231,8 +231,8 @@ def test_native_tool_loop_allows_long_file_generation_prompts():
 
 
 def test_native_tool_loop_has_structured_file_write_tool():
-    native_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    workspace_file_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesWorkspaceFileBridge.kt").read_text(encoding="utf-8")
+    native_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    workspace_file_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesWorkspaceFileBridge.kt").read_text(encoding="utf-8")
 
     assert '"file_write_tool", "write_file", "file_tool" -> executeFileWriteTool(toolCall)' in native_client
     assert '.put("name", "file_write_tool")' in native_client
@@ -243,7 +243,7 @@ def test_native_tool_loop_has_structured_file_write_tool():
 
 
 def test_native_android_shell_tool_prefers_system_commands_over_noexec_prefix():
-    shell_tool = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/NativeAndroidShellTool.kt").read_text(encoding="utf-8")
+    shell_tool = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/NativeAndroidShellTool.kt").read_text(encoding="utf-8")
 
     assert 'val shellPath = "/system/bin/sh"' in shell_tool
     assert '"/system/bin",' in shell_tool
@@ -251,8 +251,8 @@ def test_native_android_shell_tool_prefers_system_commands_over_noexec_prefix():
 
 
 def test_release_build_recovers_existing_model_files_without_run_as_access():
-    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
-    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
+    download_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
+    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
 
     assert 'importExistingModelFiles(' in download_manager
     assert 'repairPreferredDownload(store, refreshed)' in download_manager
@@ -264,7 +264,7 @@ def test_release_build_recovers_existing_model_files_without_run_as_access():
 
 
 def test_portal_screen_exposes_fullscreen_and_minimize_controls():
-    portal = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/portal/NousPortalScreen.kt").read_text(encoding="utf-8")
+    portal = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/portal/NousPortalScreen.kt").read_text(encoding="utf-8")
 
     assert 'Full screen portal' in portal
     assert 'Minimize portal' in portal

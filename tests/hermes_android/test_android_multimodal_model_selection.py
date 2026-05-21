@@ -20,11 +20,11 @@ def test_android_embedded_python_runtime_is_upgraded_to_313_in_ci_and_gradle():
 
 
 def test_settings_model_selection_uses_one_tap_cards_without_dropdowns():
-    settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
-    presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
-    downloads = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
-    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
-    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    presets = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
+    downloads = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
+    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
     assert 'ExposedDropdownMenuBox' not in settings
     assert 'DropdownMenu' not in settings
@@ -52,15 +52,15 @@ def test_settings_model_selection_uses_one_tap_cards_without_dropdowns():
 
 
 def test_chat_multimodal_request_path_attaches_images_as_openai_content_parts():
-    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
-    chat_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatViewModel.kt").read_text(encoding="utf-8")
-    api_models = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/api/HermesApiModels.kt").read_text(encoding="utf-8")
-    native_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+    chat_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatViewModel.kt").read_text(encoding="utf-8")
+    api_models = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/api/HermesApiModels.kt").read_text(encoding="utf-8")
+    native_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
 
     assert 'ActivityResultContracts.OpenDocument()' in chat_screen
     assert 'imageLauncher.launch(arrayOf("image/*"))' in chat_screen
     assert 'attachImage(uri.toString())' in chat_screen
-    assert 'data class ChatAttachment' in (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatState.kt").read_text(encoding="utf-8")
+    assert 'data class ChatAttachment' in (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatState.kt").read_text(encoding="utf-8")
     assert 'ChatContentPart(' in chat_view_model
     assert 'type = "image_url"' in chat_view_model
     assert 'data:$mimeType;base64,' in chat_view_model
@@ -70,8 +70,8 @@ def test_chat_multimodal_request_path_attaches_images_as_openai_content_parts():
 
 
 def test_litert_lm_proxy_accepts_image_content_for_vision_models_and_rejects_text_only_models():
-    proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
-    backend = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
+    proxy = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
+    backend = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
 
     assert 'Content.ImageBytes(Base64.decode' in proxy
     assert 'Content.ImageFile' in proxy
@@ -85,7 +85,7 @@ def test_litert_lm_proxy_accepts_image_content_for_vision_models_and_rejects_tex
     assert '"gemma-3n" in lower' in backend
     assert '"gemma3-4b" in lower' in backend
 
-    matrix_test = (REPO_ROOT / "android/app/src/androidTest/java/com/nousresearch/hermesagent/LiteRtLmModelMatrixInstrumentedTest.kt").read_text(encoding="utf-8")
+    matrix_test = (REPO_ROOT / "android/app/src/androidTest/java/com/mobilefork/hermesagent/LiteRtLmModelMatrixInstrumentedTest.kt").read_text(encoding="utf-8")
     assert 'provisionedVisionLiteRtLmModelDescribesImageLocally' in matrix_test
     assert 'provisionedTextOnlyLiteRtLmModelRejectsImageRequestsClearly' in matrix_test
     assert 'image input requires a LiteRT-LM model started with image support' in matrix_test

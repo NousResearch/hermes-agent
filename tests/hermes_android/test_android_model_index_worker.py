@@ -26,14 +26,14 @@ def test_cloudflare_worker_scans_unsloth_gguf_and_exposes_http_get_fallback():
 
 
 def test_android_verifies_signed_catalog_and_queues_dropdown_selection():
-    client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HuggingFaceModelIndexClient.kt").read_text(encoding="utf-8")
+    client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/models/HuggingFaceModelIndexClient.kt").read_text(encoding="utf-8")
     downloads_view_model = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt"
     ).read_text(encoding="utf-8")
     downloads_section = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsSection.kt"
     ).read_text(encoding="utf-8")
-    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
     assert "https://hf-model-index-worker.adybag14.workers.dev/models.json" in client
     assert "PUBLIC_JWK_JSON" in client

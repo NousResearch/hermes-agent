@@ -1,0 +1,369 @@
+package com.mobilefork.hermesagent.backend
+
+import android.content.Context
+import android.os.Looper
+import android.os.Process
+import com.mobilefork.hermesagent.data.AppSettingsStore
+import com.mobilefork.hermesagent.data.LocalModelDownloadRecord
+import com.mobilefork.hermesagent.data.LocalModelDownloadStore
+import com.mobilefork.hermesagent.models.HermesModelDownloadManager
+import java.io.File
+import java.util.Locale
+
+enum class BackendKind(val persistedValue: String) {
+    NONE("none"),
+    LLAMA_CPP("llama.cpp"),
+    LITERT_LM("litert-lm"),
+    AICORE("aicore");
+
+    companion object {
+        fun fromPersistedValue(value: String?): BackendKind {
+            val normalized = value.orEmpty().trim().lowercase()
+            return entries.firstOrNull { it.persistedValue == normalized } ?: NONE
+        }
+    }
+}
+
+data class LocalBackendStatus(
+    val backendKind: BackendKind,
+    val started: Boolean,
+    val baseUrl: String = "",
+    val modelName: String = "",
+    val sourceModelPath: String = "",
+    val statusMessage: String = "",
+)
+
+object OnDeviceBackendManager {
+    const val LLAMA_CPP_PORT = 15435
+    const val LITERT_LM_PORT = 15436
+
+    @Volatile
+    private var currentStatus: LocalBackendStatus = LocalBackendStatus(
+        backendKind = BackendKind.NONE,
+        started = false,
+        statusMessage = "Remote provider mode",
+    )
+
+    fun currentStatus(): LocalBackendStatus = currentStatus
+
+    @Synchronized
+    fun ensureConfigured(context: Context, backendValue: String): LocalBackendStatus {
+        return withBackgroundPriorityIfNeeded {
+            when (BackendKind.fromPersistedValue(backendValue)) {
+                BackendKind.NONE -> {
+                    stopAll()
+                    currentStatus = LocalBackendStatus(
+                        backendKind = BackendKind.NONE,
+                        started = false,
+                        statusMessage = "Remote provider mode",
+                    )
+                    currentStatus
+                }
+                BackendKind.LLAMA_CPP -> ensureLlamaCpp(context)
+                BackendKind.LITERT_LM -> ensureLiteRtLm(context)
+                BackendKind.AICORE -> ensureAICore(context)
+            }
+        }
+    }
+
+    @Synchronized
+    fun stopAll() {
+        LlamaCppServerController.stop()
+        LiteRtLmOpenAiProxy.stop()
+        currentStatus = LocalBackendStatus(
+            backendKind = BackendKind.NONE,
+            started = false,
+            statusMessage = "Local on-device backends stopped",
+        )
+    }
+
+    fun preferredDownloadSummary(context: Context, backendValue: String): String {
+        val preferred = preferredCompletedDownload(context)
+        return if (preferred != null) {
+            "Preferred local model: ${preferred.title}"
+        } else {
+            "No preferred local model is selected yet. Download any repo or file and mark it as preferred to let the selected backend try it."
+        }
+    }
+
+    private fun ensureLlamaCpp(context: Context): LocalBackendStatus {
+        LiteRtLmOpenAiProxy.stop()
+        val preferred = preferredCompletedDownload(context)
+            ?: run {
+                LlamaCppServerController.stop()
+                return LocalBackendStatus(
+                    backendKind = BackendKind.LLAMA_CPP,
+                    started = false,
+                    statusMessage = "No preferred local model is ready for llama.cpp yet",
+                ).also { currentStatus = it }
+            }
+
+        val modelFile = File(preferred.destinationPath)
+        if (!modelFile.isFile) {
+            LlamaCppServerController.stop()
+            return LocalBackendStatus(
+                backendKind = BackendKind.LLAMA_CPP,
+                started = false,
+                statusMessage = "Preferred local model is missing on disk: ${preferred.destinationPath}",
+                sourceModelPath = preferred.destinationPath,
+            ).also { currentStatus = it }
+        }
+        if (!preferred.matchesBackendArtifact(BackendKind.LLAMA_CPP)) {
+            LlamaCppServerController.stop()
+            return incompatiblePreferredDownloadStatus(preferred, BackendKind.LLAMA_CPP)
+        }
+
+        val status = LlamaCppServerController.ensureRunning(
+            context = context,
+            modelPath = modelFile.absolutePath,
+            requestedModelName = preferred.title,
+            port = LLAMA_CPP_PORT,
+        )
+        currentStatus = status
+        return status
+    }
+
+    private fun ensureLiteRtLm(context: Context): LocalBackendStatus {
+        LlamaCppServerController.stop()
+        val preferred = preferredCompletedDownload(context)
+            ?: run {
+                LiteRtLmOpenAiProxy.stop()
+                return LocalBackendStatus(
+                    backendKind = BackendKind.LITERT_LM,
+                    started = false,
+                    statusMessage = "No preferred local model is ready for LiteRT-LM yet",
+                ).also { currentStatus = it }
+            }
+
+        val modelFile = File(preferred.destinationPath)
+        if (!modelFile.isFile) {
+            LiteRtLmOpenAiProxy.stop()
+            return LocalBackendStatus(
+                backendKind = BackendKind.LITERT_LM,
+                started = false,
+                statusMessage = "Preferred local model is missing on disk: ${preferred.destinationPath}",
+                sourceModelPath = preferred.destinationPath,
+            ).also { currentStatus = it }
+        }
+        if (!preferred.matchesBackendArtifact(BackendKind.LITERT_LM)) {
+            LiteRtLmOpenAiProxy.stop()
+            return incompatiblePreferredDownloadStatus(preferred, BackendKind.LITERT_LM)
+        }
+
+        val status = LiteRtLmOpenAiProxy.ensureRunning(
+            context = context,
+            modelPath = modelFile.absolutePath,
+            requestedModelName = preferred.title,
+            port = LITERT_LM_PORT,
+            inferenceConfig = inferenceConfigFor(preferred, speculativeDecodingModeFor(context)),
+        )
+        currentStatus = status
+        return status
+    }
+
+    /**
+     * Ensure AICore backend is running with GPU/CPU fallback.
+     * AICore requires API 35+ and NPU hardware; gracefully falls back to GPU/CPU.
+     */
+    private fun ensureAICore(context: Context): LocalBackendStatus {
+        LlamaCppServerController.stop()
+        val preferred = preferredCompletedDownload(context)
+            ?: run {
+                LiteRtLmOpenAiProxy.stop()
+                return LocalBackendStatus(
+                    backendKind = BackendKind.AICORE,
+                    started = false,
+                    statusMessage = "No preferred local model is ready for AICore yet",
+                ).also { currentStatus = it }
+            }
+
+        val modelFile = java.io.File(preferred.destinationPath)
+        if (!modelFile.isFile) {
+            LiteRtLmOpenAiProxy.stop()
+            return LocalBackendStatus(
+                backendKind = BackendKind.AICORE,
+                started = false,
+                statusMessage = "Preferred local model is missing on disk: ${preferred.destinationPath}",
+                sourceModelPath = preferred.destinationPath,
+            ).also { currentStatus = it }
+        }
+        if (!preferred.matchesBackendArtifact(BackendKind.AICORE)) {
+            LiteRtLmOpenAiProxy.stop()
+            return incompatiblePreferredDownloadStatus(preferred, BackendKind.AICORE)
+        }
+
+        // AICore uses same port as LiteRT-LM but with AICore-appropriate inference config
+        val inferenceConfig = AICoreBackendController.createAICoreInferenceConfig()
+            .copy(
+                supportImage = preferred.supportsImageInput(),
+                supportAudio = preferred.supportsAudioInput(),
+            )
+        val status = LiteRtLmOpenAiProxy.ensureRunning(
+            context = context,
+            modelPath = modelFile.absolutePath,
+            requestedModelName = preferred.title,
+            port = AICoreBackendController.AICORE_PORT,
+            inferenceConfig = inferenceConfig,
+        )
+
+        // Update status message to reflect actual backend used
+        val actualBackend = AICoreBackendController.getBackendDescription()
+        val finalStatus = status.copy(
+            backendKind = BackendKind.AICORE,
+            statusMessage = "AICore mode active: $actualBackend",
+        )
+        currentStatus = finalStatus
+        return finalStatus
+    }
+
+    private fun preferredCompletedDownload(context: Context): LocalModelDownloadRecord? {
+        val store = LocalModelDownloadStore(context)
+        val refreshed = HermesModelDownloadManager.refreshDownloads(context, store)
+        val preferredId = store.preferredDownloadId().ifBlank { return null }
+        val preferred = refreshed.firstOrNull { it.id == preferredId } ?: store.findDownload(preferredId) ?: return null
+        return preferred.takeIf { it.status == "completed" }
+    }
+
+    private fun LocalModelDownloadRecord.matchesBackendArtifact(backendKind: BackendKind): Boolean {
+        val lower = destinationPath.lowercase(Locale.US)
+        return when (backendKind) {
+            BackendKind.LLAMA_CPP -> lower.endsWith(".gguf")
+            BackendKind.LITERT_LM -> isLiteRtLmArtifactPath(lower)
+            BackendKind.AICORE -> isLiteRtLmArtifactPath(lower)
+            BackendKind.NONE -> true
+        }
+    }
+
+    private fun isLiteRtLmArtifactPath(lowerPath: String): Boolean {
+        return lowerPath.endsWith(".litertlm") ||
+            (lowerPath.endsWith(".task") && !isLiteRtWebTaskArtifact(lowerPath))
+    }
+
+    private fun isLiteRtWebTaskArtifact(lowerPath: String): Boolean {
+        return lowerPath.endsWith(".task") && (
+            lowerPath.endsWith("-web.task") ||
+                lowerPath.endsWith("_web.task") ||
+                "-web." in lowerPath ||
+                "_web." in lowerPath ||
+                "/web/" in lowerPath
+            )
+    }
+
+    private fun inferenceConfigFor(
+        preferred: LocalModelDownloadRecord,
+        speculativeDecodingMode: LiteRtLmOpenAiProxy.SpeculativeDecodingMode =
+            LiteRtLmOpenAiProxy.SpeculativeDecodingMode.AUTO,
+    ): LiteRtLmOpenAiProxy.InferenceConfig {
+        val lower = preferred.modelIdentityText()
+        val modelDefaults = when {
+            "gemma-4" in lower || "gemma4" in lower -> LiteRtLmOpenAiProxy.InferenceConfig(
+                topK = 64,
+                topP = 0.95f,
+                temperature = 1.0f,
+                maxTokens = 4000,
+                maxContextLength = 32000,
+            )
+            "qwen3-0.6b" in lower || "qwen3-0-6b" in lower -> LiteRtLmOpenAiProxy.InferenceConfig(
+                topK = 64,
+                topP = 0.95f,
+                temperature = 1.0f,
+                maxTokens = 1024,
+            )
+            "qwen2.5-1.5b" in lower || "qwen2-5-1-5b" in lower -> LiteRtLmOpenAiProxy.InferenceConfig(
+                topK = 20,
+                topP = 0.8f,
+                temperature = 0.7f,
+                maxTokens = 4096,
+            )
+            else -> LiteRtLmOpenAiProxy.InferenceConfig()
+        }
+        return LiteRtLmOpenAiProxy.InferenceConfig(
+            topK = modelDefaults.topK,
+            topP = modelDefaults.topP,
+            temperature = modelDefaults.temperature,
+            maxTokens = modelDefaults.maxTokens,
+            maxContextLength = modelDefaults.maxContextLength,
+            supportImage = preferred.supportsImageInput(),
+            supportAudio = preferred.supportsAudioInput(),
+            speculativeDecodingMode = speculativeDecodingMode,
+        )
+    }
+
+    private fun speculativeDecodingModeFor(context: Context): LiteRtLmOpenAiProxy.SpeculativeDecodingMode {
+        return when (AppSettingsStore(context).load().liteRtLmSpeculativeDecodingMode.lowercase(Locale.US)) {
+            "enabled", "on", "force" -> LiteRtLmOpenAiProxy.SpeculativeDecodingMode.ENABLED
+            "disabled", "off" -> LiteRtLmOpenAiProxy.SpeculativeDecodingMode.DISABLED
+            else -> LiteRtLmOpenAiProxy.SpeculativeDecodingMode.AUTO
+        }
+    }
+
+    private fun LocalModelDownloadRecord.supportsImageInput(): Boolean {
+        val lower = modelIdentityText()
+        return "gemma-4" in lower ||
+            "gemma4" in lower ||
+            "gemma-3n" in lower ||
+            "gemma3-4b" in lower ||
+            "gemma-3-4b" in lower ||
+            "vision" in lower ||
+            "image-text" in lower
+    }
+
+    private fun LocalModelDownloadRecord.supportsAudioInput(): Boolean {
+        val lower = modelIdentityText()
+        return "gemma-4" in lower || "gemma4" in lower || "gemma-3n" in lower || "audio" in lower
+    }
+
+    private fun LocalModelDownloadRecord.modelIdentityText(): String {
+        return listOf(title, repoOrUrl, filePath, destinationFileName, destinationPath)
+            .joinToString(" ")
+            .lowercase(Locale.US)
+    }
+
+    private inline fun <T> withBackgroundPriorityIfNeeded(block: () -> T): T {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return block()
+        }
+        val tid = Process.myTid()
+        val previousPriority = runCatching { Process.getThreadPriority(tid) }
+            .getOrDefault(Process.THREAD_PRIORITY_DEFAULT)
+        runCatching { Process.setThreadPriority(tid, Process.THREAD_PRIORITY_BACKGROUND) }
+        return try {
+            block()
+        } finally {
+            runCatching { Process.setThreadPriority(tid, previousPriority) }
+        }
+    }
+
+    private fun incompatiblePreferredDownloadStatus(
+        preferred: LocalModelDownloadRecord,
+        backendKind: BackendKind,
+    ): LocalBackendStatus {
+        val lower = preferred.destinationPath.lowercase(Locale.US)
+        if (backendKind in setOf(BackendKind.LITERT_LM, BackendKind.AICORE) && isLiteRtWebTaskArtifact(lower)) {
+            return LocalBackendStatus(
+                backendKind = backendKind,
+                started = false,
+                sourceModelPath = preferred.destinationPath,
+                statusMessage = "Preferred local model ${preferred.destinationFileName} is a web/browser .task FlatBuffer, not an Android LiteRT-LM bundle. Remove it and download the .litertlm artifact instead.",
+            ).also { currentStatus = it }
+        }
+        val requiredExtension = when (backendKind) {
+            BackendKind.LLAMA_CPP -> ".gguf"
+            BackendKind.LITERT_LM -> ".litertlm or .task"
+            BackendKind.AICORE -> ".litertlm or .task"
+            BackendKind.NONE -> "supported"
+        }
+        val backendLabel = when (backendKind) {
+            BackendKind.LLAMA_CPP -> "llama.cpp"
+            BackendKind.LITERT_LM -> "LiteRT-LM"
+            BackendKind.AICORE -> "AICore (NPU)"
+            BackendKind.NONE -> "the selected backend"
+        }
+        return LocalBackendStatus(
+            backendKind = backendKind,
+            started = false,
+            sourceModelPath = preferred.destinationPath,
+            statusMessage = "Preferred local model ${preferred.destinationFileName} is not a $requiredExtension file, so $backendLabel cannot load it. Download a $requiredExtension artifact and mark it as preferred first.",
+        ).also { currentStatus = it }
+    }
+}

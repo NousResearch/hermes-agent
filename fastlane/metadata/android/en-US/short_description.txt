@@ -1,1 +1,1 @@
-Run local AI models with chat, files, voice, and Android tools
+Independent fork for local AI chat and Android workflows

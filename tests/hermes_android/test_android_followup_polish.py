@@ -5,15 +5,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_copy():
-    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
-    chat = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
-    auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
-    auth_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
-    device = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")
-    tool_profile = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/ToolProfileCard.kt").read_text(encoding="utf-8")
-    settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
-    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
-    portal = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/portal/NousPortalScreen.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+    chat = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+    auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
+    auth_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
+    device = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")
+    tool_profile = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/ToolProfileCard.kt").read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
+    portal = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/portal/NousPortalScreen.kt").read_text(encoding="utf-8")
 
     for key in [
         'chatCommandsTip',
@@ -63,10 +63,10 @@ def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_
 
 
 def test_settings_backend_toggles_sync_with_download_runtime_target_controls():
-    settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
-    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
-    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
-    downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
+    downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
 
     assert 'selectedBackend = uiState.onDeviceBackend' in settings
     assert 'onRuntimeFlavorSelected = viewModel::syncOnDeviceBackendWithRuntimeFlavor' in settings
@@ -84,8 +84,8 @@ def test_settings_backend_toggles_sync_with_download_runtime_target_controls():
 
 
 def test_settings_secret_store_initialization_stays_off_startup_main_thread():
-    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
-    secure_store = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/SecureSecretsStore.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    secure_store = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/SecureSecretsStore.kt").read_text(encoding="utf-8")
     initial_state_block = settings_view_model.split("private fun loadInitialState()", 1)[1].split("fun reload()", 1)[0]
 
     assert "private val secretsStore by lazy" in settings_view_model
@@ -104,16 +104,16 @@ def test_settings_secret_store_initialization_stays_off_startup_main_thread():
 
 
 def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
-    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
-    downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
-    settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
-    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
-    app_settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AppSettingsStore.kt").read_text(encoding="utf-8")
-    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
-    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
-    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
-    litert_proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
-    hardware_profile = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAndroidHardwareProfile.kt").read_text(encoding="utf-8")
+    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
+    downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    app_settings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/AppSettingsStore.kt").read_text(encoding="utf-8")
+    backend_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+    download_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
+    litert_proxy = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
+    hardware_profile = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesAndroidHardwareProfile.kt").read_text(encoding="utf-8")
     manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
     gradle = (REPO_ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
 
@@ -194,9 +194,9 @@ def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
 
 
 def test_android_diagnostics_exposes_agent_environment_report_for_kai_parity():
-    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
-    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
 
     assert '"agent_environment_report"' in diagnostics_bridge
     assert 'agentEnvironmentReportJson(appContext)' in diagnostics_bridge
@@ -226,10 +226,10 @@ def test_android_diagnostics_exposes_agent_environment_report_for_kai_parity():
 
 
 def test_android_diagnostics_exposes_agent_observation_dashboard_for_gemma_signal_cards():
-    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
-    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
-    quick_actions = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    quick_actions = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
 
     assert '"agent_observation_report"' in diagnostics_bridge
     assert 'agentObservationReportJson(appContext)' in diagnostics_bridge
@@ -254,9 +254,9 @@ def test_android_diagnostics_exposes_agent_observation_dashboard_for_gemma_signa
 
 
 def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_cards():
-    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
-    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
 
     assert '"signal_awareness_report"' in diagnostics_bridge
     assert 'signalAwarenessReportJson(appContext)' in diagnostics_bridge
@@ -285,10 +285,10 @@ def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_ca
 
 
 def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy_cards():
-    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
-    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
-    quick_actions = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    quick_actions = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
 
     assert '"soc_compatibility_report"' in diagnostics_bridge
     assert 'socCompatibilityReportJson(appContext)' in diagnostics_bridge
@@ -330,7 +330,7 @@ def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy
 
 
 def test_litert_proxy_exposes_in_process_current_health_for_runtime_cards():
-    litert_proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
+    litert_proxy = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
 
     assert 'internal fun currentHealthJson()' in litert_proxy
     assert 'fun healthJson(): JSONObject' in litert_proxy
@@ -341,9 +341,9 @@ def test_litert_proxy_exposes_in_process_current_health_for_runtime_cards():
 
 
 def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan_policy_cards():
-    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
-    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
     workflow = (REPO_ROOT / ".github/workflows/android.yml").read_text(encoding="utf-8")
 
     assert '"wifi_analyzer_report"' in diagnostics_bridge
@@ -404,9 +404,9 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
 
 
 def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and_scan_policy_cards():
-    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
-    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
 
     assert '"bluetooth_analyzer_report"' in diagnostics_bridge
     assert '"bluetooth_signal_history"' in diagnostics_bridge
@@ -449,9 +449,9 @@ def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and
 
 
 def test_android_diagnostics_exposes_sensor_analyzer_report_for_motion_and_sampling_policy_cards():
-    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
-    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
 
     assert '"sensor_analyzer_report"' in diagnostics_bridge
     assert '"motion_sensor_history"' in diagnostics_bridge
@@ -485,7 +485,7 @@ def test_android_diagnostics_exposes_sensor_analyzer_report_for_motion_and_sampl
 
 
 def test_android_linux_subsystem_reapplies_executable_bits_before_reusing_cached_prefix():
-    bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesLinuxSubsystemBridge.kt").read_text(encoding="utf-8")
+    bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesLinuxSubsystemBridge.kt").read_text(encoding="utf-8")
     linux_subsystem = (REPO_ROOT / "hermes_android/linux_subsystem.py").read_text(encoding="utf-8")
     android_environment = (REPO_ROOT / "tools/environments/android_linux.py").read_text(encoding="utf-8")
 
@@ -511,10 +511,10 @@ def test_android_intent_bridge_can_open_generated_workspace_html_with_fileprovid
     manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
     paths = (REPO_ROOT / "android/app/src/main/res/xml/hermes_file_paths.xml").read_text(encoding="utf-8")
     intent_bridge = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesIntentBridge.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesIntentBridge.kt"
     ).read_text(encoding="utf-8")
     automation_test = (
-        REPO_ROOT / "android/app/src/androidTest/java/com/nousresearch/hermesagent/HermesAutomationInstrumentedTest.kt"
+        REPO_ROOT / "android/app/src/androidTest/java/com/mobilefork/hermesagent/HermesAutomationInstrumentedTest.kt"
     ).read_text(encoding="utf-8")
 
     assert 'androidx.core.content.FileProvider' in manifest
@@ -545,7 +545,7 @@ def test_android_python_import_path_prefers_hermes_utils_before_chaquopy_require
     shared_utils = (REPO_ROOT / "hermes_cli/shared_utils.py").read_text(encoding="utf-8")
     native_smoke = (
         REPO_ROOT
-        / "android/app/src/androidTest/java/com/nousresearch/hermesagent/NativeAgentRuntimeSmokeTest.kt"
+        / "android/app/src/androidTest/java/com/mobilefork/hermesagent/NativeAgentRuntimeSmokeTest.kt"
     ).read_text(encoding="utf-8")
 
     assert "def prefer_hermes_package_root()" in python_path
@@ -560,8 +560,8 @@ def test_android_python_import_path_prefers_hermes_utils_before_chaquopy_require
 
 
 def test_hugging_face_inspect_download_flow_runs_off_main_thread_and_supports_repo_page_resolution():
-    downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
-    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
+    downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
+    download_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
 
     assert 'Dispatchers.IO' in downloads_view_model
     assert 'withContext(Dispatchers.IO)' in downloads_view_model
@@ -574,16 +574,16 @@ def test_hugging_face_inspect_download_flow_runs_off_main_thread_and_supports_re
 
 
 def test_chat_composer_matches_round_ui_spec():
-    chat = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+    chat = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
 
     assert 'RoundedCornerShape(28.dp)' in chat
     assert 'shape = RoundedCornerShape(28.dp)' in chat
 
 
 def test_overlay_scene_uses_screen_aware_window_bounds():
-    overlay = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesOverlaySceneBridge.kt").read_text(encoding="utf-8")
+    overlay = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesOverlaySceneBridge.kt").read_text(encoding="utf-8")
     automation_test = (
-        REPO_ROOT / "android/app/src/test/java/com/nousresearch/hermesagent/device/HermesAutomationStoreTest.kt"
+        REPO_ROOT / "android/app/src/test/java/com/mobilefork/hermesagent/device/HermesAutomationStoreTest.kt"
     ).read_text(encoding="utf-8")
 
     assert "val layoutMetrics = resolvedLayoutMetrics(appContext, payload)" in overlay
@@ -608,10 +608,10 @@ def test_overlay_scene_uses_screen_aware_window_bounds():
 
 def test_provider_setup_webview_errors_show_browser_copy_fallback():
     activity = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesProviderSetupWebActivity.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesProviderSetupWebActivity.kt"
     ).read_text(encoding="utf-8")
     activity_test = (
-        REPO_ROOT / "android/app/src/androidTest/java/com/nousresearch/hermesagent/ProviderSetupWebActivityInstrumentedTest.kt"
+        REPO_ROOT / "android/app/src/androidTest/java/com/mobilefork/hermesagent/ProviderSetupWebActivityInstrumentedTest.kt"
     ).read_text(encoding="utf-8")
 
     assert "onReceivedError" in activity
@@ -631,9 +631,9 @@ def test_provider_setup_webview_errors_show_browser_copy_fallback():
 
 
 def test_device_backend_exposes_deeper_radio_control_actions_and_status():
-    bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesSystemControlBridge.kt").read_text(encoding="utf-8")
-    device = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")
-    state_writer = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/DeviceStateWriter.kt").read_text(encoding="utf-8")
+    bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesSystemControlBridge.kt").read_text(encoding="utf-8")
+    device = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")
+    state_writer = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/DeviceStateWriter.kt").read_text(encoding="utf-8")
 
     for action in [
         'open_mobile_network_settings',
@@ -651,11 +651,11 @@ def test_device_backend_exposes_deeper_radio_control_actions_and_status():
 
 
 def test_android_automation_exposes_operator_standby_history_for_remote_dispatch():
-    bridge = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationBridge.kt").read_text(encoding="utf-8")
-    store = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationStore.kt").read_text(encoding="utf-8")
-    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceViewModel.kt").read_text(encoding="utf-8")
-    device = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")
+    bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesAutomationBridge.kt").read_text(encoding="utf-8")
+    store = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesAutomationStore.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/device/DeviceViewModel.kt").read_text(encoding="utf-8")
+    device = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")
 
     assert 'HermesAutomationRunEvent' in store
     assert 'KEY_RUN_EVENTS' in store
@@ -738,19 +738,19 @@ def test_android_automation_exposes_operator_standby_history_for_remote_dispatch
 
 def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
     controller = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAccessibilityController.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesAccessibilityController.kt"
     ).read_text(encoding="utf-8")
     ui_bridge = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAccessibilityUiBridge.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesAccessibilityUiBridge.kt"
     ).read_text(encoding="utf-8")
     chat_client = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt"
     ).read_text(encoding="utf-8")
     opengui_parser = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/OpenGuiActionCompat.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/OpenGuiActionCompat.kt"
     ).read_text(encoding="utf-8")
     app_bridge = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAppControlBridge.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesAppControlBridge.kt"
     ).read_text(encoding="utf-8")
     accessibility_config = (
         REPO_ROOT / "android/app/src/main/res/xml/hermes_accessibility_service.xml"
@@ -889,10 +889,10 @@ def test_android_ui_tool_has_opengui_style_coordinate_gesture_parity():
 
 def test_android_ui_tool_reviews_repeated_opengui_actions_before_execution():
     review = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/OpenGuiExecutionReview.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/OpenGuiExecutionReview.kt"
     ).read_text(encoding="utf-8")
     review_test = (
-        REPO_ROOT / "android/app/src/test/java/com/nousresearch/hermesagent/ui/chat/OpenGuiExecutionReviewTest.kt"
+        REPO_ROOT / "android/app/src/test/java/com/mobilefork/hermesagent/ui/chat/OpenGuiExecutionReviewTest.kt"
     ).read_text(encoding="utf-8")
 
     assert 'ACTION_REPETITION_THRESHOLD = 5' in review
@@ -912,7 +912,7 @@ def test_android_ui_tool_reviews_repeated_opengui_actions_before_execution():
     assert 'detectsAlternatingScreenStateCycle' in review_test
 
     automation_bridge = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesAutomationBridge.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesAutomationBridge.kt"
     ).read_text(encoding="utf-8")
     assert '"class_name"' in automation_bridge
     assert '"className"' in automation_bridge

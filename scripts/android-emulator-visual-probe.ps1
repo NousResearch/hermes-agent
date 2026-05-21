@@ -27,7 +27,7 @@ param(
     [string]$Text,
     [int]$KeyCode = 66,
 
-    [string]$Package = "com.nousresearch.hermesagent",
+    [string]$Package = "com.mobilefork.hermesagent",
     [string]$Activity,
 
     [string]$OutDir = "artifacts/emulator-visual",

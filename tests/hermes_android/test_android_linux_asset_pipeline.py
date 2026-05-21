@@ -176,7 +176,7 @@ def test_prepare_android_linux_assets_creates_bionic_llama_server_copy(tmp_path)
 def test_android_linux_subsystem_recreates_windows_manifest_links():
     bridge = (
         REPO_ROOT
-        / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesLinuxSubsystemBridge.kt"
+        / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesLinuxSubsystemBridge.kt"
     ).read_text(encoding="utf-8")
 
     assert "normalizeAssetRelativePath(item.optString(\"path\"))" in bridge
@@ -187,7 +187,7 @@ def test_android_linux_subsystem_recreates_windows_manifest_links():
 def test_android_linux_subsystem_retries_after_app_update():
     bridge = (
         REPO_ROOT
-        / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesLinuxSubsystemBridge.kt"
+        / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesLinuxSubsystemBridge.kt"
     ).read_text(encoding="utf-8")
 
     assert 'state.optLong("app_version_code", -1L) != currentAppVersionCode' in bridge
@@ -207,11 +207,11 @@ def test_android_linux_subsystem_retries_after_app_update():
 def test_android_linux_subsystem_records_embedded_fallback_reason():
     bridge = (
         REPO_ROOT
-        / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesLinuxSubsystemBridge.kt"
+        / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesLinuxSubsystemBridge.kt"
     ).read_text(encoding="utf-8")
     llama = (
         REPO_ROOT
-        / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LlamaCppServerController.kt"
+        / "android/app/src/main/java/com/mobilefork/hermesagent/backend/LlamaCppServerController.kt"
     ).read_text(encoding="utf-8")
 
     assert "private data class ShellLaunchProbe" in bridge
@@ -223,11 +223,11 @@ def test_android_gguf_launchers_use_extracted_prefix_directory():
     gradle = (REPO_ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
     bridge = (
         REPO_ROOT
-        / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesLinuxSubsystemBridge.kt"
+        / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesLinuxSubsystemBridge.kt"
     ).read_text(encoding="utf-8")
     llama = (
         REPO_ROOT
-        / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LlamaCppServerController.kt"
+        / "android/app/src/main/java/com/mobilefork/hermesagent/backend/LlamaCppServerController.kt"
     ).read_text(encoding="utf-8")
     native_script = (REPO_ROOT / "scripts/prepare_android_native_libs.py").read_text(encoding="utf-8")
 

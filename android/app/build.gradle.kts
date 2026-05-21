@@ -91,11 +91,11 @@ fun resolvedBuildPython(): String {
 fun hermesWheelName(): String = "hermes_agent-${hermesVersionName()}-py3-none-any.whl"
 
 android {
-    namespace = "com.nousresearch.hermesagent"
+    namespace = "com.mobilefork.hermesagent"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.nousresearch.hermesagent"
+        applicationId = "com.mobilefork.hermesagent"
         minSdk = 24
         targetSdk = 35
         versionCode = hermesVersionCode()

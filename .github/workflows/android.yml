@@ -165,11 +165,11 @@ jobs:
           }
 
           android {
-              namespace = "com.nousresearch.hermesagent"
+              namespace = "com.mobilefork.hermesagent"
               compileSdk = 35
 
               defaultConfig {
-                  applicationId = "com.nousresearch.hermesagent"
+                  applicationId = "com.mobilefork.hermesagent"
                   minSdk = 26
                   targetSdk = 35
                   versionCode = 1
@@ -195,7 +195,7 @@ jobs:
 
           cat > "$work/app/src/main/AndroidManifest.xml" <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <application android:label="Hermes Agent" />
+              <application android:label="Hermes Agent Fork" />
           </manifest>
           EOF
 

@@ -14,8 +14,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-DEFAULT_PACKAGE = "com.nousresearch.hermesagent"
-DEFAULT_READY_TEXT = "Message Hermes|Settings|Hermes"
+DEFAULT_PACKAGE = "com.mobilefork.hermesagent"
+DEFAULT_READY_TEXT = "Message Hermes Fork|Settings|Hermes Fork"
 UI_DUMP_REMOTE_PATH = "/sdcard/window_dump.xml"
 
 

@@ -1,0 +1,44 @@
+# Draft fdroiddata metadata for Hermes Agent Fork.
+# Copy this to fdroiddata/metadata/com.mobilefork.hermesagent.yml, then
+# remove Disabled only after the dependency and reproducibility audit passes.
+
+Disabled: Needs F-Droid review of Chaquopy, LiteRT-LM, generated native assets, and pip/Maven dependency licensing before official submission.
+Categories:
+  - AI Chat
+License: MIT
+AuthorName: MobileFork
+SourceCode: https://github.com/adybag14-cyber/hermes-agent
+IssueTracker: https://github.com/adybag14-cyber/hermes-agent/issues
+Changelog: https://github.com/adybag14-cyber/hermes-agent/releases
+
+Name: Hermes Agent Fork
+AutoName: Hermes Agent Fork
+Summary: Independent fork for local AI chat and Android workflows
+Description: |-
+    Hermes Agent Fork is an independent community fork. It is not official Nous Research or Teknium software.
+
+    The Android app uses the com.mobilefork.hermesagent application ID to make the fork status explicit and avoid confusion with the original Hermes project.
+
+    It provides local model chat, voice input, resumable model downloads, and Android workflow tools for files, app launch, accessibility-assisted UI actions, notifications, settings helpers, shortcuts, widgets, and automation records.
+
+RepoType: git
+Repo: https://github.com/adybag14-cyber/hermes-agent.git
+
+Builds:
+  - versionName: 0.13.113
+    versionCode: 141390
+    commit: REPLACE_WITH_REBRAND_COMMIT_HASH
+    subdir: android
+    gradle:
+      - yes
+    prebuild:
+      - echo "Review generated Android Linux assets and Python packaging before enabling this recipe."
+    rm:
+      - artifacts
+      - build
+
+AutoUpdateMode: Version v%v
+UpdateCheckMode: Tags
+UpdateCheckData: fdroid/com.mobilefork.hermesagent.version|versionCode=(\d+)|.|versionName=(.*)
+CurrentVersion: 0.13.113
+CurrentVersionCode: 141390

@@ -5,8 +5,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_app_shell_has_accounts_tab_and_auth_screen():
-    app_shell = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
-    shell_models = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/ShellModels.kt").read_text(encoding="utf-8")
+    app_shell = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
+    shell_models = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/shell/ShellModels.kt").read_text(encoding="utf-8")
 
     assert 'Accounts(' in shell_models
     assert 'label = "Accounts"' in shell_models
@@ -16,10 +16,10 @@ def test_app_shell_has_accounts_tab_and_auth_screen():
 
 
 def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
-    auth_models = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AuthModels.kt").read_text(encoding="utf-8")
-    auth_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
-    app_shell = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
-    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    auth_models = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/AuthModels.kt").read_text(encoding="utf-8")
+    auth_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
+    app_shell = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
 
     for label in ["Email", "Google", "Phone", "OpenAI", "ChatGPT", "Claude", "Gemini", "Qwen Cloud", "Qwen Coding Plan", "Qwen OAuth", "Z.AI"]:
         assert label in auth_models
@@ -64,7 +64,7 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
 
 
 def test_main_activity_and_manifest_handle_auth_callbacks():
-    main_activity = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/MainActivity.kt").read_text(encoding="utf-8")
+    main_activity = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/MainActivity.kt").read_text(encoding="utf-8")
     manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
 
     assert 'consumeAuthCallback' in main_activity
@@ -77,7 +77,7 @@ def test_main_activity_and_manifest_handle_auth_callbacks():
 
 
 def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
-    presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
+    presets = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
 
     assert 'id = "chatgpt-web"' in presets
     assert 'id = "anthropic"' in presets
@@ -122,11 +122,11 @@ def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
 
 
 def test_auth_callback_hardening_strings_and_base_url_validation_exist():
-    auth_session_store = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AuthSessionStore.kt").read_text(encoding="utf-8")
-    auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
-    browser_launcher = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesExternalBrowserLauncher.kt").read_text(encoding="utf-8")
-    corr3xt_auth_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/auth/Corr3xtAuthClient.kt").read_text(encoding="utf-8")
-    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+    auth_session_store = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/AuthSessionStore.kt").read_text(encoding="utf-8")
+    auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
+    browser_launcher = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesExternalBrowserLauncher.kt").read_text(encoding="utf-8")
+    corr3xt_auth_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/auth/Corr3xtAuthClient.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
     assert 'Auth callback rejected: no pending sign-in request' in auth_session_store
     assert 'Auth callback expired. Start sign-in again.' in auth_session_store
@@ -194,13 +194,13 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
 
 
 def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default():
-    auth_models = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AuthModels.kt").read_text(encoding="utf-8")
-    auth_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
-    auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
-    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
-    provider_setup_probe = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/auth/ProviderSetupUrlProbe.kt").read_text(encoding="utf-8")
+    auth_models = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/AuthModels.kt").read_text(encoding="utf-8")
+    auth_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
+    auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+    provider_setup_probe = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/auth/ProviderSetupUrlProbe.kt").read_text(encoding="utf-8")
 
-    provider_presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
+    provider_presets = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
 
     openrouter_block = auth_models.split('id = "openrouter"', 1)[1].split("AuthOption(", 1)[0]
     assert "browserSignInSupported = true" in openrouter_block
@@ -267,8 +267,8 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
     assert "OpenRouterLoopbackOAuthServer.start" in auth_view_model
     assert "callbackUrl = callbackUrl" in auth_view_model
     assert "the local callback will save the API key securely" in auth_view_model
-    openrouter_oauth = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/auth/OpenRouterOAuthClient.kt").read_text(encoding="utf-8")
-    openrouter_loopback = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/auth/OpenRouterLoopbackOAuthServer.kt").read_text(encoding="utf-8")
+    openrouter_oauth = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/auth/OpenRouterOAuthClient.kt").read_text(encoding="utf-8")
+    openrouter_loopback = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/auth/OpenRouterLoopbackOAuthServer.kt").read_text(encoding="utf-8")
     assert "https://openrouter.ai/auth" in openrouter_oauth
     assert "https://openrouter.ai/api/v1/auth/keys" in openrouter_oauth
     assert 'appendQueryParameter("callback_url", callbackUrl)' in openrouter_oauth
@@ -297,12 +297,12 @@ def test_runtime_provider_accounts_use_key_setup_instead_of_dead_corr3xt_default
 
 
 def test_settings_opens_official_provider_key_pages():
-    settings_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
-    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
-    browser_launcher = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesExternalBrowserLauncher.kt").read_text(encoding="utf-8")
-    provider_setup_web_activity = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/device/HermesProviderSetupWebActivity.kt").read_text(encoding="utf-8")
-    provider_presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
-    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+    settings_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    browser_launcher = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesExternalBrowserLauncher.kt").read_text(encoding="utf-8")
+    provider_setup_web_activity = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesProviderSetupWebActivity.kt").read_text(encoding="utf-8")
+    provider_presets = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
     assert "providerPreset?.apiKeyUrl" in settings_screen
     assert "viewModel::openProviderKeyPage" in settings_screen
@@ -355,8 +355,8 @@ def test_settings_opens_official_provider_key_pages():
 
 
 def test_settings_can_import_saved_python_provider_credentials_without_blank_overwrite():
-    settings_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
-    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    settings_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
     auth_bridge = (REPO_ROOT / "hermes_android/auth_bridge.py").read_text(encoding="utf-8")
 
     assert "onImportProviderCredential = viewModel::importSavedProviderCredential" in settings_screen
@@ -382,9 +382,9 @@ def test_settings_can_import_saved_python_provider_credentials_without_blank_ove
 
 
 def test_settings_provider_switch_applies_selected_provider_defaults():
-    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
-    auth_runtime_applier = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/auth/AuthRuntimeApplier.kt").read_text(encoding="utf-8")
-    runtime_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/HermesRuntimeManager.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    auth_runtime_applier = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/auth/AuthRuntimeApplier.kt").read_text(encoding="utf-8")
+    runtime_manager = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/HermesRuntimeManager.kt").read_text(encoding="utf-8")
 
     assert "val providerChanged = provider != it.provider" in settings_view_model
     assert 'baseUrl = if (providerChanged && provider != "custom") preset?.baseUrl.orEmpty() else it.baseUrl' in settings_view_model
@@ -395,7 +395,7 @@ def test_settings_provider_switch_applies_selected_provider_defaults():
     assert "private val restartScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)" in auth_runtime_applier
     assert "restartRuntimeAsync(appContext)" in auth_runtime_applier
     assert "restartScope.launch {" in auth_runtime_applier
-    assert 'import com.nousresearch.hermesagent.data.ProviderPresets' in runtime_manager
+    assert 'import com.mobilefork.hermesagent.data.ProviderPresets' in runtime_manager
     assert 'ProviderPresets.runtimeConfigBaseUrl(settings.provider, settings.baseUrl)' in runtime_manager
 
 

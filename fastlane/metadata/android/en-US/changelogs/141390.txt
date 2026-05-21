@@ -1,0 +1,1 @@
+Rebranded the Android app as Hermes Agent Fork with application ID com.mobilefork.hermesagent, explicit fork status in the listing and settings, and Alpha/Fork top-bar badges.

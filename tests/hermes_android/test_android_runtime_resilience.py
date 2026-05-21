@@ -5,13 +5,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_android_boot_and_chat_paths_guard_local_backend_failures_instead_of_crashing():
-    application = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/HermesApplication.kt").read_text(encoding="utf-8")
-    runtime_service = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/HermesRuntimeService.kt").read_text(encoding="utf-8")
-    boot_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/boot/BootViewModel.kt").read_text(encoding="utf-8")
-    boot_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/boot/BootScreen.kt").read_text(encoding="utf-8")
-    chat_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatViewModel.kt").read_text(encoding="utf-8")
-    native_tool_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
-    sse_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/api/HermesSseClient.kt").read_text(encoding="utf-8")
+    application = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/HermesApplication.kt").read_text(encoding="utf-8")
+    runtime_service = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/HermesRuntimeService.kt").read_text(encoding="utf-8")
+    boot_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/boot/BootViewModel.kt").read_text(encoding="utf-8")
+    boot_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/boot/BootScreen.kt").read_text(encoding="utf-8")
+    chat_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatViewModel.kt").read_text(encoding="utf-8")
+    native_tool_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    sse_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/api/HermesSseClient.kt").read_text(encoding="utf-8")
 
     assert "BACKGROUND_RUNTIME_STARTUP_DELAY_MS = 1500L" in application
     assert "STARTUP_BACKGROUND_WORK_DELAY_MS = 5000L" in application
@@ -50,14 +50,14 @@ def test_android_boot_and_chat_paths_guard_local_backend_failures_instead_of_cra
 
 
 def test_android_python_runtime_smoke_resets_local_backend_selection_before_remote_runtime_probe():
-    runtime_smoke = (REPO_ROOT / "android/app/src/androidTest/java/com/nousresearch/hermesagent/NativeAgentRuntimeSmokeTest.kt").read_text(encoding="utf-8")
+    runtime_smoke = (REPO_ROOT / "android/app/src/androidTest/java/com/mobilefork/hermesagent/NativeAgentRuntimeSmokeTest.kt").read_text(encoding="utf-8")
 
     assert 'AppSettingsStore(context).let { store ->' in runtime_smoke
     assert 'onDeviceBackend = BackendKind.NONE.persistedValue' in runtime_smoke
 
 
 def test_main_activity_keeps_device_state_refresh_off_the_startup_thread():
-    main_activity = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/MainActivity.kt").read_text(encoding="utf-8")
+    main_activity = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/MainActivity.kt").read_text(encoding="utf-8")
 
     assert "private fun writeDeviceStateAsync()" in main_activity
     assert "STARTUP_DEVICE_STATE_DELAY_MS = 2500L" in main_activity
@@ -67,9 +67,9 @@ def test_main_activity_keeps_device_state_refresh_off_the_startup_thread():
 
 
 def test_android_chat_ui_and_native_tool_prompt_stay_compact_on_large_font_phone_screens():
-    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
-    app_shell = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
-    native_tool_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+    app_shell = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
+    native_tool_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
 
     assert 'placeholder = {' in chat_screen
     assert 'label = { Text(strings.messageHermes' not in chat_screen

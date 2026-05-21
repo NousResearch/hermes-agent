@@ -6,10 +6,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_device_screen_guides_direct_shared_folder_and_accessibility_targeting():
     device_screen = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceScreen.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/device/DeviceScreen.kt"
     ).read_text(encoding="utf-8")
     strings = (
-        REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt"
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt"
     ).read_text(encoding="utf-8")
 
     assert 'Text(strings.deviceGuideStep(1))' in device_screen

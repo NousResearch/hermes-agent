@@ -5,7 +5,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_chat_screen_has_bubbles_history_and_action_icons():
-    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
 
     assert 'ConversationHistoryList(' in chat_screen
     assert 'ChatBubble(' in chat_screen
@@ -21,13 +21,16 @@ def test_chat_screen_has_bubbles_history_and_action_icons():
     assert 'onContextActionsChanged(shellActions)' in chat_screen
     assert 'SignalIntelligenceQuickActionGrid(' in chat_screen
     assert 'HermesSignalQuickActions' in chat_screen
-    assert 'Message Hermes' in chat_screen
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+
+    assert 'strings.messageHermes' in chat_screen
+    assert 'Message Hermes Fork' in strings
     assert 'Speak last reply' in chat_screen
-    assert 'Available app commands:' in (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatCommandRouter.kt").read_text(encoding="utf-8")
+    assert 'Available app commands:' in (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatCommandRouter.kt").read_text(encoding="utf-8")
 
 
 def test_conversation_store_tracks_multiple_sessions_and_messages():
-    conversation_store = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ConversationStore.kt").read_text(encoding="utf-8")
+    conversation_store = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/data/ConversationStore.kt").read_text(encoding="utf-8")
 
     assert 'data class StoredConversationMessage' in conversation_store
     assert 'data class ConversationSummary' in conversation_store
@@ -39,7 +42,7 @@ def test_conversation_store_tracks_multiple_sessions_and_messages():
 
 
 def test_chat_view_model_persists_history_and_supports_native_command_feedback():
-    chat_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatViewModel.kt").read_text(encoding="utf-8")
+    chat_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatViewModel.kt").read_text(encoding="utf-8")
 
     assert 'fun showHistory()' in chat_view_model
     assert 'fun openConversation(' in chat_view_model
@@ -51,7 +54,7 @@ def test_chat_view_model_persists_history_and_supports_native_command_feedback()
 
 
 def test_empty_chat_layout_scrolls_welcome_state_on_small_or_large_font_screens():
-    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
 
     assert 'LazyColumn(' in chat_screen
     assert 'EmptyChatHint(' in chat_screen
@@ -59,10 +62,10 @@ def test_empty_chat_layout_scrolls_welcome_state_on_small_or_large_font_screens(
 
 
 def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
-    actions = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
-    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
-    chat_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatViewModel.kt").read_text(encoding="utf-8")
-    chat_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    actions = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
+    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+    chat_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatViewModel.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
 
     for action in [
         "signal_awareness_report",
@@ -96,8 +99,8 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
 
 
 def test_expanded_activity_rows_show_every_agent_visible_diagnostic_card():
-    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
-    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
 
     assert "COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT = 3" in diagnostic_cards
     assert "return if (expanded) cards else cards.take(COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT)" in diagnostic_cards

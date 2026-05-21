@@ -44,14 +44,17 @@ platforms:
 
 [Svix Ingest](https://docs.svix.com/ingest/overview) lets you funnel webhooks from any third-party service through Svix. Instead of giving GitHub your server's IP, you give it a Svix Ingest URL Svix receives and validates the payload, then makes it available on a **polling endpoint** that Hermes consumes.
 
-To set up a polling endpoint:
+To set up an Ingest Source via the CLI:
 
-1. Open the [Svix dashboard](https://dashboard.svix.com)
-2. Go to **Ingest** → **Sources** → **Add Source**
-3. Select the source type (GitHub, Stripe, generic, etc.) and configure signature validation
-4. Copy the generated **polling endpoint URL** it looks like `https://api.svix.com/api/v1/app/app_xxx/poller/poll_yyy/`
-5. Copy the **endpoint-scoped token** (`sk_endp_…`) shown in the UI
-6. Paste both into your route config:
+```bash
+svix ingest source create '{"name": "my-source", "type": "genericWebhook"}'
+svix ingest source list          # find your source_id
+svix ingest source get <source_id>   # shows the polling URL and sk_endp_… token
+```
+
+Or via the dashboard: **Ingest** → **Sources** → **Add Source**, select the source type, then copy the polling URL and endpoint-scoped token.
+
+Paste both into your route config:
 
 ```yaml
 routes:
@@ -113,16 +116,23 @@ brew install svix/svix/svix-cli
 # Linux / Windows see https://github.com/svix/svix-webhooks/tree/main/svix-cli#installation
 ```
 
-Log in to get your account token
+Log in:
 
 ```bash
 svix login
 ```
-List your applications and polling endpoints:
+
+List your Ingest Sources and find the polling URL and token:
 
 ```bash
-svix application list
-svix message list --app-id app_xxx
+svix ingest source list
+svix ingest source get <source_id>
+```
+
+Create a new Ingest Source:
+
+```bash
+svix ingest source create '{"name": "my-source", "type": "genericWebhook"}'
 ```
 
 ---

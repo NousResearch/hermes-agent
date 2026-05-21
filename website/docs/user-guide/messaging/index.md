@@ -1,7 +1,7 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, Svix, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
@@ -71,6 +71,7 @@ flowchart TB
     ms[Microsoft Teams]
     api["API Server<br/>(OpenAI-compatible)"]
     wh[Webhooks]
+    sv[Svix]
         end
 
         store["Session store<br/>per chat"]
@@ -100,6 +101,7 @@ flowchart TB
     ms --> store
     api --> store
     wh --> store
+    sv --> store
     store --> agent
     cron --> store
 ```
@@ -447,6 +449,7 @@ Each platform has its own toolset:
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
+| Svix | `hermes-svix` | Full tools including terminal |
 
 ## Operating a multi-platform gateway
 
@@ -575,3 +578,4 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Teams Meetings Pipeline](teams-meetings.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Webhooks](webhooks.md)
+- [Svix](svix.md)

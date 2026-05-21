@@ -2339,3 +2339,250 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+# ---------------------------------------------------------------------------
+# Dashboard chat scrollback override (#29562)
+#
+# Regression coverage for the long-session truncation bug introduced by
+# afffb8d9a. The inline-mode browser chat scrolls through xterm.js's own
+# scrollback buffer, so the buffer needs to be large enough to hold a real
+# session's worth of output. Operators can tune the cap without rebuilding
+# the SPA via ``HERMES_DASHBOARD_CHAT_SCROLLBACK``; this section pins both
+# the parser contract and the frontend source-level guardrail.
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardChatScrollbackJs:
+    """Unit coverage for ``_dashboard_chat_scrollback_js``.
+
+    Returns either a positive integer literal (clamped at the ceiling) or
+    the literal ``null`` for the frontend to fall back to its built-in
+    default. Anything malformed resolves to ``null`` — never raises, never
+    returns something xterm.js would interpret as ``0``.
+    """
+
+    @pytest.fixture
+    def helper(self):
+        import hermes_cli.web_server as ws
+
+        return ws._dashboard_chat_scrollback_js, ws._DASHBOARD_CHAT_SCROLLBACK_CEILING
+
+    def test_unset_env_returns_null(self, helper, monkeypatch):
+        fn, _ceiling = helper
+        monkeypatch.delenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", raising=False)
+        assert fn() == "null"
+
+    @pytest.mark.parametrize("value", ["", "   ", "\t", "\n"])
+    def test_blank_returns_null(self, helper, monkeypatch, value):
+        fn, _ = helper
+        monkeypatch.setenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", value)
+        assert fn() == "null"
+
+    @pytest.mark.parametrize(
+        "value", ["abc", "1.5", "7e3", "100 lines", "infinity", "NaN"]
+    )
+    def test_non_integer_returns_null(self, helper, monkeypatch, value):
+        fn, _ = helper
+        monkeypatch.setenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", value)
+        assert fn() == "null"
+
+    def test_underscore_separator_is_accepted(self, helper, monkeypatch):
+        """Python's ``int`` accepts PEP 515 separators (``50_000``); we
+        accept the same form so config-as-code that already uses it
+        keeps working without surprise."""
+        fn, _ = helper
+        monkeypatch.setenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", "50_000")
+        assert fn() == "50000"
+
+    @pytest.mark.parametrize("value", ["0", "-1", "-50000"])
+    def test_non_positive_returns_null(self, helper, monkeypatch, value):
+        fn, _ = helper
+        monkeypatch.setenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", value)
+        assert fn() == "null"
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("1", "1"), ("100", "100"), ("50000", "50000"), ("200000", "200000")],
+    )
+    def test_valid_value_passes_through(self, helper, monkeypatch, value, expected):
+        fn, _ = helper
+        monkeypatch.setenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", value)
+        assert fn() == expected
+
+    def test_value_above_ceiling_is_clamped(self, helper, monkeypatch):
+        fn, ceiling = helper
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_CHAT_SCROLLBACK", str(ceiling * 100)
+        )
+        assert fn() == str(ceiling)
+
+    def test_value_at_ceiling_is_preserved(self, helper, monkeypatch):
+        fn, ceiling = helper
+        monkeypatch.setenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", str(ceiling))
+        assert fn() == str(ceiling)
+
+    def test_value_with_surrounding_whitespace_is_stripped(self, helper, monkeypatch):
+        fn, _ = helper
+        monkeypatch.setenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", "  12345  ")
+        assert fn() == "12345"
+
+    def test_returned_token_is_a_safe_js_literal(self, helper, monkeypatch):
+        """The helper output is interpolated into a <script> tag, so it
+        must only ever be a bare JS literal — never user-controllable
+        text. Reject any value that could break out of the literal.
+        """
+        fn, _ = helper
+        for value in ["</script>", "alert(1)", '";evil', "\\n", "0x1F"]:
+            monkeypatch.setenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", value)
+            result = fn()
+            assert result == "null" or result.isdigit()
+
+
+class TestServeIndexInjectsChatScrollback:
+    """``mount_spa`` threads the override through the existing token script.
+
+    Tests assert on the injected ``<script>`` contents — the most direct
+    surface that ChatPage.tsx reads from. The default (unset env) must
+    inject ``null`` so the frontend falls back to its own default; a
+    valid value must round-trip through unchanged.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, monkeypatch):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        web_dist = tmp_path / "web_dist"
+        web_dist.mkdir()
+        (web_dist / "index.html").write_text(
+            "<!doctype html><html><head><title>Hermes</title></head>"
+            "<body><div id='root'></div></body></html>"
+        )
+        (web_dist / "assets").mkdir()
+
+        monkeypatch.setattr(ws, "WEB_DIST", web_dist)
+        # mount_spa registers a catch-all route on the module-level ``app``
+        # — use a throwaway FastAPI instance so we don't pollute the
+        # shared singleton and break neighbouring tests.
+        application = FastAPI()
+        ws.mount_spa(application)
+        self.client = TestClient(application)
+
+    def test_default_injects_null_for_chat_scrollback(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", raising=False)
+        resp = self.client.get("/")
+        assert resp.status_code == 200
+        assert "window.__HERMES_DASHBOARD_CHAT_SCROLLBACK__=null;" in resp.text
+
+    def test_env_override_round_trips_into_script(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", "75000")
+        resp = self.client.get("/")
+        assert resp.status_code == 200
+        assert (
+            "window.__HERMES_DASHBOARD_CHAT_SCROLLBACK__=75000;" in resp.text
+        )
+
+    def test_malformed_env_falls_back_to_null(self, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", "lots-of-lines")
+        resp = self.client.get("/")
+        assert resp.status_code == 200
+        assert "window.__HERMES_DASHBOARD_CHAT_SCROLLBACK__=null;" in resp.text
+
+    def test_above_ceiling_is_clamped_in_script(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_CHAT_SCROLLBACK",
+            str(ws._DASHBOARD_CHAT_SCROLLBACK_CEILING * 10),
+        )
+        resp = self.client.get("/")
+        assert resp.status_code == 200
+        assert (
+            f"window.__HERMES_DASHBOARD_CHAT_SCROLLBACK__={ws._DASHBOARD_CHAT_SCROLLBACK_CEILING};"
+            in resp.text
+        )
+
+    def test_other_globals_still_present(self, monkeypatch):
+        """Sanity: the new global must not have displaced the existing ones."""
+        monkeypatch.delenv("HERMES_DASHBOARD_CHAT_SCROLLBACK", raising=False)
+        resp = self.client.get("/")
+        body = resp.text
+        assert "window.__HERMES_SESSION_TOKEN__=" in body
+        assert "window.__HERMES_DASHBOARD_EMBEDDED_CHAT__=" in body
+        assert 'window.__HERMES_BASE_PATH__=""' in body
+
+
+class TestChatPageScrollbackSource:
+    """Static guardrails on ``web/src/pages/ChatPage.tsx`` (#29562).
+
+    Without a JS test runner in the repo, the most reliable way to keep
+    the frontend honest is to pin the documented contract on the source
+    file directly. If the constants below ever change, this test forces
+    the docs + server defaults to be updated in lockstep.
+    """
+
+    @pytest.fixture
+    def source(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        path = repo_root / "web" / "src" / "pages" / "ChatPage.tsx"
+        assert path.is_file(), f"ChatPage.tsx not found at {path}"
+        return path.read_text()
+
+    def test_default_scrollback_is_at_least_50k(self, source):
+        """The pre-#29562 cap of 5,000 was too small; the new default
+        must be high enough to hold a long session without truncating.
+        """
+        import re
+
+        m = re.search(
+            r"DASHBOARD_CHAT_SCROLLBACK_DEFAULT\s*=\s*(\d+)", source
+        )
+        assert m, "DASHBOARD_CHAT_SCROLLBACK_DEFAULT constant missing"
+        assert int(m.group(1)) >= 50000
+
+    def test_ceiling_matches_server_side(self, source):
+        """Browser-side ceiling and server-side ceiling must agree —
+        otherwise the server could happily forward a value the browser
+        will silently clamp (or vice-versa)."""
+        import re
+
+        import hermes_cli.web_server as ws
+
+        m = re.search(
+            r"DASHBOARD_CHAT_SCROLLBACK_CEILING\s*=\s*(\d+)", source
+        )
+        assert m, "DASHBOARD_CHAT_SCROLLBACK_CEILING constant missing"
+        assert int(m.group(1)) == ws._DASHBOARD_CHAT_SCROLLBACK_CEILING
+
+    def test_reads_window_global(self, source):
+        """The runtime must honour the operator override even after a
+        build, so the constant must be a function call (not inlined)."""
+        assert "dashboardChatScrollback()" in source
+        assert "window.__HERMES_DASHBOARD_CHAT_SCROLLBACK__" in source
+
+    def test_global_is_declared(self, source):
+        assert "__HERMES_DASHBOARD_CHAT_SCROLLBACK__?:" in source
+
+    def test_old_5000_literal_is_gone(self, source):
+        """Guard against accidentally re-introducing the truncating cap."""
+        assert "scrollback: 5000" not in source
+
+    def test_invalid_global_falls_back_to_default(self, source):
+        """The browser-side helper must defensively handle bad globals
+        (string ``"abc"``, ``NaN``, negatives, zero) — those should
+        resolve to the default so a malformed inject never breaks the
+        chat tab."""
+        assert "Number.isFinite" in source
+        assert "DASHBOARD_CHAT_SCROLLBACK_DEFAULT" in source
+
+    def test_inline_mode_rationale_documented(self, source):
+        """The scrollback comment must spell out *why* the cap matters —
+        otherwise a future "just bump it back to 5k to save memory"
+        commit will undo the fix without realising it. Pinning the
+        #29562 reference here keeps the rationale linkable from blame.
+        """
+        assert "#29562" in source
+        assert "HERMES_DASHBOARD_CHAT_SCROLLBACK" in source

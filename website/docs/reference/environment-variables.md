@@ -572,6 +572,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_TUI_RESUME` | Resume a specific TUI session by ID on launch. When set, `hermes --tui` skips forging a fresh session and picks up the named session instead — useful for re-attaching after a disconnect or terminal crash. |
 | `HERMES_TUI_THEME` | Force the TUI color theme: `light`, `dark`, or a raw 6-character background hex (e.g. `ffffff` or `1a1a2e`). When unset, Hermes auto-detects using `COLORFGBG` and terminal background queries; this variable overrides detection on terminals (Ghostty, Warp, iTerm2, etc.) that don't set `COLORFGBG`. |
 | `HERMES_INFERENCE_MODEL` | Force the model for `hermes -z` / `hermes chat` without mutating `config.yaml`. Pairs with `HERMES_INFERENCE_PROVIDER`. Useful for scripted callers (sweeper, CI, batch runners) that need to override the default model per run. |
+| `HERMES_DASHBOARD_CHAT_SCROLLBACK` | Maximum number of rows the dashboard "Chat" tab retains in its xterm.js scrollback buffer. Default is 50,000 (≈60–90 MB worst case), which is enough for a few thousand typical messages. Bump this if you run very long sessions and `scroll up` hits a wall before reaching the start of the transcript (see [#29562](https://github.com/NousResearch/hermes-agent/issues/29562)). Clamped to 500,000 to keep a typo from OOM-ing the browser tab; invalid or non-positive values fall back to the default. No rebuild of the SPA required. |
 
 ## Session Settings
 

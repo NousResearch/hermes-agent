@@ -247,6 +247,47 @@ def test_symlink_apm_skills_empty(non_apm_project, monkeypatch):
         monkeypatch.setattr(hermes_constants, "get_skills_dir", original)
 
 
+def test_symlink_apm_skills_rejects_escape(apm_project, monkeypatch, tmp_path):
+    """Symlinked SKILL.md pointing outside apm_modules/ is skipped.
+
+    An attacker-controlled APM package could ship a symlinked SKILL.md
+    that escapes the module root.  The symlink code must resolve the
+    path, verify it stays within ``apm_modules/``, and skip it with
+    a warning if it does not.
+    """
+    # Replace the real SKILL.md with a symlink to an external file
+    external = tmp_path / "outside.txt"
+    external.write_text("---\nname: escape\n---\n\n# Escaped content\n")
+    skill_dir = (
+        apm_project / "apm_modules" / "owner" / "repo" / ".apm" / "skills" / "escape-skill"
+    )
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.symlink_to(external)  # Create symlink to outside, no real file here
+
+    fake_skills = apm_project / ".fake-skills"
+    fake_skills.mkdir()
+
+    import hermes_constants
+    original = hermes_constants.get_skills_dir
+    monkeypatch.setattr(hermes_constants, "get_skills_dir", lambda: fake_skills)
+
+    try:
+        count = symlink_apm_skills(str(apm_project))
+        # The escape symlink is skipped; only the original test-skill is linked
+        assert count == 1  # Only test-skill (from fixture), not escape-skill
+        apm_dir = fake_skills / "apm"
+        assert apm_dir.exists()
+        # Verify escape-skill was NOT symlinked
+        escape_link = apm_dir / "owner" / "repo" / "escape-skill" / "SKILL.md"
+        assert not escape_link.exists()
+        # But the legitimate skill IS present
+        legit_link = apm_dir / "owner" / "repo" / "test-skill" / "SKILL.md"
+        assert legit_link.is_symlink()
+    finally:
+        monkeypatch.setattr(hermes_constants, "get_skills_dir", original)
+
+
 # ── Remove symlinks tests ────────────────────────────────────────────────
 
 

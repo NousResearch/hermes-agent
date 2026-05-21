@@ -48,7 +48,50 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, { ...init, headers });
+  const res = await fetch(`${BASE}${url}`, {
+    ...init,
+    headers,
+    // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
+    // for any fetch routed through here. Loopback mode is unaffected — the
+    // server doesn't read cookies and the legacy session-token header is
+    // already attached above.
+    credentials: init?.credentials ?? "include",
+  });
+  if (res.status === 401) {
+    // Phase 6: the gated middleware emits a structured envelope so the
+    // SPA can full-page-navigate to /login on session expiry. Parse it,
+    // and only redirect on the known error codes — domain-level 401s
+    // (e.g. "you don't have permission to read this monitor") bubble
+    // up as regular errors so callers can handle them.
+    let body: { error?: string; login_url?: string } = {};
+    try {
+      body = await res.clone().json();
+    } catch {
+      /* non-JSON 401 — let it fall through */
+    }
+    if (
+      (body.error === "unauthenticated" || body.error === "session_expired") &&
+      body.login_url
+    ) {
+      // Preserve where the user was so /auth/callback can land them back
+      // after re-auth. The gate's login_url already carries a ``next=``
+      // built from the request path, but the SPA may be deep inside a
+      // SPA route the gate never saw — e.g. a hash route or a client-side
+      // /sessions/<id> deep link. Save the current location as a
+      // fallback the post-login handler can read.
+      try {
+        sessionStorage.setItem(
+          "hermes.lastLocation",
+          window.location.pathname + window.location.search,
+        );
+      } catch {
+        /* SSR / privacy mode — ignore */
+      }
+      window.location.assign(body.login_url);
+      // Never resolve — the page is about to unload.
+      return new Promise<T>(() => {});
+    }
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);

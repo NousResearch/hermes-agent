@@ -46,6 +46,7 @@ class AuditEvent(enum.Enum):
     REVOKE = "revoke"
     SESSION_VERIFY_FAILURE = "session_verify_failure"
     WS_TICKET_MINTED = "ws_ticket_minted"
+    WS_TICKET_REJECTED = "ws_ticket_rejected"
 
 
 def _resolve_log_path() -> Path:

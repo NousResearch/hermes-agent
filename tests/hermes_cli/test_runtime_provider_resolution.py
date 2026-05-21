@@ -710,6 +710,7 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["api_key"] == "local-provider-key"
     assert resolved["requested_provider"] == "local"
     assert resolved["source"] == "custom_provider:Local"
+    assert resolved["custom_provider"] is True
 
 
 def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch):
@@ -746,6 +747,7 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
 
     assert resolved["provider"] == "openai-direct-primary"
     assert resolved["provider_key"] == "openai-direct-primary"
+    assert resolved["custom_provider"] is True
     assert resolved["api_mode"] == "codex_responses"
     assert resolved["base_url"] == "https://api.openai.com/v1"
     assert resolved["api_key"] == "dir-key"
@@ -787,6 +789,7 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
 
     assert resolved["provider"] == "mycorp-proxy"
     assert resolved["provider_key"] == "mycorp-proxy"
+    assert resolved["custom_provider"] is True
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "https://proxy.example.com/v1"
     assert resolved["api_key"] == "env-secret"
@@ -828,6 +831,7 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     assert resolved["requested_provider"] == "custom:local-llm"
     assert resolved["provider"] == "custom"
     assert "provider_key" not in resolved
+    assert resolved["custom_provider"] is True
 
 
 def test_providers_dict_provider_key_is_normalized(monkeypatch):
@@ -1660,6 +1664,7 @@ def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
         rp, "_get_named_custom_provider",
         lambda p: {
             "name": "my-server",
+            "provider_key": "my-server",
             "base_url": "http://localhost:8000/v1",
             "api_key": "test-key",
             "model": "qwen3.6-plus",
@@ -1681,6 +1686,9 @@ def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     assert resolved["model"] == "qwen3.6-plus", (
         "model must be injected into pool result"
     )
+    assert resolved["provider"] == "custom"
+    assert resolved["provider_key"] == "my-server"
+    assert resolved["custom_provider"] is True
     assert resolved["api_key"] == "pool-key", "pool credentials should be used"
 
 

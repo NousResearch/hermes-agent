@@ -469,6 +469,7 @@ def _try_resolve_from_custom_pool(
             "api_key": pool_api_key,
             "source": f"pool:{pool_key}",
             "credential_pool": pool,
+            "custom_provider": True,
         }
     except Exception:
         return None
@@ -682,6 +683,7 @@ def _resolve_named_custom_runtime(
             "api_key": api_key,
             "source": "direct-alias",
             "requested_provider": requested_provider,
+            "custom_provider": True,
         }
 
     custom_provider = _get_named_custom_provider(requested_provider)
@@ -708,6 +710,7 @@ def _resolve_named_custom_runtime(
     # Check if a credential pool exists for this custom endpoint
     pool_result = _try_resolve_from_custom_pool(base_url, runtime_provider, custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
     if pool_result:
+        pool_result["custom_provider"] = True
         if provider_key:
             pool_result["provider_key"] = provider_key
         # Propagate the model name even when using pooled credentials —
@@ -747,6 +750,7 @@ def _resolve_named_custom_runtime(
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+        "custom_provider": True,
     }
     if provider_key:
         result["provider_key"] = provider_key

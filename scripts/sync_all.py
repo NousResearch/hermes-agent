@@ -32,6 +32,7 @@ DEFAULT_REMOTE = "upstream"
 DEFAULT_UPSTREAM_REF = f"{DEFAULT_REMOTE}/main"
 DEFAULT_STRATEGY = MERGE_TOOLS / "hermes-merge-conflict-strategies.json"
 INVENTORY_JSON = REPO_ROOT / "_docs" / "upstream-main-diff-inventory.json"
+DEFAULT_CLAW_ROOT = REPO_ROOT.parent / "clawdbot-main3"
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -180,7 +181,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="With --openclaw-vendor: port clawdbot-main scripts/tools to scripts/openclaw_ports/.",
     )
-    parser.add_argument("--claw-root", default=r"C:\Users\downl\Desktop\clawdbot-main3")
+    parser.add_argument("--claw-root", default=str(DEFAULT_CLAW_ROOT))
     parser.add_argument("--clawdbot-main", default=None, help="Override clawdbot-main path.")
     parser.add_argument("--commit", action="store_true", help="Commit merge after successful resolution.")
     parser.add_argument(

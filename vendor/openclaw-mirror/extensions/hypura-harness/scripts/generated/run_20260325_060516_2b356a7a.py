@@ -1,4 +1,0 @@
-# /// script
-# dependencies = []
-# ///
-print("ok")

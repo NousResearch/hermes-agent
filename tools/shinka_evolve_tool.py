@@ -11,10 +11,11 @@ logger = logging.getLogger(__name__)
 # Base directory for ShinkaEvolve (assumed relative to hermes-agent root)
 HERMES_ROOT = Path(__file__).parent.parent
 SHINKA_DIR = HERMES_ROOT / "vendor" / "openclaw-mirror" / "ShinkaEvolve"
+SHINKA_PACKAGE_INIT = SHINKA_DIR / "shinka" / "__init__.py"
 
 def check_shinka_available() -> bool:
     """Check if ShinkaEvolve submodule is present."""
-    return SHINKA_DIR.exists()
+    return SHINKA_PACKAGE_INIT.is_file()
 
 def shinka_run_batch(
     task_dir: str, 

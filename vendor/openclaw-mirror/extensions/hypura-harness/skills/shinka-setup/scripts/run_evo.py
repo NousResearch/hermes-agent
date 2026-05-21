@@ -11,7 +11,7 @@ TASK_SYS_MSG = """<task-specific system message guiding search>"""
 
 
 async def main(config_path: str):
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     config["evo_config"]["task_sys_msg"] = TASK_SYS_MSG

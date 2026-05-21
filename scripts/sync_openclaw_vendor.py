@@ -28,7 +28,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MERGE_TOOLS = REPO_ROOT / "scripts" / "merge_tools"
-DEFAULT_CLAW_ROOT = Path(r"C:\Users\downl\Desktop\clawdbot-main3")
+DEFAULT_CLAW_ROOT = REPO_ROOT.parent / "clawdbot-main3"
 DEFAULT_OPENCLAW_SYNC = DEFAULT_CLAW_ROOT / "openclaw-sync"
 DEFAULT_CLAWDBOT_MAIN = DEFAULT_CLAW_ROOT / "clawdbot-main"
 DEFAULT_VENDOR_ROOT = REPO_ROOT / "vendor" / "openclaw-mirror"

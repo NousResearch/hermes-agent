@@ -79,6 +79,16 @@ export function enableMouseTrackingFor(mode: MouseTrackingMode): string {
 
     case 'off':
       return ''
+
+    default:
+      // Defensive fallback: the type system guarantees exhaustiveness, but
+      // JS callers / corrupted config / hot-reloads in dev could reach this
+      // with an unknown value. Without a default, an unmatched mode returns
+      // undefined which then concatenates as the literal string "undefined"
+      // into the terminal byte stream — visibly garbling output. Treat
+      // unknown as 'off' (no DEC sequences) so the worst case is silent
+      // input loss rather than a wrecked screen.
+      return ''
   }
 }
 

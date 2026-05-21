@@ -631,6 +631,18 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
+            # Plan 004-A: register reaction_added / reaction_removed event handlers
+            # for skill feedback capture.  Only 👍 and 👎 are tracked (see
+            # hermes_agent.self_improvement.feedback_capture._classify_emoji).
+            # Reactions on non-Hermes messages are silently dropped in the handler.
+            @self._app.event("reaction_added")
+            async def handle_reaction_added(event, say):
+                await self._handle_reaction_added(event)
+
+            @self._app.event("reaction_removed")
+            async def handle_reaction_removed(event, say):
+                await self._handle_reaction_removed(event)
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack
@@ -822,6 +834,33 @@ class SlackAdapter(BasePlatformAdapter):
                     excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
                     for old_ts in list(self._bot_message_ts)[:excess]:
                         self._bot_message_ts.discard(old_ts)
+
+            # Plan 004-A: register skill output for feedback correlation.
+            # If metadata carries a "skill_name" key, store (slack_ts, channel_id) →
+            # skill_name in skill_output_map so reactions on this message can be
+            # correlated back to the skill that produced it.
+            # Best-effort: failure is logged but never raised.
+            skill_name = (metadata or {}).get("skill_name", "")
+            if sent_ts and skill_name:
+                pool = self._get_neon_pool()
+                if pool is not None:
+                    try:
+                        team_id = (
+                            (list(self._team_bot_user_ids.keys())[:1] or [""])[0]
+                        )
+                        from hermes_agent.self_improvement.feedback_capture import register_output
+                        await register_output(
+                            pool=pool,
+                            platform="slack",
+                            team_id=team_id,
+                            channel_id=chat_id,
+                            slack_ts=sent_ts,
+                            skill_name=skill_name,
+                        )
+                    except Exception as _roe:
+                        logger.debug(
+                            "[Slack] Plan 004-A register_output error: %s", _roe
+                        )
 
             return SendResult(
                 success=True,
@@ -1286,6 +1325,115 @@ class SlackAdapter(BasePlatformAdapter):
             text = text.replace(key, placeholders[key])
 
         return text
+
+    # ----- Plan 004-A: Skill feedback capture (reaction_added / reaction_removed) -----
+
+    def _get_neon_pool(self):
+        """
+        Return the asyncpg connection pool from the NeonBackend singleton.
+
+        Returns None when HERMES_MODE != saas or the pool is not initialised.
+        This is a best-effort lookup — feedback capture is non-critical and
+        must not crash the Slack gateway if Neon is unavailable.
+
+        Accesses the module-level _backend singleton directly (sync, no await)
+        since this is called from both sync and async contexts.
+        """
+        try:
+            import os as _os
+            if _os.environ.get("HERMES_MODE") != "saas":
+                return None
+            import hermes_storage as _hs
+            backend = _hs._backend
+            return getattr(backend, "_pool", None) if backend is not None else None
+        except Exception:
+            return None
+
+    async def _handle_reaction_added(self, event: dict) -> None:
+        """
+        Handle a Slack reaction_added event (Plan 004-A feedback capture).
+
+        Extracts (channel, item_ts, emoji, user) from the event and delegates
+        to feedback_capture.handle_reaction_added(). Only 👍/👎 are tracked.
+        Non-Hermes messages are silently dropped in the capture layer.
+
+        Failure is logged but never raised — this is a telemetry path and must
+        not interrupt the Slack gateway's event loop.
+        """
+        pool = self._get_neon_pool()
+        if pool is None:
+            return  # Not in saas mode or pool unavailable; silently skip.
+
+        try:
+            emoji_name = event.get("reaction", "")
+            reactor_user = event.get("user", "")
+            item = event.get("item", {}) or {}
+            channel_id = item.get("channel", "")
+            item_ts = item.get("ts", "")
+            # Resolve team_id from the event; fall back to the bot's team.
+            team_id = event.get("item_user", "")
+            # Slack reaction_added events have no team_id in the event payload;
+            # use the app's team_id resolved at connection time.
+            team_id = (
+                event.get("team")                    # some Enterprise Grid events include it
+                or (list(self._team_bot_user_ids.keys())[:1] or [""])[0]
+            )
+
+            if not all([channel_id, item_ts, reactor_user, emoji_name, team_id]):
+                logger.debug("[Slack] reaction_added: missing fields, skipping: %s", event)
+                return
+
+            from hermes_agent.self_improvement.feedback_capture import handle_reaction_added
+            await handle_reaction_added(
+                pool=pool,
+                platform="slack",
+                team_id=team_id,
+                reactor_user_id=reactor_user,
+                channel_id=channel_id,
+                item_ts=item_ts,
+                emoji_name=emoji_name,
+            )
+        except Exception as exc:
+            logger.warning("[Slack] Plan 004-A reaction_added handler error: %s", exc)
+
+    async def _handle_reaction_removed(self, event: dict) -> None:
+        """
+        Handle a Slack reaction_removed event (Plan 004-A feedback capture).
+
+        Mirrors _handle_reaction_added: extracts fields and delegates to
+        feedback_capture.handle_reaction_removed(). Idempotent — deleting a
+        non-existent row is safe.
+        """
+        pool = self._get_neon_pool()
+        if pool is None:
+            return
+
+        try:
+            emoji_name = event.get("reaction", "")
+            reactor_user = event.get("user", "")
+            item = event.get("item", {}) or {}
+            channel_id = item.get("channel", "")
+            item_ts = item.get("ts", "")
+            team_id = (
+                event.get("team")
+                or (list(self._team_bot_user_ids.keys())[:1] or [""])[0]
+            )
+
+            if not all([channel_id, item_ts, reactor_user, emoji_name, team_id]):
+                return
+
+            from hermes_agent.self_improvement.feedback_capture import handle_reaction_removed
+            await handle_reaction_removed(
+                pool=pool,
+                platform="slack",
+                team_id=team_id,
+                reactor_user_id=reactor_user,
+                channel_id=channel_id,
+                item_ts=item_ts,
+                emoji_name=emoji_name,
+            )
+        except Exception as exc:
+            logger.warning("[Slack] Plan 004-A reaction_removed handler error: %s", exc)
 
     # ----- Reactions -----
 

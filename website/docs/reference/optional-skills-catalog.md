@@ -191,6 +191,12 @@ hermes skills uninstall <skill-name>
 | [**sherlock**](/docs/user-guide/skills/optional/security/security-sherlock) | OSINT username search across 400+ social networks. Hunt down social media accounts by username. |
 | [**web-pentest**](/docs/user-guide/skills/optional/security/security-web-pentest) | Authorized web application penetration testing — reconnaissance, vulnerability analysis, proof-based exploitation, and professional reporting. Adapts Shannon's "No Exploit, No Report" methodology with hard guardrails for scope, authoriza... |
 
+## social-media
+
+| Skill | Description |
+|-------|-------------|
+| [**tiktok-publisher**](/docs/user-guide/skills/optional/social-media/social-media-tiktok-publisher) | Publish TikTok videos through MyBrandMetrics. |
+
 ## software-development
 
 | Skill | Description |

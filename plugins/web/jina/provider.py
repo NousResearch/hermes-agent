@@ -79,11 +79,11 @@ class JinaWebSearchProvider(WebSearchProvider):
         headers = {"Authorization": f"Bearer {api_key}"}
 
         try:
+            from urllib.parse import quote_plus
             with httpx.Client(timeout=30) as client:
-                resp = client.post(
-                    _SEARCH_ENDPOINT,
+                resp = client.get(
+                    f"{_SEARCH_ENDPOINT}{quote_plus(query)}",
                     headers=headers,
-                    content=query,
                     params={"numResults": limit},
                 )
                 resp.raise_for_status()

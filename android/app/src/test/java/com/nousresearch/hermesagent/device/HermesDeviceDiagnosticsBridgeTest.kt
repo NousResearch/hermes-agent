@@ -972,6 +972,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.has("bluetooth_manufacturer_name_count"))
         assertTrue(featureLabels.contains("Identify paired devices"))
         assertTrue(featureLabels.contains("Scan nearby BLE devices"))
+        assertTrue(featureLabels.contains("Pause/resume BLE scan control"))
         assertTrue(featureLabels.contains("RSSI proximity graph"))
         assertTrue(featureLabels.contains("RSSI trend history graph"))
         assertTrue(featureLabels.contains("Service UUID labels"))
@@ -979,15 +980,45 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(featureLabels.contains("Bluetooth safety boundary"))
         assertTrue(routeLabels.contains("Route nearby Bluetooth scan"))
         assertTrue(routeLabels.contains("Route Bluetooth signal history"))
+        assertTrue(routeLabels.contains("Route pause or resume BLE scan mode"))
         assertTrue(routeLabels.contains("Route service/manufacturer semantics"))
         assertTrue(routeLabels.contains("Route scan policy explanation"))
         assertTrue(policyLabels.contains("Connect and scan permissions"))
         assertTrue(policyLabels.contains("Active scan cadence"))
+        assertTrue(policyLabels.contains("Pause/resume BLE scan mode"))
         assertTrue(policyLabels.contains("Analysis and privacy boundary"))
+        assertTrue(result.has("bluetooth_scan_control"))
+        assertTrue(result.getJSONObject("bluetooth_scan_control").getBoolean("pause_resume_supported"))
         assertTrue(result.getJSONArray("cards").toString().contains("Bluetooth Analyzer Readiness"))
         assertTrue(result.getInt("bluetooth_analyzer_feature_count") >= 9)
         assertTrue(result.getInt("bluetooth_analyzer_workflow_route_count") >= 6)
         assertTrue(result.getInt("bluetooth_scan_policy_count") >= 6)
+    }
+
+    @Test
+    fun bluetoothScanModePausedSuppressesActiveRefreshAndResumedRequestsIt() {
+        val paused = HermesDeviceDiagnosticsBridge.bluetoothScanJson(
+            context,
+            JSONObject()
+                .put("refresh", true)
+                .put("scan_mode", "paused"),
+        )
+        val resumed = HermesDeviceDiagnosticsBridge.bluetoothScanJson(
+            context,
+            JSONObject().put("scan_mode", "resumed"),
+        )
+
+        val pausedControl = paused.getJSONObject("bluetooth_scan_control")
+        val resumedControl = resumed.getJSONObject("bluetooth_scan_control")
+
+        assertEquals("paused", pausedControl.getString("scan_mode"))
+        assertTrue(pausedControl.getBoolean("pause_resume_supported"))
+        assertTrue(pausedControl.getBoolean("user_refresh_requested"))
+        assertFalse(pausedControl.getBoolean("effective_refresh_requested"))
+        assertTrue(pausedControl.getBoolean("refresh_suppressed_by_pause"))
+        assertEquals("resumed", resumedControl.getString("scan_mode"))
+        assertTrue(resumedControl.getBoolean("effective_refresh_requested"))
+        assertTrue(resumedControl.getBoolean("resumed_requests_active_scan"))
     }
 
     @Test

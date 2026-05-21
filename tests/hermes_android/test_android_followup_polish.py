@@ -368,7 +368,7 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     assert '"wifi_scan_policy_matrix"' in chat_client
     assert '"wifi_scan_control"' in chat_client
     assert '"scan_mode"' in chat_client
-    assert 'Wi-Fi scan mode for direct Wi-Fi actions' in chat_client
+    assert 'Wi-Fi or Bluetooth scan mode for direct signal actions' in chat_client
     assert '"wifi_channel_utilization" -> wifiChannelUtilizationRow(row)' in diagnostic_cards
     assert '"wifi_access_point_semantics" -> wifiAccessPointSemanticRow(row)' in diagnostic_cards
     assert '"wifi_band_coverage" -> wifiBandCoverageRow(row)' in diagnostic_cards
@@ -399,6 +399,11 @@ def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and
     assert '"bluetooth_analyzer_feature_matrix"' in diagnostics_bridge
     assert '"bluetooth_analyzer_workflow_routes"' in diagnostics_bridge
     assert '"bluetooth_scan_policy_matrix"' in diagnostics_bridge
+    assert '"bluetooth_scan_control"' in diagnostics_bridge
+    assert 'Pause/resume BLE scan control' in diagnostics_bridge
+    assert 'Route pause or resume BLE scan mode' in diagnostics_bridge
+    assert 'scan_mode=paused' in diagnostics_bridge
+    assert 'scan_mode=resumed' in diagnostics_bridge
     assert 'Bluetooth Analyzer readiness' in diagnostics_bridge
     assert 'bluetooth_analyzer_report' in chat_client
     assert 'bluetooth_signal_history' in chat_client
@@ -410,6 +415,8 @@ def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and
     assert '"bluetooth_analyzer_feature_matrix"' in chat_client
     assert '"bluetooth_analyzer_workflow_routes"' in chat_client
     assert '"bluetooth_scan_policy_matrix"' in chat_client
+    assert '"bluetooth_scan_control"' in chat_client
+    assert 'Wi-Fi or Bluetooth scan mode for direct signal actions' in chat_client
     assert '"bluetooth_signal_history" -> bluetoothSignalHistoryRow(row)' in diagnostic_cards
     assert '"bluetooth_analyzer_feature_matrix", "bluetooth_analyzer_workflow_routes", "bluetooth_scan_policy_matrix"' in diagnostic_cards
     assert 'capabilityMatrixRow(row)' in diagnostic_cards

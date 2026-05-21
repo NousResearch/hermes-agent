@@ -1257,7 +1257,7 @@ class NativeToolCallingChatClient(
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point detail/export rows. Defaults to limit, or the Wi-Fi max for wifi_ap_details/wifi_export."))
                         .put("export_format", stringProp("Wi-Fi export format for wifi_export: json, csv, or both."))
-                        .put("scan_mode", stringProp("Wi-Fi scan mode for direct Wi-Fi actions: auto, paused, or resumed. Paused reuses cached rows/history; resumed requests a fresh Android scan."))
+                        .put("scan_mode", stringProp("Wi-Fi or Bluetooth scan mode for direct signal actions: auto, paused, or resumed. Paused reuses cached rows/history; resumed requests a fresh Android scan or BLE sample."))
                         .put("refresh", boolProp("For wifi_scan, wifi_export, wifi_ap_details, bluetooth_scan, bluetooth_signal_history, motion_sensor_history, or motion_pose, request Android to refresh scan/sensor results before reading available results; analyzer reports stay passive."))
                         .put("include_snapshot", boolProp("For sensor_analyzer_report, include a bounded one-shot sensor snapshot; default is passive readiness and policy rows only."))
                         .put("sensor_types", stringProp("Comma-separated sensor types such as accelerometer, gyroscope, magnetic_field, light, proximity; returned rows include sensor range, resolution, power, FIFO, wake-up, and sampling-rate metadata when Android exposes it."))
@@ -3316,7 +3316,7 @@ internal object NativeToolContextCompressor {
             when (val value = compacted.opt(key)) {
                 is String, is Number, is Boolean -> fallback.put(key, value)
                 is JSONArray -> if (key == "cards" || key in PRESERVED_ARRAY_KEYS) fallback.put(key, value)
-                is JSONObject -> if (key in PRESERVED_ARRAY_KEYS || key == "wifi_scan_status" || key == "wifi_scan_control" || key == "bluetooth_scan_status" || key == "sensor_sampling_status" || key == "wifi_access_point_export") {
+                is JSONObject -> if (key in PRESERVED_ARRAY_KEYS || key == "wifi_scan_status" || key == "wifi_scan_control" || key == "bluetooth_scan_status" || key == "bluetooth_scan_control" || key == "sensor_sampling_status" || key == "wifi_access_point_export") {
                     fallback.put(key, value)
                 } else if (key == "current_local_backend" || key == "litert_runtime_health") {
                     fallback.put(key, value)

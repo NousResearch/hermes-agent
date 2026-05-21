@@ -100,12 +100,13 @@ class NativeToolCallingChatClientTest {
     @Test
     fun extractsExplicitBluetoothSignalHistoryDiagnosticQuickActionArguments() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
-            "Run android_device_diagnostics_tool action=bluetooth_signal_history refresh=false",
+            "Run android_device_diagnostics_tool action=bluetooth_signal_history refresh=false scan_mode=paused",
         )
 
         requireNotNull(parsed)
         assertEquals("bluetooth_signal_history", parsed.getString("action"))
         assertFalse(parsed.getBoolean("refresh"))
+        assertEquals("paused", parsed.getString("scan_mode"))
     }
 
     @Test

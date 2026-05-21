@@ -580,7 +580,9 @@ object HermesDeviceDiagnosticsBridge {
     fun bluetoothScanJson(context: Context, arguments: JSONObject = JSONObject(), actionName: String = "bluetooth_scan"): JSONObject {
         val appContext = context.applicationContext
         val limit = arguments.optInt("limit", DEFAULT_LIMIT).coerceIn(1, MAX_BLUETOOTH_RESULTS)
-        val refresh = arguments.optBoolean("refresh", false)
+        val requestedRefresh = arguments.optBoolean("refresh", false)
+        val scanMode = normalizedBluetoothScanMode(arguments)
+        val refresh = effectiveBluetoothRefreshRequested(requestedRefresh, scanMode)
         val timeoutMs = arguments.optLong("timeout_ms", DEFAULT_BLUETOOTH_TIMEOUT_MS).coerceIn(500L, MAX_BLUETOOTH_TIMEOUT_MS)
         val bluetoothManager = appContext.getSystemService(BluetoothManager::class.java)
         val adapter = bluetoothManager?.adapter ?: runCatching { BluetoothAdapter.getDefaultAdapter() }.getOrNull()
@@ -591,6 +593,7 @@ object HermesDeviceDiagnosticsBridge {
                 .put("action", actionName)
                 .put("error", "Bluetooth service is unavailable on this device")
                 .put("bluetooth_scan_permission_status", permissionStatus)
+                .put("bluetooth_scan_control", bluetoothScanControlJson(scanMode, requestedRefresh, refresh, false))
         }
         val rows = ConcurrentHashMap<String, JSONObject>()
         if (permissionStatus.optBoolean("can_read_paired_devices", false)) {
@@ -659,8 +662,11 @@ object HermesDeviceDiagnosticsBridge {
         return JSONObject()
             .put("success", true)
             .put("action", actionName)
-            .put("refresh_requested", refresh)
+            .put("refresh_requested", requestedRefresh)
+            .put("effective_refresh_requested", refresh)
             .put("refresh_accepted", refreshAccepted)
+            .put("bluetooth_scan_mode", scanMode)
+            .put("bluetooth_scan_control", bluetoothScanControlJson(scanMode, requestedRefresh, refresh, refreshAccepted))
             .put("scan_error", scanError ?: JSONObject.NULL)
             .put("bluetooth_enabled", runCatching { adapter.isEnabled }.getOrDefault(false))
             .put("bluetooth_device_count", devices.length())
@@ -747,6 +753,9 @@ object HermesDeviceDiagnosticsBridge {
             manufacturerIdCount = manufacturerIdCount,
             rssiDeviceCount = rssiDeviceCount,
         )
+        val scanControl = scanStatus.optJSONObject("bluetooth_scan_control")
+            ?: scanResult?.optJSONObject("bluetooth_scan_control")
+            ?: bluetoothScanControlJson(BLUETOOTH_SCAN_MODE_AUTO, false, false, false)
         val featureRows = bluetoothAnalyzerFeatureRows(
             bluetoothAvailable = bluetoothAvailable,
             bluetoothLeSupported = bluetoothLeSupported,
@@ -823,6 +832,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("report_scope", "Bluetooth Analyzer readiness and routing report for paired devices, nearby BLE devices, RSSI proximity graphs, signal history/trends, Bluetooth SIG service labels, manufacturer names, category metadata, scan cadence, permissions, and privacy boundaries.")
             .put("bluetooth_scan_permission_status", permissionStatus)
             .put("bluetooth_scan_status", scanStatus)
+            .put("bluetooth_scan_control", scanControl)
             .put("bluetooth_devices", devices)
             .put("bluetooth_metadata_summary", metadataSummary)
             .put("bluetooth_signal_history", cachedHistory)
@@ -3099,6 +3109,20 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 capabilityRow(
                     category = "bluetooth_analyzer_parity",
+                    label = "Pause/resume BLE scan control",
+                    ready = true,
+                    valueLabel = "scan_mode ready",
+                    detail = "Hermes accepts scan_mode=paused to reuse paired/passive rows and cached RSSI history without starting BluetoothLeScanner, and scan_mode=resumed to request a fresh BLE sample on direct Bluetooth actions.",
+                    recommendation = "Pause repeated BLE scans during passive review; resume only when the user asks for a fresh nearby Bluetooth reading.",
+                    fraction = 0.9f,
+                    extra = JSONObject()
+                        .put("feature_source", "Bluetooth active scan cadence control")
+                        .put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_parity",
                     label = "RSSI proximity graph",
                     ready = rssiDeviceCount > 0 || (bluetoothLeSupported && canScanNearby),
                     valueLabel = if (rssiDeviceCount > 0) "$rssiDeviceCount RSSI row(s)" else "scan route ready",
@@ -3256,6 +3280,18 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 capabilityRow(
                     category = "bluetooth_analyzer_route",
+                    label = "Route pause or resume BLE scan mode",
+                    ready = true,
+                    valueLabel = "scan_mode",
+                    detail = "Use scan_mode=paused with bluetooth_scan or bluetooth_signal_history to keep analysis cached; use scan_mode=resumed to request a fresh direct BLE sample.",
+                    recommendation = "Prefer paused mode for repeated card review and resumed mode for explicit fresh-scan requests.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "bluetooth_scan"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_analyzer_route",
                     label = "Route service/manufacturer semantics",
                     ready = serviceUuidCount > 0 || manufacturerIdCount > 0 || canScanNearby || deviceCount > 0,
                     valueLabel = "bluetooth_scan",
@@ -3357,6 +3393,20 @@ object HermesDeviceDiagnosticsBridge {
                     extra = JSONObject()
                         .put("constraint_type", "scan_cadence")
                         .put("scan_error", scanStatus.opt("scan_error") ?: JSONObject.NULL),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "bluetooth_scan_policy",
+                    label = "Pause/resume BLE scan mode",
+                    ready = true,
+                    valueLabel = scanStatus.optJSONObject("bluetooth_scan_control")?.optString("scan_mode").orEmpty().ifBlank { BLUETOOTH_SCAN_MODE_AUTO },
+                    detail = "scan_mode=paused suppresses active BluetoothLeScanner work even when refresh=true, while scan_mode=resumed requests a fresh BLE sample on direct Bluetooth actions.",
+                    recommendation = "Use paused mode for cached Bluetooth dashboards and resumed mode for explicit fresh nearby-device scans.",
+                    fraction = 0.9f,
+                    extra = JSONObject()
+                        .put("constraint_type", "agent_scan_control")
+                        .put("tool_action", "bluetooth_scan"),
                 ),
             )
             .put(
@@ -4855,7 +4905,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(toolJson("android_system_tool", "Read phone state and open settings or user-granted Shizuku/Sui actions.", "action, package_name, permission"))
                     .put(toolJson("android_ui_tool", "Inspect and control visible Android UI through accessibility and screenshots.", "action, selectors, coordinates"))
                     .put(toolJson("android_automation_tool", "Run/open/create saved automations, watcher tasks, overlays, notifications, widgets, and Tasker-style triggers.", "action, trigger, data_uri"))
-                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel ratings/AP detail and export rows/vendor OUI/filter facets, Bluetooth nearby devices/service UUID labels/manufacturer names/proximity/history, camera, sensors, SOC compatibility, overlay, Gemma-visible agent observation dashboards, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, refresh, sensor_types, timeout_ms"))
+                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel ratings/AP detail and export rows/vendor OUI/filter facets, Bluetooth nearby devices/service UUID labels/manufacturer names/proximity/history, camera, sensors, SOC compatibility, overlay, Gemma-visible agent observation dashboards, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, scan_mode, refresh, sensor_types, timeout_ms"))
                     .put(toolJson("hindsight_memory_tool", "Retain, recall, reflect, and promote local Hindsight-style memories with tags, entities, keywords, recency, reinforcement, and reusable prompt context.", "action, content, query, tags, category")),
             )
             .put("diagnostics_actions", JSONArray(ACTIONS))
@@ -5792,6 +5842,66 @@ object HermesDeviceDiagnosticsBridge {
         return values.size
     }
 
+    private fun normalizedBluetoothScanMode(arguments: JSONObject): String {
+        val requested = arguments.optString("scan_mode").ifBlank {
+            arguments.optString("bluetooth_scan_mode").ifBlank {
+                arguments.optString("scan_control")
+            }
+        }
+        return when (requested.trim().lowercase(Locale.US)) {
+            "pause", "paused", "passive", "cached", "hold", "stop" -> BLUETOOTH_SCAN_MODE_PAUSED
+            "resume", "resumed", "active", "fresh", "refresh", "live" -> BLUETOOTH_SCAN_MODE_RESUMED
+            else -> BLUETOOTH_SCAN_MODE_AUTO
+        }
+    }
+
+    private fun effectiveBluetoothRefreshRequested(refreshRequested: Boolean, scanMode: String): Boolean {
+        return when (scanMode) {
+            BLUETOOTH_SCAN_MODE_PAUSED -> false
+            BLUETOOTH_SCAN_MODE_RESUMED -> true
+            else -> refreshRequested
+        }
+    }
+
+    private fun bluetoothScanControlJson(
+        scanMode: String,
+        userRefreshRequested: Boolean,
+        effectiveRefreshRequested: Boolean,
+        refreshAccepted: Boolean,
+    ): JSONObject {
+        return JSONObject()
+            .put("scan_mode", scanMode)
+            .put("pause_resume_supported", true)
+            .put("user_refresh_requested", userRefreshRequested)
+            .put("effective_refresh_requested", effectiveRefreshRequested)
+            .put("refresh_suppressed_by_pause", userRefreshRequested && !effectiveRefreshRequested && scanMode == BLUETOOTH_SCAN_MODE_PAUSED)
+            .put("refresh_accepted", refreshAccepted)
+            .put("paused_uses_cached_scan_results", scanMode == BLUETOOTH_SCAN_MODE_PAUSED)
+            .put("resumed_requests_active_scan", scanMode == BLUETOOTH_SCAN_MODE_RESUMED)
+            .put("android_scope", "Per diagnostic request; Android exposes paired devices and cached Hermes history, while active BLE scans require permission and may be sparse.")
+            .put("agent_instruction", bluetoothScanModeInstruction(scanMode, userRefreshRequested, effectiveRefreshRequested, refreshAccepted))
+    }
+
+    private fun bluetoothScanModeInstruction(
+        scanMode: String,
+        userRefreshRequested: Boolean,
+        effectiveRefreshRequested: Boolean,
+        refreshAccepted: Boolean,
+    ): String {
+        return when {
+            scanMode == BLUETOOTH_SCAN_MODE_PAUSED && userRefreshRequested ->
+                "Active Bluetooth scan was paused; explain paired rows and cached RSSI history instead of scanning again."
+            scanMode == BLUETOOTH_SCAN_MODE_PAUSED ->
+                "Use paired Bluetooth rows and cached RSSI history while scan mode is paused."
+            scanMode == BLUETOOTH_SCAN_MODE_RESUMED && refreshAccepted ->
+                "Android accepted the resumed BLE scan request; read RSSI, service, and manufacturer rows before advising."
+            scanMode == BLUETOOTH_SCAN_MODE_RESUMED && effectiveRefreshRequested ->
+                "A resumed BLE scan was requested; Android may still return only paired or sparse advertisement rows."
+            else ->
+                "Auto mode follows the refresh argument and reports Bluetooth permission, enablement, and sparse-advertisement limits honestly."
+        }
+    }
+
     private fun bluetoothScanStatusJson(
         bluetoothAvailable: Boolean,
         bluetoothLeSupported: Boolean,
@@ -5810,12 +5920,22 @@ object HermesDeviceDiagnosticsBridge {
             scanResult.has("error") -> scanResult.optString("error")
             else -> JSONObject.NULL
         }
+        val refreshRequested = scanResult?.optBoolean("refresh_requested", false) ?: false
+        val effectiveRefreshRequested = scanResult?.optBoolean("effective_refresh_requested", refreshRequested) ?: false
+        val scanMode = scanResult?.optString("bluetooth_scan_mode").orEmpty().ifBlank { BLUETOOTH_SCAN_MODE_AUTO }
         return JSONObject()
             .put("bluetooth_available", bluetoothAvailable)
             .put("bluetooth_le_supported", bluetoothLeSupported)
             .put("bluetooth_enabled", bluetoothEnabled)
-            .put("refresh_requested", scanResult?.optBoolean("refresh_requested", false) ?: false)
+            .put("refresh_requested", refreshRequested)
+            .put("effective_refresh_requested", effectiveRefreshRequested)
             .put("refresh_accepted", scanResult?.optBoolean("refresh_accepted", false) ?: false)
+            .put("bluetooth_scan_mode", scanMode)
+            .put(
+                "bluetooth_scan_control",
+                scanResult?.optJSONObject("bluetooth_scan_control")
+                    ?: bluetoothScanControlJson(BLUETOOTH_SCAN_MODE_AUTO, false, false, false),
+            )
             .put("scan_error", scanError)
             .put("can_read_paired_devices", permissionStatus.optBoolean("can_read_paired_devices", false))
             .put("can_scan_nearby_devices", permissionStatus.optBoolean("can_scan_nearby_devices", false))
@@ -8233,6 +8353,9 @@ object HermesDeviceDiagnosticsBridge {
     private const val MAX_BLUETOOTH_HISTORY_SERIES_POINTS = 8
     private const val BLUETOOTH_SIGNAL_HISTORY_PREFS = "hermes_bluetooth_signal_history"
     private const val BLUETOOTH_SIGNAL_HISTORY_KEY = "signal_history"
+    private const val BLUETOOTH_SCAN_MODE_AUTO = "auto"
+    private const val BLUETOOTH_SCAN_MODE_PAUSED = "paused"
+    private const val BLUETOOTH_SCAN_MODE_RESUMED = "resumed"
     private const val MAX_MOTION_HISTORY_SENSORS_PER_SAMPLE = 8
     private const val MAX_MOTION_HISTORY_SENSORS = 12
     private const val MAX_MOTION_HISTORY_ROWS = 12

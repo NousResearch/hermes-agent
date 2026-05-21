@@ -1744,5 +1744,18 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 savings_pct,
             )
             logger.info("Compression #%d complete", self.compression_count)
+            # Compression efficiency ratio
+            if saved_estimate > 0 and new_estimate > 0:
+                ratio = saved_estimate / new_estimate
+                if ratio >= 5.0:
+                    level = "efficient"
+                elif ratio >= 3.0:
+                    level = "moderate"
+                else:
+                    level = "inefficient"
+                logger.info(
+                    "Compression efficiency: %s %.1f:1 (saved=%d input, cost=%d output tokens)",
+                    level, ratio, saved_estimate, new_estimate,
+                )
 
         return compressed

@@ -2964,18 +2964,20 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
-    async def _run_commands_slash(
+    async def _run_palette_slash(
         self,
         interaction: Any,
         page: str = "",
     ) -> None:
-        """Render /commands output with the Discord quick-action palette attached."""
-        command_text = f"/commands {page}".strip()
-        if not await self._check_slash_authorization(interaction, command_text):
+        """Render the Discord quick-action palette as its own /palette command."""
+        palette_command_text = f"/palette {page}".strip()
+        if not await self._check_slash_authorization(interaction, palette_command_text):
             return
 
         await interaction.response.defer(ephemeral=False)
-        event = self._build_slash_event(interaction, command_text)
+        # Reuse the existing /commands renderer for the textual command list,
+        # but keep the interactive palette on its own Discord slash command.
+        event = self._build_slash_event(interaction, f"/commands {page}".strip())
 
         text = "Hermes Quick Actions"
         try:
@@ -2985,7 +2987,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 if response:
                     text = str(response)
         except Exception as exc:
-            logger.warning("Discord /commands quick-action render failed: %s", exc, exc_info=True)
+            logger.warning("Discord /palette quick-action render failed: %s", exc, exc_info=True)
             text = "Hermes Quick Actions"
 
         view = CommandQuickActionsView(self)
@@ -2998,7 +3000,7 @@ class DiscordAdapter(BasePlatformAdapter):
             for chunk in chunks[1:]:
                 await interaction.followup.send(chunk)
         except Exception as exc:
-            logger.debug("Discord /commands quick-action response failed: %s", exc)
+            logger.debug("Discord /palette quick-action response failed: %s", exc)
 
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
@@ -3034,10 +3036,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_retry(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/retry", "Retrying~")
 
-        @tree.command(name="commands", description="Browse commands and show quick actions")
+        @tree.command(name="palette", description="Show Discord quick action palette")
         @discord.app_commands.describe(page="Optional command-list page number")
-        async def slash_commands(interaction: discord.Interaction, page: str = ""):
-            await self._run_commands_slash(interaction, page)
+        async def slash_palette(interaction: discord.Interaction, page: str = ""):
+            await self._run_palette_slash(interaction, page)
 
         @tree.command(name="undo", description="Remove the last exchange")
         async def slash_undo(interaction: discord.Interaction):

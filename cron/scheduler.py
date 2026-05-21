@@ -1584,6 +1584,11 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+        # Cron progress is not wired to gateway adapters here: run_job() may
+        # execute standalone, and live adapters/loop are only available later
+        # in _deliver_result() for the final delivery. Keep interim Telegram
+        # status edits on the gateway message-processing seam until cron has a
+        # low-risk live-delivery callback path.
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,

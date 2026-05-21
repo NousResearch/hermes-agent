@@ -238,6 +238,99 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     return text
 
 
+def _bound_gateway_status_text(adapter: Any, text: str) -> str:
+    """Bound interim status text to one platform message before status edits."""
+    status_bounder = getattr(adapter, "_bound_status_text", None)
+    if callable(status_bounder):
+        try:
+            return status_bounder(text)
+        except Exception:
+            pass
+
+    raw_text = str(text or "")
+    try:
+        limit = int(
+            getattr(
+                adapter,
+                "STATUS_MESSAGE_LENGTH",
+                getattr(adapter, "MAX_MESSAGE_LENGTH", 4000),
+            )
+            or 4000
+        )
+    except Exception:
+        limit = 4000
+    limit = max(1, limit)
+    len_fn = getattr(adapter, "message_len_fn", len)
+    try:
+        if len_fn(raw_text) <= limit:
+            return raw_text
+    except Exception:
+        if len(raw_text) <= limit:
+            return raw_text
+
+    suffix = "..."
+    budget = max(0, limit - len(suffix))
+    best = ""
+    lo, hi = 0, len(raw_text)
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = raw_text[:mid]
+        try:
+            fits = len_fn(candidate) <= budget
+        except Exception:
+            fits = len(candidate) <= budget
+        if fits:
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return (best.rstrip() + suffix) if best else suffix
+
+
+def _gateway_status_text_fits(adapter: Any, text: str) -> bool:
+    """Return True when status text already fits the adapter status bound."""
+    try:
+        return _bound_gateway_status_text(adapter, text) == text
+    except Exception:
+        return False
+
+
+def _bound_gateway_status_text_recent(adapter: Any, text: str) -> str:
+    """Bound status text while preserving the newest progress lines."""
+    raw_text = str(text or "")
+    if not raw_text or _gateway_status_text_fits(adapter, raw_text):
+        return raw_text
+
+    prefix = "..."
+    selected: list[str] = []
+    for line in reversed(raw_text.splitlines() or [raw_text]):
+        body = line if not selected else line + "\n" + "\n".join(selected)
+        candidate = prefix + "\n" + body
+        if _gateway_status_text_fits(adapter, candidate):
+            selected.insert(0, line)
+            continue
+
+        if selected:
+            break
+
+        lo, hi = 0, len(line)
+        best = ""
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            suffix = line[len(line) - mid :] if mid else ""
+            candidate = prefix + "\n" + suffix if suffix else prefix
+            if _gateway_status_text_fits(adapter, candidate):
+                best = suffix
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return (prefix + "\n" + best) if best else _bound_gateway_status_text(adapter, prefix)
+
+    if selected:
+        return prefix + "\n" + "\n".join(selected)
+    return _bound_gateway_status_text(adapter, raw_text)
+
+
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
 
@@ -15662,6 +15755,15 @@ class GatewayRunner:
             if _progress_thread_id == source.thread_id
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
+        _status_update_thread_id = (
+            _progress_thread_id
+            if _progress_thread_id is not None
+            else source.thread_id
+        )
+        _status_update_key = (
+            f"gateway-run:{session_key or session_id or source.chat_id}:"
+            f"{run_generation if run_generation is not None else id(progress_queue)}"
+        )
         _progress_reply_to = (
             event_message_id
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
@@ -15676,10 +15778,29 @@ class GatewayRunner:
             if not adapter:
                 return
 
+            _send_or_update_status = getattr(adapter, "send_or_update_status", None)
+            _status_updates_supported = callable(_send_or_update_status)
+            _status_update_accepts_metadata = False
+            if _status_updates_supported and _progress_metadata:
+                try:
+                    _status_params = inspect.signature(_send_or_update_status).parameters
+                    _status_update_accepts_metadata = (
+                        "metadata" in _status_params
+                        or any(
+                            param.kind is inspect.Parameter.VAR_KEYWORD
+                            for param in _status_params.values()
+                        )
+                    )
+                except (TypeError, ValueError):
+                    _status_update_accepts_metadata = False
+
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
             # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            if (
+                not _status_updates_supported
+                and type(adapter).edit_message is BasePlatformAdapter.edit_message
+            ):
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -15762,6 +15883,20 @@ class GatewayRunner:
                     _cleanup_msg_ids.append(str(result.message_id))
 
             async def _send_progress_text(text: str):
+                if _status_updates_supported:
+                    bounded_text = _bound_gateway_status_text_recent(adapter, text)
+                    kwargs = {}
+                    if _status_update_accepts_metadata:
+                        kwargs["metadata"] = _progress_metadata
+                    result = await _send_or_update_status(
+                        source.chat_id,
+                        _status_update_thread_id,
+                        _status_update_key,
+                        bounded_text,
+                        **kwargs,
+                    )
+                    _track_progress_result(result)
+                    return result
                 result = await adapter.send(
                     chat_id=source.chat_id,
                     content=text,
@@ -15778,6 +15913,8 @@ class GatewayRunner:
                 caller should skip the normal send/edit path for this tick.
                 """
                 nonlocal progress_msg_id, progress_lines, can_edit
+                if _status_updates_supported:
+                    return False
                 if not progress_lines or not can_edit:
                     return False
                 groups = _split_progress_groups(progress_lines)
@@ -15885,8 +16022,13 @@ class GatewayRunner:
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
                         full_text = "\n".join(progress_lines)
-                        result = await _edit_progress_message(progress_msg_id, full_text)
+                        if _status_updates_supported:
+                            result = await _send_progress_text(full_text)
+                        else:
+                            result = await _edit_progress_message(progress_msg_id, full_text)
                         if not result.success:
+                            if _status_updates_supported:
+                                continue
                             _err = (getattr(result, "error", "") or "").lower()
                             # Transient network errors (ConnectError, timeouts)
                             # must not permanently disable progress-message
@@ -15925,20 +16067,10 @@ class GatewayRunner:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=full_text,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
+                            result = await _send_progress_text(full_text)
                         else:
                             # Editing unsupported: send just this line
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
+                            result = await _send_progress_text(msg)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
                             if _cleanup_progress:
@@ -15971,7 +16103,10 @@ class GatewayRunner:
                                 if can_edit and progress_lines and progress_msg_id:
                                     _pending_text = _progress_text(progress_lines)
                                     try:
-                                        await _edit_progress_message(progress_msg_id, _pending_text)
+                                        if _status_updates_supported:
+                                            await _send_progress_text(_pending_text)
+                                        else:
+                                            await _edit_progress_message(progress_msg_id, _pending_text)
                                     except Exception:
                                         pass
                                 progress_msg_id = None
@@ -15989,7 +16124,10 @@ class GatewayRunner:
                     if can_edit and progress_lines and progress_msg_id:
                         full_text = _progress_text(progress_lines)
                         try:
-                            await _edit_progress_message(progress_msg_id, full_text)
+                            if _status_updates_supported:
+                                await _send_progress_text(full_text)
+                            else:
+                                await _edit_progress_message(progress_msg_id, full_text)
                         except Exception:
                             pass
                     return
@@ -16048,6 +16186,44 @@ class GatewayRunner:
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 
+        async def _send_status_text(prepared_message: str):
+            sender = getattr(_status_adapter, "send_or_update_status", None)
+            if callable(sender):
+                bounded_message = _bound_gateway_status_text_recent(_status_adapter, prepared_message)
+                kwargs = {}
+                if _status_thread_metadata:
+                    try:
+                        params = inspect.signature(sender).parameters
+                        if (
+                            "metadata" in params
+                            or any(
+                                param.kind is inspect.Parameter.VAR_KEYWORD
+                                for param in params.values()
+                            )
+                        ):
+                            kwargs["metadata"] = _status_thread_metadata
+                    except (TypeError, ValueError):
+                        pass
+                return await sender(
+                    _status_chat_id,
+                    _status_update_thread_id,
+                    _status_update_key,
+                    bounded_message,
+                    **kwargs,
+                )
+            return await _status_adapter.send(
+                _status_chat_id,
+                prepared_message,
+                metadata=_status_thread_metadata,
+            )
+
+        async def _send_interim_assistant_text(text: str):
+            return await _status_adapter.send(
+                _status_chat_id,
+                text,
+                metadata=_status_thread_metadata,
+            )
+
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
@@ -16065,11 +16241,7 @@ class GatewayRunner:
                 )
                 return
             _fut = safe_schedule_threadsafe(
-                _status_adapter.send(
-                    _status_chat_id,
-                    prepared_message,
-                    metadata=_status_thread_metadata,
-                ),
+                _send_status_text(prepared_message),
                 _loop_for_step,
                 logger=logger,
                 log_message=f"status_callback ({event_type}) scheduling error",
@@ -16240,11 +16412,7 @@ class GatewayRunner:
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
                 safe_schedule_threadsafe(
-                    _status_adapter.send(
-                        _status_chat_id,
-                        text,
-                        metadata=_status_thread_metadata,
-                    ),
+                    _send_interim_assistant_text(text),
                     _loop_for_step,
                     logger=logger,
                     log_message="interim_assistant_callback scheduling error",
@@ -17618,7 +17786,7 @@ class GatewayRunner:
             and not response.get("failed")
             and hasattr(_cleanup_adapter, "register_post_delivery_callback")
         ):
-            _ids_snapshot = list(_cleanup_msg_ids)
+            _ids_snapshot = list(dict.fromkeys(_cleanup_msg_ids))
             _chat_id_snapshot = source.chat_id
             _adapter_snapshot = _cleanup_adapter
             _loop_snapshot = asyncio.get_running_loop()

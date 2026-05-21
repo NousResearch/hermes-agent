@@ -7,7 +7,7 @@ import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
-import { type TranslationKey, useI18n } from '../i18n.js'
+import { type TranslationKey, useI18n } from '../i18n/index.js'
 import { pick } from '../lib/text.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,

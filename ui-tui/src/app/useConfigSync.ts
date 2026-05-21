@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import { normalizeLocale } from '../i18n.js'
+import { normalizeLocale } from '../i18n/index.js'
 import type {
   ConfigFullResponse,
   ConfigMtimeResponse,

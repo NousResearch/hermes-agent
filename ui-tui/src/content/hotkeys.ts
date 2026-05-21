@@ -1,4 +1,4 @@
-import type { TranslationKey } from '../i18n.js'
+import type { TranslationKey } from '../i18n/index.js'
 import { isMac, isRemoteShell } from '../lib/platform.js'
 
 const action = isMac ? 'Cmd' : 'Ctrl'

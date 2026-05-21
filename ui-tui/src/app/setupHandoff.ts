@@ -1,7 +1,7 @@
 import type { RunExternalProcess } from '@hermes/ink'
 
 import type { SetupStatusResponse } from '../gatewayTypes.js'
-import { type Locale, translate } from '../i18n.js'
+import { type Locale, translate } from '../i18n/index.js'
 import type { LaunchResult } from '../lib/externalCli.js'
 
 import type { SlashHandlerContext } from './interfaces.js'

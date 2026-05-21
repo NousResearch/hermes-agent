@@ -1,6 +1,6 @@
 import { parseSlashCommand } from '../domain/slash.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
-import { translate } from '../i18n.js'
+import { translate } from '../i18n/index.js'
 import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
 
 import type { SlashHandlerContext } from './interfaces.js'

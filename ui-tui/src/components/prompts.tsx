@@ -1,7 +1,7 @@
 import { Box, Text, useInput } from '@hermes/ink'
 import { useState } from 'react'
 
-import { useI18n } from '../i18n.js'
+import { useI18n } from '../i18n/index.js'
 import { isMac } from '../lib/platform.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'

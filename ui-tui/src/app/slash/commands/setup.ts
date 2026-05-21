@@ -1,6 +1,6 @@
 import { withInkSuspended } from '@hermes/ink'
 
-import { translate } from '../../../i18n.js'
+import { translate } from '../../../i18n/index.js'
 import { launchHermesCommand } from '../../../lib/externalCli.js'
 import { runExternalSetup } from '../../setupHandoff.js'
 import type { SlashCommand } from '../types.js'

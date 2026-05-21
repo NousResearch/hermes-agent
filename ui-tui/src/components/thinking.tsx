@@ -15,7 +15,7 @@ import {
   treeTotals,
   widthByDepth
 } from '../lib/subagentTree.js'
-import { useI18n } from '../i18n.js'
+import { useI18n } from '../i18n/index.js'
 import {
   boundedLiveRenderText,
   compactPreview,

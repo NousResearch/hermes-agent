@@ -1,6 +1,6 @@
 import { Box, Text } from '@hermes/ink'
 
-import { useI18n } from '../i18n.js'
+import { useI18n } from '../i18n/index.js'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 

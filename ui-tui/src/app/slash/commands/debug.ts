@@ -1,5 +1,5 @@
 import { formatBytes, performHeapDump } from '../../../lib/memory.js'
-import { translate } from '../../../i18n.js'
+import { translate } from '../../../i18n/index.js'
 import type { SlashCommand } from '../types.js'
 
 export const debugCommands: SlashCommand[] = [

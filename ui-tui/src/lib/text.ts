@@ -4,8 +4,8 @@ import {
   THINKING_COT_MAX
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
-import type { Locale } from '../i18n-consts.js'
-import { TRAIL_PATTERNS } from '../i18n-consts.js'
+import type { Locale } from '../i18n/index.js'
+import { TRAIL_PATTERNS } from '../i18n/index.js'
 import type { ThinkingMode } from '../types.js'
 
 const ESC = String.fromCharCode(27)

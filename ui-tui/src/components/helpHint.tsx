@@ -1,7 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 
 import { HOTKEY_DEFS } from '../content/hotkeys.js'
-import { useI18n, type TranslationKey } from '../i18n.js'
+import { useI18n, type TranslationKey } from '../i18n/index.js'
 import type { Theme } from '../theme.js'
 
 const COMMON_COMMAND_KEYS: [string, TranslationKey][] = [

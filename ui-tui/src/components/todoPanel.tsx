@@ -1,7 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
-import { useI18n } from '../i18n.js'
+import { useI18n } from '../i18n/index.js'
 import { countPendingTodos } from '../lib/liveProgress.js'
 import { todoGlyph, todoTone } from '../lib/todo.js'
 import type { Theme } from '../theme.js'

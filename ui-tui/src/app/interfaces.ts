@@ -4,7 +4,7 @@ import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'rea
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ImageAttachResponse } from '../gatewayTypes.js'
-import type { Locale } from '../i18n.js'
+import type { Locale } from '../i18n/index.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'

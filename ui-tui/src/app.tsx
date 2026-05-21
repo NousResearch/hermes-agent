@@ -5,7 +5,7 @@ import { $uiState } from './app/uiStore.js'
 import { useMainApp } from './app/useMainApp.js'
 import { AppLayout } from './components/appLayout.js'
 import type { GatewayClient } from './gatewayClient.js'
-import { I18nProvider } from './i18n.js'
+import { I18nProvider } from './i18n/index.js'
 
 export function App({ gw }: { gw: GatewayClient }) {
   const { appActions, appComposer, appProgress, appStatus, appTranscript, gateway } = useMainApp(gw)

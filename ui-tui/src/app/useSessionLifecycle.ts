@@ -5,7 +5,7 @@ import { evictInkCaches } from '@hermes/ink'
 import { useCallback, type RefObject } from 'react'
 
 import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
-import { translate, type TranslationKey } from '../i18n.js'
+import { translate, type TranslationKey } from '../i18n/index.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'

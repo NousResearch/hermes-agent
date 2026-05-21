@@ -13,7 +13,7 @@ import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '..
 import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
-import { useI18n } from '../i18n.js'
+import { useI18n } from '../i18n/index.js'
 import { asRpcResult } from '../lib/rpc.js'
 import {
   buildSubagentTree,

@@ -9,7 +9,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
-import { normalizeLocale, translate, type TranslationKey } from '../i18n.js'
+import { normalizeLocale, translate, type TranslationKey } from '../i18n/index.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'

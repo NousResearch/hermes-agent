@@ -17,7 +17,7 @@ import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
-import { translate, type Locale, type TranslationKey } from '../../../i18n.js'
+import { translate, type Locale, type TranslationKey } from '../../../i18n/index.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {

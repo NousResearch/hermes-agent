@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionDeleteResponse, SessionListItem, SessionListResponse } from '../gatewayTypes.js'
-import { useI18n } from '../i18n.js'
+import { useI18n } from '../i18n/index.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 

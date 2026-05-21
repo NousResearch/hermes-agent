@@ -276,6 +276,7 @@ class LoadedPlugin:
     tools_registered: List[str] = field(default_factory=list)
     hooks_registered: List[str] = field(default_factory=list)
     commands_registered: List[str] = field(default_factory=list)
+    worker_lanes_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
 
@@ -353,6 +354,62 @@ class PluginContext:
             "Plugin %s registered tool: %s%s",
             self.manifest.name, name, " (override)" if override else "",
         )
+
+    # -- worker lane registration -------------------------------------------
+
+    def register_worker_lane(
+        self,
+        lane=None,
+        *,
+        name: str | None = None,
+        kind: str = "plugin",
+        description: str = "",
+        spawn_fn: Callable | None = None,
+        success_policy: str = "block_for_review",
+        max_concurrency: int | None = None,
+        **config: Any,
+    ) -> None:
+        """Register a Kanban external worker lane from a plugin.
+
+        Registration errors are logged and swallowed so a broken plugin lane
+        cannot prevent Hermes startup.
+        """
+        try:
+            from hermes_cli.worker_lanes import WorkerLane, register_worker_lane
+
+            if lane is None:
+                if name is None or spawn_fn is None:
+                    raise ValueError("name and spawn_fn are required")
+                lane = WorkerLane(
+                    name=name,
+                    kind=kind,
+                    description=description,
+                    spawn_fn=spawn_fn,
+                    success_policy=success_policy,
+                    max_concurrency=max_concurrency,
+                    source=f"plugin:{self.manifest.name}",
+                    config=dict(config),
+                )
+            elif isinstance(lane, WorkerLane):
+                lane.source = lane.source or f"plugin:{self.manifest.name}"
+            else:
+                raise TypeError("lane must be a WorkerLane instance")
+
+            register_worker_lane(lane)
+            self._manager._plugin_worker_lane_names.add(lane.name)
+            logger.debug(
+                "Plugin %s registered worker lane: %s",
+                self.manifest.name,
+                lane.name,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Plugin '%s' failed to register worker lane %r: %s",
+                self.manifest.name,
+                name or getattr(lane, "name", None),
+                exc,
+                exc_info=_PLUGINS_DEBUG,
+            )
 
     # -- message injection --------------------------------------------------
 
@@ -775,6 +832,7 @@ class PluginManager:
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
+        self._plugin_worker_lane_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
@@ -800,10 +858,16 @@ class PluginManager:
             self._plugins.clear()
             self._hooks.clear()
             self._plugin_tool_names.clear()
+            self._plugin_worker_lane_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
             self._context_engine = None
+            try:
+                from hermes_cli.worker_lanes import clear_worker_lanes
+                clear_worker_lanes(source_prefix="plugin:")
+            except Exception:
+                pass
         self._discovered = True
 
         manifests: List[PluginManifest] = []
@@ -1212,9 +1276,17 @@ class PluginManager:
                     c for c in self._plugin_commands
                     if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
+                loaded.worker_lanes_registered = [
+                    n for n in self._plugin_worker_lane_names
+                    if n not in {
+                        lane
+                        for name, p in self._plugins.items()
+                        for lane in p.worker_lanes_registered
+                    }
+                ]
                 loaded.enabled = True
                 logger.debug(
-                    "  registered: %d tool(s), %d hook(s), %d slash command(s), %d CLI command(s)",
+                    "  registered: %d tool(s), %d hook(s), %d slash command(s), %d CLI command(s), %d worker lane(s)",
                     len(loaded.tools_registered),
                     len(loaded.hooks_registered),
                     len(loaded.commands_registered),
@@ -1222,6 +1294,7 @@ class PluginManager:
                         1 for c in self._cli_commands
                         if self._cli_commands[c].get("plugin") == manifest.name
                     ),
+                    len(loaded.worker_lanes_registered),
                 )
 
         except Exception as exc:
@@ -1349,6 +1422,7 @@ class PluginManager:
                     "tools": len(loaded.tools_registered),
                     "hooks": len(loaded.hooks_registered),
                     "commands": len(loaded.commands_registered),
+                    "worker_lanes": len(loaded.worker_lanes_registered),
                     "error": loaded.error,
                 }
             )

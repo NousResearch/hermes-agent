@@ -1254,12 +1254,15 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
         print("(no assignees — create a profile with `hermes -p <name> setup`)")
         return 0
     # Header
-    print(f"{'NAME':20s}  {'ON DISK':8s}  COUNTS")
+    print(f"{'NAME':20s}  {'TYPE':14s}  COUNTS")
     for entry in data:
-        on_disk = "yes" if entry["on_disk"] else "no"
+        if entry.get("worker_lane"):
+            entry_type = entry.get("worker_kind") or "worker_lane"
+        else:
+            entry_type = "profile" if entry["on_disk"] else "unknown"
         counts = entry["counts"] or {}
         count_str = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "(idle)"
-        print(f"{entry['name']:20s}  {on_disk:8s}  {count_str}")
+        print(f"{entry['name']:20s}  {entry_type:14s}  {count_str}")
     return 0
 
 
@@ -2023,6 +2026,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_concurrency": res.skipped_concurrency,
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2050,6 +2054,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if res.skipped_concurrency:
+        print(f"Skipped (lane concurrency): {', '.join(res.skipped_concurrency)}")
     return 0
 
 

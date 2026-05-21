@@ -26,7 +26,13 @@ To be a kanban worker lane, an integration must provide three things:
 
 ### 1. An assignee string
 
-The dispatcher matches `task.assignee` against either a Hermes profile name (the default lane shape) or a registered non-spawnable identifier (the plugin lane shape — see [Adding an external CLI worker lane](#adding-an-external-cli-worker-lane) below). Tasks whose assignee doesn't resolve are left on `ready` with a `skipped_nonspawnable` event so a board operator can fix them; they are not silently dropped or executed by an arbitrary fallback.
+The dispatcher resolves `task.assignee` in this order:
+
+1. registered external worker lane
+2. Hermes profile name
+3. `skipped_nonspawnable`
+
+This keeps existing profile workers compatible while allowing names such as `codex-fast`, `codex-deep`, and `codex-review` to be registered as external lanes. Unknown terminal/control-plane names still stay in `ready` or `review` and appear in `skipped_nonspawnable` rather than being spawned through a broken fallback.
 
 ### 2. A spawn mechanism
 
@@ -44,7 +50,21 @@ For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <ass
 | `HERMES_PROFILE` | the worker's own profile name (for `kanban_comment` author attribution) |
 | `HERMES_TENANT` | tenant namespace, if the task has one |
 
-For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spawn_fn` callable that gets `task`, `workspace`, and `board` and returns an optional pid for crash detection.
+For non-Hermes lanes, the worker lane registry supplies a trusted `spawn_fn` callable that gets `task`, `workspace`, and `board` and returns an optional pid for crash detection. Lanes can be registered from config or by plugins:
+
+```python
+def register(ctx):
+    ctx.register_worker_lane(
+        name="my-cli-worker",
+        kind="plugin",
+        description="Runs my trusted CLI worker",
+        spawn_fn=spawn_my_worker,
+        success_policy="block_for_review",
+        max_concurrency=1,
+    )
+```
+
+Plugin lane registration failures are logged and do not stop Hermes startup.
 
 ### 3. A lifecycle terminator
 
@@ -88,13 +108,117 @@ When you create profiles for your fleet, choose names that match the *role* you 
 
 A specialisation of the profile lane: an orchestrator is a Hermes profile whose toolset includes `kanban` but excludes `terminal` / `file` / `code` / `web` for implementation. Its job is decomposing a high-level goal into child tasks via `kanban_create` + `kanban_link` and stepping back. The orchestrator skill encodes the anti-temptation rules.
 
-## Adding an external CLI worker lane
+## Codex CLI adapter
 
-Wiring a non-Hermes CLI tool (Codex CLI, Claude Code CLI, OpenCode CLI, a local coding-model runner, etc.) as a kanban worker lane is *not yet a paved path*. The dispatcher's spawn function is pluggable (`spawn_fn` is a parameter on `dispatch_once`), and a plugin could register its own `spawn_fn` for a non-Hermes assignee, but the surrounding integration work — wrapping the CLI's exit code into `kanban_complete` / `kanban_block` calls, mapping the CLI's workspace/sandbox conventions onto the dispatcher's `HERMES_KANBAN_WORKSPACE` env, handling auth and per-CLI policy — is still per-integration design work.
+Codex CLI is the first built-in external adapter. Configure one or more lanes in `config.yaml`:
 
-If you're considering adding a CLI lane, open an issue describing the specific CLI and the workflow you're trying to enable. The contract above is the constraints any such lane must satisfy; the implementation shape (one plugin per CLI vs a generic CLI-runner plugin parameterised by config) is open.
+```yaml
+kanban:
+  worker_lanes:
+    codex-fast:
+      type: codex_cli
+      model: gpt-5.4-mini
+      sandbox: workspace-write
+      approval: never
+      max_concurrency: 2
+      success_policy: block_for_review
 
-The historical issue for this is [#19931](https://github.com/NousResearch/hermes-agent/issues/19931) and the closed-not-merged Codex-specific PR [#19924](https://github.com/NousResearch/hermes-agent/pull/19924) — those describe the original architecture proposal but didn't land a runner.
+    codex-deep:
+      type: codex_cli
+      model: gpt-5.5
+      sandbox: workspace-write
+      approval: never
+      max_concurrency: 1
+      success_policy: block_for_review
+
+    codex-review:
+      type: codex_cli
+      model: gpt-5.5
+      sandbox: read-only
+      approval: never
+      max_concurrency: 1
+      success_policy: block_for_review
+```
+
+The adapter runs a Hermes-owned wrapper process, and that wrapper starts Codex with fixed argv:
+
+```text
+codex --cd <workspace> --sandbox <sandbox> --ask-for-approval <approval> [--model <model>] exec -
+```
+
+The command is not taken from model output and is not an arbitrary shell string. The wrapper passes a small allowlisted environment to Codex rather than forwarding every secret variable.
+
+Each worker instance records the worker lane, kind, task id, run id, worker pid, claim lock, workspace, and model in events and metadata. Codex output is written to the normal worker log (`hermes kanban log <task_id>`).
+
+The wrapper also heartbeats the task and parses these progress formats into `task_events` as `worker_progress`:
+
+```text
+o (1) 分析入口
+x (2) 修改 dispatcher
+```
+
+```text
+- [ ] 分析入口
+- [x] 修改 dispatcher
+```
+
+On success, the default `block_for_review` policy blocks the task with structured evidence instead of marking it `done`:
+
+```text
+review-required: Codex completed; Hermes review required
+```
+
+The metadata includes bounded output tail, git status, changed files, diff summary, verification commands, and review reason. This is distinct from the `review` column's profile-review dispatch path in current Kanban; Codex lane success hands evidence to Hermes/main-agent review without replaying the full Codex session.
+
+## Skill lane intent
+
+Hermes skills can choose an existing lane directly:
+
+```text
+assignee=codex-deep
+```
+
+Skills may also propose a lane request:
+
+```yaml
+worker_lane_request:
+  name: codex-long-context
+  type: codex_cli
+  model: gpt-5.5
+  sandbox: workspace-write
+  approval: never
+  max_concurrency: 1
+  success_policy: block_for_review
+  reason: "large refactor requiring stronger reasoning"
+```
+
+Model output is not trusted execution config. Requests must pass a deterministic validator: type allowlist, model allowlist, sandbox allowlist, approval allowlist, max concurrency cap, fixed command shape, and no arbitrary shell command fields.
+
+## Progress queries
+
+Progress queries should read Kanban state, events, logs, and run metadata:
+
+- `hermes kanban show <task_id>`
+- `hermes kanban tail <task_id>`
+- `hermes kanban log <task_id>`
+- `hermes kanban runs <task_id> --json`
+
+These reads do not interrupt a running external worker.
+
+## Goal bridge
+
+The intended `/goal` bridge is:
+
+```text
+/goal create "complex objective"
+-> create_kanban_task_from_goal(...)
+-> orchestrator creates child tasks
+-> child tasks use assignee=<lane_name>
+-> external lanes execute
+-> Hermes reviews Kanban evidence and responds to the user
+```
+
+The current `/goal` session-level semantics remain intact. The lane registry and assignee resolution are bridge points for a future goal-to-Kanban orchestrator.
 
 ## Failure modes the dispatcher handles
 
@@ -105,6 +229,14 @@ So lane authors don't have to reimplement these:
 - **Run-level retry** — when a task is retried (post-block, post-crash, post-reclaim), the worker can use the `expected_run_id` parameter on terminating tools to fail fast if its own run was already superseded.
 - **Per-task max runtime** — `task.max_runtime_seconds` hard-caps wall-clock time per run, regardless of PID liveness. Catches genuinely-deadlocked workers that the live-PID extension would otherwise keep running.
 - **Stranded-task detection** — a ready task whose assignee never produces a claim within `kanban.stranded_threshold_seconds` (default 30 min) shows up in `hermes kanban diagnostics` as a `stranded_in_ready` warning. Severity escalates to error at 2x the threshold and critical at 6x. Catches typo'd assignees, deleted profiles, and down external worker pools in one signal — identity-agnostic, no per-board allowlist to curate.
+
+## Current limits
+
+- No full Codex event stream integration yet; progress is parsed from wrapper stdout/stderr.
+- No approval bridge; configure Codex lanes with controlled approval policy.
+- No automatic deep review for large diffs.
+- External lane command shapes are adapter-defined, not model-defined.
+- Review reads Codex artifacts and bounded metadata, not the full Codex session.
 
 ## Related
 

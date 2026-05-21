@@ -1936,6 +1936,19 @@ def _append_event(
     )
 
 
+def record_task_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    payload: Optional[dict] = None,
+    *,
+    run_id: Optional[int] = None,
+) -> None:
+    """Public helper for trusted external worker wrappers to emit events."""
+    with write_txn(conn):
+        _append_event(conn, task_id, kind, payload, run_id=run_id)
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3034,6 +3047,7 @@ def block_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    metadata: Optional[dict] = None,
 ) -> bool:
     """Transition ``running -> blocked``."""
     with write_txn(conn):
@@ -3070,6 +3084,7 @@ def block_task(
             conn, task_id,
             outcome="blocked", status="blocked",
             summary=reason,
+            metadata=metadata,
         )
         # Synthesize a run when blocking a never-claimed task so the
         # reason is preserved in attempt history.
@@ -3078,8 +3093,12 @@ def block_task(
                 conn, task_id,
                 outcome="blocked",
                 summary=reason,
+                metadata=metadata,
             )
-        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        payload = {"reason": reason}
+        if metadata:
+            payload["metadata"] = metadata
+        _append_event(conn, task_id, "blocked", payload, run_id=run_id)
         return True
 
 
@@ -3695,6 +3714,9 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_concurrency: list[str] = field(default_factory=list)
+    """Ready/review task ids skipped because their worker lane's
+    max_concurrency is already saturated."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -4530,7 +4552,14 @@ def _record_spawn_failure(
     )
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
+def _set_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    *,
+    worker_lane: Optional[str] = None,
+    worker_kind: Optional[str] = None,
+) -> None:
     """Record the spawned child's pid + emit a ``spawned`` event.
 
     The event's payload carries the pid so a human reading ``hermes kanban
@@ -4548,7 +4577,12 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
                 "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
                 (int(pid), run_id),
             )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        payload: dict[str, Any] = {"pid": int(pid)}
+        if worker_lane:
+            payload["worker_lane"] = worker_lane
+        if worker_kind:
+            payload["worker_kind"] = worker_kind
+        _append_event(conn, task_id, "spawned", payload, run_id=run_id)
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -4644,7 +4678,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    whose assignee maps to a real Hermes profile or registered worker lane.
 
     Used by the gateway- and CLI-embedded dispatchers' health telemetry to
     decide whether ``0 spawned`` is a "stuck" condition (real spawnable
@@ -4664,19 +4698,28 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     if not rows:
         return False
     try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+        from hermes_cli.worker_lanes import (
+            register_configured_worker_lanes,
+            resolve_worker_assignee,
+        )
+        register_configured_worker_lanes()
     except Exception:
-        # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
+        resolve_worker_assignee = None  # type: ignore[assignment]
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if resolve_worker_assignee is None:
+            # Can't introspect — assume spawnable, preserve legacy behavior.
             return True
+        try:
+            if resolve_worker_assignee(row["assignee"], refresh_config=False).spawnable:
+                return True
+        except Exception:
+            continue
     return False
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one review+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    whose assignee maps to a real Hermes profile or registered worker lane.
 
     Mirror of :func:`has_spawnable_ready` for the review column —
     used by the health telemetry to decide whether the dispatcher
@@ -4690,13 +4733,30 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     if not rows:
         return False
     try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+        from hermes_cli.worker_lanes import (
+            register_configured_worker_lanes,
+            resolve_worker_assignee,
+        )
+        register_configured_worker_lanes()
     except Exception:
-        return True
+        resolve_worker_assignee = None  # type: ignore[assignment]
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if resolve_worker_assignee is None:
             return True
+        try:
+            if resolve_worker_assignee(row["assignee"], refresh_config=False).spawnable:
+                return True
+        except Exception:
+            continue
     return False
+
+
+def _running_count_for_assignee(conn: sqlite3.Connection, assignee: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status = 'running' AND assignee = ?",
+        (_canonical_assignee(assignee),),
+    ).fetchone()
+    return int(row[0] if row else 0)
 
 
 def dispatch_once(
@@ -4788,6 +4848,14 @@ def dispatch_once(
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
+    try:
+        from hermes_cli.worker_lanes import (
+            register_configured_worker_lanes,
+            resolve_worker_assignee,
+        )
+        register_configured_worker_lanes()
+    except Exception:
+        resolve_worker_assignee = None  # type: ignore[assignment]
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -4824,27 +4892,35 @@ def dispatch_once(
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
     spawned = 0
+    lane_spawned: dict[str, int] = {}
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        # Skip ready tasks whose assignee is not a real Hermes profile.
-        # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
-        # with "Profile 'X' does not exist" when the assignee names a
-        # control-plane lane (e.g. an interactive Claude Code terminal
-        # like ``orion-cc`` / ``orion-research``) rather than a Hermes
-        # profile. Those task lanes are pulled by terminals via
-        # ``claim_task`` directly and should NEVER auto-spawn — the
-        # subprocess would crash on startup, get reaped as a zombie,
-        # the task would loop back to ``ready`` on next tick, and we'd
-        # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
-        try:
-            from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        # Resolve before claiming so non-spawnable control-plane lanes stay in
+        # ready instead of being handed to the profile fallback. Historically
+        # this guard only checked ``profile_exists`` because `_default_spawn`
+        # runs ``hermes -p <assignee>``; without the guard, assignees such as
+        # interactive terminal lanes would crash on startup, loop back to ready,
+        # and burn dispatcher cycles. The resolver preserves that behavior while
+        # adding registered external worker lanes ahead of Hermes profiles.
+        if resolve_worker_assignee is None:
+            assignee_resolution = None
+        else:
+            try:
+                assignee_resolution = resolve_worker_assignee(
+                    row["assignee"],
+                    refresh_config=False,
+                )
+            except Exception:
+                result.skipped_nonspawnable.append(row["id"])
+                continue
+        if (
+            assignee_resolution is not None
+            and assignee_resolution.kind == "skipped_nonspawnable"
+        ):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -4853,6 +4929,18 @@ def dispatch_once(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        lane = (
+            assignee_resolution.lane
+            if assignee_resolution is not None
+            and assignee_resolution.kind == "worker_lane"
+            else None
+        )
+        if lane is not None and lane.max_concurrency is not None:
+            lane_running = _running_count_for_assignee(conn, lane.name)
+            lane_local = lane_spawned.get(lane.name, 0) if dry_run else 0
+            if lane_running + lane_local >= int(lane.max_concurrency):
+                result.skipped_concurrency.append(row["id"])
+                continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -4876,6 +4964,8 @@ def dispatch_once(
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            if lane is not None:
+                lane_spawned[lane.name] = lane_spawned.get(lane.name, 0) + 1
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -4892,7 +4982,9 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        _spawn = spawn_fn if spawn_fn is not None else (
+            lane.spawn_fn if lane is not None else _default_spawn
+        )
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
@@ -4907,7 +4999,13 @@ def dispatch_once(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    worker_lane=(lane.name if lane is not None else None),
+                    worker_kind=(lane.kind if lane is not None else None),
+                )
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -4945,15 +5043,39 @@ def dispatch_once(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        try:
-            from hermes_cli.profiles import profile_exists
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if resolve_worker_assignee is None:
+            assignee_resolution = None
+        else:
+            try:
+                assignee_resolution = resolve_worker_assignee(
+                    row["assignee"],
+                    refresh_config=False,
+                )
+            except Exception:
+                result.skipped_nonspawnable.append(row["id"])
+                continue
+        if (
+            assignee_resolution is not None
+            and assignee_resolution.kind == "skipped_nonspawnable"
+        ):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        lane = (
+            assignee_resolution.lane
+            if assignee_resolution is not None
+            and assignee_resolution.kind == "worker_lane"
+            else None
+        )
+        if lane is not None and lane.max_concurrency is not None:
+            lane_running = _running_count_for_assignee(conn, lane.name)
+            lane_local = lane_spawned.get(lane.name, 0) if dry_run else 0
+            if lane_running + lane_local >= int(lane.max_concurrency):
+                result.skipped_concurrency.append(row["id"])
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            if lane is not None:
+                lane_spawned[lane.name] = lane_spawned.get(lane.name, 0) + 1
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -4975,8 +5097,11 @@ def dispatch_once(
         # appends task.skills via --skills.  Setting task.skills here
         # means the review agent gets both kanban-worker (lifecycle)
         # and sdlc-review (review logic: AC verification, merge, etc.).
-        claimed.skills = ["sdlc-review"]
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        if lane is None:
+            claimed.skills = ["sdlc-review"]
+        _spawn = spawn_fn if spawn_fn is not None else (
+            lane.spawn_fn if lane is not None else _default_spawn
+        )
         try:
             import inspect
             try:
@@ -4988,7 +5113,13 @@ def dispatch_once(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    worker_lane=(lane.name if lane is not None else None),
+                    worker_kind=(lane.kind if lane is not None else None),
+                )
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
@@ -6141,6 +6272,19 @@ def known_assignees(conn: sqlite3.Connection) -> list[dict]:
       the whole board.
     """
     on_disk = set(list_profiles_on_disk())
+    worker_lane_names: set[str] = set()
+    worker_lane_kinds: dict[str, str] = {}
+    try:
+        from hermes_cli.worker_lanes import (
+            list_worker_lanes,
+            register_configured_worker_lanes,
+        )
+        register_configured_worker_lanes()
+        for lane in list_worker_lanes():
+            worker_lane_names.add(lane.name)
+            worker_lane_kinds[lane.name] = lane.kind
+    except Exception:
+        pass
 
     # Count tasks per (assignee, status), excluding archived.
     counts: dict[str, dict[str, int]] = {}
@@ -6151,11 +6295,13 @@ def known_assignees(conn: sqlite3.Connection) -> list[dict]:
     ):
         counts.setdefault(row["assignee"], {})[row["status"]] = int(row["n"])
 
-    names = sorted(on_disk | set(counts.keys()))
+    names = sorted(on_disk | worker_lane_names | set(counts.keys()))
     return [
         {
             "name": name,
             "on_disk": name in on_disk,
+            "worker_lane": name in worker_lane_names,
+            "worker_kind": worker_lane_kinds.get(name),
             "counts": counts.get(name, {}),
         }
         for name in names

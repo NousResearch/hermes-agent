@@ -486,14 +486,14 @@ def memory_tool(
         result = store.add(target, content)
 
     elif action == "replace":
-        if not old_text:
+        if old_text is None:
             return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
             return tool_error("content is required for 'replace' action.", success=False)
         result = store.replace(target, old_text, content)
 
     elif action == "remove":
-        if not old_text:
+        if old_text is None:
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 

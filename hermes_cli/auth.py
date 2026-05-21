@@ -1388,7 +1388,7 @@ def resolve_provider(
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
-        "openai": "custom",
+        "openai": "openrouter",
         # Local server aliases — route through the generic custom provider
         "ollama": "custom", "ollama_cloud": "ollama-cloud",
         "vllm": "custom", "llamacpp": "custom",

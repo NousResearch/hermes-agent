@@ -13,6 +13,9 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
+- POST /v1/voice/sessions          — create a lightweight voice session for mobile clients
+- POST /v1/voice/sessions/{voice_session_id}/turns — submit a text voice turn, optionally synthesize TTS
+- GET/DELETE /v1/voice/sessions/{voice_session_id} — inspect or end a voice session
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -25,10 +28,12 @@ Requires:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import socket as _socket
 import re
@@ -664,6 +669,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Lightweight mobile voice sessions.  These are intentionally in-memory:
+        # they are a short-lived "dial Jeeves" control plane over the existing
+        # server-side AIAgent/session persistence, not a realtime media server.
+        self._voice_sessions: Dict[str, Dict[str, Any]] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -999,6 +1008,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": True,
                 "run_events_sse": True,
                 "run_stop": True,
+                "voice_sessions": True,
+                "voice_text_turns": True,
+                "voice_audio_upload": False,
+                "voice_tts": "optional_best_effort",
                 "run_approval_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
@@ -1017,7 +1030,231 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "voice_sessions": {"method": "POST", "path": "/v1/voice/sessions"},
+                "voice_session": {"method": "GET", "path": "/v1/voice/sessions/{voice_session_id}"},
+                "voice_turns": {"method": "POST", "path": "/v1/voice/sessions/{voice_session_id}/turns"},
+                "voice_hangup": {"method": "DELETE", "path": "/v1/voice/sessions/{voice_session_id}"},
             },
+        })
+
+    def _voice_session_public(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the client-safe view of an in-memory voice session."""
+        return {
+            "object": "hermes.voice_session",
+            "id": session["id"],
+            "status": session.get("status", "active"),
+            "hermes_session_id": session.get("hermes_session_id"),
+            "created_at": session.get("created_at"),
+            "updated_at": session.get("updated_at"),
+            "turn_count": len(session.get("turns", [])),
+            "capabilities": {
+                "text_turns": True,
+                "audio_upload": False,
+                "tts": "optional_best_effort",
+            },
+        }
+
+    async def _handle_create_voice_session(self, request: "web.Request") -> "web.Response":
+        """POST /v1/voice/sessions — create a lightweight mobile voice session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json() if request.can_read_body else {}
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            return web.json_response(_openai_error("Request body must be a JSON object"), status=400)
+
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        if body.get("session_key") and gateway_session_key is None:
+            # JSON session_key is accepted for native apps that cannot easily set
+            # custom headers, but it follows the same auth requirement and
+            # validation as the X-Hermes-Session-Key header.
+            if not self._api_key:
+                logger.warning(
+                    "voice session_key rejected: no API key configured. "
+                    "Set API_SERVER_KEY to enable long-term memory scoping."
+                )
+                return web.json_response(
+                    _openai_error(
+                        "session_key requires API key authentication. Configure API_SERVER_KEY to enable this feature."
+                    ),
+                    status=403,
+                )
+            raw_session_key = str(body.get("session_key")).strip()
+            if re.search(r'[\r\n\x00]', raw_session_key):
+                return web.json_response(
+                    {"error": {"message": "Invalid session key", "type": "invalid_request_error"}},
+                    status=400,
+                )
+            if len(raw_session_key) > self._MAX_SESSION_HEADER_LEN:
+                return web.json_response(
+                    {"error": {"message": "Session key too long", "type": "invalid_request_error"}},
+                    status=400,
+                )
+            gateway_session_key = raw_session_key
+
+        now = time.time()
+        voice_session_id = f"voice_{uuid.uuid4().hex}"
+        hermes_session_id = body.get("hermes_session_id") or f"api-voice-{voice_session_id}"
+        system_prompt = body.get("system_prompt")
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            return web.json_response(_openai_error("system_prompt must be a string", param="system_prompt"), status=400)
+
+        session = {
+            "id": voice_session_id,
+            "status": "active",
+            "hermes_session_id": str(hermes_session_id),
+            "gateway_session_key": gateway_session_key,
+            "system_prompt": system_prompt or None,
+            "created_at": now,
+            "updated_at": now,
+            "turns": [],
+            "history": [],
+        }
+        self._voice_sessions[voice_session_id] = session
+        return web.json_response(self._voice_session_public(session), status=201)
+
+    async def _handle_get_voice_session(self, request: "web.Request") -> "web.Response":
+        """GET /v1/voice/sessions/{voice_session_id}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session = self._voice_sessions.get(request.match_info["voice_session_id"])
+        if session is None:
+            return web.json_response(_openai_error("Voice session not found", code="voice_session_not_found"), status=404)
+        return web.json_response(self._voice_session_public(session))
+
+    async def _handle_delete_voice_session(self, request: "web.Request") -> "web.Response":
+        """DELETE /v1/voice/sessions/{voice_session_id} — hang up."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session = self._voice_sessions.get(request.match_info["voice_session_id"])
+        if session is None:
+            return web.json_response(_openai_error("Voice session not found", code="voice_session_not_found"), status=404)
+        session["status"] = "ended"
+        session["updated_at"] = time.time()
+        return web.json_response(self._voice_session_public(session))
+
+    def _build_voice_tts_payload(self, reply_text: str, include_base64: bool = False) -> Optional[Dict[str, Any]]:
+        """Best-effort TTS wrapper for voice turns.
+
+        This reuses the existing text_to_speech_tool contract.  Failures are
+        returned in-band so the mobile text turn still succeeds.
+        """
+        try:
+            from tools.tts_tool import text_to_speech_tool
+            raw = text_to_speech_tool(reply_text)
+            result = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+        if not isinstance(result, dict):
+            return {"success": False, "error": "Unexpected TTS result"}
+        payload: Dict[str, Any] = {
+            "success": bool(result.get("success")),
+            "file_path": result.get("file_path"),
+            "media_tag": result.get("media_tag"),
+            "provider": result.get("provider"),
+            "voice_compatible": bool(result.get("voice_compatible", False)),
+        }
+        if not payload["success"]:
+            payload["error"] = result.get("error") or "TTS generation failed"
+            return payload
+        file_path = payload.get("file_path")
+        if isinstance(file_path, str) and file_path:
+            payload["mime_type"] = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+            if include_base64:
+                try:
+                    with open(file_path, "rb") as fh:
+                        payload["base64"] = base64.b64encode(fh.read()).decode("ascii")
+                except Exception as exc:
+                    payload["base64_error"] = str(exc)
+        return payload
+
+    async def _handle_voice_turn(self, request: "web.Request") -> "web.Response":
+        """POST /v1/voice/sessions/{voice_session_id}/turns — submit one text turn.
+
+        MVP boundary: this endpoint does not accept raw audio yet.  iOS should
+        use device speech recognition (or another STT service) and submit the
+        transcript as ``text``.  If an ``audio`` field is supplied without text,
+        the server returns 501 with a machine-readable capability hint.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session = self._voice_sessions.get(request.match_info["voice_session_id"])
+        if session is None:
+            return web.json_response(_openai_error("Voice session not found", code="voice_session_not_found"), status=404)
+        if session.get("status") != "active":
+            return web.json_response(_openai_error("Voice session has ended", code="voice_session_ended"), status=409)
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+        if not isinstance(body, dict):
+            return web.json_response(_openai_error("Request body must be a JSON object"), status=400)
+
+        text = body.get("text") or body.get("transcript")
+        if text is not None and not isinstance(text, str):
+            return web.json_response(_openai_error("text must be a string", param="text"), status=400)
+        if not text or not text.strip():
+            if body.get("audio") is not None:
+                return web.json_response(
+                    _openai_error(
+                        "Audio upload/STT is not implemented on this MVP endpoint. Submit a transcript in the text field.",
+                        code="voice_audio_not_supported",
+                    ),
+                    status=501,
+                )
+            return web.json_response(_openai_error("Missing required text transcript", param="text"), status=400)
+        text = text.strip()[:MAX_NORMALIZED_TEXT_LENGTH]
+
+        result, usage = await self._run_agent(
+            user_message=text,
+            conversation_history=list(session.get("history", [])),
+            ephemeral_system_prompt=session.get("system_prompt"),
+            session_id=session.get("hermes_session_id"),
+            gateway_session_key=session.get("gateway_session_key"),
+        )
+        reply_text = ""
+        if isinstance(result, dict):
+            reply_text = result.get("final_response") or result.get("error") or ""
+            if result.get("session_id"):
+                session["hermes_session_id"] = result["session_id"]
+        else:
+            reply_text = str(result or "")
+
+        session["history"].append({"role": "user", "content": text})
+        session["history"].append({"role": "assistant", "content": reply_text})
+        turn = {
+            "id": f"turn_{uuid.uuid4().hex}",
+            "created_at": time.time(),
+            "transcript": text,
+            "reply": reply_text,
+            "usage": usage,
+        }
+        include_tts = _coerce_request_bool(body.get("tts"), default=False)
+        if include_tts:
+            turn["audio"] = self._build_voice_tts_payload(
+                reply_text,
+                include_base64=_coerce_request_bool(body.get("include_audio_base64"), default=False),
+            )
+        session["turns"].append(turn)
+        session["updated_at"] = turn["created_at"]
+
+        return web.json_response({
+            "object": "hermes.voice_turn",
+            "voice_session_id": session["id"],
+            "hermes_session_id": session.get("hermes_session_id"),
+            **turn,
         })
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
@@ -3406,6 +3643,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            self._app.router.add_post("/v1/voice/sessions", self._handle_create_voice_session)
+            self._app.router.add_get("/v1/voice/sessions/{voice_session_id}", self._handle_get_voice_session)
+            self._app.router.add_delete("/v1/voice/sessions/{voice_session_id}", self._handle_delete_voice_session)
+            self._app.router.add_post("/v1/voice/sessions/{voice_session_id}/turns", self._handle_voice_turn)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

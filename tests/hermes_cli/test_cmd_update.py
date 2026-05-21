@@ -419,6 +419,172 @@ class TestCmdUpdateBranchFlag:
         assert "nonexistent" in out
 
 
+class TestCmdUpdateCheckBranchFlag:
+    """``hermes update --check --branch <name>`` honors the branch override.
+
+    The check path used to call ``git rev-list HEAD..origin/<branch> --count``
+    with ``check=True``. When the branch didn't exist on origin, the fetch
+    silently succeeded (no refspec) but rev-list exited 128 and a raw
+    ``CalledProcessError`` propagated to the user. These tests pin the
+    friendlier behavior: detect-the-missing-ref before rev-list, exit 1
+    with a clear message.
+    """
+
+    def _check_side_effect(
+        self,
+        target_branch: str,
+        *,
+        verify_ok: bool = True,
+        commit_count: str = "0",
+        upstream_fetch_ok: bool = True,
+    ):
+        """Mock side-effect for the _cmd_update_check git pipeline.
+
+        - ``target_branch``      what we expect compare ref to point at
+        - ``verify_ok``          if False, ``git rev-parse --verify --quiet
+                                 origin/<branch>`` fails (branch missing
+                                 on origin)
+        - ``commit_count``       rev-list count (0 = up-to-date)
+        - ``upstream_fetch_ok``  if False, ``git fetch upstream`` fails
+                                 (forces fallback to origin on branch==main)
+        """
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+
+            if "fetch" in joined and "upstream" in joined:
+                rc = 0 if upstream_fetch_ok else 128
+                err = "" if upstream_fetch_ok else "fatal: 'upstream' does not appear to be a git repository\n"
+                return subprocess.CompletedProcess(cmd, rc, stdout="", stderr=err)
+
+            if "fetch" in joined and "origin" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            if "rev-parse" in joined and "--verify" in joined:
+                rc = 0 if verify_ok else 1
+                return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        return side_effect
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_branch_compares_against_named_origin_branch(
+        self, mock_run, _mock_method, capsys
+    ):
+        """--check --branch bb/gui compares against origin/bb/gui, never origin/main."""
+        mock_run.side_effect = self._check_side_effect(
+            target_branch="bb/gui", verify_ok=True, commit_count="2"
+        )
+        args = SimpleNamespace(check=True, branch="bb/gui")
+
+        cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        # Non-main branch skips upstream probe entirely.
+        assert not any("fetch" in c and "upstream" in c for c in commands), commands
+        # Verify and rev-list both target origin/bb/gui.
+        verify_cmds = [c for c in commands if "rev-parse" in c and "--verify" in c]
+        assert any("origin/bb/gui" in c for c in verify_cmds), verify_cmds
+        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        assert any("origin/bb/gui" in c for c in rev_list_cmds), rev_list_cmds
+        assert not any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_branch_missing_on_origin_exits_cleanly(
+        self, mock_run, _mock_method, capsys
+    ):
+        """If origin/<branch> doesn't exist, surface a friendly error and exit 1.
+
+        Pre-fix this case raised CalledProcessError from rev-list's check=True
+        and dumped a Python traceback to stdout.
+        """
+        mock_run.side_effect = self._check_side_effect(
+            target_branch="ghost", verify_ok=False
+        )
+        args = SimpleNamespace(check=True, branch="ghost")
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(args)
+        assert exc_info.value.code == 1
+
+        out = capsys.readouterr().out
+        # No raw Python traceback.
+        assert "Traceback" not in out
+        assert "CalledProcessError" not in out
+        # Friendly message naming the branch.
+        assert "ghost" in out
+        assert "not found" in out
+
+        # rev-list must never have been called once verify failed.
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("rev-list" in c for c in commands), commands
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_default_main_still_prefers_upstream(
+        self, mock_run, _mock_method, capsys
+    ):
+        """No --branch (or --branch=None) preserves the upstream-then-origin probe."""
+        mock_run.side_effect = self._check_side_effect(
+            target_branch="main", verify_ok=True, commit_count="0"
+        )
+        args = SimpleNamespace(check=True, branch=None)
+
+        cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        # Should have tried upstream first.
+        assert any("fetch" in c and "upstream" in c for c in commands), commands
+        # Compare ref is upstream/main (upstream fetch succeeded).
+        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
+
+    @patch("hermes_cli.config.detect_install_method", return_value="pip")
+    @patch("hermes_cli.banner.check_via_pypi", return_value=0)
+    @patch("subprocess.run")
+    def test_check_branch_warns_on_pypi_install(
+        self, mock_run, _mock_pypi, _mock_method, capsys
+    ):
+        """PyPI install + --branch=<non-main> surfaces a warning instead of silent drop."""
+        args = SimpleNamespace(check=True, branch="bb/gui")
+
+        cmd_update(args)
+
+        out = capsys.readouterr().out
+        assert "--branch is ignored for PyPI installs" in out
+        assert "bb/gui" in out
+
+
+class TestCmdUpdateZipBranchRefusal:
+    """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
+
+    The ZIP fallback hard-codes a GitHub archive URL for main.zip; honoring
+    --branch arbitrarily would require remote-branch existence checks the
+    fallback can't easily do. Refusing is the right move — silently lying
+    about which branch got installed is the bug --branch was meant to prevent.
+    """
+
+    def test_zip_fallback_refuses_non_main_branch(self, capsys):
+        from hermes_cli.main import _update_via_zip
+
+        args = SimpleNamespace(branch="bb/gui")
+        with pytest.raises(SystemExit) as exc_info:
+            _update_via_zip(args)
+        assert exc_info.value.code == 1
+
+        out = capsys.readouterr().out
+        assert "bb/gui" in out
+        assert "not supported" in out
+        # No actual download attempted.
+        assert "Downloading latest version" not in out
+
+
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm
 

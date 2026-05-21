@@ -97,7 +97,14 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    for key in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+    ):
+        monkeypatch.delenv(key, raising=False)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -156,6 +163,88 @@ async def test_registers_native_restart_slash_command(adapter):
         "/restart",
         "Restart requested~",
     )
+
+
+@pytest.mark.asyncio
+async def test_queue_steer_background_and_btw_use_visible_reply_anchor(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "queue" in adapter._client.tree.commands
+    assert "steer" in adapter._client.tree.commands
+    assert "background" in adapter._client.tree.commands
+    assert "btw" in adapter._client.tree.commands
+
+    interaction = SimpleNamespace()
+
+    await adapter._client.tree.commands["queue"](interaction, prompt="next thing")
+    adapter._run_simple_slash.assert_awaited_with(
+        interaction,
+        "/queue next thing",
+        "Queued: next thing",
+        visible_anchor=True,
+    )
+
+    adapter._run_simple_slash.reset_mock()
+    await adapter._client.tree.commands["steer"](interaction, prompt="steer this")
+    adapter._run_simple_slash.assert_awaited_with(
+        interaction,
+        "/steer steer this",
+        "Steer: steer this",
+        visible_anchor=True,
+    )
+
+    adapter._run_simple_slash.reset_mock()
+    await adapter._client.tree.commands["background"](interaction, prompt="side quest")
+    adapter._run_simple_slash.assert_awaited_with(
+        interaction,
+        "/background side quest",
+        "Background: side quest",
+        visible_anchor=True,
+    )
+
+    adapter._run_simple_slash.reset_mock()
+    await adapter._client.tree.commands["btw"](interaction, prompt="also check x")
+    adapter._run_simple_slash.assert_awaited_with(
+        interaction,
+        "/btw also check x",
+        "BTW: also check x",
+        visible_anchor=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_simple_slash_visible_anchor_uses_original_response_as_message_id(adapter):
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(id=123, name="ops", guild=SimpleNamespace(name="Server")),
+        channel_id=123,
+        user=SimpleNamespace(id=42, display_name="Conor"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        original_response=AsyncMock(return_value=SimpleNamespace(id=98765)),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+    )
+
+    await adapter._run_simple_slash(
+        interaction,
+        "/queue next thing",
+        "Queued: next thing",
+        visible_anchor=True,
+    )
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=False)
+    interaction.original_response.assert_awaited_once()
+    interaction.edit_original_response.assert_awaited_once_with(content="Queued: next thing")
+    interaction.delete_original_response.assert_not_awaited()
+    assert len(captured_events) == 1
+    assert captured_events[0].message_id == "98765"
+    assert captured_events[0].source.message_id == "98765"
 
 
 # ------------------------------------------------------------------

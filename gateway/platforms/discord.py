@@ -2882,6 +2882,8 @@ class DiscordAdapter(BasePlatformAdapter):
         interaction: discord.Interaction,
         command_text: str,
         followup_msg: str | None = None,
+        *,
+        visible_anchor: bool = False,
     ) -> None:
         """Common handler for simple slash commands that dispatch a command string.
 
@@ -2889,6 +2891,11 @@ class DiscordAdapter(BasePlatformAdapter):
         then cleans up the deferred response.  If *followup_msg* is provided
         the "thinking..." indicator is replaced with that text; otherwise it
         is deleted so the channel isn't cluttered.
+
+        ``visible_anchor=True`` makes the interaction response public and keeps
+        it as a reply target.  Discord slash commands do not have a normal
+        channel message ID, so queued/backgrounded follow-ups otherwise break
+        the visible reply chain.
         """
         # Log the invoker so ghost-command reports can be triaged.  Discord
         # native slash invocations are always user-initiated (no bot can fire
@@ -2913,12 +2920,31 @@ class DiscordAdapter(BasePlatformAdapter):
         if not await self._check_slash_authorization(interaction, command_text):
             return
 
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=not visible_anchor)
         event = self._build_slash_event(interaction, command_text)
+
+        if visible_anchor:
+            try:
+                original = await interaction.original_response()
+                original_id = getattr(original, "id", None)
+                if original_id is not None:
+                    event.message_id = str(original_id)
+                    try:
+                        event.source.message_id = str(original_id)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug("Discord slash visible anchor lookup failed: %s", e)
+
         await self.handle_message(event)
         try:
             if followup_msg:
                 await interaction.edit_original_response(content=followup_msg)
+            elif visible_anchor:
+                preview = command_text.strip()
+                if len(preview) > 180:
+                    preview = preview[:177] + "..."
+                await interaction.edit_original_response(content=preview or "Queued.")
             else:
                 await interaction.delete_original_response()
         except Exception as e:
@@ -2977,7 +3003,13 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="steer", description="Inject a message after the next tool call (no interrupt)")
         @discord.app_commands.describe(prompt="Text to inject into the agent's next tool result")
         async def slash_steer(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/steer {prompt}".strip())
+            preview = prompt[:120] + ("..." if len(prompt) > 120 else "")
+            await self._run_simple_slash(
+                interaction,
+                f"/steer {prompt}".strip(),
+                f"Steer: {preview}",
+                visible_anchor=True,
+            )
 
         @tree.command(name="compress", description="Compress conversation context")
         async def slash_compress(interaction: discord.Interaction):
@@ -3069,12 +3101,35 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
         @discord.app_commands.describe(prompt="The prompt to queue")
         async def slash_queue(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
+            preview = prompt[:120] + ("..." if len(prompt) > 120 else "")
+            await self._run_simple_slash(
+                interaction,
+                f"/queue {prompt}",
+                f"Queued: {preview}",
+                visible_anchor=True,
+            )
 
         @tree.command(name="background", description="Run a prompt in the background")
         @discord.app_commands.describe(prompt="The prompt to run in the background")
         async def slash_background(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
+            preview = prompt[:120] + ("..." if len(prompt) > 120 else "")
+            await self._run_simple_slash(
+                interaction,
+                f"/background {prompt}",
+                f"Background: {preview}",
+                visible_anchor=True,
+            )
+
+        @tree.command(name="btw", description="Run a side prompt in the background")
+        @discord.app_commands.describe(prompt="The side prompt to run in the background")
+        async def slash_btw(interaction: discord.Interaction, prompt: str):
+            preview = prompt[:120] + ("..." if len(prompt) > 120 else "")
+            await self._run_simple_slash(
+                interaction,
+                f"/btw {prompt}",
+                f"BTW: {preview}",
+                visible_anchor=True,
+            )
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in

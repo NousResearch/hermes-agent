@@ -13,8 +13,10 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import logging
 import os
 import signal
+import time
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -35,6 +37,7 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+logger = logging.getLogger(__name__)
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
@@ -356,7 +359,21 @@ def _pid_exists(pid: int) -> bool:
     """
     try:
         import psutil  # type: ignore
-        return bool(psutil.pid_exists(int(pid)))
+        if not psutil.pid_exists(int(pid)):
+            return False
+        # Zombie / stuck process detection (no /proc on Windows).
+        try:
+            proc = psutil.Process(int(pid))
+            age = time.time() - proc.create_time()
+            mem = proc.memory_info().rss
+            cpu = proc.cpu_percent(interval=0)
+            if age > 300 and mem < 10 * 1024 * 1024 and cpu < 0.1:
+                return False
+            if proc.status() in (psutil.STATUS_STOPPED, psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                return False
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        return True
     except ImportError:
         pass  # Fall through to stdlib fallback.
 
@@ -956,7 +973,15 @@ def get_running_pid(
             continue
 
         if _looks_like_gateway_process(pid) or _record_looks_like_gateway(record):
-            return pid
+            if _pid_exists(pid):
+                return pid
+            logger.warning(
+                "Gateway PID %d appears stuck (zombie detected in get_running_pid). "
+                "Cleaning up and treating as not running.",
+                pid,
+            )
+            terminate_pid(pid, force=True)
+            continue
 
     _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
     return None

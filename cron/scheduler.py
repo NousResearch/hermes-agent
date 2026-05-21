@@ -816,6 +816,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     Shell support lets ``no_agent=True`` jobs ship classic bash watchdogs
     (the `memory-watchdog.sh` pattern) without wrapping them in Python.
 
+    When a remote terminal backend (e.g. SSH) is configured, the script
+    executes on that remote host instead of the scheduler's local machine.
+
     Args:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
@@ -825,6 +828,20 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
+    # ------------------------------------------------------------------
+    # Remote terminal backend routing (#29849)
+    # ------------------------------------------------------------------
+    try:
+        config = load_config()
+        terminal_cfg = config.get("terminal", {})
+        backend = (terminal_cfg.get("backend") or "local").strip().lower()
+    except Exception:
+        backend = "local"
+
+    if backend != "local":
+        # Non-local terminal — run the script on the remote host.
+        return _run_job_script_remote(script_path, backend)
+
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
@@ -923,6 +940,211 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
+
+
+def _run_job_script_remote(script_path: str, backend: str) -> tuple[bool, str]:
+    """Execute a cron job's data-collection script on a remote terminal backend.
+
+    Reads SSH / Docker env var config to build the remote command, then runs
+    the script via that transport instead of local ``subprocess.run()``.
+
+    Args:
+        script_path: Path as stored in the cron job (relative or absolute).
+        backend: The terminal backend name (e.g. "ssh").
+
+    Returns:
+        (success, output) — on failure *output* contains the error message.
+    """
+    try:
+        config = load_config()
+        terminal_cfg = config.get("terminal", {})
+    except Exception:
+        return False, "Failed to read terminal configuration"
+
+    # ------------------------------------------------------------------
+    # SSH transport (#29849)
+    # ------------------------------------------------------------------
+    if backend == "ssh":
+        host = os.getenv("TERMINAL_SSH_HOST") or ""
+        user = os.getenv("TERMINAL_SSH_USER") or ""
+        port = os.getenv("TERMINAL_SSH_PORT", "22")
+        key_path = os.getenv("TERMINAL_SSH_KEY") or ""
+
+        if not host or not user:
+            return False, (
+                f"SSH terminal backend requires TERMINAL_SSH_HOST and TERMINAL_SSH_USER env vars. "
+                f"(host={host!r}, user={user!r})"
+            )
+
+        # Validate script filename against path traversal — same guard as local.
+        raw = Path(script_path).expanduser()
+        if raw.is_absolute():
+            script_name = raw.name
+        else:
+            scripts_dir = _get_hermes_home() / "scripts"
+            script_name = (scripts_dir / raw).name
+
+        # Basic safety: reject absolute path overrides on remote.
+        if Path(script_path).is_absolute():
+            return False, f"Absolute paths not supported for remote execution: {script_path!r}"
+
+        scripts_dir_resolved = _get_hermes_home().resolve() / "scripts"
+
+        # Validate filename stays within scripts dir via resolved name check.
+        try:
+            test_path = (scripts_dir_resolved / script_name).resolve()
+            test_path.relative_to(scripts_dir_resolved)
+        except ValueError:
+            return False, (
+                f"Blocked: script path resolves outside the scripts directory "
+                f"({scripts_dir_resolved}): {script_path!r}"
+            )
+
+        # Build SSH command: ssh user@host bash /remote/.hermes/scripts/script.sh
+        ssh_args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]
+        if key_path:
+            ssh_args.extend(["-i", key_path])
+        if port != "22":
+            ssh_args.extend(["-p", port])
+
+        # Detect remote HERMES_HOME to build the script path.
+        home_cmd = list(ssh_args) + [f"{user}@{host}", "echo $HOME"]
+        try:
+            home_result = subprocess.run(
+                home_cmd, capture_output=True, text=True, timeout=15
+            )
+            if home_result.returncode != 0:
+                stderr = (home_result.stderr or "").strip()
+                return False, f"SSH connection failed ({user}@{host}): {stderr or home_result.stdout.strip()}"
+            remote_home = home_result.stdout.strip()
+        except subprocess.TimeoutExpired:
+            return False, f"SSH connection to {user}@{host} timed out"
+
+        if not remote_home:
+            remote_home = f"/home/{user}"
+
+        # Resolve script path against REMOTE hermes_home/scripts.
+        remote_script_dir = Path(remote_home) / ".hermes" / "scripts"
+        remote_script_path = remote_script_dir / script_name
+
+        suffix = script_name.rsplit(".", 1)[-1].lower() if "." in script_name else ""
+        if suffix in ("sh", "bash"):
+            remote_cmd = f"bash {remote_script_path}"
+        else:
+            remote_cmd = f"{sys.executable} {remote_script_path}"
+
+        # Run the script on remote host.
+        full_cmd = list(ssh_args) + [f"{user}@{host}", remote_cmd]
+        try:
+            result = subprocess.run(
+                full_cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # generous timeout for remote execution
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"Script timed out after 300s on remote ({user}@{host}): {script_path!r}"
+
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+
+        # Redact secrets.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+            stderr = redact_sensitive_text(stderr)
+        except Exception:
+            pass
+
+        if result.returncode != 0:
+            parts = [f"Script exited with code {result.returncode} (remote: {user}@{host})"]
+            if stderr:
+                parts.append(f"stderr:\\n{stderr}")
+            if stdout:
+                parts.append(f"stdout:\\n{stdout}")
+            return False, "\\n".join(parts)
+
+        return True, stdout
+
+    # ------------------------------------------------------------------
+    # Fallback for unknown backends: log and run locally (backward compat).
+    # ------------------------------------------------------------------
+    logger.warning(
+        "Cron script: unknown terminal backend %r — falling back to local execution",
+        backend,
+    )
+    scripts_dir = _get_hermes_home() / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    scripts_dir_resolved = scripts_dir.resolve()
+
+    raw = Path(script_path).expanduser()
+    if raw.is_absolute():
+        path = raw.resolve()
+    else:
+        path = (scripts_dir / raw).resolve()
+
+    try:
+        path.relative_to(scripts_dir_resolved)
+    except ValueError:
+        return False, (
+            f"Blocked: script path resolves outside the scripts directory "
+            f"({scripts_dir_resolved}): {script_path!r}"
+        )
+
+    if not path.exists():
+        return False, f"Script not found on local host for remote backend: {path}"
+    if not path.is_file():
+        return False, f"Script path is not a file: {path}"
+
+    script_timeout = _get_script_timeout()
+    suffix = path.suffix.lower()
+    if suffix in {".sh", ".bash"}:
+        _bash = shutil.which("bash") or (
+            "/bin/bash" if os.path.isfile("/bin/bash") else None
+        )
+        if _bash is None:
+            return False, f"bash not found for remote fallback script execution."
+        argv = [_bash, str(path)]
+    else:
+        argv = [sys.executable, str(path)]
+
+    run_env = os.environ.copy()
+    run_env["HERMES_HOME"] = str(_get_hermes_home())
+    try:
+        from hermes_constants import get_subprocess_home
+        profile_home = get_subprocess_home()
+        if profile_home:
+            run_env["HOME"] = profile_home
+    except Exception:
+        pass
+
+    try:
+        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        result = subprocess.run(
+            argv,
+            capture_output=True, text=True, timeout=script_timeout,
+            cwd=str(path.parent), env=run_env, **popen_kwargs,
+        )
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+            stderr = redact_sensitive_text(stderr)
+        except Exception:
+            pass
+        if result.returncode != 0:
+            parts = [f"Script exited with code {result.returncode} (fallback to local)"]
+            if stderr:
+                parts.append(f"stderr:\\n{stderr}")
+            if stdout:
+                parts.append(f"stdout:\\n{stdout}")
+            return False, "\\n".join(parts)
+        return True, stdout
+    except subprocess.TimeoutExpired:
+        return False, f"Script timed out after {script_timeout}s (fallback): {path}"
+    except Exception as exc:
+        return False, f"Script execution failed (fallback): {exc}"
 
 
 def _parse_wake_gate(script_output: str) -> bool:

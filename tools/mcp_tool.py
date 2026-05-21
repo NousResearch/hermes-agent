@@ -1660,9 +1660,25 @@ class MCPServerTask:
                 self.session = None
 
     async def start(self, config: dict):
-        """Create the background Task and wait until ready (or failed)."""
+        """Create the background Task and wait until ready (or failed).
+
+        Raises asyncio.TimeoutError if the server does not become ready
+        within ``connect_timeout`` seconds.  On timeout the orphaned
+        run-task is cancelled to avoid resource leaks.
+        """
+        connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         self._task = asyncio.ensure_future(self.run(config))
-        await self._ready.wait()
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=connect_timeout)
+        except asyncio.TimeoutError:
+            # The server task is still spinning — cancel it to prevent leaks.
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
+
         if self._error:
             raise self._error
 

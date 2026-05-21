@@ -153,6 +153,17 @@ class FailingAdapter:
         raise RuntimeError("simulated send failure")
 
 
+class FailedResultAdapter:
+    """Adapter whose send() returns an explicit non-delivery result."""
+
+    def __init__(self):
+        self.attempts = 0
+
+    async def send(self, chat_id, text, metadata=None):
+        self.attempts += 1
+        return SendResult(success=False, error="simulated non-delivery")
+
+
 def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     """A raising adapter rewinds the claim so the next tick can retry.
 
@@ -176,6 +187,37 @@ def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     # still returns the event for retry on the next tick.
     assert adapter.attempts >= 1, "send should have been attempted at least once"
     assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+
+
+def test_kanban_notifier_treats_failed_send_result_as_failed_delivery(tmp_path, monkeypatch):
+    """SendResult(success=False) must not ledger or advance as delivered."""
+    db_path = tmp_path / "failed-result.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid = _create_completed_subscription()
+
+    adapter = FailedResultAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.attempts >= 1, "send should have been attempted at least once"
+    assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+
+    conn = kb.connect()
+    try:
+        evidence_rows = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND kind = 'notify_delivery_evidence'",
+            (tid,),
+        ).fetchall()
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert evidence_rows == []
+    assert len(subs) == 1, "terminal subscription must not be removed on failed send"
+    assert runner._kanban_sub_fail_counts[(tid, "telegram", "chat-1", "")] == 1
 
 
 def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):

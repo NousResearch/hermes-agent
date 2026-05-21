@@ -4588,6 +4588,10 @@ class GatewayRunner:
                             send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            if self._kanban_send_result_failed(send_result):
+                                raise RuntimeError(
+                                    self._kanban_send_failure_error(send_result)
+                                )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -4735,6 +4739,24 @@ class GatewayRunner:
             )
         finally:
             conn.close()
+
+    @staticmethod
+    def _kanban_send_result_failed(send_result: Any) -> bool:
+        """Return True when adapter.send() explicitly reports non-delivery."""
+        if send_result is None:
+            return False
+        if isinstance(send_result, dict):
+            return send_result.get("success") is False
+        return getattr(send_result, "success", None) is False
+
+    @staticmethod
+    def _kanban_send_failure_error(send_result: Any) -> str:
+        """Extract a short adapter error from an explicit send failure result."""
+        if isinstance(send_result, dict):
+            error = send_result.get("error")
+        else:
+            error = getattr(send_result, "error", None)
+        return str(error or "adapter returned success=False")
 
     @staticmethod
     def _kanban_send_message_id(send_result: Any) -> Optional[str]:

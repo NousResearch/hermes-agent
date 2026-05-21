@@ -147,6 +147,32 @@ function ToolCallBlock({
   );
 }
 
+// Context-compaction handoff blocks are persisted as ``role="user"`` or
+// ``role="assistant"`` with content starting with one of these prefixes —
+// they're metadata inserted by ``agent/context_compressor.py``, NOT real
+// turns the user typed or the model replied with. Rendering them with
+// the same styling as regular messages confuses operators scrolling the
+// session timeline (#29824 — "WebUI can show context compaction block
+// instead of latest assistant response after compression"), so we
+// detect them here and downgrade them to a muted, clearly-labelled
+// "Context handoff" row.
+//
+// Keep these prefixes in sync with ``SUMMARY_PREFIX`` and
+// ``LEGACY_SUMMARY_PREFIX`` in ``agent/context_compressor.py``.
+const COMPACTION_PREFIXES = [
+  "[CONTEXT COMPACTION — REFERENCE ONLY]",
+  "[CONTEXT COMPACTION - REFERENCE ONLY]",
+  "[CONTEXT SUMMARY]:",
+] as const;
+
+function isCompactionMessage(msg: SessionMessage): boolean {
+  if (msg.role !== "user" && msg.role !== "assistant") return false;
+  const content = msg.content;
+  if (typeof content !== "string") return false;
+  const head = content.trimStart();
+  return COMPACTION_PREFIXES.some((p) => head.startsWith(p));
+}
+
 function MessageBubble({
   msg,
   highlight,
@@ -180,12 +206,25 @@ function MessageBubble({
       text: "text-warning",
       label: t.sessions.roles.tool,
     },
+    // Compaction handoffs render as faded system-style metadata with a
+    // distinctive label so they can't be mistaken for real assistant
+    // replies during a scroll-back review (#29824).
+    compaction: {
+      bg: "bg-muted/50",
+      text: "text-muted-foreground italic",
+      label: "Context handoff",
+    },
   };
 
-  const style = ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
-  const label = msg.tool_name
-    ? `${t.sessions.roles.tool}: ${msg.tool_name}`
-    : style.label;
+  const isCompaction = isCompactionMessage(msg);
+  const style = isCompaction
+    ? ROLE_STYLES.compaction
+    : ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
+  const label = isCompaction
+    ? ROLE_STYLES.compaction.label
+    : msg.tool_name
+      ? `${t.sessions.roles.tool}: ${msg.tool_name}`
+      : style.label;
 
   // Check if any search term appears as a prefix of any word in content
   const isHit = (() => {

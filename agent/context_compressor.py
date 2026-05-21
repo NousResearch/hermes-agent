@@ -1833,6 +1833,105 @@ This compaction should PRIORITISE preserving all information related to the focu
                 return i
         return -1
 
+    def _find_last_assistant_message_idx(
+        self, messages: List[Dict[str, Any]], head_end: int
+    ) -> int:
+        """Return the index of the last user-visible assistant reply at or
+        after *head_end*, or -1.
+
+        A "user-visible reply" is an assistant message with non-empty
+        textual content — i.e. one that the WebUI / TUI / SessionsPage
+        rendered as a bubble the operator could read. We deliberately
+        skip assistant messages that contain only ``tool_calls`` (and
+        no text), because those render as small "calling tool X"
+        indicators and aren't what the reporter means by "the output
+        of the last message you sent" (#29824).
+
+        Falling back to the most recent assistant message of ANY kind
+        only kicks in when no content-bearing assistant message exists
+        in the compressible region — typically a fresh session that
+        just started a multi-step tool sequence with no prior reply
+        to anchor. In that case the agent fix is a no-op and the
+        existing user-message anchor carries the load.
+        """
+        last_any = -1
+        for i in range(len(messages) - 1, head_end - 1, -1):
+            msg = messages[i]
+            if msg.get("role") != "assistant":
+                continue
+            if last_any < 0:
+                last_any = i
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return i
+            if isinstance(content, list):
+                # Multimodal / Anthropic-style content: look for any
+                # text block with non-empty text.
+                for part in content:
+                    if isinstance(part, dict):
+                        text = part.get("text") or part.get("content")
+                        if isinstance(text, str) and text.strip():
+                            return i
+        return last_any
+
+    def _ensure_last_assistant_message_in_tail(
+        self,
+        messages: List[Dict[str, Any]],
+        cut_idx: int,
+        head_end: int,
+    ) -> int:
+        """Guarantee the most recent assistant message is in the protected tail.
+
+        WebUI / TUI / SessionsPage bug (#29824). Without this anchor,
+        ``_find_tail_cut_by_tokens`` can leave the user's most recent
+        visible assistant response inside the compressed middle region —
+        especially when the conversation has a single oversized tool
+        result or a long stretch of tool-call/result pairs after the
+        last assistant reply. The summariser then rolls that reply up
+        into the single ``[CONTEXT COMPACTION — REFERENCE ONLY]`` block
+        persisted as ``role="user"`` or ``role="assistant"``. From the
+        operator's perspective the WebUI session viewer
+        (``web/src/pages/SessionsPage.tsx``) and the TUI chat panel
+        both suddenly show the opaque "Context compaction" block in the
+        slot where they were just reading the assistant's actual reply:
+
+            User:       "i cant see the output of the last message you
+                         sent, i did see it previously, however now see
+                         'context compaction'"
+
+        Mirror of ``_ensure_last_user_message_in_tail`` but anchors on
+        the last assistant-role message. Re-runs the tool-group
+        alignment so we don't split a ``tool_call`` / ``tool_result``
+        group that immediately precedes the anchored message — orphaned
+        tool messages would otherwise be removed by
+        ``_sanitize_tool_pairs`` and trigger the same data-loss symptom
+        we're trying to prevent.
+        """
+        last_asst_idx = self._find_last_assistant_message_idx(messages, head_end)
+        if last_asst_idx < 0:
+            # No assistant message in the compressible region — nothing
+            # to anchor (single-turn pre-reply state, etc.).
+            return cut_idx
+        if last_asst_idx >= cut_idx:
+            # Already in the tail — the token-budget walk did the right
+            # thing on its own.
+            return cut_idx
+        # Pull cut_idx back to the assistant message, then re-align so
+        # we don't split a tool group that immediately precedes it
+        # (e.g. an ``assistant(tool_calls)`` → ``tool(result)`` →
+        # ``assistant(final reply)`` sequence would otherwise leave the
+        # ``tool`` orphan when cut lands at the final reply).
+        new_cut = self._align_boundary_backward(messages, last_asst_idx)
+        if not self.quiet_mode:
+            logger.debug(
+                "Anchoring tail cut to last assistant message at index %d "
+                "(was %d, aligned to %d) to keep the previously-visible "
+                "reply out of the compaction summary (#29824)",
+                last_asst_idx, cut_idx, new_cut,
+            )
+        # Safety: never go back into the head region.
+        return max(new_cut, head_end + 1)
+
     def _ensure_last_user_message_in_tail(
         self,
         messages: List[Dict[str, Any]],
@@ -1975,6 +2074,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Ensure the most recent user message is always in the tail so the
         # active task is never lost to compression (fixes #10896).
         cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+
+        # Ensure the most recent assistant message is always in the tail
+        # so the previously-visible reply isn't silently rolled into the
+        # ``[CONTEXT COMPACTION — REFERENCE ONLY]`` block (fixes #29824).
+        # Each anchor only walks ``cut_idx`` backward, so chaining them is
+        # monotonic — the tail can only grow, never shrink.
+        cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
 
         return max(cut_idx, head_end + 1)
 

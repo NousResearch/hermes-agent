@@ -114,6 +114,38 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_board_includes_worker_lane_assignee_details(client):
+    from hermes_cli.worker_lanes import WorkerLane, clear_worker_lanes, register_worker_lane
+
+    def spawn(task, workspace, *, board=None):
+        return 123
+
+    clear_worker_lanes()
+    try:
+        register_worker_lane(WorkerLane(
+            name="codex-deep",
+            kind="codex_cli",
+            description="Deep Codex lane",
+            spawn_fn=spawn,
+            max_concurrency=1,
+        ))
+        client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": "external lane task", "assignee": "codex-deep"},
+        )
+
+        r = client.get("/api/plugins/kanban/board")
+        assert r.status_code == 200
+        data = r.json()
+    finally:
+        clear_worker_lanes()
+
+    assert "codex-deep" in data["assignees"]
+    details = {item["name"]: item for item in data["assignee_details"]}
+    assert details["codex-deep"]["worker_lane"] is True
+    assert details["codex-deep"]["worker_kind"] == "codex_cli"
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 
@@ -226,6 +258,20 @@ def test_dashboard_client_side_filtering_includes_tenant_filter():
 
     assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
     assert "[boardData, tenantFilter, assigneeFilter, search]" in js
+
+
+def test_dashboard_assignee_controls_use_worker_lane_details():
+    """Worker lanes should be visible in pickers without changing PATCH values."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    assert "function assigneeName(entry)" in js
+    assert "function assigneeLabel(entry)" in js
+    assert "entry.worker_lane" in js
+    assert "boardData.assignee_details || boardData.assignees" in js
+    assert "value: name }, assigneeLabel(a)" in js
 
 
 def test_dashboard_initial_board_uses_backend_current_when_unpinned():

@@ -244,6 +244,21 @@
     return `${url}${sep}board=${encodeURIComponent(board)}`;
   }
 
+  function assigneeName(entry) {
+    return typeof entry === "string" ? entry : entry && entry.name || "";
+  }
+
+  function assigneeLabel(entry) {
+    if (typeof entry === "string") return entry;
+    if (!entry) return "";
+    const name = entry.name || "";
+    if (entry.worker_lane) {
+      return `${name} [${entry.worker_kind || "lane"}]`;
+    }
+    if (entry.on_disk) return name;
+    return `${name} [ad hoc]`;
+  }
+
   // The SDK's Select component fires ``onValueChange(value)`` directly
   // (it's a shadcn-style popup, not a native <select>). Older plugin
   // code calls ``onChange({target: {value}})`` which silently never
@@ -1011,7 +1026,7 @@
         }),
        selectedIds.size > 0 ? h(BulkActionBar, {
          count: selectedIds.size,
-         assignees: (boardData && boardData.assignees) || [],
+         assignees: (boardData && (boardData.assignee_details || boardData.assignees)) || [],
          onApply: applyBulk,
          onClear: clearSelected,
          onSelectAllVisible: selectAllVisible,
@@ -1043,7 +1058,7 @@
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
-          assignees: (boardData && boardData.assignees) || [],
+          assignees: (boardData && (boardData.assignee_details || boardData.assignees)) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
       ),
@@ -1956,7 +1971,7 @@
   function BoardToolbar(props) {
     const { t } = useI18n();
     const tenants = (props.board && props.board.tenants) || [];
-    const assignees = (props.board && props.board.assignees) || [];
+    const assignees = (props.board && (props.board.assignee_details || props.board.assignees)) || [];
     return h("div", { className: "flex flex-wrap items-end gap-3" },
       h("div", { className: "flex flex-col gap-1",
                  title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
@@ -1990,7 +2005,8 @@
         }, selectChangeHandler(props.setAssigneeFilter)),
           h(SelectOption, { value: "" }, tx(t, "allProfiles", "All profiles")),
           assignees.map(function (a) {
-            return h(SelectOption, { key: a, value: a }, a);
+            const name = assigneeName(a);
+            return h(SelectOption, { key: name, value: name }, assigneeLabel(a));
           }),
         ),
       ),
@@ -2120,7 +2136,8 @@
           h(SelectOption, { value: "" }, "— reassign —"),
           h(SelectOption, { value: "__none__" }, "(unassign)"),
           props.assignees.map(function (a) {
-            return h(SelectOption, { key: a, value: a }, a);
+            const name = assigneeName(a);
+            return h(SelectOption, { key: name, value: name }, assigneeLabel(a));
           }),
         ),
         h(Button, {

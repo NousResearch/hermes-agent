@@ -472,6 +472,18 @@ def get_board(
                 "AND status != 'archived' ORDER BY assignee"
             )
         ]
+        assignee_details = kanban_db.known_assignees(conn)
+        assignee_detail_names = {entry["name"] for entry in assignee_details}
+        for name in assignees:
+            if name not in assignee_detail_names:
+                assignee_details.append({
+                    "name": name,
+                    "on_disk": False,
+                    "worker_lane": False,
+                    "worker_kind": None,
+                    "counts": {},
+                })
+        assignee_details.sort(key=lambda entry: entry["name"])
 
         return {
             "columns": [
@@ -479,6 +491,7 @@ def get_board(
             ],
             "tenants": tenants,
             "assignees": assignees,
+            "assignee_details": assignee_details,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }

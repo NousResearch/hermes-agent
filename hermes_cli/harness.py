@@ -1,21 +1,32 @@
 import os
 import subprocess
 import time
-import httpx
 import logging
 import platform
 from pathlib import Path
-from typing import Optional, Dict, Any
 
-from hermes_cli.config import load_config, get_hermes_home
-from hermes_constants import get_hermes_home as _get_home
+from hermes_cli.config import load_config
 
 logger = logging.getLogger(__name__)
+
+_FALSE_ENV_VALUES = {"0", "false", "no", "off", "disabled"}
+
+
+def _env_flag_disabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in _FALSE_ENV_VALUES
+
+
+def _auto_start_disabled_by_env() -> bool:
+    return _env_flag_disabled("HYPURA_HARNESS_AUTO_START") or _env_flag_disabled(
+        "HERMES_HARNESS_AUTO_START"
+    )
 
 def get_harness_url() -> str:
     """Get the local harness URL from config or env."""
     config = load_config()
     harness_cfg = config.get("harness", {})
+    if not isinstance(harness_cfg, dict):
+        harness_cfg = {}
     host = os.getenv("HYPURA_HARNESS_HOST") or harness_cfg.get("host", "127.0.0.1")
     port = os.getenv("HYPURA_HARNESS_PORT") or harness_cfg.get("port", 18794)
     return f"http://{host}:{port}"
@@ -120,8 +131,14 @@ def stop_harness_daemon() -> bool:
 
 def ensure_harness_running():
     """Higher-level check/start for auto-invocation."""
+    if _auto_start_disabled_by_env():
+        logger.debug("Hypura Harness auto-start disabled by environment.")
+        return
+
     config = load_config()
     harness_cfg = config.get("harness", {})
+    if not isinstance(harness_cfg, dict):
+        harness_cfg = {}
     if not harness_cfg.get("enabled", True):
         return
     

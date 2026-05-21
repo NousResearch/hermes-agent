@@ -10,6 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# python-telegram-bot is an optional dep — skip the entire module when
+# it isn't installed (e.g. CI bare env). Tests that patch telegram.Bot
+# or call _send_telegram need it; tests for other platforms don't but
+# keeping the whole file consistent is simpler.
+_HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not installed") is not None
+
 
 @pytest.fixture(autouse=True)
 def _reset_signal_scheduler():

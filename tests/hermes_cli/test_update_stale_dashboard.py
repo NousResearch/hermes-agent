@@ -64,6 +64,11 @@ def _ps_line(pid: int, cmd: str) -> str:
     return f"{pid:>7} {cmd}"
 
 
+def _fake_pid(offset: int = 0) -> int:
+    """Return a deterministic fake PID that cannot collide with this test process."""
+    return os.getpid() + 10_000 + offset
+
+
 def _ps_runner(stdout: str):
     """Build a subprocess.run side_effect that only stubs ps -A calls.
 
@@ -96,40 +101,43 @@ class TestFindStaleDashboardPids:
             assert _find_stale_dashboard_pids() == []
 
     def test_matches_running_dashboard(self):
+        pid = _fake_pid()
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
-                stdout=_ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119") + "\n",
+                stdout=_ps_line(pid, "python3 -m hermes_cli.main dashboard --port 9119") + "\n",
                 stderr="",
             )
-            assert _find_stale_dashboard_pids() == [12345]
+            assert _find_stale_dashboard_pids() == [pid]
 
     def test_multiple_matches(self):
+        pids = [_fake_pid(i) for i in range(3)]
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="\n".join([
-                    _ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119"),
-                    _ps_line(12346, "hermes dashboard --port 9120 --no-open"),
-                    _ps_line(12347, "python /home/x/hermes_cli/main.py dashboard"),
+                    _ps_line(pids[0], "python3 -m hermes_cli.main dashboard --port 9119"),
+                    _ps_line(pids[1], "hermes dashboard --port 9120 --no-open"),
+                    _ps_line(pids[2], "python /home/x/hermes_cli/main.py dashboard"),
                 ]) + "\n",
                 stderr="",
             )
-            assert sorted(_find_stale_dashboard_pids()) == [12345, 12346, 12347]
+            assert sorted(_find_stale_dashboard_pids()) == pids
 
     def test_self_pid_excluded(self):
+        pid = _fake_pid()
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="\n".join([
                     _ps_line(os.getpid(), "python3 -m hermes_cli.main dashboard"),
-                    _ps_line(12345, "hermes dashboard --port 9119"),
+                    _ps_line(pid, "hermes dashboard --port 9119"),
                 ]) + "\n",
                 stderr="",
             )
             pids = _find_stale_dashboard_pids()
         assert os.getpid() not in pids
-        assert 12345 in pids
+        assert pid in pids
 
     def test_ps_not_found_returns_empty(self):
         with patch("subprocess.run", side_effect=FileNotFoundError):
@@ -144,46 +152,49 @@ class TestFindStaleDashboardPids:
         """Guards against greedy pgrep-style matching catching chat sessions
         or unrelated processes whose cmdline happens to contain 'dashboard'.
         """
+        pid = _fake_pid()
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="\n".join([
-                    _ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119"),
+                    _ps_line(pid, "python3 -m hermes_cli.main dashboard --port 9119"),
                     _ps_line(22222, "python3 -m hermes_cli.main chat -q 'rewrite my dashboard'"),
                     _ps_line(33333, "node /opt/grafana/dashboard-server.js"),
                 ]) + "\n",
                 stderr="",
             )
             pids = _find_stale_dashboard_pids()
-        assert pids == [12345]
+        assert pids == [pid]
 
     def test_grep_lines_ignored(self):
+        pid = _fake_pid()
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="\n".join([
                     _ps_line(99999, "grep hermes dashboard"),
-                    _ps_line(12345, "hermes dashboard --port 9119"),
+                    _ps_line(pid, "hermes dashboard --port 9119"),
                 ]) + "\n",
                 stderr="",
             )
             pids = _find_stale_dashboard_pids()
         assert 99999 not in pids
-        assert 12345 in pids
+        assert pid in pids
 
     def test_invalid_pid_lines_skipped(self):
+        pid = _fake_pid()
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="\n".join([
                     "notapid hermes dashboard --bad",
-                    _ps_line(12345, "hermes dashboard --port 9119"),
+                    _ps_line(pid, "hermes dashboard --port 9119"),
                     "   ",
                 ]) + "\n",
                 stderr="",
             )
             pids = _find_stale_dashboard_pids()
-        assert pids == [12345]
+        assert pids == [pid]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")

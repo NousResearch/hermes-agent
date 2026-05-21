@@ -16,6 +16,7 @@ from pathlib import Path
 from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, load_config
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 
 
 def _get_git_commit(project_root: Path) -> str:
@@ -69,6 +70,8 @@ def _count_skills(hermes_home: Path) -> int:
         return 0
     count = 0
     for item in skills_dir.rglob("SKILL.md"):
+        if is_excluded_skill_path(item):
+            continue
         count += 1
     return count
 

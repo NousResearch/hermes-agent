@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
+from agent.skill_utils import is_excluded_skill_path
+
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # Directories bootstrapped inside every new profile
@@ -485,8 +487,9 @@ def _count_skills(profile_dir: Path) -> int:
         return 0
     count = 0
     for md in skills_dir.rglob("SKILL.md"):
-        if "/.hub/" not in str(md) and "/.git/" not in str(md):
-            count += 1
+        if is_excluded_skill_path(md):
+            continue
+        count += 1
     return count
 
 

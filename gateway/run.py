@@ -1109,7 +1109,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     normalized = command_name.lower().replace("_", "-")
     try:
         from tools.skills_tool import _get_disabled_skill_names
-        from agent.skill_utils import get_all_skills_dirs
+        from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
         disabled = _get_disabled_skill_names()
 
         # Check disabled skills across all dirs (local + external)
@@ -1117,7 +1117,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
             if not skills_dir.exists():
                 continue
             for skill_md in skills_dir.rglob("SKILL.md"):
-                if any(part in {'.git', '.github', '.hub', '.archive'} for part in skill_md.parts):
+                if is_excluded_skill_path(skill_md):
                     continue
                 slug, declared_name = _skill_slug_from_frontmatter(skill_md)
                 if not slug or not declared_name:
@@ -1136,6 +1136,8 @@ def _check_unavailable_skill(command_name: str) -> str | None:
         optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
             for skill_md in optional_dir.rglob("SKILL.md"):
+                if is_excluded_skill_path(skill_md):
+                    continue
                 slug, _declared = _skill_slug_from_frontmatter(skill_md)
                 if not slug:
                     continue

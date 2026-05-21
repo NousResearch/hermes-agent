@@ -631,11 +631,11 @@ class DockerEnvironment(BaseEnvironment):
         if self._container_id:
             try:
                 # Stop in background so cleanup doesn't block
-                stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
+                subprocess.Popen(
+                    [self._docker_exe, "stop", self._container_id],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
-                subprocess.Popen(stop_cmd, shell=True)
             except Exception as e:
                 logger.warning("Failed to stop container %s: %s", self._container_id, e)
 
@@ -643,8 +643,9 @@ class DockerEnvironment(BaseEnvironment):
                 # Also schedule removal (stop only leaves it as stopped)
                 try:
                     subprocess.Popen(
-                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
-                        shell=True,
+                        [self._docker_exe, "rm", "-f", self._container_id],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
                     )
                 except Exception:
                     pass

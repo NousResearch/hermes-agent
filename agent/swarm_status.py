@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List, Mapping
 
 from agent.swarm_state import SwarmJob
 from agent.swarm_store import SwarmStore
+from agent.swarm_synthesis import synthesize_swarm_result
 
 _SECRET_MARKERS = ("secret", "token", "key", "password", "credential", "api_key", "auth", "bearer")
 
@@ -88,6 +89,14 @@ def format_swarm_status(jobs: Iterable[SwarmJob], *, include_completed: bool = F
             metadata = _format_metadata(event.metadata)
             suffix = f" [{metadata}]" if metadata else ""
             lines.append(f"  last event: {event.event_type} — {_short(event.message)}{suffix}")
+        if job.routing_plan and job.routing_plan.evidence_requirements:
+            synthesis = synthesize_swarm_result(job)
+            lines.append("  evidence:")
+            for kind, count in sorted(synthesis.missing_evidence.items()):
+                lines.append(f"    - {kind}: missing ({count})")
+            if not synthesis.missing_evidence:
+                lines.append("    - required evidence satisfied")
+            lines.append(f"  safe to present complete: {'yes' if synthesis.safe_to_present_complete else 'no'}")
     return "\n".join(lines)
 
 

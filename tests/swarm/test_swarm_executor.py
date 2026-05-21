@@ -41,6 +41,29 @@ def test_build_delegate_tasks_preserves_declared_toolsets():
     assert tasks[1]["toolsets"] == ["terminal", "file"]
 
 
+def test_build_delegate_tasks_injects_required_evidence_contract():
+    job = SwarmJob.create("research with citations", created_at="2026-01-01T00:00:00+00:00")
+    plan = RoutingPlan(
+        mode="swarm",
+        reason="research",
+        suggested_tasks=[{"title": "research", "description": "find sources"}],
+        verification_required=True,
+        evidence_requirements=[
+            EvidenceRequirement("citation", "Cite source URLs"),
+            EvidenceRequirement("artifact", "Return any output path"),
+        ],
+    )
+
+    tasks = build_delegate_tasks(plan, job, max_children=3)
+
+    context = tasks[0]["context"]
+    assert "Required evidence" in context
+    assert "citation" in context
+    assert "artifact" in context
+    assert "claims" in context
+    assert "side_effects_performed" in context
+
+
 def test_aggregates_results_into_job_summary_data():
     job = SwarmJob.create("parallel work", created_at="2026-01-01T00:00:00+00:00")
     plan = _plan([{"title": "alpha"}, {"title": "beta"}])
@@ -159,3 +182,52 @@ def test_weak_output_detector_accepts_dict_evidence_requirements():
 
     assert job.tasks[0].status == "needs_review"
     assert "missing_citation" in job.tasks[0].result["weak_output"]["reasons"]
+
+
+def test_valid_structured_evidence_packet_is_not_marked_weak_and_synthesis_persists():
+    job = SwarmJob.create("research", created_at="2026-01-01T00:00:00+00:00")
+    plan = RoutingPlan(
+        mode="swarm",
+        reason="research",
+        suggested_tasks=[{"title": "research"}],
+        verification_required=True,
+        evidence_requirements=[EvidenceRequirement("citation", "Cite sources")],
+    )
+
+    def delegate_fn(**kwargs):
+        return {
+            "results": [
+                {
+                    "summary": "researched",
+                    "claims": ["claim is sourced"],
+                    "evidence": [{"kind": "citation", "url": "https://example.com/source"}],
+                }
+            ]
+        }
+
+    execute_swarm(job, plan, delegate_fn, max_children=3)
+
+    assert job.tasks[0].status == "completed"
+    assert "weak_output" not in job.tasks[0].result
+    assert job.metadata["swarm_synthesis"]["verified_claims"] == ["claim is sourced"]
+    assert job.metadata["swarm_synthesis"]["safe_to_present_complete"] is True
+
+
+def test_synthesis_persists_when_all_tasks_are_blocked_before_dispatch():
+    job = SwarmJob.create("send report", created_at="2026-01-01T00:00:00+00:00")
+    plan = RoutingPlan(
+        mode="swarm",
+        reason="approval needed",
+        suggested_tasks=[{"title": "send", "permission_required": True}],
+        verification_required=True,
+        evidence_requirements=[EvidenceRequirement("human_approval", "Garrett approves send")],
+    )
+
+    def delegate_fn(**kwargs):
+        raise AssertionError("blocked tasks should not dispatch")
+
+    execute_swarm(job, plan, delegate_fn, max_children=3)
+
+    assert job.status == "awaiting_permission"
+    assert job.metadata["swarm_synthesis"]["safe_to_present_complete"] is False
+    assert job.metadata["swarm_synthesis"]["blocked_tasks"] == [job.tasks[0].task_id]

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List
 
+from agent.swarm_evidence import EvidencePacket, validate_evidence_packet
+
 _VAGUE_SUCCESS_PHRASES = (
     "done",
     "fixed",
@@ -70,10 +72,11 @@ def detect_weak_output(result: Dict[str, Any], evidence_requirements: Iterable[A
     if text in _VAGUE_SUCCESS_PHRASES or any(phrase in text for phrase in ("looks good", "should work", "seems fine")):
         reasons.append("vague_success_language")
     for kind in required_kinds:
-        if kind and not _has_kind_evidence(result, kind):
-            reason = f"missing_{kind}"
-            if reason not in reasons:
-                reasons.append(reason)
+        validation = validate_evidence_packet(EvidencePacket.from_result(result), [item for item in evidence_requirements if _requirement_kind(item) == kind])
+        if kind and not validation.passed:
+            for reason in validation.reasons or [f"missing_{kind}"]:
+                if reason not in reasons:
+                    reasons.append(reason)
 
     return {
         "weak": bool(reasons),

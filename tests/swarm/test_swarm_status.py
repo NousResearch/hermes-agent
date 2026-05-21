@@ -1,4 +1,4 @@
-from agent.swarm_state import AuditEvent, PermissionGrant, RoutingPlan, SwarmJob
+from agent.swarm_state import AuditEvent, EvidenceRequirement, PermissionGrant, RoutingPlan, SwarmJob
 from agent.swarm_status import format_swarm_status, load_swarm_status_text, redact_secrets
 from agent.swarm_store import SwarmStore
 
@@ -64,3 +64,22 @@ def test_load_swarm_status_text_does_not_fallback_to_other_sessions():
 
     assert load_swarm_status_text(session_id="session-b") == ""
     assert "private other session" in load_swarm_status_text(session_id="session-a")
+
+
+def test_status_exposes_missing_evidence_from_synthesis():
+    job = SwarmJob.create("research", created_at="2026-01-01T00:00:00+00:00")
+    job.routing_plan = RoutingPlan(
+        mode="swarm",
+        reason="needs proof",
+        evidence_requirements=[EvidenceRequirement("citation", "Cite sources")],
+        verification_required=True,
+    )
+    task = job.add_task("research", status="needs_review")
+    task.result = {"summary": "done", "claims": ["claim"], "evidence": []}
+    job.transition("partially_completed")
+
+    text = format_swarm_status([job], include_completed=True)
+
+    assert "evidence:" in text
+    assert "citation: missing" in text
+    assert "safe to present complete: no" in text

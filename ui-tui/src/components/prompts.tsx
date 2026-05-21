@@ -1,11 +1,13 @@
 import { Box, Text, useInput } from '@hermes/ink'
 import { useState } from 'react'
 
+import { readClipboardText } from '../lib/clipboard.js'
 import { isMac } from '../lib/platform.js'
+import { stripTrailingPasteNewlines } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
-import { TextInput } from './textInput.js'
+import { type PasteEvent, TextInput } from './textInput.js'
 
 const OPTS = ['once', 'session', 'always', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
@@ -22,6 +24,8 @@ type ApprovalAction =
   | { kind: 'choose'; choice: (typeof OPTS)[number] }
   | { kind: 'move'; delta: -1 | 1 }
   | { kind: 'noop' }
+
+type ClarifyPasteResult = { cursor: number; value: string } | null
 
 /**
  * Pure key-dispatch for the approval prompt — exported so the regression
@@ -58,6 +62,19 @@ export function approvalAction(ch: string, key: ApprovalKey, sel: number): Appro
   }
 
   return { kind: 'noop' }
+}
+
+export function clarifyPasteResult(raw: null | string, cursor: number, value: string): ClarifyPasteResult {
+  const cleaned = stripTrailingPasteNewlines((raw ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n'))
+
+  if (!cleaned || !/[^\n]/.test(cleaned)) {
+    return null
+  }
+
+  return {
+    cursor: cursor + cleaned.length,
+    value: value.slice(0, cursor) + cleaned + value.slice(cursor)
+  }
 }
 
 export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
@@ -126,6 +143,14 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
     </Text>
   )
 
+  const pasteIntoCustom = ({ cursor, hotkey, text, value }: PasteEvent) => {
+    if (hotkey && !text) {
+      return readClipboardText().then(clipText => clarifyPasteResult(clipText, cursor, value))
+    }
+
+    return clarifyPasteResult(text, cursor, value)
+  }
+
   useInput((ch, key) => {
     if (key.escape) {
       typing && choices.length ? setTyping(false) : onCancel()
@@ -163,7 +188,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
 
         <Box>
           <Text color={t.color.label}>{'> '}</Text>
-          <TextInput columns={Math.max(20, cols - 6)} onChange={setCustom} onSubmit={onAnswer} value={custom} />
+          <TextInput columns={Math.max(20, cols - 6)} onChange={setCustom} onPaste={pasteIntoCustom} onSubmit={onAnswer} value={custom} />
         </Box>
 
         <Text color={t.color.muted}>

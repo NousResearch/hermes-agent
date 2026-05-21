@@ -275,6 +275,8 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertEquals("near", HermesDeviceDiagnosticsBridge.bluetoothProximityLabel(-48))
         assertEquals("room", HermesDeviceDiagnosticsBridge.bluetoothProximityLabel(-67))
         assertEquals(2.0, HermesDeviceDiagnosticsBridge.estimateBluetoothDistanceMeters(-65, -59)!!, 0.01)
+        assertEquals("Heart Rate", HermesDeviceDiagnosticsBridge.bluetoothServiceUuidLabel("0000180d-0000-1000-8000-00805f9b34fb"))
+        assertEquals("Apple", HermesDeviceDiagnosticsBridge.bluetoothManufacturerIdLabel("0x004C"))
 
         val devices = JSONArray()
             .put(
@@ -286,7 +288,10 @@ class HermesDeviceDiagnosticsBridgeTest {
                     .put("connectable", true)
                     .put("rssi_dbm", -49)
                     .put("service_uuids", JSONArray().put("0000180d-0000-1000-8000-00805f9b34fb"))
-                    .put("manufacturer_ids", JSONArray().put("0x004C")),
+                    .put("service_labels", JSONArray().put("Heart Rate"))
+                    .put("manufacturer_ids", JSONArray().put("0x004C"))
+                    .put("manufacturer_names", JSONArray().put("Apple"))
+                    .put("semantic_context", "services=Heart Rate | manufacturers=Apple"),
             )
             .put(
                 JSONObject()
@@ -295,7 +300,8 @@ class HermesDeviceDiagnosticsBridgeTest {
                     .put("device_category", "wearable_health")
                     .put("connectable", false)
                     .put("rssi_dbm", -73)
-                    .put("manufacturer_ids", JSONArray().put("0x004C")),
+                    .put("manufacturer_ids", JSONArray().put("0x004C"))
+                    .put("manufacturer_names", JSONArray().put("Apple")),
             )
 
         val rows = HermesDeviceDiagnosticsBridge.bluetoothMetadataSummaryRows(devices)
@@ -313,8 +319,10 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertEquals(2, category.getInt("count"))
         assertEquals(1, category.getInt("paired_count"))
         assertEquals("0x004C", manufacturer.getString("label"))
+        assertEquals("Apple", manufacturer.getString("semantic_label"))
         assertEquals(2, manufacturer.getInt("count"))
         assertTrue(service.getString("label").contains("180d"))
+        assertEquals("Heart Rate", service.getString("semantic_label"))
         assertTrue(service.getString("recommendation").contains("BLE service UUID"))
     }
 
@@ -329,7 +337,10 @@ class HermesDeviceDiagnosticsBridgeTest {
                 .put("device_category", "wearable_health")
                 .put("rssi_dbm", -72)
                 .put("service_uuids", JSONArray().put("0000180d-0000-1000-8000-00805f9b34fb"))
-                .put("manufacturer_ids", JSONArray().put("0x004C")),
+                .put("service_labels", JSONArray().put("Heart Rate"))
+                .put("manufacturer_ids", JSONArray().put("0x004C"))
+                .put("manufacturer_names", JSONArray().put("Apple"))
+                .put("semantic_context", "services=Heart Rate | manufacturers=Apple"),
         )
         val secondScan = JSONArray().put(
             JSONObject()
@@ -340,7 +351,10 @@ class HermesDeviceDiagnosticsBridgeTest {
                 .put("device_category", "wearable_health")
                 .put("rssi_dbm", -58)
                 .put("service_uuids", JSONArray().put("0000180d-0000-1000-8000-00805f9b34fb"))
-                .put("manufacturer_ids", JSONArray().put("0x004C")),
+                .put("service_labels", JSONArray().put("Heart Rate"))
+                .put("manufacturer_ids", JSONArray().put("0x004C"))
+                .put("manufacturer_names", JSONArray().put("Apple"))
+                .put("semantic_context", "services=Heart Rate | manufacturers=Apple"),
         )
 
         val store = HermesDeviceDiagnosticsBridge.mergeBluetoothSignalHistory(
@@ -360,6 +374,9 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertEquals("approaching", row.getString("trend_label"))
         assertEquals("room", row.getString("proximity_label"))
         assertTrue(row.getJSONArray("service_uuids").toString().contains("180d"))
+        assertTrue(row.getJSONArray("service_labels").toString().contains("Heart Rate"))
+        assertTrue(row.getJSONArray("manufacturer_names").toString().contains("Apple"))
+        assertTrue(row.getString("semantic_context").contains("Heart Rate"))
         assertEquals(2, row.getJSONArray("rssi_series").length())
         assertEquals(500L, row.getLong("last_seen_ms"))
     }
@@ -731,16 +748,18 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.has("bluetooth_scan_permission_status"))
         assertTrue(result.has("bluetooth_scan_status"))
         assertFalse(result.getJSONObject("bluetooth_scan_status").getBoolean("refresh_requested"))
+        assertTrue(result.has("bluetooth_service_label_count"))
+        assertTrue(result.has("bluetooth_manufacturer_name_count"))
         assertTrue(featureLabels.contains("Identify paired devices"))
         assertTrue(featureLabels.contains("Scan nearby BLE devices"))
         assertTrue(featureLabels.contains("RSSI proximity graph"))
         assertTrue(featureLabels.contains("RSSI trend history graph"))
-        assertTrue(featureLabels.contains("Service UUID metadata"))
-        assertTrue(featureLabels.contains("Manufacturer ID metadata"))
+        assertTrue(featureLabels.contains("Service UUID labels"))
+        assertTrue(featureLabels.contains("Manufacturer names"))
         assertTrue(featureLabels.contains("Bluetooth safety boundary"))
         assertTrue(routeLabels.contains("Route nearby Bluetooth scan"))
         assertTrue(routeLabels.contains("Route Bluetooth signal history"))
-        assertTrue(routeLabels.contains("Route service/manufacturer metadata"))
+        assertTrue(routeLabels.contains("Route service/manufacturer semantics"))
         assertTrue(routeLabels.contains("Route scan policy explanation"))
         assertTrue(policyLabels.contains("Connect and scan permissions"))
         assertTrue(policyLabels.contains("Active scan cadence"))

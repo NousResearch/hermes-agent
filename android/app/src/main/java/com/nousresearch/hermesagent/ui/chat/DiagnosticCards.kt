@@ -309,6 +309,8 @@ private fun bluetoothRow(row: JSONObject): DiagnosticGraphRow? {
         if (row.optBoolean("paired", false)) "paired" else null,
         row.optString("proximity_label").takeIf { it.isNotBlank() },
         row.optNumber("estimated_distance_meters")?.toDouble()?.let { "~${formatDecimal(it, 1)} m" },
+        joinJsonStrings(row.optJSONArray("service_labels"), 2).takeIf { it.isNotBlank() }?.let { "services $it" },
+        joinJsonStrings(row.optJSONArray("manufacturer_names"), 2).takeIf { it.isNotBlank() }?.let { "manufacturers $it" },
         row.optNumber("service_uuid_count")?.toInt()?.takeIf { it > 0 }?.let { "$it services" },
         row.optNumber("manufacturer_data_count")?.toInt()?.takeIf { it > 0 }?.let { "$it manufacturer records" },
         row.optNumber("scan_record_bytes")?.toInt()?.let { "$it scan bytes" },
@@ -322,12 +324,15 @@ private fun bluetoothRow(row: JSONObject): DiagnosticGraphRow? {
 }
 
 private fun bluetoothMetadataSummaryRow(row: JSONObject): DiagnosticGraphRow? {
-    val label = row.optString("label").takeIf { it.isNotBlank() } ?: return null
+    val rawLabel = row.optString("label").takeIf { it.isNotBlank() } ?: return null
+    val semanticLabel = row.optString("semantic_label").takeIf { it.isNotBlank() && it != "null" }
+    val label = semanticLabel ?: rawLabel
     val count = row.optNumber("count")?.toInt() ?: return null
     val summaryType = row.optString("summary_type").ifBlank { "metadata" }
     val strongestRssi = row.optNumber("strongest_rssi_dbm")?.toInt()
     val detail = listOfNotNull(
         summaryType.replace('_', ' '),
+        semanticLabel?.let { "raw $rawLabel" },
         row.optNumber("paired_count")?.toInt()?.takeIf { it > 0 }?.let { "$it paired" },
         row.optNumber("connectable_count")?.toInt()?.takeIf { it > 0 }?.let { "$it connectable" },
         strongestRssi?.let { "strongest $it dBm" },
@@ -359,6 +364,8 @@ private fun bluetoothSignalHistoryRow(row: JSONObject): DiagnosticGraphRow? {
         averageRssi?.let { "avg $it dBm" },
         if (minRssi != null && maxRssi != null) "range $minRssi..$maxRssi dBm" else null,
         trendDb?.let { "${row.optString("trend_label").ifBlank { "trend" }} ${if (it > 0) "+" else ""}$it dB" },
+        joinJsonStrings(row.optJSONArray("service_labels"), 2).takeIf { it.isNotBlank() }?.let { "services $it" },
+        joinJsonStrings(row.optJSONArray("manufacturer_names"), 2).takeIf { it.isNotBlank() }?.let { "manufacturers $it" },
         joinJsonStrings(row.optJSONArray("service_uuids"), 2).takeIf { it.isNotBlank() }?.let { "services $it" },
         joinJsonStrings(row.optJSONArray("manufacturer_ids"), 2).takeIf { it.isNotBlank() }?.let { "manufacturers $it" },
     ).joinToString(" | ")

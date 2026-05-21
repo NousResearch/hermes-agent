@@ -677,7 +677,10 @@ class NativeToolCallingChatClientTest {
                         .put("current_rssi_dbm", -58)
                         .put("average_rssi_dbm", -65)
                         .put("trend_label", "approaching")
-                        .put("trend_db", 14),
+                        .put("trend_db", 14)
+                        .put("service_labels", JSONArray().put("Heart Rate"))
+                        .put("manufacturer_names", JSONArray().put("Apple"))
+                        .put("semantic_context", "services=Heart Rate | manufacturers=Apple"),
                 ),
             )
             .put("cards", JSONArray().put(JSONObject().put("title", "Bluetooth Analyzer Readiness").put("body", "18 rows")))
@@ -701,6 +704,9 @@ class NativeToolCallingChatClientTest {
         assertEquals("permission", policies.getJSONObject(0).getString("constraint_type"))
         assertEquals("Bluetooth connect and scan", policies.getJSONObject(0).getString("permission_gate"))
         assertEquals("Heart Strap", history.getJSONObject(0).getString("device_name"))
+        assertEquals("Heart Rate", history.getJSONObject(0).getJSONArray("service_labels").getString(0))
+        assertEquals("Apple", history.getJSONObject(0).getJSONArray("manufacturer_names").getString(0))
+        assertTrue(history.getJSONObject(0).getString("semantic_context").contains("manufacturers=Apple"))
         assertEquals(1, parsed.getInt("bluetooth_signal_history_count"))
     }
 

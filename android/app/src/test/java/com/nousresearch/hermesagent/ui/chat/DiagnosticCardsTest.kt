@@ -105,6 +105,7 @@ class DiagnosticCardsTest {
                                 JSONObject()
                                     .put("summary_type", "manufacturer_id")
                                     .put("label", "0x004C")
+                                    .put("semantic_label", "Apple")
                                     .put("count", 2)
                                     .put("connectable_count", 1)
                                     .put("strongest_rssi_dbm", -50)
@@ -117,9 +118,10 @@ class DiagnosticCardsTest {
 
         val row = extractDiagnosticCards(content).single().rows.single()
 
-        assertEquals("0x004C", row.label)
+        assertEquals("Apple", row.label)
         assertEquals("2 devices", row.valueLabel)
         assertTrue(row.detail.contains("manufacturer id"))
+        assertTrue(row.detail.contains("raw 0x004C"))
         assertTrue(row.detail.contains("1 connectable"))
         assertTrue(row.fraction > 0.7f)
     }
@@ -566,7 +568,9 @@ class DiagnosticCardsTest {
                                     .put("trend_label", "approaching")
                                     .put("sample_count", 2)
                                     .put("service_uuids", JSONArray().put("0000180d-0000-1000-8000-00805f9b34fb"))
-                                    .put("manufacturer_ids", JSONArray().put("0x004C")),
+                                    .put("service_labels", JSONArray().put("Heart Rate"))
+                                    .put("manufacturer_ids", JSONArray().put("0x004C"))
+                                    .put("manufacturer_names", JSONArray().put("Apple")),
                             ),
                         ),
                 ),
@@ -581,6 +585,8 @@ class DiagnosticCardsTest {
         assertTrue(row.detail.contains("2 samples"))
         assertTrue(row.detail.contains("avg -65 dBm"))
         assertTrue(row.detail.contains("approaching +14 dB"))
+        assertTrue(row.detail.contains("services Heart Rate"))
+        assertTrue(row.detail.contains("manufacturers Apple"))
         assertTrue(row.detail.contains("manufacturers 0x004C"))
         assertTrue(row.fraction > 0.5f)
     }

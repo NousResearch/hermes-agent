@@ -315,6 +315,11 @@ def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and
     assert 'bluetoothAnalyzerFeatureRows(' in diagnostics_bridge
     assert 'bluetoothAnalyzerWorkflowRows(' in diagnostics_bridge
     assert 'bluetoothScanPolicyRows(' in diagnostics_bridge
+    assert 'bluetoothServiceUuidLabel(' in diagnostics_bridge
+    assert 'bluetoothManufacturerIdLabel(' in diagnostics_bridge
+    assert '"service_labels"' in diagnostics_bridge
+    assert '"manufacturer_names"' in diagnostics_bridge
+    assert 'Bluetooth SIG service labels' in diagnostics_bridge
     assert '"bluetooth_signal_history"' in diagnostics_bridge
     assert '"bluetooth_analyzer_feature_matrix"' in diagnostics_bridge
     assert '"bluetooth_analyzer_workflow_routes"' in diagnostics_bridge
@@ -322,6 +327,10 @@ def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and
     assert 'Bluetooth Analyzer readiness' in diagnostics_bridge
     assert 'bluetooth_analyzer_report' in chat_client
     assert 'bluetooth_signal_history' in chat_client
+    assert '"bluetooth_service_label_count"' in chat_client
+    assert '"bluetooth_manufacturer_name_count"' in chat_client
+    assert '"service_labels"' in chat_client
+    assert '"manufacturer_names"' in chat_client
     assert '"bluetooth_signal_history"' in chat_client
     assert '"bluetooth_analyzer_feature_matrix"' in chat_client
     assert '"bluetooth_analyzer_workflow_routes"' in chat_client

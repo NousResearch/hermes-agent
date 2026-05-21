@@ -153,6 +153,27 @@ export async function buildWsAuthParam(): Promise<[string, string]> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  /**
+   * Identity probe for the dashboard auth gate (Phase 7).
+   *
+   * Returns the verified Session as JSON when gated mode is active and a
+   * valid cookie is attached. Loopback mode is unaffected — the endpoint
+   * still exists but is never useful there (no Session, no cookie). The
+   * AuthWidget component swallows 401s from this call: if the gate isn't
+   * engaged, /api/auth/me returns 401 and the widget renders nothing.
+   */
+  getAuthMe: () => fetchJSON<AuthMeResponse>("/api/auth/me"),
+  logout: () =>
+    fetch(`${BASE}/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    }).then((r) => {
+      // /auth/logout returns 302 → /login. Follow that with a full-page
+      // navigation rather than letting fetch() opaquely consume the
+      // redirect — the SPA needs to leave the protected area.
+      window.location.assign("/login");
+      return r;
+    }),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -433,6 +454,23 @@ export const api = {
     }),
 };
 
+/** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
+ *
+ * Returned by the dashboard's gated middleware when a valid session cookie
+ * is attached. ``email`` and ``display_name`` are empty strings under the
+ * Nous Portal contract V1 (the access token has no email/name claims —
+ * see Contract Anchor C4 in the plan). The AuthWidget surfaces a
+ * truncated ``user_id`` instead.
+ */
+export interface AuthMeResponse {
+  user_id: string;
+  email: string;
+  display_name: string;
+  org_id: string;
+  provider: string;
+  expires_at: number;
+}
+
 export interface ActionResponse {
   name: string;
   ok: boolean;
@@ -456,6 +494,14 @@ export interface PlatformStatus {
 
 export interface StatusResponse {
   active_sessions: number;
+  /** Phase 7: ``true`` when the dashboard's OAuth gate is engaged
+   * (public bind, no ``--insecure``). Read alongside ``auth_providers``
+   * to render a "gated / loopback" badge. */
+  auth_required?: boolean;
+  /** Phase 7: registered ``DashboardAuthProvider`` names (e.g. ``["nous"]``).
+   * Empty in loopback mode; empty + ``auth_required=true`` is a
+   * fail-closed state (the dashboard will refuse to bind). */
+  auth_providers?: string[];
   config_path: string;
   config_version: number;
   env_path: string;

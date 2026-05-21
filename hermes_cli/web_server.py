@@ -653,6 +653,19 @@ async def get_status():
     except Exception:
         pass
 
+    # Dashboard auth gate (Phase 7): surface whether the gate is engaged
+    # and which providers are registered so ``hermes status`` and the
+    # SPA's StatusPage can show "OAuth gate ON via Nous Research" or
+    # "loopback only — no auth gate" with no extra round trips.
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    auth_providers: list[str] = []
+    try:
+        from hermes_cli.dashboard_auth import list_providers as _list_providers
+        auth_providers = [p.name for p in _list_providers()]
+    except Exception:
+        # Module not importable yet (early startup) — leave as [].
+        pass
+
     return {
         "version": __version__,
         "release_date": __release_date__,
@@ -669,6 +682,8 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+        "auth_required": auth_required,
+        "auth_providers": auth_providers,
     }
 
 

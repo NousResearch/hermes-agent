@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
+    "The title MUST be in Chinese (Simplified), regardless of the input language. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
 

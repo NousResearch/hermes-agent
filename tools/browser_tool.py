@@ -33,8 +33,8 @@ Environment Variables:
   requires Scale Plan (default: "false")
 - BROWSERBASE_KEEP_ALIVE: Enable keepAlive for session reconnection after disconnects,
   requires paid plan (default: "true")
-- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in milliseconds. Set to extend
-  beyond project default. Common values: 600000 (10min), 1800000 (30min) (default: none)
+- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in seconds (max 21600 = 6h).
+  Set to extend beyond project default. Common values: 600 (10min), 1800 (30min) (default: none)
 
 Usage:
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click

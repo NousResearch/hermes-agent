@@ -748,7 +748,7 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="local")
 
-    assert resolved["provider"] == "custom"
+    assert resolved["provider"] == "custom:Local"
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "http://1.2.3.4:1234/v1"
     assert resolved["api_key"] == "local-provider-key"
@@ -788,7 +788,7 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
 
     resolved = rp.resolve_runtime_provider(requested="openai-direct-primary")
 
-    assert resolved["provider"] == "custom"
+    assert resolved["provider"] == "custom:OpenAI Direct (Primary)"
     assert resolved["api_mode"] == "codex_responses"
     assert resolved["base_url"] == "https://api.openai.com/v1"
     assert resolved["api_key"] == "dir-key"
@@ -828,7 +828,7 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
 
-    assert resolved["provider"] == "custom"
+    assert resolved["provider"] == "custom:MyCorp Proxy"
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "https://proxy.example.com/v1"
     assert resolved["api_key"] == "env-secret"
@@ -1628,7 +1628,7 @@ def test_named_custom_runtime_propagates_model_direct_path(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="my-server")
     assert resolved["model"] == "qwen3.6-plus"
-    assert resolved["provider"] == "custom"
+    assert resolved["provider"] == "custom:my-server"
 
 
 def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):

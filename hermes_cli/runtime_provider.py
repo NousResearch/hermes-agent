@@ -448,7 +448,14 @@ def _try_resolve_from_custom_pool(
     api_mode_override: Optional[str] = None,
     provider_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
+    """Check if a credential pool exists for a custom endpoint and return a runtime dict if so.
+
+    When ``provider_name`` is provided (a named custom provider like
+    ``bobapi-deepseek``), the returned ``provider`` field preserves that
+    identity as ``custom:<name>`` instead of collapsing to bare ``custom``,
+    so downstream callers (TUI display, credential lookups) see the actual
+    sub-provider rather than a flattened sentinel.
+    """
     pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
     if not pool_key:
         return None
@@ -462,8 +469,10 @@ def _try_resolve_from_custom_pool(
         pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         if not pool_api_key:
             return None
+        # Preserve the sub-provider identity when we have a named custom provider.
+        runtime_provider = f"custom:{provider_name}" if provider_name else provider_label
         return {
-            "provider": provider_label,
+            "provider": runtime_provider,
             "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
             "api_key": pool_api_key,
@@ -701,14 +710,15 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
+    custom_name = custom_provider.get("name", requested_provider)
     result = {
-        "provider": "custom",
+        "provider": f"custom:{custom_name}",
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
-        "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+        "source": f"custom_provider:{custom_name}",
     }
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.

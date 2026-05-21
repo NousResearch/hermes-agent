@@ -271,6 +271,31 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
 
     # Last resort: replace with empty object so the API request doesn't
     # crash the entire session.
+    #
+    # write_file-specific recovery: when the generic repairs above all fail
+    # (typically because the model emitted unescaped triple-double-quotes
+    # inside the "content" value), try to salvage at least the "path" field.
+    # File paths are always simple strings — no quoting issues — so a narrow
+    # regex reliably extracts them even when the surrounding JSON is broken.
+    #
+    # Without this, _handle_write_file receives {} and returns a generic
+    # "path missing" error that the model cannot act on, causing a retry
+    # loop with the same malformed JSON.  With the path recovered, the model
+    # instead receives the "content missing" error which explicitly suggests
+    # using execute_code — a path the model can follow to break the loop.
+    if tool_name == "write_file":
+        path_match = re.search(r'"path"\s*:\s*"([^"]+)"', raw_stripped)
+        if path_match:
+            recovered = json.dumps({"path": path_match.group(1)})
+            logger.warning(
+                "Unrepairable tool_call arguments for %s — "
+                "recovered path only (content JSON was malformed, likely "
+                "unescaped quotes in Python/code content). "
+                "path=%r (was: %s)",
+                tool_name, path_match.group(1), raw_stripped[:80],
+            )
+            return recovered
+
     logger.warning(
         "Unrepairable tool_call arguments for %s — "
         "replaced with empty object (was: %s)",

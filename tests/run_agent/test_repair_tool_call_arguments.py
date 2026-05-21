@@ -141,3 +141,25 @@ class TestRepairToolCallArguments:
         parsed = json.loads(result)
         assert "line" in parsed["msg"]
 
+    # -- Stage 7: write_file path recovery from malformed content JSON --
+
+    def test_write_file_recovers_path_from_malformed_content(self):
+        """When a model emits unescaped triple-double-quotes inside the
+        content field, the JSON is unrecoverable — but the path field
+        should still be extracted so the model gets the actionable
+        'content missing' error instead of a generic 'path missing' error
+        that causes a retry loop."""
+        malformed = (
+            '{"path": "foo.py", "content": "def f():\\n    '
+            '"""Docstring."""\\n    pass"}'
+        )
+        result = _repair_tool_call_arguments(malformed, "write_file")
+        parsed = json.loads(result)
+        assert parsed.get("path") == "foo.py"
+        assert "content" not in parsed
+
+    def test_write_file_path_absent_still_returns_empty(self):
+        """If the JSON is malformed AND no path field is present, the
+        generic {} fallback is still returned — no special recovery."""
+        assert _repair_tool_call_arguments("garbage", "write_file") == "{}"
+

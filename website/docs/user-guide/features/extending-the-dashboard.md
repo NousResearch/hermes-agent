@@ -271,8 +271,10 @@ Each built-in ships its own palette, typography, and layout — switching produc
 | **Mono** (`mono`) | Grayscale | IBM Plex Sans + IBM Plex Mono, 13px | 0 radius, compact |
 | **Cyberpunk** (`cyberpunk`) | Neon green on black | Share Tech Mono everywhere, 14px | 0 radius, compact |
 | **Rosé** (`rose`) | Pink + ivory | Fraunces (serif) + DM Mono, 16px | 1rem radius, spacious |
+| **Makima** (`makima`) | Gruvbox browns + gold + burgundy | System stack, 15px | 0.65rem radius, comfortable |
+| **Manjaro** (`manjaro`) | Midnight purple + magenta + teal | System stack, 15px | 0.75rem radius, comfortable |
 
-Themes that reference Google Fonts (all except Hermes Teal) load the stylesheet on demand — the first time you switch to them a `<link>` tag is injected into `<head>`.
+Themes that reference Google Fonts load the stylesheet on demand — the first time you switch to them a `<link>` tag is injected into `<head>`.
 
 ### Full theme YAML reference
 

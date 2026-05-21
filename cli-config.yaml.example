@@ -1001,6 +1001,8 @@ display:
   #   poseidon       — Sea-green/teal Olympian theme
   #   sisyphus       — Earthy stone-and-moss theme
   #   charizard      — Fiery orange dragon theme
+  #   makima         — Warm gruvbox browns, gold, and burgundy
+  #   manjaro        — Midnight purple, hot magenta, and teal
   #
   # Custom skins: drop a YAML file in ~/.hermes/skins/<name>.yaml
   # Schema (all fields optional, missing values inherit from default):

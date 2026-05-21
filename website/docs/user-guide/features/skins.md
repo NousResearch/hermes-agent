@@ -41,6 +41,8 @@ display:
 | `poseidon` | Ocean-god theme — deep blue and seafoam | `Poseidon Agent` | Deep blue to seafoam gradient. Ocean-themed spinners ("charting currents", "sounding the depth"). Trident ASCII art banner. |
 | `sisyphus` | Sisyphean theme — austere grayscale with persistence | `Sisyphus Agent` | Light grays with stark contrast. Boulder-themed spinners ("pushing uphill", "resetting the boulder", "enduring the loop"). Boulder-and-hill ASCII art banner. |
 | `charizard` | Volcanic theme — burnt orange and ember | `Charizard Agent` | Warm burnt orange to ember gradient. Fire-themed spinners ("banking into the draft", "measuring burn"). Dragon-silhouette ASCII art banner. |
+| `makima` | Makima-inspired desktop palette — gruvbox browns, gold, and burgundy | `Makima Hermes` | Warm dark surfaces (`#282828` / `#1d2021`), gold accents, muted rose highlights, and control-themed spinner verbs. |
+| `manjaro` | Manjaro-inspired desktop palette — midnight purple, magenta, and teal | `Manjaro Hermes` | Deep purple-black surfaces, hot magenta borders, violet accents, and teal success/info highlights. |
 
 ## Complete list of configurable keys
 

@@ -204,6 +204,130 @@ export const defaultLargeTheme: DashboardTheme = {
   },
 };
 
+export const makimaTheme: DashboardTheme = {
+  name: "makima",
+  label: "Makima",
+  description: "Warm Makima desktop palette for the Hermes dashboard.",
+  palette: {
+    background: { hex: "#1d2021", alpha: 1 },
+    midground: { hex: "#282828", alpha: 0.96 },
+    foreground: { hex: "#f0e8d0", alpha: 0.08 },
+    warmGlow: "rgba(215, 153, 33, 0.34)",
+    noiseOpacity: 0.75,
+  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.65rem",
+    density: "comfortable",
+  },
+  colorOverrides: {
+    card: "#282828",
+    cardForeground: "#f0e8d0",
+    popover: "#1d2021",
+    popoverForeground: "#fbf1c7",
+    primary: "#d79921",
+    primaryForeground: "#282828",
+    secondary: "#504945",
+    secondaryForeground: "#f0e8d0",
+    muted: "#504945",
+    mutedForeground: "#a89984",
+    accent: "#d3869b",
+    accentForeground: "#282828",
+    destructive: "#cc241d",
+    destructiveForeground: "#fbf1c7",
+    success: "#b8bb26",
+    warning: "#fabd2f",
+    border: "#5d141a",
+    input: "#504945",
+    ring: "#d79921",
+  },
+  componentStyles: {
+    card: {
+      background: "linear-gradient(135deg, rgba(40,40,40,0.96), rgba(29,32,33,0.98))",
+      borderColor: "rgba(215,153,33,0.45)",
+      boxShadow: "0 0 0 1px rgba(93,20,26,0.35), 0 20px 60px rgba(29,32,33,0.55)",
+    },
+    header: {
+      background: "linear-gradient(90deg, rgba(93,20,26,0.82), rgba(40,40,40,0.78))",
+      borderColor: "rgba(215,153,33,0.45)",
+    },
+    sidebar: {
+      background: "rgba(29,32,33,0.92)",
+      borderColor: "rgba(80,73,69,0.85)",
+    },
+    badge: {
+      background: "rgba(215,153,33,0.16)",
+      borderColor: "rgba(215,153,33,0.5)",
+    },
+    progress: {
+      background: "linear-gradient(90deg, #5d141a, #d79921, #fabd2f)",
+    },
+  },
+};
+
+export const manjaroTheme: DashboardTheme = {
+  name: "manjaro",
+  label: "Manjaro",
+  description: "Midnight purple and magenta Manjaro desktop palette for the Hermes dashboard.",
+  palette: {
+    background: { hex: "#090714", alpha: 1 },
+    midground: { hex: "#0d0b1a", alpha: 0.96 },
+    foreground: { hex: "#e8e0f0", alpha: 0.08 },
+    warmGlow: "rgba(230, 32, 122, 0.38)",
+    noiseOpacity: 0.82,
+  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.75rem",
+    density: "comfortable",
+  },
+  colorOverrides: {
+    card: "#0d0b1a",
+    cardForeground: "#e8e0f0",
+    popover: "#090714",
+    popoverForeground: "#f5f0ff",
+    primary: "#e6207a",
+    primaryForeground: "#f5f0ff",
+    secondary: "#1a1530",
+    secondaryForeground: "#e8e0f0",
+    muted: "#1a1530",
+    mutedForeground: "#6e6580",
+    accent: "#7b2fbe",
+    accentForeground: "#f5f0ff",
+    destructive: "#ff1493",
+    destructiveForeground: "#f5f0ff",
+    success: "#2eb398",
+    warning: "#f0c040",
+    border: "#7b2fbe",
+    input: "#1a1530",
+    ring: "#e6207a",
+  },
+  componentStyles: {
+    card: {
+      background: "linear-gradient(135deg, rgba(13,11,26,0.96), rgba(26,21,48,0.88))",
+      borderColor: "rgba(230,32,122,0.48)",
+      boxShadow: "0 0 0 1px rgba(123,47,190,0.3), 0 24px 70px rgba(9,7,20,0.65)",
+    },
+    header: {
+      background: "linear-gradient(90deg, rgba(230,32,122,0.78), rgba(123,47,190,0.5), rgba(13,11,26,0.8))",
+      borderColor: "rgba(92,200,216,0.38)",
+    },
+    sidebar: {
+      background: "rgba(9,7,20,0.92)",
+      borderColor: "rgba(123,47,190,0.65)",
+    },
+    badge: {
+      background: "rgba(230,32,122,0.16)",
+      borderColor: "rgba(230,32,122,0.52)",
+    },
+    progress: {
+      background: "linear-gradient(90deg, #1a237e, #7b2fbe, #e6207a, #ff1493)",
+    },
+  },
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
@@ -212,4 +336,6 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  makima: makimaTheme,
+  manjaro: manjaroTheme,
 };

@@ -523,6 +523,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
                     result = {
+                        "provider_key": ep_name,
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
@@ -551,6 +552,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
                         result = {
+                            "provider_key": ep_name,
                             "name": display_name,
                             "base_url": base_url.strip(),
                             "api_key": resolved_api_key,
@@ -691,8 +693,17 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
+    # New-style `providers:` entries are first-class named providers in the
+    # rest of the runtime (model switching, capability lookup, logs, aux
+    # vision routing).  Preserve their provider key instead of collapsing them
+    # to bare "custom".  Legacy `custom_providers:` entries intentionally keep
+    # the old "custom" label unless they were migrated with a provider_key.
+    runtime_provider = str(
+        custom_provider.get("provider_key") or "custom"
+    ).strip() or "custom"
+
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    pool_result = _try_resolve_from_custom_pool(base_url, runtime_provider, custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -724,7 +735,7 @@ def _resolve_named_custom_runtime(
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     result = {
-        "provider": "custom",
+        "provider": runtime_provider,
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",

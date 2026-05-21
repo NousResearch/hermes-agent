@@ -744,7 +744,7 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
 
     resolved = rp.resolve_runtime_provider(requested="openai-direct-primary")
 
-    assert resolved["provider"] == "custom"
+    assert resolved["provider"] == "openai-direct-primary"
     assert resolved["api_mode"] == "codex_responses"
     assert resolved["base_url"] == "https://api.openai.com/v1"
     assert resolved["api_key"] == "dir-key"
@@ -784,7 +784,7 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
 
-    assert resolved["provider"] == "custom"
+    assert resolved["provider"] == "mycorp-proxy"
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "https://proxy.example.com/v1"
     assert resolved["api_key"] == "env-secret"

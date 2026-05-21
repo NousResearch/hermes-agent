@@ -883,6 +883,21 @@ def _has_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+def _telegram_voice_opus_cmd(ffmpeg: str, input_path: str, output_path: str) -> list[str]:
+    """Build ffmpeg args for Telegram voice-compatible OGG Opus speech."""
+    return [
+        ffmpeg, "-i", input_path,
+        "-acodec", "libopus",
+        "-ac", "1",
+        "-b:a", "64k",
+        "-vbr", "on",
+        "-application", "voip",
+        "-compression_level", "10",
+        "-y", "-loglevel", "error",
+        output_path,
+    ]
+
+
 def _convert_to_opus(mp3_path: str) -> Optional[str]:
     """
     Convert an MP3 file to OGG Opus format for Telegram voice bubbles.
@@ -899,8 +914,7 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
     try:
         result = subprocess.run(
-            ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
-             "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
+            _telegram_voice_opus_cmd("ffmpeg", mp3_path, ogg_path),
             capture_output=True, timeout=30,
             stdin=subprocess.DEVNULL,
         )
@@ -1674,13 +1688,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             # For .ogg output, force libopus encoding (Telegram voice bubbles
             # require Opus specifically; ffmpeg's default for .ogg is Vorbis).
             if output_path.lower().endswith(".ogg"):
-                cmd = [
-                    ffmpeg, "-i", wav_path,
-                    "-acodec", "libopus", "-ac", "1",
-                    "-b:a", "64k", "-vbr", "off",
-                    "-y", "-loglevel", "error",
-                    output_path,
-                ]
+                cmd = _telegram_voice_opus_cmd(ffmpeg, wav_path, output_path)
             else:
                 cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
             result = subprocess.run(cmd, capture_output=True, timeout=30, stdin=subprocess.DEVNULL)

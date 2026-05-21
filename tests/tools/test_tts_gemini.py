@@ -419,6 +419,43 @@ class TestGenerateGeminiTts:
         assert prompt_text == "Hi there."
         assert "audio tag rewrite failed" in caplog.text
 
+    def test_ogg_output_uses_telegram_voice_opus_args(
+        self,
+        tmp_path,
+        monkeypatch,
+        mock_gemini_response,
+    ):
+        from tools import tts_tool
+        from tools.tts_tool import _generate_gemini_tts
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(returncode=0, stderr=b"")
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(tts_tool.subprocess, "run", fake_run)
+
+        output_path = str(tmp_path / "speech.ogg")
+        with patch("requests.post", return_value=mock_gemini_response):
+            assert _generate_gemini_tts("Hi", output_path, {}) == output_path
+
+        cmd = captured["cmd"]
+        assert cmd[0] == "/usr/bin/ffmpeg"
+        assert cmd[-1] == output_path
+        assert cmd == tts_tool._telegram_voice_opus_cmd(
+            "/usr/bin/ffmpeg",
+            cmd[cmd.index("-i") + 1],
+            output_path,
+        )
+        assert cmd[cmd.index("-vbr") + 1] == "on"
+        assert cmd[cmd.index("-application") + 1] == "voip"
+        assert cmd[cmd.index("-compression_level") + 1] == "10"
+        assert captured["kwargs"]["timeout"] == 30
+
 
 class TestGeminiInCheckRequirements:
     def test_gemini_api_key_satisfies_requirements(self, monkeypatch):

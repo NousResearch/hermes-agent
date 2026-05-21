@@ -1581,7 +1581,7 @@ class TestProcessShutdownLifecycle:
         monkeypatch.setattr(hindsight_mod.asyncio, "run_coroutine_threadsafe", _raise)
         coro = _never_scheduled()
 
-        with pytest.raises(RuntimeError, match="interpreter shutdown"):
+        with pytest.raises(RuntimeError, match="Hindsight loop unavailable"):
             hindsight_mod._run_sync(coro)
 
         assert coro.cr_frame is None

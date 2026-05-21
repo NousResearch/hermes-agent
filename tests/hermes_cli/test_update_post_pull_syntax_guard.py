@@ -64,14 +64,20 @@ def _populate_critical_tree(root: Path, *, broken_file: str | None = None) -> No
     If ``broken_file`` is given, that file gets orphan merge-conflict markers
     (the exact failure mode from PR #28452).
     """
+    # Build the marker lines without spelling raw conflict markers in this
+    # test file; otherwise repo-wide marker scans correctly flag this file even
+    # though the markers are only test fixture data.
+    conflict_start = "<" * 7 + " HEAD\n"
+    conflict_sep = "=" * 7 + "\n"
+    conflict_end = ">" * 7 + " 0b6d673e7\n"
     broken_payload = (
         "x = {\n"
         '    "a": 1,\n'
-        "<<<<<<< HEAD\n"
+        f"{conflict_start}"
         '    "b": 2,\n'
-        "=======\n"
+        f"{conflict_sep}"
         '    "c": 0b6d673e7,\n'  # invalid binary literal — the actual error users saw
-        ">>>>>>> 0b6d673e7\n"
+        f"{conflict_end}"
         "}\n"
     )
     for relpath in hermes_main._UPDATE_CRITICAL_FILES:

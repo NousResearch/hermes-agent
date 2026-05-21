@@ -3156,6 +3156,9 @@ class BasePlatformAdapter(ABC):
                 response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+            elif isinstance(response, str) and response.strip() == "NO_REPLY":
+                logger.info("[%s] Handler returned NO_REPLY for %s; suppressing delivery", self.name, event.source.chat_id)
+                response = None
             if response:
                 # Capture [[as_document]] before extract_media strips it, so the
                 # dispatch partition below can route image-extension files

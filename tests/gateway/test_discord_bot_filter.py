@@ -48,6 +48,13 @@ class TestDiscordBotFilter(unittest.TestCase):
             return False  # own messages always ignored
 
         if getattr(message.author, "bot", False):
+            bot_text = getattr(message, "clean_content", None)
+            if not isinstance(bot_text, str):
+                bot_text = message.content or ""
+            bot_text = bot_text.strip()
+            if bot_text == "NO_REPLY":
+                return False
+
             allow = allow_bots.lower().strip()
             if allow == "none":
                 return False
@@ -97,6 +104,14 @@ class TestDiscordBotFilter(unittest.TestCase):
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, mentions=[our_user])
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_bot_no_reply_sentinel_always_rejected(self):
+        """Bot NO_REPLY sentinel messages are control tokens, not prompts."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="NO_REPLY", mentions=[our_user])
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+        self.assertFalse(self._run_filter(msg, "all", our_user))
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""

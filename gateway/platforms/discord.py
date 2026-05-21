@@ -748,6 +748,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
+                    bot_text = getattr(message, "clean_content", None)
+                    if not isinstance(bot_text, str):
+                        bot_text = message.content or ""
+                    bot_text = bot_text.strip()
+                    if bot_text == "NO_REPLY":
+                        logger.info(
+                            "[%s] Ignoring bot NO_REPLY sentinel from %s in %s",
+                            self.name,
+                            getattr(message.author, "id", "unknown"),
+                            getattr(message.channel, "id", "unknown"),
+                        )
+                        return
+
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
@@ -3784,6 +3797,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     continue
 
                 content = getattr(msg, "clean_content", msg.content) or ""
+                if not isinstance(content, str):
+                    content = msg.content or ""
+                if getattr(msg.author, "bot", False) and content.strip() == "NO_REPLY":
+                    continue
                 if not content and msg.attachments:
                     content = "(attachment)"
                 if not content:

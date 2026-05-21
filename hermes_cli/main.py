@@ -12994,6 +12994,18 @@ Examples:
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
     # =========================================================================
+    # rollout command
+    # =========================================================================
+    rollout_parser = subparsers.add_parser("rollout", help="Generate GSPO/RLVR verifiable rollouts")
+    rollout_parser.add_argument("--prompt", required=True, help="Task prompt for the agent")
+    rollout_parser.add_argument("--verifier", required=True, help="Command to run to verify success")
+    rollout_parser.add_argument("--G", type=int, default=8, help="Number of trajectories to sample")
+    rollout_parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
+    rollout_parser.add_argument("--output", default="gspo_dataset.jsonl", help="Output JSONL path")
+    from hermes_cli.rollout import cmd_rollout
+    rollout_parser.set_defaults(func=cmd_rollout)
+
+    # =========================================================================
     # logs command
     # =========================================================================
     logs_parser = subparsers.add_parser(

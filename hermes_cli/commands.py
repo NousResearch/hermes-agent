@@ -173,6 +173,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
+    CommandDef("rollout", "Generate GSPO/RLVR verifiable rollouts (parallel execution)",
+               "Tools & Skills", cli_only=True, args_hint="--prompt <prompt> --verifier <cmd>"),
     CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("init", "boards", "create", "list", "ls", "show", "assign",

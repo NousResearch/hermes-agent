@@ -297,7 +297,9 @@ def apply_automatic_transitions(
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
     if cron_protected is None:
-        cron_protected = _load_cron_protected() or set()
+        cron_protected = _load_cron_protected()
+        if cron_protected is None:
+            return {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
 
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
 
@@ -1398,9 +1400,16 @@ def _render_candidate_list(cron_protected: Optional[Set[str]] = None) -> str:
         return "No agent-created skills to review."
 
     if cron_protected is None:
-        cron_protected = _load_cron_protected() or set()
+        cron_protected = _load_cron_protected()
 
     lines = []
+
+    if cron_protected is None:
+        lines.append(
+            "⚠ Cron-protection guard unavailable (cron store error). "
+            "Do NOT archive any skill this run — cron job dependencies cannot be verified.\n"
+        )
+        cron_protected = set()
 
     protected_names = sorted(cron_protected)
     if protected_names:
@@ -1517,7 +1526,7 @@ def run_curator_review(
 
         llm_meta: Dict[str, Any] = {}
         try:
-            candidate_list = _render_candidate_list(cron_protected=cron_protected or set())
+            candidate_list = _render_candidate_list(cron_protected=cron_protected)
             if "No agent-created skills" in candidate_list:
                 final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
                 llm_meta = {

@@ -197,9 +197,18 @@ FEISHU_GROUP_POLICY=allowlist   # default
 
 | Value | Behavior |
 |-------|----------|
-| `open` | Hermes responds to @mentions from any user in any group. |
+| `open` | Hermes responds to @mentions from any user in any group that also passes gateway authorization. |
 | `allowlist` | Hermes only responds to @mentions from users listed in `FEISHU_ALLOWED_USERS`. |
 | `disabled` | Hermes ignores all group messages entirely. |
+
+To open specific Feishu groups without opening DMs globally, set a chat-scoped gateway allowlist:
+
+```bash
+FEISHU_GROUP_ALLOWED_CHATS=oc_xxx,oc_yyy
+FEISHU_ALLOW_ALL_USERS=false
+```
+
+Messages in those groups still follow mention policy (`FEISHU_REQUIRE_MENTION=true` by default), while private DMs from unpaired users remain unauthorized.
 
 In all modes, the bot must be explicitly @mentioned (or @all) in the group before the message is processed. Direct messages always bypass this gate.
 

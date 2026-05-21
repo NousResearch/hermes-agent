@@ -4408,14 +4408,14 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
     }
 )
 
-_TUI_EXTRA_META: dict[str, tuple[str, str]] = {
-    "/compact": ("Toggle compact display mode", "切换紧凑显示模式"),
-    "/details": ("Control agent detail visibility", "控制 Agent 详情可见性"),
-    "/logs": ("Show recent gateway log lines", "显示最近的网关日志"),
-    "/mouse": (
-        "Toggle mouse/wheel tracking [on|off|toggle]",
-        "切换鼠标/滚轮追踪 [on|off|toggle]",
-    ),
+_TUI_EXTRA_META: dict[str, dict[str, str]] = {
+    "/compact": {"en": "Toggle compact display mode", "zh": "切换紧凑显示模式"},
+    "/details": {"en": "Control agent detail visibility", "zh": "控制 Agent 详情可见性"},
+    "/logs": {"en": "Show recent gateway log lines", "zh": "显示最近的网关日志"},
+    "/mouse": {
+        "en": "Toggle mouse/wheel tracking [on|off|toggle]",
+        "zh": "切换鼠标/滚轮追踪 [on|off|toggle]",
+    },
 }
 
 _TUI_EXTRA: list[tuple[str, str]] = [
@@ -4427,8 +4427,9 @@ _TUI_EXTRA: list[tuple[str, str]] = [
 
 def _tui_extra_meta(command: str) -> str:
     """Return localized metadata for TUI-only slash commands."""
-    en, zh = _TUI_EXTRA_META[command]
-    return zh if resolve_language().lower().startswith("zh") else en
+    lang = resolve_language().lower()
+    meta = _TUI_EXTRA_META[command]
+    return meta.get(lang, meta.get("en", ""))
 
 # Commands that queue messages onto _pending_input in the CLI.
 # In the TUI the slash worker subprocess has no reader for that queue,

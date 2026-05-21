@@ -91,7 +91,7 @@ export const useI18n = () => useContext(I18nContext)
 /** Raw toolset name, with or without the _tools suffix, to display label. */
 export const toolsetLabel = (raw: string, locale: Locale): string => {
   const key = raw.endsWith('_tools') ? raw.slice(0, -6) : raw
-  if (locale !== 'zh') return key
-  const zhCatalog = zh.catalog as Record<string, string>
-  return zhCatalog[`toolset.${key}`] ?? key
+  const pack = getPack(locale)
+  const label = (pack.catalog as Record<string, string>)[`toolset.${key}`]
+  return label ?? (en.catalog as Record<string, string>)[`toolset.${key}`] ?? key
 }

@@ -358,7 +358,7 @@ async def process_content_with_llm(
     MAX_CONTENT_SIZE = 2_000_000  # 2M chars - refuse entirely above this
     CHUNK_THRESHOLD = 500_000     # 500k chars - use chunked processing above this
     CHUNK_SIZE = 100_000          # 100k chars per chunk
-    MAX_OUTPUT_SIZE = 5000        # Hard cap on final output size
+    MAX_OUTPUT_SIZE = 5_000     # Hard cap on final output size
     
     try:
         content_len = len(content)

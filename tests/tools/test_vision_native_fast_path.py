@@ -49,6 +49,9 @@ class TestSupportsMediaInToolResults:
     def test_openai_codex_yes(self):
         assert _supports_media_in_tool_results("openai-codex", "gpt-5-codex") is True
 
+    def test_custom_provider_yes(self):
+        assert _supports_media_in_tool_results("custom", "llama-3.3-vision") is True
+
     def test_gemini_3_yes(self):
         assert _supports_media_in_tool_results("google", "gemini-3-flash-preview") is True
 

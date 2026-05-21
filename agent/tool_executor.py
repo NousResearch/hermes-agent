@@ -869,7 +869,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         if not agent.quiet_mode:
             if agent.verbose_logging:
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
-                print(agent._wrap_verbose("Result: ", function_result))
+                _fr_str = function_result if isinstance(function_result, str) else str(function_result)
+                print(agent._wrap_verbose("Result: ", _fr_str))
             else:
                 _fr_str = function_result if isinstance(function_result, str) else str(function_result)
                 response_preview = _fr_str[:agent.log_prefix_chars] + "..." if len(_fr_str) > agent.log_prefix_chars else _fr_str

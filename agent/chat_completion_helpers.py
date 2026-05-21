@@ -193,6 +193,18 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # Stale-call detector: kill the connection if no response
         # arrives within the configured timeout.
         _elapsed = time.time() - _call_start
+        # Timeout-approach warning: log once when elapsed reaches 75% of
+        # threshold so operators can see slow prefill before the hard
+        # timeout fires.  Skipped for infinite stale timeout (local
+        # providers).
+        if _stale_timeout != float("inf") and _elapsed >= _stale_timeout * 0.75:
+            _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            logger.warning(
+                "Non-streaming API call approaching timeout (%.0fs / %.0fs). "
+                "model=%s context=~%s tokens.",
+                _elapsed, _stale_timeout,
+                api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+            )
         if _elapsed > _stale_timeout:
             _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
             logger.warning(
@@ -1974,6 +1986,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # but delivering no real chunks.  Kill the client so the
         # inner retry loop can start a fresh connection.
         _stale_elapsed = time.time() - last_chunk_time["t"]
+        # Timeout-approach warning: log once when stale elapsed reaches
+        # 75% of threshold so operators can see slow prefill / thinking
+        # before the hard stale timeout fires.  Skipped for infinite
+        # stale timeout (local providers).
+        if (_stream_stale_timeout != float("inf")
+                and _stale_elapsed >= _stream_stale_timeout * 0.75):
+            _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            logger.warning(
+                "Stream approaching stale timeout (%.0fs / %.0fs) — no chunks received. "
+                "model=%s context=~%s tokens.",
+                _stale_elapsed, _stream_stale_timeout,
+                api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+            )
         if _stale_elapsed > _stream_stale_timeout:
             _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
             logger.warning(

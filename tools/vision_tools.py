@@ -73,6 +73,70 @@ _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 # attacker-hosted multi-gigabyte files or decompression bombs.
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
+# Max dimension for vision analysis. Images exceeding this on either axis
+# are proportionally downsampled before encoding.  Reduces local vision
+# model (llama.cpp) processing time from minutes to seconds.
+_VISION_MAX_DIMENSION = 2048
+
+
+def _downsample_if_needed(image_path: Path, max_dimension: int = _VISION_MAX_DIMENSION) -> Path:
+    """Proportionally downsample an image if either dimension exceeds *max_dimension*.
+
+    Uses Pillow with LANCZOS resampling.  The original file is replaced in-place
+    (a temporary copy is used during the resize to avoid corruption).
+
+    Returns the (possibly resized) path.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        logger.debug("Pillow not installed — skipping dimension-based downsample")
+        return image_path
+
+    try:
+        img = Image.open(image_path)
+    except Exception as exc:
+        logger.debug("Pillow cannot open image for downsample: %s", exc)
+        return image_path
+
+    w, h = img.size
+    if w <= max_dimension and h <= max_dimension:
+        return image_path  # already within limits
+
+    # Compute proportional scale factor
+    scale = min(max_dimension / w, max_dimension / h)
+    new_w = max(int(w * scale), 1)
+    new_h = max(int(h * scale), 1)
+
+    logger.info(
+        "Downsampling image %dx%d → %dx%d (max %dpx)",
+        w, h, new_w, new_h, max_dimension,
+    )
+
+    # Convert RGBA → RGB for JPEG output (JPEG doesn't support alpha)
+    pil_format = "PNG" if image_path.suffix.lower() in (".png",) else "JPEG"
+    if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
+        img = img.convert("RGB")
+
+    # Write to a temporary path, then replace the original atomically
+    tmp_path = image_path.with_name(image_path.name + ".tmp")
+    try:
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        save_kwargs = {"format": pil_format}
+        if pil_format == "JPEG":
+            save_kwargs["quality"] = 85
+        img.save(tmp_path, **save_kwargs)
+        tmp_path.replace(image_path)  # atomic on POSIX
+    except Exception as exc:
+        logger.warning("Downsample failed: %s — keeping original", exc)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return image_path
+
+    return image_path
+
 
 def _validate_image_url(url: str) -> bool:
     """
@@ -429,6 +493,9 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         ``image_url`` parts.
       * OpenAI Responses (``openai-codex``): ``function_call_output.output``
         accepts an array of ``input_text``/``input_image`` items.
+      * Custom OpenAI-compatible endpoints (``custom`` provider — llama.cpp,
+        llamafile, etc.): follow the OpenAI Chat Completions API and support
+        ``image_url`` in tool-result messages.
       * Gemini 3 (and proxied via aggregators): supports multimodal tool
         results. Older Gemini does NOT.
 
@@ -458,6 +525,12 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
 
     # OpenAI Chat Completions and Responses
     if p in {"openai", "openai-chat", "openai-codex", "azure-openai"}:
+        return True
+
+    # Custom OpenAI-compatible endpoint (llama.cpp, llamafile, etc.)
+    # These endpoints follow the OpenAI Chat Completions API, which
+    # supports image_url content in tool-result messages.
+    if p == "custom":
         return True
 
     # Gemini — gate on model name; older Gemini variants did not support
@@ -589,6 +662,9 @@ async def _vision_analyze_native(
                 "Only real image files are supported for vision analysis.",
                 success=False,
             )
+
+        # Downsample large images proportionally before encoding.
+        temp_image_path = _downsample_if_needed(temp_image_path)
 
         image_data_url = _image_to_base64_data_url(
             temp_image_path, mime_type=detected_mime_type,
@@ -730,7 +806,11 @@ async def vision_analyze_tool(
         detected_mime_type = _detect_image_mime_type(temp_image_path)
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
-        
+
+        # Downsample large images proportionally before encoding.
+        # Prevents minutes-long processing in local vision models (llama.cpp).
+        temp_image_path = _downsample_if_needed(temp_image_path)
+
         # Convert image to base64 — send at full resolution first.
         # If the provider rejects it as too large, we auto-resize and retry.
         logger.info("Converting image to base64...")
@@ -1020,6 +1100,9 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     # the auxiliary LLM and return the image bytes as a multimodal
     # tool-result envelope. The main model sees the pixels directly on its
     # next turn — no aux call, no information loss, no extra latency.
+    _provider: Optional[str] = None
+    _model: Optional[str] = None
+    _mode: Optional[str] = None
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
         from agent.image_routing import decide_image_input_mode
@@ -1039,6 +1122,10 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         logger.debug("Native vision fast-path check failed; using aux LLM: %s", exc)
 
     # Legacy path: aux LLM describes the image and we return its text.
+    logger.debug(
+        "vision_analyze: legacy aux-LLM path (provider=%s, model=%s, fast_path=%s)",
+        _provider, _model, _mode,
+    )
     full_prompt = (
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"

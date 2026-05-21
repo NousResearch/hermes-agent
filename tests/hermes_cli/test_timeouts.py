@@ -306,3 +306,131 @@ def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkey
     )
 
     assert agent._compute_non_stream_stale_timeout([]) == 300.0
+
+
+def test_non_streaming_timeout_approach_warning(monkeypatch, tmp_path, caplog):
+    """Non-streaming path logs a WARNING when elapsed reaches 75% of stale timeout."""
+    import logging
+    import time
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+
+    from agent.chat_completion_helpers import interruptible_api_call
+
+    agent = MagicMock()
+    agent.api_mode = "chat_completions"
+    agent._compute_non_stream_stale_timeout.return_value = 100.0  # 100s stale timeout
+    agent._touch_activity = MagicMock()
+    agent._emit_status = MagicMock()
+    agent._interrupt_requested = False
+
+    # Make the actual call fail immediately so the stale detector fires
+    agent._create_request_openai_client.side_effect = ConnectionError("fail")
+    agent._close_request_openai_client = MagicMock()
+
+    with caplog.at_level(logging.WARNING, logger="agent.chat_completion_helpers"):
+        with patch("threading.Thread") as MockThread:
+            mock_thread = MagicMock()
+            # Thread stays alive for a while so the stale detector gets to run
+            mock_thread.is_alive.return_value = True
+            mock_thread.join = MagicMock()
+            MockThread.return_value = mock_thread
+
+            # Simulate elapsed time growing past 75% of stale timeout
+            call_count = [0]
+            base_time = [1000.0]
+
+            def mock_time():
+                call_count[0] += 1
+                if call_count[0] < 5:
+                    return base_time[0] + call_count[0] * 0.1
+                if call_count[0] < 10:
+                    return base_time[0] + 80.0  # 80% of 100s threshold
+                return base_time[0] + 105.0  # past 100%
+
+            with patch("agent.chat_completion_helpers.time.time", side_effect=mock_time):
+                try:
+                    interruptible_api_call(agent, {"messages": [], "model": "test-model"})
+                except Exception:
+                    pass  # Expected to fail
+
+    # Check that a timeout-approach warning was logged
+    approach_warnings = [
+        rec for rec in caplog.records
+        if "approaching timeout" in rec.message.lower()
+    ]
+    assert len(approach_warnings) >= 1, (
+        f"Expected a timeout-approach warning but got: {[r.message for r in caplog.records]}"
+    )
+    assert "80s / 100s" in approach_warnings[0].message
+
+
+def test_streaming_timeout_approach_warning(monkeypatch, tmp_path, caplog):
+    """Streaming path logs a WARNING when stale elapsed reaches 75% of stale timeout.
+
+    The streaming path has complex retry logic that makes integration testing
+    fragile. This test verifies the warning is triggered by directly calling
+    the helper with a mock that simulates the stale detector loop.
+    """
+    import logging
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+
+    from agent.chat_completion_helpers import interruptible_streaming_api_call
+
+    agent = MagicMock()
+    agent.api_mode = "chat_completions"
+    agent._compute_non_stream_stale_timeout.return_value = 100.0
+    agent._touch_activity = MagicMock()
+    agent._emit_status = MagicMock()
+    agent._interrupt_requested = False
+    agent.base_url = "https://api.example.com/v1"
+    agent.model = "test-model"
+
+    # The streaming path computes _stream_stale_timeout_base from config
+    # For non-local URLs, it uses the default 180s unless overridden.
+    # We need to ensure the stale timeout is finite and under 100s so the
+    # 75% warning fires before the 100s stale timeout.
+    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "100")
+
+    # Patch the inner call to fail immediately
+    agent._create_request_openai_client.side_effect = ConnectionError("fail")
+    agent._close_request_openai_client = MagicMock()
+    agent._replace_primary_openai_client = MagicMock()
+
+    with caplog.at_level(logging.WARNING, logger="agent.chat_completion_helpers"):
+        with patch("threading.Thread") as MockThread:
+            mock_thread = MagicMock()
+            mock_thread.is_alive.return_value = True
+            mock_thread.join = MagicMock()
+            MockThread.return_value = mock_thread
+
+            call_count = [0]
+
+            def mock_time():
+                call_count[0] += 1
+                if call_count[0] < 5:
+                    return 1000.0 + call_count[0] * 0.1
+                if call_count[0] < 10:
+                    return 1080.0  # 80s stale elapsed (80% of 100s)
+                return 1090.0  # 90s stale elapsed
+
+            with patch("agent.chat_completion_helpers.time.time", side_effect=mock_time):
+                try:
+                    interruptible_streaming_api_call(agent, {"messages": [], "model": "test-model"})
+                except Exception:
+                    pass
+
+    approach_warnings = [
+        rec for rec in caplog.records
+        if "approaching stale timeout" in rec.message.lower()
+    ]
+    assert len(approach_warnings) >= 1, (
+        f"Expected a stream timeout-approach warning but got: {[r.message for r in caplog.records]}"
+    )
+    assert "80s / 100s" in approach_warnings[0].message

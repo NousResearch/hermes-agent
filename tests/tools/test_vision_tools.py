@@ -17,8 +17,10 @@ from tools.vision_tools import (
     _image_to_base64_data_url,
     _resize_image_for_vision,
     _is_image_size_error,
+    _downsample_if_needed,
     _MAX_BASE64_BYTES,
     _RESIZE_TARGET_BYTES,
+    _VISION_MAX_DIMENSION,
     vision_analyze_tool,
     check_vision_requirements,
 )
@@ -918,3 +920,118 @@ class TestIsImageSizeError:
 
     def test_empty_message(self):
         assert not _is_image_size_error(Exception(""))
+
+
+# ---------------------------------------------------------------------------
+# _downsample_if_needed — dimension-based downsample
+# ---------------------------------------------------------------------------
+
+
+class TestDownsampleIfNeeded:
+    """Tests for the dimension-based image downsample helper."""
+
+    def test_small_image_passes_through(self, tmp_path):
+        """Images within the max dimension should not be modified."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (100, 100), (255, 0, 0))
+        path = tmp_path / "small.png"
+        img.save(path)
+        original_mtime = path.stat().st_mtime
+        result = _downsample_if_needed(path)
+        assert result == path
+        assert path.stat().st_mtime == original_mtime
+        img2 = Image.open(result)
+        assert img2.size == (100, 100)
+
+    def test_large_image_downsampled(self, tmp_path):
+        """Images exceeding max dimension should be proportionally downsampled."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (4000, 3000), (0, 0, 255))
+        path = tmp_path / "large.jpg"
+        img.save(path, "JPEG", quality=95)
+        original_size = path.stat().st_size
+        result = _downsample_if_needed(path)
+        img2 = Image.open(result)
+        w, h = img2.size
+        assert w <= _VISION_MAX_DIMENSION
+        assert h <= _VISION_MAX_DIMENSION
+        # Aspect ratio preserved (4:3)
+        assert abs(w / h - 4.0 / 3.0) < 0.01
+        assert path.stat().st_size < original_size
+
+    def test_tall_image_downsampled(self, tmp_path):
+        """Tall images should also be downsampled."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (3000, 4000), (0, 255, 0))
+        path = tmp_path / "tall.jpg"
+        img.save(path, "JPEG", quality=95)
+        result = _downsample_if_needed(path)
+        img2 = Image.open(result)
+        assert img2.width <= _VISION_MAX_DIMENSION
+        assert img2.height <= _VISION_MAX_DIMENSION
+
+    def test_png_preserved(self, tmp_path):
+        """PNG images should remain PNG after downsample."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGBA", (3000, 3000), (255, 0, 0, 128))
+        path = tmp_path / "alpha.png"
+        img.save(path)
+        result = _downsample_if_needed(path)
+        assert result.suffix == ".png"
+        img2 = Image.open(result)
+        assert img2.width <= _VISION_MAX_DIMENSION
+        assert img2.height <= _VISION_MAX_DIMENSION
+
+    def test_exactly_at_limit(self, tmp_path):
+        """Image exactly at the limit should not be resized."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (2048, 2048), (255, 255, 0))
+        path = tmp_path / "exact.png"
+        img.save(path)
+        original_mtime = path.stat().st_mtime
+        result = _downsample_if_needed(path)
+        assert result == path
+        assert path.stat().st_mtime == original_mtime
+        img2 = Image.open(result)
+        assert img2.size == (2048, 2048)
+
+    def test_just_over_limit(self, tmp_path):
+        """Image just over the limit should be resized."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (2049, 1000), (0, 255, 255))
+        path = tmp_path / "over.png"
+        img.save(path)
+        result = _downsample_if_needed(path)
+        img2 = Image.open(result)
+        assert img2.width <= _VISION_MAX_DIMENSION
+        assert img2.height <= _VISION_MAX_DIMENSION
+
+    def test_no_pillow_skips_gracefully(self, tmp_path):
+        """Without Pillow, the function should return the original path."""
+        path = tmp_path / "test.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
+            result = _downsample_if_needed(path)
+            assert result == path
+
+    def test_constants_sane(self):
+        """Max dimension should be a reasonable value."""
+        assert _VISION_MAX_DIMENSION == 2048

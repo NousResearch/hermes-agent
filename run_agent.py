@@ -3205,17 +3205,27 @@ class AIAgent:
           1. ``model.supports_vision`` (top-level, single-model shortcut)
           2. ``providers.<provider>.models.<model>.supports_vision``
           3. models.dev capability lookup
-        Custom/local models absent from models.dev would otherwise be
-        misclassified as non-vision and have their images stripped.
+          4. Model-name heuristic: if the model name contains "-image-"
+             (case-insensitive), treat as vision-capable (for custom/local
+             providers absent from models.dev).
+        Result is cached on first call so the log message appears only once
+        per session regardless of how many times this method is invoked.
         """
+        # Lazy cache — set to True/False after first computation so repeated
+        # calls (up to 3 per session) skip the log entirely.
+        if hasattr(self, "_vision_cache"):
+            return self._vision_cache
+
         try:
             from hermes_cli.config import load_config
             from agent.image_routing import _lookup_supports_vision
             cfg = load_config()
             provider = (getattr(self, "provider", "") or "").strip()
             model = (getattr(self, "model", "") or "").strip()
-            return _lookup_supports_vision(provider, model, cfg) is True
+            self._vision_cache = _lookup_supports_vision(provider, model, cfg) is True
+            return self._vision_cache
         except Exception:
+            self._vision_cache = False
             return False
 
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
@@ -3865,6 +3875,10 @@ class AIAgent:
         """
         import shutil as _shutil
         import textwrap as _tw
+        # Defensive: vision_analyze's native fast path returns a multimodal
+        # envelope dict; convert so .split() below never crashes.
+        if not isinstance(text, str):
+            text = str(text)
         cols = _shutil.get_terminal_size((120, 24)).columns
         wrap_width = max(40, cols - len(indent))
         out_lines: list[str] = []

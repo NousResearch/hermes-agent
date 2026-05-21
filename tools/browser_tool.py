@@ -3501,6 +3501,8 @@ def _chromium_search_roots() -> List[str]:
     3. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
     4. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
        on Windows.
+    5. ``~/.agent-browser/browsers/`` — agent-browser's own browser cache
+       (0.26+).  Downloads Chrome for Testing here on ``agent-browser install``.
     """
     roots: List[str] = []
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
@@ -3515,6 +3517,9 @@ def _chromium_search_roots() -> List[str]:
             home, "AppData", "Local"
         )
         roots.append(os.path.join(local, "ms-playwright"))
+    # agent-browser (0.26+) stores Chrome for Testing builds here
+    # (e.g. chrome-148.0.7778.56/) instead of the Playwright cache.
+    roots.append(os.path.join(home, ".agent-browser", "browsers"))
     return roots
 
 
@@ -3568,11 +3573,12 @@ def _chromium_installed() -> bool:
         except OSError:
             continue
         # Playwright names them ``chromium-<build>`` and
-        # ``chromium_headless_shell-<build>``; agent-browser accepts either.
+        # ``chromium_headless_shell-<build>``; agent-browser (0.26+)
+        # uses ``chrome-<build>`` (Chrome for Testing).  Accept all variants.
         for entry in entries:
             if entry.startswith("chromium-") or entry.startswith(
                 "chromium_headless_shell-"
-            ):
+            ) or entry.startswith("chrome-"):
                 _cached_chromium_installed = True
                 return True
 

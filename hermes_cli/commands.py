@@ -97,7 +97,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg", "btw"), args_hint="<prompt>"),
     CommandDef("qq", "Ask a quick question with full memory context (clean, no history pollution)", "Session",
-               args_hint="<prompt>"),
+               args_hint="<prompt>", cli_only=True),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",

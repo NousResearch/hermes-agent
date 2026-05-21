@@ -27,6 +27,7 @@ const MUTATING_COMMANDS = [
   'new',
   'personality',
   'queue',
+  'qq',
   'reasoning',
   'reload-mcp',
   'retry',

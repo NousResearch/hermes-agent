@@ -172,6 +172,21 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().status).toBe('⏸ goal paused')
   })
 
+  it('formats quick-question background completions distinctly', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    patchUiState(state => ({ ...state, bgTasks: new Set(['qq_123abc']) }))
+    onEvent({
+      payload: { kind: 'quick_question', task_id: 'qq_123abc', text: 'the answer' },
+      type: 'background.complete'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith('💬 Quick answer (qq_123abc): the answer')
+    expect(getUiState().bgTasks.has('qq_123abc')).toBe(false)
+  })
+
   it('surfaces self-improvement review summaries as a persistent system line', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)
@@ -182,9 +197,7 @@ describe('createGatewayEventHandler', () => {
       type: 'review.summary'
     } as any)
 
-    expect(ctx.system.sys).toHaveBeenCalledWith(
-      "💾 Self-improvement review: Skill 'hermes-release' patched"
-    )
+    expect(ctx.system.sys).toHaveBeenCalledWith("💾 Self-improvement review: Skill 'hermes-release' patched")
   })
 
   it('ignores review.summary events with empty or missing text', () => {

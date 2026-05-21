@@ -49,6 +49,35 @@ describe('createSlashHandler', () => {
     vi.useRealTimers()
   })
 
+  it('routes /qq locally through prompt.background with quick-question metadata', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ task_id: 'qq_123abc' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/qq what do you remember?')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('prompt.background', {
+      kind: 'quick_question',
+      prefix: 'qq',
+      session_id: 'sid-abc',
+      text: 'what do you remember?'
+    })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+
+    await vi.waitFor(() => {
+      expect(getUiState().bgTasks.has('qq_123abc')).toBe(true)
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('quick question qq_123abc started')
+    })
+  })
+
+  it('/qq without a prompt shows usage instead of hitting the slash worker', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/qq')).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('/qq <prompt>')
+  })
+
   it('routes /status to live session.status instead of slash worker', async () => {
     patchUiState({ sid: 'sid-abc' })
     const rpc = vi.fn(() => Promise.resolve({ output: 'Hermes TUI Status' }))
@@ -397,7 +426,9 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     expect(createSlashHandler(ctx)('/browser connect')).toBe(true)
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chromium-family browser remote debugging at http://127.0.0.1:9222...')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(
+      'checking Chromium-family browser remote debugging at http://127.0.0.1:9222...'
+    )
 
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(

@@ -16,12 +16,41 @@ import type { PanelSection } from '../../../types.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
-import type { SlashCommand } from '../types.js'
+import type { SlashCommand, SlashRunCtx } from '../types.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const TUI_SESSION_STRIP_RE = new RegExp(`\\s*${TUI_SESSION_MODEL_FLAG}\\b\\s*`, 'g')
 
 const stripTuiSessionFlag = (trimmed: string) => trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
+
+const startDetachedPrompt = (
+  arg: string,
+  ctx: SlashRunCtx,
+  opts: { command: string; kind: 'background' | 'quick_question'; prefix: 'bg' | 'qq'; startedLabel: string }
+) => {
+  if (!arg) {
+    return ctx.transcript.sys(`/${opts.command} <prompt>`)
+  }
+
+  ctx.gateway
+    .rpc<BackgroundStartResponse>('prompt.background', {
+      kind: opts.kind,
+      prefix: opts.prefix,
+      session_id: ctx.sid,
+      text: arg
+    })
+    .then(
+      ctx.guarded<BackgroundStartResponse>(r => {
+        if (!r.task_id) {
+          return
+        }
+
+        patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add(r.task_id!) }))
+        ctx.transcript.sys(`${opts.startedLabel} ${r.task_id} started`)
+      })
+    )
+    .catch(ctx.guardedErr)
+}
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
@@ -42,22 +71,20 @@ export const sessionCommands: SlashCommand[] = [
     aliases: ['bg', 'btw'],
     help: 'launch a background prompt',
     name: 'background',
-    run: (arg, ctx) => {
-      if (!arg) {
-        return ctx.transcript.sys('/background <prompt>')
-      }
+    run: (arg, ctx) =>
+      startDetachedPrompt(arg, ctx, { command: 'background', kind: 'background', prefix: 'bg', startedLabel: 'bg' })
+  },
 
-      ctx.gateway.rpc<BackgroundStartResponse>('prompt.background', { session_id: ctx.sid, text: arg }).then(
-        ctx.guarded<BackgroundStartResponse>(r => {
-          if (!r.task_id) {
-            return
-          }
-
-          patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add(r.task_id!) }))
-          ctx.transcript.sys(`bg ${r.task_id} started`)
-        })
-      )
-    }
+  {
+    help: 'ask a quick question with full memory context',
+    name: 'qq',
+    run: (arg, ctx) =>
+      startDetachedPrompt(arg, ctx, {
+        command: 'qq',
+        kind: 'quick_question',
+        prefix: 'qq',
+        startedLabel: 'quick question'
+      })
   },
 
   {
@@ -384,31 +411,29 @@ export const sessionCommands: SlashCommand[] = [
           )
       }
 
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg })
-        .then(
-          ctx.guarded<ConfigSetResponse>(r => {
-            if (!r.value) {
-              return
-            }
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg }).then(
+        ctx.guarded<ConfigSetResponse>(r => {
+          if (!r.value) {
+            return
+          }
 
-            if (r.value === 'hide') {
-              patchUiState(state => ({
-                ...state,
-                sections: { ...state.sections, thinking: 'hidden' },
-                showReasoning: false
-              }))
-            } else if (r.value === 'show') {
-              patchUiState(state => ({
-                ...state,
-                sections: { ...state.sections, thinking: 'expanded' },
-                showReasoning: true
-              }))
-            }
+          if (r.value === 'hide') {
+            patchUiState(state => ({
+              ...state,
+              sections: { ...state.sections, thinking: 'hidden' },
+              showReasoning: false
+            }))
+          } else if (r.value === 'show') {
+            patchUiState(state => ({
+              ...state,
+              sections: { ...state.sections, thinking: 'expanded' },
+              showReasoning: true
+            }))
+          }
 
-            ctx.transcript.sys(`reasoning: ${r.value}`)
-          })
-        )
+          ctx.transcript.sys(`reasoning: ${r.value}`)
+        })
+      )
     }
   },
 

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -133,6 +134,7 @@ except (ValueError, TypeError):
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
+_BACKGROUND_TASK_PREFIX_RE = re.compile(r"^[a-z][a-z0-9_-]{0,15}$")
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
@@ -3680,7 +3682,11 @@ def _(rid, params: dict) -> dict:
     text, parent = params.get("text", ""), params.get("session_id", "")
     if not text:
         return _err(rid, 4012, "text required")
-    task_id = f"bg_{uuid.uuid4().hex[:6]}"
+    raw_prefix = str(params.get("prefix") or "bg").strip().lower()
+    prefix = raw_prefix if _BACKGROUND_TASK_PREFIX_RE.fullmatch(raw_prefix) else "bg"
+    raw_kind = str(params.get("kind") or "").strip().lower()
+    kind = "quick_question" if raw_kind == "quick_question" or prefix == "qq" else "background"
+    task_id = f"{prefix}_{uuid.uuid4().hex[:6]}"
 
     def run():
         session_tokens = _set_session_context(task_id)
@@ -3698,6 +3704,7 @@ def _(rid, params: dict) -> dict:
                 parent,
                 {
                     "task_id": task_id,
+                    "kind": kind,
                     "text": (
                         result.get("final_response", str(result))
                         if isinstance(result, dict)
@@ -3709,7 +3716,7 @@ def _(rid, params: dict) -> dict:
             _emit(
                 "background.complete",
                 parent,
-                {"task_id": task_id, "text": f"error: {e}"},
+                {"task_id": task_id, "kind": kind, "text": f"error: {e}"},
             )
         finally:
             _clear_session_context(session_tokens)

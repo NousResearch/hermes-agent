@@ -111,6 +111,56 @@ _IS_WINDOWS = sys.platform == "win32"
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _kanban_config() -> dict:
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        kanban = cfg.get("kanban") or {}
+        return kanban if isinstance(kanban, dict) else {}
+    except Exception:
+        return {}
+
+
+def review_gate_enabled() -> bool:
+    """Return True when worker completion must pass through Review first."""
+    env = os.environ.get("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE")
+    if env is not None:
+        return _truthy(env)
+    return _truthy(_kanban_config().get("require_review_before_done"))
+
+
+def merge_captain_profile() -> str:
+    """Profile that owns Review-column / merge-train work."""
+    env = os.environ.get("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE")
+    if env and env.strip():
+        return env.strip()
+    cfg = _kanban_config()
+    for key in ("merge_captain_profile", "merge_train_operator_profile", "review_assignee"):
+        value = cfg.get(key)
+        if value and str(value).strip():
+            return str(value).strip()
+    return "merge-captain"
+
+
+def review_agent_skills() -> list[str]:
+    """Skills to force-load for the Review-column merge captain."""
+    cfg = _kanban_config()
+    value = cfg.get("review_agent_skills")
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return ["cursor-bugbot-sweep", "github-pr-workflow"]
+
+
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
 
@@ -2571,6 +2621,38 @@ def claim_review_task(
         return get_task(conn, task_id)
 
 
+def _event_payload_dict(row: sqlite3.Row | None) -> dict:
+    if not row or not row["payload"]:
+        return {}
+    try:
+        payload = json.loads(row["payload"])
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _run_started_from_review(conn: sqlite3.Connection, task_id: str, run_id: Optional[int]) -> bool:
+    if run_id is None:
+        return False
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'claimed' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, int(run_id)),
+    ).fetchone()
+    return _event_payload_dict(row).get("source_status") == "review"
+
+
+def _latest_review_handoff(conn: sqlite3.Connection, task_id: str) -> dict:
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'submitted_for_review' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return _event_payload_dict(row)
+
+
 def heartbeat_claim(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3014,56 +3096,113 @@ def complete_task(
     else:
         verified_cards = []
 
+    route_to_review = False
     with write_txn(conn):
-        if expected_run_id is None:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
-                 WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
-                """,
-                (result, now, task_id),
-            )
+        task_row = conn.execute(
+            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not task_row:
+            return False
+        run_for_gate = expected_run_id if expected_run_id is not None else task_row["current_run_id"]
+        route_to_review = review_gate_enabled() and not _run_started_from_review(
+            conn, task_id, int(run_for_gate) if run_for_gate else None
+        )
+        effective_metadata = metadata
+        if route_to_review:
+            original_assignee = task_row["assignee"]
+            review_assignee = merge_captain_profile()
+            if effective_metadata is None:
+                effective_metadata = {}
+            else:
+                effective_metadata = dict(effective_metadata)
+            effective_metadata.setdefault("implementation_assignee", original_assignee)
+            effective_metadata.setdefault("review_assignee", review_assignee)
+            effective_metadata.setdefault("review_gate", "required")
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'review',
+                           assignee     = ?,
+                           result       = ?,
+                           completed_at = NULL,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                    """,
+                    (review_assignee, result, task_id),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'review',
+                           assignee     = ?,
+                           result       = ?,
+                           completed_at = NULL,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                       AND current_run_id = ?
+                    """,
+                    (review_assignee, result, task_id, int(expected_run_id)),
+                )
         else:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
-                 WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
-                   AND current_run_id = ?
-                """,
-                (result, now, task_id, int(expected_run_id)),
-            )
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'done',
+                           result       = ?,
+                           completed_at = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                    """,
+                    (result, now, task_id),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'done',
+                           result       = ?,
+                           completed_at = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                       AND current_run_id = ?
+                    """,
+                    (result, now, task_id, int(expected_run_id)),
+                )
         if cur.rowcount != 1:
             return False
+        target_status = "review" if route_to_review else "done"
         run_id = _end_run(
             conn, task_id,
-            outcome="completed", status="done",
+            outcome="completed", status=target_status,
             summary=summary if summary is not None else result,
-            metadata=metadata,
+            metadata=effective_metadata,
         )
         # If complete_task was called on a never-claimed task (ready or
-        # blocked → done with no run in flight), synthesize a
+        # blocked → done/review with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
         # attempt history instead of silently lost.
-        if run_id is None and (summary or metadata or result):
+        if run_id is None and (summary or effective_metadata or result):
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
                 summary=summary if summary is not None else result,
-                metadata=metadata,
+                metadata=effective_metadata,
             )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
@@ -3077,14 +3216,17 @@ def complete_task(
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
+        if route_to_review:
+            completed_payload["implementation_assignee"] = task_row["assignee"]
+            completed_payload["review_assignee"] = merge_captain_profile()
         # Carry artifact paths in the event payload so the gateway
         # notifier can upload them as native attachments alongside the
         # completion message. Workers pass these via
         # ``kanban_complete(artifacts=[...])`` which stashes the list in
         # ``metadata["artifacts"]`` — we promote it onto the event so
         # consumers don't have to fetch the run row to find it.
-        if isinstance(metadata, dict):
-            md_artifacts = metadata.get("artifacts")
+        if isinstance(effective_metadata, dict):
+            md_artifacts = effective_metadata.get("artifacts")
             if isinstance(md_artifacts, (list, tuple)):
                 cleaned_artifacts = [
                     str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
@@ -3092,7 +3234,7 @@ def complete_task(
                 if cleaned_artifacts:
                     completed_payload["artifacts"] = cleaned_artifacts
         _append_event(
-            conn, task_id, "completed",
+            conn, task_id, "submitted_for_review" if route_to_review else "completed",
             completed_payload,
             run_id=run_id,
         )
@@ -3122,10 +3264,13 @@ def complete_task(
     # just tracks "is there a current pathology the breaker should
     # care about", and a success resets that question.
     _clear_failure_counter(conn, task_id)
-    # Recompute ready status for dependents (separate txn so children see done).
-    recompute_ready(conn)
-    # Clean up the scratch workspace and any stale tmux session for the worker.
-    _cleanup_workspace(conn, task_id)
+    if not route_to_review:
+        # Recompute ready status for dependents only after the merge captain
+        # has approved/merged the PR and the task is truly done.
+        recompute_ready(conn)
+        # Clean up scratch workspace only at final done; the Review column may
+        # still need the implementation branch/workspace for Bugbot fixes.
+        _cleanup_workspace(conn, task_id)
     return True
 
 
@@ -3440,53 +3585,116 @@ def block_task(
     expected_run_id: Optional[int] = None,
     metadata: Optional[dict] = None,
 ) -> bool:
-    """Transition ``running -> blocked``."""
+    """Transition ``running -> blocked``.
+
+    When the required Review gate is enabled and the active run started from
+    the Review column, ``kanban_block`` means "Bugbot/review rejected this PR".
+    In that case the task is automatically returned to the original
+    implementation assignee in ``ready`` instead of getting stuck in Blocked.
+    """
     with write_txn(conn):
-        if expected_run_id is None:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status       = 'blocked',
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
-                 WHERE id = ?
-                   AND status IN ('running', 'ready')
-                """,
-                (task_id,),
-            )
+        task_row = conn.execute(
+            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not task_row:
+            return False
+        run_for_gate = expected_run_id if expected_run_id is not None else task_row["current_run_id"]
+        review_rejection = review_gate_enabled() and _run_started_from_review(
+            conn, task_id, int(run_for_gate) if run_for_gate else None
+        )
+        handoff = _latest_review_handoff(conn, task_id) if review_rejection else {}
+        implementation_assignee = handoff.get("implementation_assignee")
+        effective_metadata = metadata
+        if review_rejection and implementation_assignee:
+            if effective_metadata is None:
+                effective_metadata = {}
+            else:
+                effective_metadata = dict(effective_metadata)
+            effective_metadata.setdefault("implementation_assignee", implementation_assignee)
+            effective_metadata.setdefault("review_rejection", True)
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           assignee     = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                    """,
+                    (implementation_assignee, task_id),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           assignee     = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                       AND current_run_id = ?
+                    """,
+                    (implementation_assignee, task_id, int(expected_run_id)),
+                )
+            target_status = "ready"
+            event_kind = "review_rejected"
         else:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status       = 'blocked',
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
-                 WHERE id = ?
-                   AND status IN ('running', 'ready')
-                   AND current_run_id = ?
-                """,
-                (task_id, int(expected_run_id)),
-            )
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'blocked',
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                    """,
+                    (task_id,),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'blocked',
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                       AND current_run_id = ?
+                    """,
+                    (task_id, int(expected_run_id)),
+                )
+            target_status = "blocked"
+            event_kind = "blocked"
         if cur.rowcount != 1:
             return False
         run_id = _end_run(
             conn, task_id,
-            outcome="blocked", status="blocked",
+            outcome="blocked", status=target_status,
             summary=reason,
-            metadata=metadata,
+            metadata=effective_metadata,
         )
         # Synthesize a run when blocking a never-claimed task so the
         # reason/metadata is preserved in attempt history.
-        if run_id is None and (reason or metadata):
+        if run_id is None and (reason or effective_metadata):
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="blocked",
                 summary=reason,
-                metadata=metadata,
+                metadata=effective_metadata,
             )
-        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        payload = {"reason": reason}
+        if event_kind == "review_rejected":
+            payload["implementation_assignee"] = implementation_assignee
+        _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         return True
 
 
@@ -5453,12 +5661,12 @@ def dispatch_once(
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load sdlc-review skill for review agents.  The
-        # _default_spawn function already auto-loads kanban-worker, and
-        # appends task.skills via --skills.  Setting task.skills here
-        # means the review agent gets both kanban-worker (lifecycle)
-        # and sdlc-review (review logic: AC verification, merge, etc.).
-        claimed.skills = ["sdlc-review"]
+        # Force-load merge-train review skills for review agents.  The
+        # _default_spawn function already auto-loads kanban-worker and filters
+        # missing skills against the review profile's Hermes home, so this can
+        # safely name the operator workflow without making missing optional
+        # skills fatal on profiles that do not have a local copy.
+        claimed.skills = review_agent_skills()
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect
@@ -5682,6 +5890,40 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
+def _skill_available(hermes_home: Optional[str], skill_name: str) -> bool:
+    """True if ``skill_name`` resolves in the worker's Hermes home.
+
+    Skill names may be unqualified (``kanban-worker``) or category-qualified
+    (``github/cursor-bugbot-sweep``).  Qualified names are checked as a direct
+    relative path under ``skills/``; unqualified names also search nested
+    categories.  Path traversal and absolute paths are rejected.
+    """
+    from pathlib import Path as _Path
+
+    raw = (skill_name or "").strip()
+    if not raw:
+        return False
+    rel = _Path(raw)
+    if rel.is_absolute() or ".." in rel.parts or any(not part for part in rel.parts):
+        return False
+    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
+    skills_root = base / "skills"
+    if not skills_root.is_dir():
+        return False
+    direct = skills_root / rel / "SKILL.md"
+    if direct.is_file():
+        return True
+    if len(rel.parts) > 1:
+        return False
+    try:
+        for skill_md in skills_root.rglob(f"{raw}/SKILL.md"):
+            if skill_md.is_file():
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     """True if the bundled ``kanban-worker`` skill resolves for the home the
     spawned worker will run under.
@@ -5696,25 +5938,7 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     the kanban lifecycle contract is still injected via ``KANBAN_GUIDANCE``, so
     omitting the flag only drops the supplementary pattern library.
     """
-    from pathlib import Path as _Path
-
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
-        return False
-    # Canonical bundled location first (cheap), then a bounded scan for
-    # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
-        return True
-    try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
-    return False
+    return _skill_available(hermes_home, "kanban-worker")
 
 
 def _worker_terminal_timeout_env(
@@ -5870,7 +6094,13 @@ def _default_spawn(
     if task.skills:
         for sk in task.skills:
             if sk and sk != "kanban-worker":
-                cmd.extend(["--skills", sk])
+                if _skill_available(env.get("HERMES_HOME"), sk):
+                    cmd.extend(["--skills", sk])
+                else:
+                    _log.warning(
+                        "Skipping unresolved kanban worker skill %s for profile %s",
+                        sk, profile_arg,
+                    )
     if task.model_override:
         cmd.extend(["-m", task.model_override])
     cmd.extend([
@@ -6033,6 +6263,38 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
     lines.append("")
+
+    if review_gate_enabled():
+        review_run = _run_started_from_review(conn, task_id, task.current_run_id)
+        if review_run:
+            handoff = _latest_review_handoff(conn, task_id)
+            implementation_assignee = handoff.get("implementation_assignee") or "(unknown)"
+            lines.append("## Mandatory merge-train / Review-column protocol")
+            lines.append(
+                "You are the merge captain for this task, not the implementation worker. "
+                "Run the Cursor/Bugbot PR review workflow, decide merge ordering, and "
+                "serialize merges for parallel PRs."
+            )
+            lines.append(
+                f"Original implementation assignee: {implementation_assignee}. If Bugbot "
+                "finds issues or the branch needs a rebase because another PR merged, call "
+                "kanban_block with the exact required fixes/rebase instructions; Hermes will "
+                "automatically return the card to that assignee in Ready."
+            )
+            lines.append(
+                "Only call kanban_complete after the PR is clean, up to date, merged, and the "
+                "task is truly done."
+            )
+            lines.append("")
+        else:
+            lines.append("## Mandatory Review-column gate")
+            lines.append(
+                "When implementation is complete, call kanban_complete with PR/branch/test "
+                "handoff details. The kernel will move this card to Review and assign it to "
+                f"the merge captain ({merge_captain_profile()}); implementation workers must "
+                "not bypass Review or merge their own parallel PRs."
+            )
+            lines.append("")
 
     if task.body and task.body.strip():
         lines.append("## Body")

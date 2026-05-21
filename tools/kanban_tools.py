@@ -505,7 +505,13 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            task = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=task.status if task else None,
+                assignee=task.assignee if task else None,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -545,7 +551,13 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            task = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=task.status if task else None,
+                assignee=task.assignee if task else None,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -875,7 +887,11 @@ KANBAN_COMPLETE_SCHEMA = {
     "name": "kanban_complete",
     "description": (
         "Mark your current task done with a structured handoff for "
-        "downstream workers and humans. Prefer ``summary`` for a "
+        "downstream workers and humans. On boards with the required Review "
+        "gate enabled, implementation-worker calls do not go straight to Done: "
+        "the kernel moves the card to Review and assigns the configured merge "
+        "captain, who is the only actor allowed to complete the card after "
+        "Bugbot/review and merge-train checks. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "

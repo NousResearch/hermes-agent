@@ -2854,10 +2854,27 @@ def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
         assert kb.get_task(conn, t).status == "review"
 
 
+def test_skill_available_accepts_qualified_and_unqualified_names(kanban_home):
+    """Worker skill preflight accepts category-qualified skill names safely."""
+    (kanban_home / "skills" / "github" / "cursor-bugbot-sweep").mkdir(parents=True)
+    (kanban_home / "skills" / "github" / "cursor-bugbot-sweep" / "SKILL.md").write_text(
+        "---\nname: cursor-bugbot-sweep\n---\n# Skill\n"
+    )
+    (kanban_home / "skills" / "devops" / "kanban-worker").mkdir(parents=True)
+    (kanban_home / "skills" / "devops" / "kanban-worker" / "SKILL.md").write_text(
+        "---\nname: kanban-worker\n---\n# Skill\n"
+    )
+
+    assert kb._skill_available(str(kanban_home), "github/cursor-bugbot-sweep")
+    assert kb._skill_available(str(kanban_home), "kanban-worker")
+    assert not kb._skill_available(str(kanban_home), "../cursor-bugbot-sweep")
+    assert not kb._skill_available(str(kanban_home), "/tmp/cursor-bugbot-sweep")
+
+
 def test_dispatch_review_spawns_with_correct_skills(
     kanban_home, all_assignees_spawnable,
 ):
-    """Review tasks get sdlc-review skill set before spawning."""
+    """Review tasks get merge-train skills set before spawning."""
     spawned_tasks = []
 
     def capture_spawn(task, workspace, board=None):
@@ -2870,7 +2887,7 @@ def test_dispatch_review_spawns_with_correct_skills(
         res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
     assert len(res.spawned) == 1
     assert len(spawned_tasks) == 1
-    assert spawned_tasks[0].skills == ["sdlc-review"]
+    assert spawned_tasks[0].skills == ["cursor-bugbot-sweep", "github-pr-workflow"]
 
 
 def test_dispatch_review_skips_unassigned(kanban_home):
@@ -2965,6 +2982,86 @@ def test_dispatch_review_skips_nonspawnable(kanban_home, monkeypatch):
 def test_review_status_in_valid_statuses():
     """'review' is a valid task status."""
     assert "review" in kb.VALID_STATUSES
+
+
+def test_required_review_gate_routes_implementation_completion_to_merge_captain(
+    kanban_home, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="implement feature", assignee="worker-a")
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None
+        assert kb.complete_task(
+            conn,
+            t,
+            summary="PR ready for review",
+            metadata={"pr": 123},
+            expected_run_id=claimed.current_run_id,
+        )
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+        run = kb.latest_run(conn, t)
+
+    assert task is not None
+    assert run is not None
+    assert task.status == "review"
+    assert task.assignee == "merge-captain"
+    assert task.completed_at is None
+    assert run.status == "review"
+    assert run.outcome == "completed"
+    assert any(e.kind == "submitted_for_review" for e in events)
+
+
+def test_required_review_gate_allows_review_run_to_complete_done(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="merge approved", assignee="worker-a")
+        impl = kb.claim_task(conn, t)
+        assert impl is not None
+        assert kb.complete_task(conn, t, summary="PR ready", expected_run_id=impl.current_run_id)
+        review = kb.claim_review_task(conn, t)
+        assert review is not None
+        assert review.assignee == "merge-captain"
+        assert kb.complete_task(conn, t, summary="merged", expected_run_id=review.current_run_id)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert task is not None
+    assert task.status == "done"
+    assert task.completed_at is not None
+    assert any(e.kind == "completed" for e in events)
+
+
+def test_required_review_gate_block_returns_to_original_worker(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_REVIEW_BEFORE_DONE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_MERGE_CAPTAIN_PROFILE", "merge-captain")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="bugbot found issue", assignee="worker-a")
+        impl = kb.claim_task(conn, t)
+        assert impl is not None
+        assert kb.complete_task(conn, t, summary="PR ready", expected_run_id=impl.current_run_id)
+        review = kb.claim_review_task(conn, t)
+        assert review is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason="Bugbot found issue; rebase after recent merge and fix failing test.",
+            expected_run_id=review.current_run_id,
+        )
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+        run = kb.latest_run(conn, t)
+
+    assert task is not None
+    assert run is not None
+    assert task.status == "ready"
+    assert task.assignee == "worker-a"
+    assert run.outcome == "blocked"
+    assert run.status == "ready"
+    assert any(e.kind == "review_rejected" for e in events)
 
 
 def test_dispatch_review_does_not_claim_ready_tasks(

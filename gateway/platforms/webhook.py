@@ -379,9 +379,21 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
 
-        # Validate HMAC signature FIRST (skip for INSECURE_NO_AUTH testing mode)
+        # Validate HMAC signature FIRST (skip only for the explicit local-test
+        # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
+        # not only during connect(), so direct handler reuse cannot turn a
+        # network webhook route into an unauthenticated agent-dispatch surface.
         secret = route_config.get("secret", self._global_secret)
-        if secret and secret != _INSECURE_NO_AUTH:
+        if not secret:
+            logger.error(
+                "[webhook] Route %s has no HMAC secret; refusing request",
+                route_name,
+            )
+            return web.json_response(
+                {"error": "Webhook route is missing an HMAC secret"},
+                status=500,
+            )
+        if secret != _INSECURE_NO_AUTH:
             if not self._validate_signature(request, raw_body, secret):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name

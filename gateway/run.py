@@ -6135,6 +6135,7 @@ class GatewayRunner:
                     }
                     if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                         return True
+                    return False
 
         if not user_id:
             return False

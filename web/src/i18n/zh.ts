@@ -223,6 +223,14 @@ export const zh: Translations = {
     toolCalls: "工具调用",
     noModelsData: "该时间段暂无模型使用数据",
     startSession: "开始会话后将在此显示模型数据",
+    overrideAuto: "（覆盖 — 自动：{value}）",
+    autoDetected: "自动检测",
+    loading: "正在加载模型信息…",
+    contextWindow: "上下文窗口",
+    maxOutput: "最大输出",
+    capabilityTools: "工具",
+    capabilityVision: "视觉",
+    capabilityReasoning: "推理",
   },
 
   logs: {
@@ -414,6 +422,16 @@ export const zh: Translations = {
     hideValue: "隐藏值",
   },
 
+  toolCall: {
+    running: "运行中",
+    error: "错误",
+    done: "已完成",
+    context: "上下文",
+    streaming: "流式输出",
+    diff: "差异",
+    result: "结果",
+  },
+
   oauth: {
     title: "提供商登录（OAuth）",
     providerLogins: "提供商登录（OAuth）",
@@ -451,6 +469,9 @@ export const zh: Translations = {
       external: "外部 CLI",
     },
     expiresIn: "{time}后过期",
+    tokenExchangeFailed: "Token 交换失败",
+    openDocs: "打开 {provider} 文档",
+    disconnectDescription: "这将移除 {provider} 已存储的 OAuth 令牌，需要重新授权才能继续使用。",
   },
 
   language: {
@@ -460,6 +481,10 @@ export const zh: Translations = {
   theme: {
     title: "主题",
     switchTheme: "切换主题",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

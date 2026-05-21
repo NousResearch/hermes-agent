@@ -226,6 +226,14 @@ export const ko: Translations = {
     toolCalls: "도구 호출",
     noModelsData: "이 기간에 대한 모델 사용 데이터가 없습니다",
     startSession: "세션을 시작하면 여기에 모델 데이터가 표시됩니다",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -419,7 +427,17 @@ export const ko: Translations = {
     showValue: "실제 값 표시",
     hideValue: "값 숨기기",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "제공자 로그인 (OAuth)",
     providerLogins: "제공자 로그인 (OAuth)",
@@ -457,6 +475,9 @@ export const ko: Translations = {
       external: "외부 CLI",
     },
     expiresIn: "{time} 후 만료",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -466,6 +487,10 @@ export const ko: Translations = {
   theme: {
     title: "테마",
     switchTheme: "테마 전환",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

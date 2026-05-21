@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { useI18n } from "@/i18n";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
 
@@ -22,12 +23,14 @@ const SHEET_TRANSITION_MS = 280;
  * Drag the header/handle downward to dismiss (skipped when reduced motion is on).
  */
 export function BottomPickSheet({
-  backdropDismissLabel = "Dismiss",
+  backdropDismissLabel,
   children,
   onClose,
   open,
   title,
 }: BottomPickSheetProps) {
+  const { t } = useI18n();
+  const dismissLabel = backdropDismissLabel ?? t.common.close;
   const [renderPortal, setRenderPortal] = useState(open);
   const [entered, setEntered] = useState(false);
   const [dragOffsetPx, setDragOffsetPx] = useState(0);
@@ -153,7 +156,7 @@ export function BottomPickSheet({
     <div className="fixed inset-0 z-[200] flex flex-col justify-end">
       <button
         type="button"
-        aria-label={backdropDismissLabel}
+        aria-label={dismissLabel}
         className={cn(
           "absolute inset-0 bg-black/55 backdrop-blur-[2px]",
           "transition-opacity ease-out motion-reduce:transition-none",

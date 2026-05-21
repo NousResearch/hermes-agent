@@ -226,6 +226,14 @@ export const ga: Translations = {
     toolCalls: "glaonna uirlise",
     noModelsData: "Gan sonraí úsáide samhla don tréimhse seo",
     startSession: "Tosaigh seisiún chun sonraí samhla a fheiceáil anseo",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -419,7 +427,17 @@ export const ga: Translations = {
     showValue: "Taispeáin an fíorluach",
     hideValue: "Folaigh an luach",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "Logálacha isteach soláthraí (OAuth)",
     providerLogins: "Logálacha isteach soláthraí (OAuth)",
@@ -457,6 +475,9 @@ export const ga: Translations = {
       external: "CLI seachtrach",
     },
     expiresIn: "as feidhm i {time}",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -466,6 +487,10 @@ export const ga: Translations = {
   theme: {
     title: "Téama",
     switchTheme: "Athraigh téama",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

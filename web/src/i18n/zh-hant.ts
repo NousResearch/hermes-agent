@@ -226,6 +226,14 @@ export const zhHant: Translations = {
     toolCalls: "工具呼叫",
     noModelsData: "此時間範圍內無模型使用資料",
     startSession: "開始工作階段後將於此處顯示模型資料",
+    overrideAuto: "（覆蓋 — 自動：{value}）",
+    autoDetected: "自動偵測",
+    loading: "正在載入模型資訊…",
+    contextWindow: "上下文視窗",
+    maxOutput: "最大輸出",
+    capabilityTools: "工具",
+    capabilityVision: "視覺",
+    capabilityReasoning: "推理",
   },
 
   logs: {
@@ -419,7 +427,17 @@ export const zhHant: Translations = {
     showValue: "顯示實際值",
     hideValue: "隱藏值",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "提供者登入（OAuth）",
     providerLogins: "提供者登入（OAuth）",
@@ -456,7 +474,10 @@ export const zhHant: Translations = {
       device_code: "裝置代碼",
       external: "外部 CLI",
     },
-    expiresIn: "{time}後過期",
+    expiresIn: "將在 {time} 後過期",
+    tokenExchangeFailed: "Token 交換失敗",
+    openDocs: "開啟 {provider} 文件",
+    disconnectDescription: "這將移除 {provider} 已儲存的 OAuth 權杖，需要重新授權才能繼續使用。",
   },
 
   language: {
@@ -466,6 +487,10 @@ export const zhHant: Translations = {
   theme: {
     title: "主題",
     switchTheme: "切換主題",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

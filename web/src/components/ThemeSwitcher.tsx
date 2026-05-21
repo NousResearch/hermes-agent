@@ -58,7 +58,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
 
   const current = availableThemes.find((th) => th.name === themeName);
   const label = current?.label ?? themeName;
-  const sheetTitle = t.theme?.title ?? "Theme";
+  const sheetTitle = t.theme.title;
 
   return (
     <div ref={wrapperRef} className="relative">
@@ -66,8 +66,8 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
         ghost
         onClick={() => setOpen((o) => !o)}
         className="px-2 py-1 normal-case tracking-normal font-normal text-xs text-muted-foreground hover:text-foreground"
-        title={t.theme?.switchTheme ?? "Switch theme"}
-        aria-label={t.theme?.switchTheme ?? "Switch theme"}
+        title={t.theme.switchTheme}
+        aria-label={t.theme.switchTheme}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
@@ -95,6 +95,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
               availableThemes={availableThemes}
               close={close}
               setTheme={setTheme}
+              t={t}
               themeName={themeName}
             />
           </div>
@@ -125,6 +126,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
             availableThemes={availableThemes}
             close={close}
             setTheme={setTheme}
+            t={t}
             themeName={themeName}
           />
         </div>
@@ -137,6 +139,7 @@ function ThemeSwitcherOptions({
   availableThemes,
   close,
   setTheme,
+  t,
   themeName,
 }: ThemeSwitcherOptionsProps) {
   return (
@@ -168,7 +171,7 @@ function ThemeSwitcherOptions({
                 mondwest
                 className="truncate text-[0.75rem] tracking-wide uppercase"
               >
-                {th.label}
+                {t ? (t.theme.presets[th.name]?.label ?? th.label) : th.label}
               </Typography>
               {th.description && (
                 <Typography className="truncate text-[0.65rem] normal-case tracking-normal text-midground/50">
@@ -217,6 +220,7 @@ interface ThemeSwitcherOptionsProps {
   availableThemes: ThemeListEntry[];
   close: () => void;
   setTheme: (name: string) => void;
+  t?: ReturnType<typeof useI18n>["t"];
   themeName: string;
 }
 

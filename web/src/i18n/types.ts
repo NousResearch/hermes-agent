@@ -246,6 +246,14 @@ export interface Translations {
     toolCalls: string;
     noModelsData: string;
     startSession: string;
+    overrideAuto: string;
+    autoDetected: string;
+    loading: string;
+    contextWindow: string;
+    maxOutput: string;
+    capabilityTools: string;
+    capabilityVision: string;
+    capabilityReasoning: string;
   };
 
   // ── Logs page ──
@@ -441,6 +449,17 @@ export interface Translations {
     showValue: string;
   };
 
+  // ── Tool call display ──
+  toolCall: {
+    running: string;
+    error: string;
+    done: string;
+    context: string;
+    streaming: string;
+    diff: string;
+    result: string;
+  };
+
   // ── OAuth ──
   oauth: {
     title: string;
@@ -479,6 +498,9 @@ export interface Translations {
       external: string;
     };
     expiresIn: string;
+    tokenExchangeFailed: string;
+    openDocs: string;
+    disconnectDescription: string;
   };
 
   // ── Language switcher ──
@@ -490,6 +512,7 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
+    presets: Record<string, { label: string; description?: string }>;
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──

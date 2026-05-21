@@ -47,6 +47,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
+    "me@promplate.dev": "CNSeniorious000",
     "erhanyasarx@gmail.com": "erhnysr",
     "30366221+WorldWriter@users.noreply.github.com": "WorldWriter",
     "dafeng@DafengdeMacBook-Pro.local": "WorldWriter",

@@ -3201,7 +3201,7 @@ class AIAgent:
         messages (for non-vision models) or let the provider adapter handle
         them natively (for vision-capable models).
 
-        Resolution order:
+        Resolution order (see ``agent.image_routing._supports_vision_override``):
           1. ``model.supports_vision`` (top-level, single-model shortcut)
           2. ``providers.<provider>.models.<model>.supports_vision``
           3. models.dev capability lookup
@@ -3209,28 +3209,12 @@ class AIAgent:
         misclassified as non-vision and have their images stripped.
         """
         try:
-            from hermes_cli.config import cfg_get, load_config
+            from hermes_cli.config import load_config
+            from agent.image_routing import _lookup_supports_vision
             cfg = load_config()
             provider = (getattr(self, "provider", "") or "").strip()
             model = (getattr(self, "model", "") or "").strip()
-            # self.provider is the runtime-resolved value, which is rewritten
-            # to "custom" for named custom providers (see
-            # hermes_cli/runtime_provider.py:_resolve_named_custom_runtime),
-            # while the config still holds the user-declared name (e.g.
-            # "my-vllm") under model.provider. Try both as provider keys.
-            config_provider = str(cfg_get(cfg, "model", "provider") or "").strip()
-            candidates = [("model", "supports_vision")]
-            for p in dict.fromkeys(filter(None, (provider, config_provider))):
-                candidates.append(("providers", p, "models", model, "supports_vision"))
-            for keys in candidates:
-                override = cfg_get(cfg, *keys)
-                if override is not None:
-                    return bool(override)
-            from agent.models_dev import get_model_capabilities
-            if not provider or not model:
-                return False
-            caps = get_model_capabilities(provider, model)
-            return bool(caps and caps.supports_vision)
+            return _lookup_supports_vision(provider, model, cfg) is True
         except Exception:
             return False
 

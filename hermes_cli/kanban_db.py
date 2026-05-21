@@ -1057,7 +1057,24 @@ def connect(
                 # process are cheap. The lock prevents same-process dispatcher
                 # threads from racing through the additive ALTER TABLE pass with
                 # stale PRAGMA snapshots during gateway startup.
-                conn.executescript(SCHEMA_SQL)
+                #
+                # executescript wraps all statements in a single implicit
+                # transaction. On legacy DBs, a CREATE INDEX that references a
+                # column added by _migrate_add_optional_columns (below) will
+                # abort the entire script before the column migration can run.
+                # Catch this so the migration can add the column, then create
+                # the index afterwards (its own "IF NOT EXISTS" CREATE INDEX
+                # calls handle this idempotently).
+                try:
+                    conn.executescript(SCHEMA_SQL)
+                except sqlite3.OperationalError as exc:
+                    msg = str(exc).lower()
+                    if "no such column" not in msg:
+                        raise
+                    # SCHEMA_SQL was rolled back entirely, but CREATE TABLE
+                    # IF NOT EXISTS means existing tables are intact. The
+                    # migration below will add missing columns and recreate
+                    # all additive indexes via IF NOT EXISTS.
                 _migrate_add_optional_columns(conn)
                 _INITIALIZED_PATHS.add(resolved)
     except Exception:

@@ -1324,6 +1324,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "prompt_tokens": usage.get("input_tokens", 0),
                 "completion_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                "cache_write_tokens": usage.get("cache_write_tokens", 0),
             },
         }
         if is_partial or is_failed or not completed:
@@ -1453,6 +1455,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     "prompt_tokens": usage.get("input_tokens", 0),
                     "completion_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                    "cache_write_tokens": usage.get("cache_write_tokens", 0),
                 },
             }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
@@ -1645,6 +1649,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "input_tokens": usage.get("input_tokens", 0),
                 "output_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                "cache_write_tokens": usage.get("cache_write_tokens", 0),
             }
             incomplete_history = list(conversation_history)
             incomplete_history.append({"role": "user", "content": user_message})
@@ -1988,6 +1994,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                    "cache_write_tokens": usage.get("cache_write_tokens", 0),
                 }
                 _failed_history = list(conversation_history)
                 _failed_history.append({"role": "user", "content": user_message})
@@ -2012,6 +2020,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                    "cache_write_tokens": usage.get("cache_write_tokens", 0),
                 }
                 full_history = self._build_response_conversation_history(
                     conversation_history,
@@ -2078,6 +2088,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                    "cache_write_tokens": usage.get("cache_write_tokens", 0),
                 }
                 await _write_event("response.failed", {
                     "type": "response.failed",
@@ -2348,6 +2360,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "input_tokens": usage.get("input_tokens", 0),
                 "output_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                "cache_write_tokens": usage.get("cache_write_tokens", 0),
             },
         }
 

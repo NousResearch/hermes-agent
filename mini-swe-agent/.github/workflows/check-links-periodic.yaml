@@ -1,0 +1,21 @@
+name: Check Markdown links full
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - check-links*
+      - fix-links*
+  schedule:
+    - cron: "0 0,12 * * *"
+
+jobs:
+  markdown-link-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: tcort/github-action-markdown-link-check@v1
+        with:
+          use-verbose-mode: 'yes'
+          config-file: .github/mlc_config.json

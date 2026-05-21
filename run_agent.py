@@ -25,9 +25,6 @@ import hashlib
 import json
 import logging
 logger = logging.getLogger(__name__)
-# Suppress litellm's verbose debug/info spam
-logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-logging.getLogger("litellm").setLevel(logging.WARNING)
 import os
 import random
 import re
@@ -218,8 +215,8 @@ class AIAgent:
             self.provider = "openai-codex"
         else:
             self.api_mode = "chat_completions"
-        # Use litellm for direct Anthropic API access (ANTHROPIC_API_KEY)
-        self._use_litellm = (provider_name == "anthropic")
+        # Direct Anthropic SDK when provider == "anthropic" (ANTHROPIC_API_KEY).
+        self._is_anthropic = (provider_name == "anthropic")
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
@@ -359,8 +356,8 @@ class AIAgent:
         
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
         try:
-            if self._use_litellm:
-                # Direct Anthropic via litellm — no OpenAI client needed
+            if self._is_anthropic:
+                # Direct Anthropic via the anthropic SDK — no OpenAI client needed
                 self.client = None
                 if not self.quiet_mode:
                     print(f"› AI Agent initialized with model: {self.model} (anthropic direct)")
@@ -2086,15 +2083,13 @@ class AIAgent:
         return result["response"]
 
     def _chat_completion(self, **kwargs):
-        """Route chat completion to litellm (Anthropic direct) or OpenAI client."""
-        if self._use_litellm:
-            import litellm
-            litellm.drop_params = True
-            litellm.modify_params = True
-            litellm.suppress_debug_info = True
-            # Strip OpenRouter-specific params that Anthropic API rejects
+        """Route chat completion to the Anthropic SDK (Claude) or the OpenAI client."""
+        if self._is_anthropic:
+            from agent.llm_client import completion as _completion
+            # Strip OpenAI/OpenRouter-only params the Anthropic API rejects.
             kwargs.pop("extra_body", None)
-            return litellm.completion(**kwargs)
+            kwargs.setdefault("api_key", self.api_key)
+            return _completion(**kwargs)
         return self.client.chat.completions.create(**kwargs)
 
     def _apply_qwen_params(self, kwargs: dict) -> dict:

@@ -283,7 +283,7 @@ def resolve_runtime_provider(
         return {
             "provider": "anthropic",
             "api_mode": "chat_completions",
-            "base_url": "",  # litellm handles routing
+            "base_url": "",  # anthropic SDK uses its default base URL
             "api_key": api_key,
             "source": "env",
             "requested_provider": "anthropic",

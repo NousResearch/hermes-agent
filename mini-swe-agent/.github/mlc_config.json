@@ -1,0 +1,16 @@
+{
+  "ignorePatterns": [
+    {
+      "pattern": "https://github.com/?.*"
+    },
+    {
+      "pattern": "https://platform.openai.com/docs/.*"
+    },
+    {
+      "pattern": ".*localhost.*"
+    },
+    {
+      "pattern": "^(?!https).*(?<!\\.md)$"
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+name: build-docs
+
+on:
+  push:
+    branches:
+      - main
+      - v1
+      - "build-docs-*"
+  pull_request:
+    branches:
+      - main
+      - v1
+
+# Prevent concurrent runs that could conflict when pushing to gh-pages
+concurrency:
+  group: build-docs-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Configure Git Credentials
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+      - uses: actions/setup-python@v6
+        with:
+          python-version: 3.x
+      - run: echo "cache_id=$(date --utc '+%V')" >> $GITHUB_ENV
+      - uses: actions/cache@v5
+        with:
+          key: mkdocs-material-${{ env.cache_id }}
+          path: .cache
+          restore-keys: |
+            mkdocs-material-
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+      - run: uv pip install --python ${Python_ROOT_DIR} '.[full]'
+      - name: Deploy v2 Documentation (main)
+        if: github.ref == 'refs/heads/main'
+        run: mike deploy --push --update-aliases v2 latest
+      - name: Deploy v1 Documentation (v1 branch)
+        if: github.ref == 'refs/heads/v1'
+        run: mike deploy --push v1
+      - name: Build Documentation (strict)
+        # Do this even if we've already deployed, just so we can catch errors
+        # and mark the build as failed.
+        run: mkdocs build --strict

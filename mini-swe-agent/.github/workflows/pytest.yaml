@@ -1,0 +1,80 @@
+
+name: Pytest
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+on:
+  push:
+    branches:
+      - main
+      - v2.0
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'mkdocs.yml'
+      - '.cursor/**'
+      - '.github/workflows/build-docs.yaml'
+      - '.github/workflows/release.yaml'
+      - '.github/workflows/pylint.yaml'
+  pull_request:
+    branches:
+      - main
+      - v2.0
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'mkdocs.yml'
+      - '.cursor/**'
+      - '.github/workflows/build-docs.yaml'
+      - '.github/workflows/release.yaml'
+      - '.github/workflows/pylint.yaml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Update apt package list
+        run: sudo apt-get update
+      - name: Install podman
+        run: sudo apt-get install -y podman
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get install -y bubblewrap
+          sudo chmod u+s $(which bwrap)  # ensure we can set uid permissions
+      - name: Install singularity/apptainer
+        run: |
+            sudo apt-get install -y wget
+            cd /tmp
+            wget https://github.com/apptainer/apptainer/releases/download/v1.3.4/apptainer_1.3.4_amd64.deb
+            sudo dpkg -i apptainer_1.3.4_amd64.deb || sudo apt-get install -f -y
+            # Create singularity symlink for compatibility
+            sudo ln -sf /usr/bin/apptainer /usr/bin/singularity
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Install dependencies
+        run: |
+            uv pip install --python ${Python_ROOT_DIR} -e '.[full]'
+      - name: Configure mini-swe-agent
+        run: |
+          mini-extra config set MSWEA_CONFIGURED 'true'
+          mini-extra config set OPENAI_API_KEY '${{ secrets.OPENAI_API_KEY }}'
+          mini-extra config set OPENROUTER_API_KEY '${{ secrets.OPENROUTER_API_KEY }}'
+          # mini-extra config set PORTKEY_API_KEY '${{ secrets.PORTKEY_API_KEY }}'
+          mini-extra config set REQUESTY_API_KEY '${{ secrets.REQUESTY_API_KEY }}'
+      - name: Run pytest
+        run: pytest -v --cov --cov-branch --cov-report=xml -n auto --run-fire
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: SWE-agent/mini-swe-agent

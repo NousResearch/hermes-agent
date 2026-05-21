@@ -1,0 +1,23 @@
+name: Bug Report
+description: Create a report to help us reproduce and correct the bug
+labels: ['bug']
+
+body:
+- type: textarea
+  attributes:
+    label: Describe the bug
+    description: >
+      A clear and concise description of what the bug is.
+      Please copy as much as possible from the output, in particular any error message.
+      Any hint about how to reproduce your issue will help us help you!
+      Please also include your operating system where relevant.
+      Markdown formatting is appreciated 😉
+
+      Hint: The full history of your last `mini` run is saved to your global config directory.
+      Including it helps us understand the issue.
+  validations:
+    required: true
+- type: markdown
+  attributes:
+    value: >
+      Thanks for contributing 🎉!

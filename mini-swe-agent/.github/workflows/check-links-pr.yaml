@@ -1,0 +1,13 @@
+on: [pull_request]
+name: Check Markdown links in modified files
+jobs:
+  markdown-link-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: tcort/github-action-markdown-link-check@v1
+      with:
+        use-verbose-mode: 'yes'
+        check-modified-files-only: 'yes'
+        base-branch: 'main'
+        config-file: .github/mlc_config.json

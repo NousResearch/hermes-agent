@@ -1,0 +1,11 @@
+name: Question
+description: Anything that's not a bug
+labels: ['question']
+
+body:
+- type: textarea
+  attributes:
+    label: Describe the issue
+    description: The more details the better!
+  validations:
+    required: true

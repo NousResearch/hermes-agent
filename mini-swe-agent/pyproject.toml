@@ -1,0 +1,283 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "mini-swe-agent"
+dynamic = ["version"]
+description = "Nano SWE Agent - A simple AI software engineering agent"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE.md"}
+keywords = ["nlp", "agents", "code"]
+authors = [
+    {name = "Kilian Lieret", email = "kilian.lieret@posteo.de" },
+    {name = "Carlos E. Jimenez", email = "carlosej@princeton.edu" },
+]
+
+# Classifiers help users find your project by categorizing it.
+classifiers = [
+  # How mature is this project? Common values are
+  #   3 - Alpha, 4 - Beta, 5 - Production/Stable
+  "Development Status :: 3 - Alpha",
+  "Operating System :: OS Independent",
+  # Indicate who your project is intended for
+  "Intended Audience :: Developers",
+  # Pick your license as you wish
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3 :: Only",
+]
+
+dependencies = [
+    "pyyaml",
+    "requests",
+    "jinja2",
+    "pydantic >= 2.0",
+    "tenacity",
+    "rich",
+    "python-dotenv",
+    "typer",
+    "platformdirs",
+    "textual",
+    "prompt_toolkit",
+]
+
+[project.optional-dependencies]
+full = [
+    "mini-swe-agent[dev]",
+    "swe-rex>=1.4.0",
+    "mini-swe-agent[modal]",
+    "mini-swe-agent[contree]",
+]
+
+modal = [
+    "modal",
+    "boto3",
+]
+
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-asyncio",
+    "pytest-xdist",
+    "pre-commit",
+    "ruff",
+    "mkdocs-include-markdown-plugin",
+    "mkdocstrings[python]>=0.18",
+    "mike",
+    "mkdocs-material",
+    "mkdocs-glightbox",
+    "mkdocs-redirects",
+    "portkey-ai",
+    "swe-rex",
+]
+
+contree = [
+    "contree-sdk>=0.2.0",
+]
+
+[project.urls]
+Documentation = "https://mini-swe-agent.com/latest/"
+Repository = "https://github.com/SWE-agent/mini-SWE-agent"
+"Bug Tracker" = "https://github.com/SWE-agent/mini-SWE-agent/issues"
+
+[project.scripts]
+mini = "minisweagent.run.mini:app"
+mini-swe-agent = "minisweagent.run.mini:app"
+mini-extra = "minisweagent.run.utilities.mini_extra:main"
+mini-e= "minisweagent.run.utilities.mini_extra:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "minisweagent.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["minisweagent*"]
+
+[tool.setuptools.package-data]
+minisweagent = ["config/**/*"]
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+    # ---- project specific ----
+    "tests/test_data",
+    # Exclude commands so they don't get the __future__ imports
+    "config/commands",
+]
+
+line-length = 120
+indent-width = 4
+
+target-version = "py310"
+
+[tool.ruff.lint]
+# Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.
+# Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
+# McCabe complexity (`C901`) by default.
+# I001: Isort, I002: required import
+select = [
+    # Error (E)
+    "E",
+    # Error (PLE)
+    "PLE",
+    # pycodestyle
+    "E713",  # not in
+    "E714",  # is not
+    "E711",  # comparison with None
+    # pyflakes
+    "F821",
+    "F822",
+    "F401",  # unused-import
+    "F841",  # unused var
+    "F541",  # f-string without args
+    "F901",  # raise NotImplemented should be raise NotImplementedError
+    # isort
+    "I001",  # isort
+    "I002",  # required import
+    # pyupgrade and related
+    "UP",    # pyupgrade
+    "C401",  # flake8-comprehensions: unnecessary-generator-set
+    "C402",  # flake8-comprehensions: unnecessary-generator-dict
+    "C403",  # flake8-comprehensions: unnecessary-list-comprehension-set
+    "C404",  # flake8-comprehensions: unnecessary-list-comprehension-dict
+    "C405",  # flake8-comprehensions: unnecessary-literal-set
+    "F632",  # pyflakes: is-literal
+    "W605",  # pycodestyle: invalid-escape-sequence
+    # bugbear
+    "B006",  # mutable default
+    "B007",  # unused loop var
+    "B009",  # getattr with constant
+    # flake8-errmsg
+    "EM",
+    # flake8-return
+    "RET",
+    # RUF
+    "RUF019",  # unneded key in dict check
+    # pytest
+    "PT",
+    # flake8-simplify (SIM)
+    "SIM201",
+    # flake8-use-pathlib
+    "PTH100",
+    "PTH110",
+    "PTH111",
+    "PTH112",
+    "PTH113",
+    "PTH114",
+    "PTH117",
+    "PTH118",
+    "PTH119",
+    "PTH120",
+    "PTH121",
+    "PTH122",
+    "PTH202",
+    "PTH203",
+    "PTH204",
+    "PTH205",
+]
+ignore = [
+    # flake8-return
+    "RET505",  # can't autofix
+    "RET506",  # can't autofix
+    "RET507",  # can't autofix
+    # error (E)
+    "E501",    # line too long
+    "E402",    # import not on top of file
+    "E722",    # bare except
+    "E741",    # ambiguous symbol
+    # pytest
+    "PT011",
+    "PT018",
+    # flake8-errmsg
+    "EM101",   # exception must not use a string literal
+    "EM102",   # exception must not use an f-string literal
+    "EM103",   # exception must not use a .format(...) string directly
+]
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+
+[tool.typos.default.extend-identifiers]
+# *sigh* this just isn't worth the cost of fixing
+ACI = "ACI"
+
+[tool.typos.default.extend-words]
+# Don't correct the surname "Teh"
+aci = "aci"
+ba = "ba"
+
+[tool.pylint.messages_control]
+disable = [
+    "line-too-long",           # C0301 - disable line length checks
+    "missing-docstring",       # C0111 - disable docstring requirements
+    "missing-class-docstring", # C0115 - disable class docstring requirements
+    "missing-function-docstring", # C0116 - disable function docstring requirements
+    "missing-module-docstring", # C0114 - disable module docstring requirements
+    "unspecified-encoding",    # W1514 - disable unspecified encoding warnings
+    "duplicate-code",          # R0801 - disable code duplication checks
+    "too-few-public-methods",  # R0903 - disable too few public methods warnings
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "slow: marks tests as slow (deselect with '-k \"not slow\"')",
+]
+
+[dependency-groups]
+dev = [
+    "datasets>=4.5.0",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.0.0",
+]

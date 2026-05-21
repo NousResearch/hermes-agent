@@ -1,0 +1,53 @@
+name: Pylint
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'mkdocs.yml'
+      - '.cursor/**'
+      - '.github/workflows/build-docs.yaml'
+      - '.github/workflows/release.yaml'
+      - '.github/workflows/pytest.yaml'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'mkdocs.yml'
+      - '.cursor/**'
+      - '.github/workflows/build-docs.yaml'
+      - '.github/workflows/release.yaml'
+      - '.github/workflows/pytest.yaml'
+
+jobs:
+  pylint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Install dependencies
+        run: |
+            uv pip install --python ${Python_ROOT_DIR} -e '.[full]'
+            uv pip install --python ${Python_ROOT_DIR} pylint
+      - name: Run pylint (fail only on errors)
+        run: |
+          # Run pylint with errors-only flag to only fail on real errors (E and F level)
+          # This will show all messages but only exit with error code for errors, not warnings/advice
+          pylint minisweagent/ --errors-only

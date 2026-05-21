@@ -1,0 +1,19 @@
+# Configuration for codecov
+coverage:
+  status:
+    project:
+      default:
+        # If we get < 50% coverage, codecov is gonna mark it a failure
+        target: 50%
+        threshold: null
+    patch:
+      default:
+        # Codecov won't mark it as a failure if a patch is not covered well
+        informational: true
+github_checks:
+  # Don't mark lines that aren't covered
+  annotations: false
+
+ignore:
+  - "tests/**/*"
+

@@ -1029,11 +1029,12 @@ class HermesCLI:
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
         is_local = resolved_provider == "local"
-        is_litellm = resolved_provider == "anthropic"  # litellm handles routing
-        if not is_local and not is_litellm and (not isinstance(api_key, str) or not api_key):
+        # Anthropic uses the official SDK directly; base_url is implicit.
+        is_anthropic = resolved_provider == "anthropic"
+        if not is_local and not is_anthropic and (not isinstance(api_key, str) or not api_key):
             self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
             return False
-        if not is_litellm and (not isinstance(base_url, str) or not base_url):
+        if not is_anthropic and (not isinstance(base_url, str) or not base_url):
             self.console.print("[bold red]Provider resolver returned an empty base URL.[/]")
             return False
 

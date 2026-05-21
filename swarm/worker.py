@@ -65,7 +65,7 @@ class LocalWorkerBackend(WorkerBackend):
         if "claude" in model:
             provider = "anthropic"
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-            base_url = ""  # litellm handles routing
+            base_url = ""  # anthropic SDK uses its default base URL
         elif model.startswith("local/"):
             provider = "local"
             api_key = "local"

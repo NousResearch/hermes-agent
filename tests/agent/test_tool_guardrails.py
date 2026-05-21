@@ -268,6 +268,21 @@ def test_same_tool_varying_args_warns_by_default_without_halting():
     assert controller.halt_decision is None
 
 
+def test_patch_failure_warning_recommends_reread_and_smaller_context():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(same_tool_failure_warn_after=2, same_tool_failure_halt_after=99)
+    )
+
+    controller.after_call("patch", {"path": "a.py", "old_string": "x1", "new_string": "y"}, '{"error":"not found"}', failed=True)
+    decision = controller.after_call("patch", {"path": "a.py", "old_string": "x2", "new_string": "y"}, '{"error":"not found"}', failed=True)
+
+    assert decision.action == "warn"
+    assert decision.code == "same_tool_failure_warning"
+    assert "Re-read" in decision.message
+    assert "smaller exact context" in decision.message
+    assert "write_file only" in decision.message
+
+
 def test_hard_stop_enabled_halts_same_tool_varying_args_failure_streak():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(

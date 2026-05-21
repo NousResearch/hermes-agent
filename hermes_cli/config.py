@@ -667,6 +667,17 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # RTK-inspired terminal output optimizer. Default off to preserve legacy
+        # behavior exactly. When enabled, Hermes may compact noisy foreground
+        # terminal output after ANSI stripping/secret redaction while preserving
+        # a sanitized raw-output file for recovery.
+        "output_optimizer": {
+            "enabled": False,
+            "min_chars": 4000,
+            "target_chars": 12000,
+            "raw_output": "preserve",  # preserve | off
+            "storage_dir": "/tmp/hermes-terminal-raw",
+        },
     },
 
     "web": {

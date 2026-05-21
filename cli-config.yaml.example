@@ -173,6 +173,13 @@ terminal:
   lifetime_seconds: 300
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
+  # Optional RTK-inspired terminal output optimizer. Default off to preserve legacy behavior.
+  output_optimizer:
+    enabled: false
+    min_chars: 4000
+    target_chars: 12000
+    raw_output: preserve  # preserve | off
+    storage_dir: /tmp/hermes-terminal-raw
 
 # -----------------------------------------------------------------------------
 # OPTION 2: SSH remote execution

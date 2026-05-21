@@ -582,6 +582,12 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
             "in the same tool, then try an absolute path, a simpler command, a different "
             "working directory, or a different tool such as read_file/write_file/patch."
         )
+    if tool_name == "patch":
+        return common + (
+            "For repeated patch failures, stop trying the same old_string. Re-read the "
+            "target with read_file/search_files, choose a smaller exact context, or switch "
+            "to write_file only when replacing the whole file is safer and scoped."
+        )
     return common + (
         "Try different arguments, a narrower query/path, an absolute path when relevant, "
         "or a different tool that can make progress. If the blocker is external, report "

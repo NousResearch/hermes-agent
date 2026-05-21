@@ -2136,6 +2136,202 @@ def review_required_snapshots(
     return snapshots
 
 
+def _review_required_snapshot_for_decision(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> TaskProgressSnapshot:
+    snapshot = task_progress_snapshot(conn, task_id)
+    if snapshot is None:
+        raise ValueError(f"unknown task {task_id}")
+    if snapshot.task.status != "blocked":
+        raise ValueError(f"task {task_id} is not blocked for review")
+    if snapshot.run is None or not snapshot.review_required:
+        raise ValueError(f"task {task_id} has no review-required worker evidence")
+    return snapshot
+
+
+def _review_decision_metadata(
+    evidence: Optional[dict],
+    *,
+    decision: str,
+    reviewer: str,
+    reviewed_at: int,
+    source_run_id: int,
+    comment: Optional[str] = None,
+) -> dict:
+    updated = dict(evidence or {})
+    review = updated.get("review")
+    if not isinstance(review, dict):
+        review = {}
+    else:
+        review = dict(review)
+    review.update(
+        {
+            "required": False,
+            "decision": decision,
+            "reviewer": reviewer,
+            "reviewed_at": reviewed_at,
+            "source_run_id": source_run_id,
+        }
+    )
+    if comment:
+        review["comment"] = comment
+    updated["review"] = review
+    return updated
+
+
+def review_worker_evidence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    decision: str,
+    reviewer: str = "user",
+    comment: Optional[str] = None,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+) -> TaskProgressSnapshot:
+    """Approve or request changes for review-required external-worker evidence.
+
+    This is the controlled review bridge for Codex/external-worker lanes. It
+    operates on the bounded evidence stored in ``task_runs.metadata`` and
+    ``task_events``; it does not read or replay the full worker transcript.
+    """
+    normalized_decision = decision.strip().lower().replace("-", "_")
+    if normalized_decision not in {"approve", "request_changes"}:
+        raise ValueError("decision must be approve or request_changes")
+    reviewer_name = (reviewer or "user").strip() or "user"
+    review_comment = (comment or "").strip()
+    if normalized_decision == "request_changes" and not review_comment:
+        raise ValueError("review comment is required when requesting changes")
+
+    snapshot = _review_required_snapshot_for_decision(conn, task_id)
+    assert snapshot.run is not None  # for type checkers; guaranteed above.
+    source_run_id = snapshot.run.id
+    now = int(time.time())
+    metadata = _review_decision_metadata(
+        snapshot.evidence,
+        decision="approved" if normalized_decision == "approve" else "changes_requested",
+        reviewer=reviewer_name,
+        reviewed_at=now,
+        source_run_id=source_run_id,
+        comment=review_comment or None,
+    )
+    lane_meta = metadata.get("worker_lane") if isinstance(metadata, dict) else None
+    event_payload = {
+        "reviewer": reviewer_name,
+        "source_run_id": source_run_id,
+        "worker_lane": lane_meta if isinstance(lane_meta, dict) else None,
+    }
+    if review_comment:
+        event_payload["comment"] = review_comment
+
+    if normalized_decision == "request_changes":
+        with write_txn(conn):
+            # Re-check inside the write transaction before mutating state.
+            current = _review_required_snapshot_for_decision(conn, task_id)
+            assert current.run is not None
+            if current.run.id != source_run_id:
+                raise ValueError(f"task {task_id} review evidence changed")
+            conn.execute(
+                "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                (json.dumps(metadata, ensure_ascii=False), source_run_id),
+            )
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, reviewer_name, review_comment, now),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "commented",
+                {"author": reviewer_name, "len": len(review_comment)},
+            )
+            _append_event(
+                conn,
+                task_id,
+                "worker_review_changes_requested",
+                event_payload,
+                run_id=source_run_id,
+            )
+            if not _unblock_task_in_txn(
+                conn,
+                task_id,
+                event_payload={
+                    "review_decision": "changes_requested",
+                    "reviewer": reviewer_name,
+                    "source_run_id": source_run_id,
+                },
+            ):
+                raise ValueError(f"cannot unblock {task_id} after review")
+        refreshed = task_progress_snapshot(conn, task_id)
+        if refreshed is None:
+            raise ValueError(f"unknown task {task_id}")
+        return refreshed
+
+    review_summary = (
+        summary
+        or result
+        or f"approved worker evidence from run {source_run_id}"
+    )
+    review_result = result or review_summary
+    with write_txn(conn):
+        current = _review_required_snapshot_for_decision(conn, task_id)
+        assert current.run is not None
+        if current.run.id != source_run_id:
+            raise ValueError(f"task {task_id} review evidence changed")
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), source_run_id),
+        )
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status       = 'done',
+                   result       = ?,
+                   completed_at = ?,
+                   claim_lock   = NULL,
+                   claim_expires= NULL,
+                   worker_pid   = NULL,
+                   current_run_id = NULL
+             WHERE id = ?
+               AND status = 'blocked'
+            """,
+            (review_result, now, task_id),
+        )
+        if cur.rowcount != 1:
+            raise ValueError(f"cannot approve {task_id} after review")
+        approved_run_id = _synthesize_ended_run(
+            conn,
+            task_id,
+            outcome="completed",
+            summary=review_summary,
+            metadata=metadata,
+        )
+        event_payload["target_run_id"] = approved_run_id
+        _append_event(
+            conn,
+            task_id,
+            "worker_review_approved",
+            event_payload,
+            run_id=approved_run_id,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "completed",
+            {"result_len": len(review_result), "summary": review_summary[:400]},
+            run_id=approved_run_id,
+        )
+    _clear_failure_counter(conn, task_id)
+    recompute_ready(conn)
+    _cleanup_workspace(conn, task_id)
+    refreshed = task_progress_snapshot(conn, task_id)
+    if refreshed is None:
+        raise ValueError(f"unknown task {task_id}")
+    return refreshed
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3326,6 +3522,58 @@ def block_task(
         return True
 
 
+def _unblock_task_in_txn(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    event_payload: Optional[dict] = None,
+) -> bool:
+    """Transition ``blocked``/``scheduled`` -> ready or todo inside a txn."""
+    now = int(time.time())
+    stale = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+        (task_id,),
+    ).fetchone()
+    if stale and stale["current_run_id"]:
+        conn.execute(
+            """
+            UPDATE task_runs
+               SET status = 'reclaimed', outcome = 'reclaimed',
+                   summary = COALESCE(summary, 'invariant recovery on unblock'),
+                   ended_at = ?,
+                   claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+             WHERE id = ? AND ended_at IS NULL
+            """,
+            (now, int(stale["current_run_id"])),
+        )
+    # Re-gate on parent completion before flipping 'blocked' back to
+    # 'ready'. Unconditionally setting status='ready' here bypasses the
+    # parent-completion invariant (the dispatcher trusts that column);
+    # if parents are still in progress the task must wait in 'todo'
+    # until recompute_ready picks it up. RCA: Bug 2 at
+    # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
+    undone_parents = conn.execute(
+        "SELECT 1 FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    new_status = "todo" if undone_parents else "ready"
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, current_run_id = NULL, "
+        "consecutive_failures = 0, last_failure_error = NULL "
+        "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+        (new_status, task_id),
+    )
+    if cur.rowcount != 1:
+        return False
+    payload = {"status": new_status} if new_status != "ready" else None
+    if event_payload:
+        payload = {**(payload or {}), **event_payload}
+    _append_event(conn, task_id, "unblocked", payload)
+    return True
+
+
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
 
@@ -3336,50 +3584,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
     """
-    now = int(time.time())
     with write_txn(conn):
-        stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (task_id,),
-        ).fetchone()
-        if stale and stale["current_run_id"]:
-            conn.execute(
-                """
-                UPDATE task_runs
-                   SET status = 'reclaimed', outcome = 'reclaimed',
-                       summary = COALESCE(summary, 'invariant recovery on unblock'),
-                       ended_at = ?,
-                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
-                 WHERE id = ? AND ended_at IS NULL
-                """,
-                (now, int(stale["current_run_id"])),
-            )
-        # Re-gate on parent completion before flipping 'blocked' back to
-        # 'ready'. Unconditionally setting status='ready' here bypasses the
-        # parent-completion invariant (the dispatcher trusts that column);
-        # if parents are still in progress the task must wait in 'todo'
-        # until recompute_ready picks it up. RCA: Bug 2 at
-        # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (new_status, task_id),
-        )
-        if cur.rowcount != 1:
-            return False
-        _append_event(
-            conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
-        )
-        return True
+        return _unblock_task_in_txn(conn, task_id)
 
 
 def specify_triage_task(

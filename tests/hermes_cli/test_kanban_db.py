@@ -195,6 +195,107 @@ def test_review_required_snapshots_lists_bounded_evidence(
     assert deep_snapshots[0].to_dict()["verification"]["commands"] == ["pytest -q"]
 
 
+def test_review_worker_evidence_approve_completes_from_bounded_metadata(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approve review",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        source_run_id = task.current_run_id
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=source_run_id,
+            metadata=metadata,
+        )
+
+        snapshot = kb.review_worker_evidence(
+            conn,
+            tid,
+            decision="approve",
+            reviewer="reviewer",
+            summary="reviewed bounded evidence",
+        )
+        events = kb.list_events(conn, tid)
+        runs = kb.list_runs(conn, tid)
+
+    assert snapshot.task.status == "done"
+    assert snapshot.task.result == "reviewed bounded evidence"
+    assert snapshot.review_required is False
+    assert snapshot.evidence["review"]["decision"] == "approved"
+    assert snapshot.evidence["review"]["source_run_id"] == source_run_id
+    assert [run.outcome for run in runs] == ["blocked", "completed"]
+    assert any(event.kind == "worker_review_approved" for event in events)
+    assert any(event.kind == "completed" for event in events)
+
+
+def test_review_worker_evidence_request_changes_unblocks_with_comment(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "failed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="request changes",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        source_run_id = task.current_run_id
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=source_run_id,
+            metadata=metadata,
+        )
+
+        snapshot = kb.review_worker_evidence(
+            conn,
+            tid,
+            decision="request_changes",
+            reviewer="reviewer",
+            comment="Please add the missing regression test.",
+        )
+        comments = kb.list_comments(conn, tid)
+        events = kb.list_events(conn, tid)
+        source_run = kb.list_runs(conn, tid)[0]
+
+    assert snapshot.task.status == "ready"
+    assert snapshot.task.current_run_id is None
+    assert snapshot.review_required is False
+    assert source_run.metadata["review"]["decision"] == "changes_requested"
+    assert source_run.metadata["review"]["source_run_id"] == source_run_id
+    assert comments[-1].author == "reviewer"
+    assert "missing regression test" in comments[-1].body
+    assert any(event.kind == "worker_review_changes_requested" for event in events)
+    assert any(
+        event.kind == "unblocked"
+        and event.payload
+        and event.payload.get("review_decision") == "changes_requested"
+        for event in events
+    )
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"

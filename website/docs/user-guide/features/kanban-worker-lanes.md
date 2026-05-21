@@ -232,6 +232,17 @@ the bounded evidence already written to `task_runs.metadata`, the latest
 progress event, and an optional worker-log tail without replaying the complete
 Codex session.
 
+Reviewers can close the handoff through the same bounded-evidence path:
+
+```bash
+hermes kanban review <task_id> approve --summary "bounded evidence accepted"
+hermes kanban review <task_id> request-changes --comment "add a regression test"
+```
+
+`approve` records the review decision and marks the task done. `request-changes`
+records the reviewer comment, emits a review event, and unblocks the task so the
+dispatcher can hand the follow-up back to the assigned lane.
+
 ## Goal bridge
 
 The intended `/goal` bridge is:

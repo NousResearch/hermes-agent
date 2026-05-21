@@ -413,6 +413,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `tail <id>` | Follow a task's event stream. |
 | `progress <id>` | Read a task's latest worker progress, heartbeat, bounded evidence, and optional log tail without claiming or interrupting it. Flags: `--json`, `--log-tail`. |
 | `reviews` | List tasks whose latest worker run is waiting for Hermes review (`review.required: true`). Flags: `--assignee`, `--tenant`, `--lane`, `--limit`, `--log-tail`, `--json`. |
+| `review <id> approve\|request-changes` | Resolve a review-required worker handoff from bounded evidence. `approve` marks the task done; `request-changes` writes a reviewer comment and unblocks the task for another worker run. Flags: `--reviewer`, `--comment`, `--summary`, `--result`, `--json`. |
 | `dispatch` | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--failure-limit N`, `--json`. |
 | `context <id>` | Print the full context a worker would see (title + body + parent results + comments). |
 | `specify <id>` / `specify --all` | Flesh out a triage-column task into a concrete spec (title + body with goal, approach, acceptance criteria) via the auxiliary LLM, then promote it to `todo`. Flags: `--tenant` (scope `--all` to one tenant), `--author`, `--json`. Configure the model under `auxiliary.triage_specifier` in `config.yaml`. |

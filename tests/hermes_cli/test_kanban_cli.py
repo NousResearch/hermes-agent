@@ -478,6 +478,83 @@ def test_run_slash_reviews_lists_review_required_evidence(
     assert "review-required: Codex completed" in human
 
 
+def test_run_slash_review_approve_completes_review_required_task(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approve via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash(
+        f"review {tid} approve --reviewer ralph --summary 'bounded evidence approved' --json"
+    ))
+
+    assert payload["task"]["status"] == "done"
+    assert payload["evidence"]["review"]["decision"] == "approved"
+    assert payload["evidence"]["review"]["reviewer"] == "ralph"
+    assert payload["review_required"] is False
+
+
+def test_run_slash_review_request_changes_unblocks_for_next_worker(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "failed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="request changes via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    out = kc.run_slash(
+        f"review {tid} request-changes --reviewer ralph "
+        "--comment 'add a focused regression test'"
+    )
+
+    assert f"Requested changes for {tid}" in out
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert task.status == "ready"
+    assert "focused regression test" in comments[-1].body
+    assert any(event.kind == "worker_review_changes_requested" for event in events)
+
+
 def test_run_slash_worker_lane_request_validates_without_enabling(
     kanban_home, tmp_path,
 ):

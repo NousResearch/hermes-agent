@@ -498,6 +498,38 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_reviews.add_argument("--json", action="store_true")
 
+    # --- review ---
+    p_review = sub.add_parser(
+        "review",
+        help="Approve or request changes for review-required worker evidence",
+    )
+    p_review.add_argument("task_id")
+    p_review.add_argument(
+        "decision",
+        choices=("approve", "request-changes", "request_changes"),
+    )
+    p_review.add_argument(
+        "--reviewer",
+        default=None,
+        help="Reviewer name (default: active profile or user)",
+    )
+    p_review.add_argument(
+        "--comment",
+        default=None,
+        help="Review comment; required for request-changes",
+    )
+    p_review.add_argument(
+        "--result",
+        default=None,
+        help="Result text to store when approving. Defaults to the approval summary.",
+    )
+    p_review.add_argument(
+        "--summary",
+        default=None,
+        help="Approval summary stored as the completed review run summary.",
+    )
+    p_review.add_argument("--json", action="store_true")
+
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
     p_assign.add_argument("task_id")
@@ -994,6 +1026,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "show":     _cmd_show,
         "progress": _cmd_progress,
         "reviews":  _cmd_reviews,
+        "review":   _cmd_review,
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
@@ -1933,6 +1966,34 @@ def _cmd_reviews(args: argparse.Namespace) -> int:
             f"{str(run.get('id') or '-'):>5s}  {summary[:120]}"
         )
     print("\nUse `hermes kanban progress <task_id> --json` for full bounded evidence.")
+    return 0
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    decision = str(getattr(args, "decision", "")).replace("-", "_")
+    reviewer = getattr(args, "reviewer", None) or _profile_author()
+    try:
+        with kb.connect() as conn:
+            snapshot = kb.review_worker_evidence(
+                conn,
+                args.task_id,
+                decision=decision,
+                reviewer=reviewer,
+                comment=getattr(args, "comment", None),
+                result=getattr(args, "result", None),
+                summary=getattr(args, "summary", None),
+            )
+    except ValueError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    payload = _snapshot_to_dict(snapshot)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    if decision == "approve":
+        print(f"Approved {args.task_id}; task is now {snapshot.task.status}")
+    else:
+        print(f"Requested changes for {args.task_id}; task is now {snapshot.task.status}")
     return 0
 
 

@@ -415,6 +415,50 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_outbound_format_card_wraps_markdown_in_interactive_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"outbound_format": "card"}))
+        msg_type, payload = adapter._build_outbound_payload("**Bold**\n\n| A | B |\n|---|---|")
+
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        self.assertEqual(card["schema"], "2.0")
+        self.assertEqual(card["config"]["width_mode"], "fill")
+        elements = card["body"]["elements"]
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertIn("**Bold**", elements[0]["content"])
+        self.assertEqual(elements[1]["tag"], "table")
+        self.assertEqual(elements[1]["header_style"]["background_style"], "grey")
+        self.assertEqual(elements[1]["columns"][0]["display_name"], "A")
+        self.assertEqual(elements[1]["columns"][0]["data_type"], "markdown")
+        self.assertEqual(elements[1]["columns"][1]["display_name"], "B")
+        self.assertEqual(elements[1]["rows"], [])
+        self.assertNotIn("wide_screen_mode", json.dumps(card, ensure_ascii=False))
+        self.assertNotIn("column_set", json.dumps(card, ensure_ascii=False))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_auto_routes_markdown_tables_to_card_json_v2_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload = adapter._build_outbound_payload(
+            "| Name | Value |\n|---|---|\n| Alpha | **1** |\n| Beta | [two](https://example.com) |"
+        )
+
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        table = card["body"]["elements"][0]
+        self.assertEqual(card["schema"], "2.0")
+        self.assertEqual(table["tag"], "table")
+        self.assertEqual(table["columns"][0]["display_name"], "Name")
+        self.assertEqual(table["columns"][1]["display_name"], "Value")
+        self.assertEqual(table["rows"][0], {"c1": "Alpha", "c2": "**1**"})
+        self.assertEqual(table["rows"][1], {"c1": "Beta", "c2": "[two](https://example.com)"})
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

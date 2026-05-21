@@ -1147,6 +1147,10 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(feishu_cfg, dict):
                 if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
                     os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
+                if "outbound_format" in feishu_cfg and not os.getenv("HERMES_FEISHU_OUTBOUND_FORMAT"):
+                    os.environ["HERMES_FEISHU_OUTBOUND_FORMAT"] = str(feishu_cfg["outbound_format"]).lower()
+                if "message_format" in feishu_cfg and not os.getenv("HERMES_FEISHU_OUTBOUND_FORMAT"):
+                    os.environ["HERMES_FEISHU_OUTBOUND_FORMAT"] = str(feishu_cfg["message_format"]).lower()
 
     except Exception as e:
         logger.warning(

@@ -324,6 +324,45 @@
 .hermes-kanban-worker-lane-instance code {
   font-family: var(--font-mono, ui-monospace, monospace);
 }
+.hermes-kanban-worker-lane-request-dialog {
+  width: min(680px, calc(100vw - 2rem));
+}
+.hermes-kanban-worker-lane-request-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.hermes-kanban-worker-lane-request-reason {
+  min-height: 4.8rem;
+}
+.hermes-kanban-worker-lane-request-options {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+.hermes-kanban-worker-lane-request-result {
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  border: 1px solid color-mix(in srgb, #3fb97d 45%, var(--color-border));
+  border-radius: var(--radius-sm, 0.25rem);
+  background: color-mix(in srgb, #3fb97d 10%, transparent);
+  font-size: 0.72rem;
+}
+.hermes-kanban-worker-lane-request-result code {
+  display: block;
+  margin-top: 0.35rem;
+  white-space: pre-wrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+  color: var(--color-muted-foreground);
+}
+@media (max-width: 640px) {
+  .hermes-kanban-worker-lane-request-grid {
+    grid-template-columns: 1fr;
+  }
+}
 
 /* ---- Card ------------------------------------------------------------ */
 

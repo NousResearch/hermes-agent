@@ -286,10 +286,41 @@ def test_dashboard_worker_lane_roster_uses_status_endpoint():
 
     assert "function WorkerLaneRoster(props)" in js
     assert "`${API}/worker-lanes`" in js
+    assert "if (!lanes) return null;" in js
+    assert "request lane" in js
     assert "active / max concurrency" in js
     assert "Registered external worker lanes. This view is read-only" in js
     assert "hermes-kanban-worker-lanes" in css
     assert "hermes-kanban-worker-lane-cap--full" in css
+
+
+def test_dashboard_worker_lane_request_dialog_uses_validator_endpoint():
+    """Operator lane requests should be form-built, not arbitrary commands."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+    css = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    ).read_text()
+
+    assert "function WorkerLaneRequestDialog(props)" in js
+    assert "`${API}/worker-lane-requests`" in js
+    assert 'type: "codex_cli"' in js
+    assert 'success_policy: "block_for_review"' in js
+    assert "setPersist(on);" in js
+    assert "if (on) setEnable(true);" in js
+    assert "The command is fixed by Hermes" in js
+    dialog_js = js[
+        js.index("function WorkerLaneRequestDialog(props)"):
+        js.index("  // -------------------------------------------------------------------------\n  // Bulk action bar")
+    ]
+    assert "command:" not in dialog_js
+    assert "cmd:" not in dialog_js
+    assert "argv:" not in dialog_js
+    assert "executable:" not in dialog_js
+    assert "hermes-kanban-worker-lane-request-dialog" in css
+    assert "hermes-kanban-worker-lane-request-grid" in css
 
 
 def test_dashboard_initial_board_uses_backend_current_when_unpinned():

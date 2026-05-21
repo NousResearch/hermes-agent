@@ -216,6 +216,11 @@ Dashboard/plugin clients can use the same validator through:
 POST /api/plugins/kanban/worker-lane-requests
 ```
 
+The dashboard worker-lane panel exposes the same path as a controlled request
+form. It lets an operator validate, enable, persist, or replace a Codex lane
+request using the allowlisted fields; it does not accept arbitrary shell
+commands.
+
 By default the endpoint only validates. Pass `enable=true` to register the
 lane for the current process, or `persist=true` to write the sanitized adapter
 fields under `kanban.worker_lanes`.

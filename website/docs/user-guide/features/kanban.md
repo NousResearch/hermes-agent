@@ -548,7 +548,7 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `GET` | `/orchestration` | Read the kanban orchestration settings (`orchestrator_profile`, `default_assignee`, `auto_decompose`) plus the *resolved* effective values after fallbacks. |
 | `PUT` | `/orchestration` | Update one or more of the three orchestration keys in `config.yaml`. Validates that non-empty profile names actually exist. |
 | `GET` | `/worker-lanes` | List registered external worker lanes, current capacity, per-status counts, and active task/run/pid instances without reading worker sessions |
-| `POST` | `/worker-lane-requests` | Validate and optionally enable/persist a skill-generated worker lane request through the deterministic allowlist validator. |
+| `POST` | `/worker-lane-requests` | Validate and optionally enable/persist a skill-generated or dashboard-submitted worker lane request through the deterministic allowlist validator. |
 | `GET` | `/reviews?lane=<name>&limit=<n>&log_tail=<bytes>` | List review-required external-worker handoffs, optionally filtered by assignee, tenant, or worker lane |
 | `POST` | `/links` | Add a dependency (`parent_id` → `child_id`) |
 | `DELETE` | `/links?parent_id=…&child_id=…` | Remove a dependency |

@@ -1317,9 +1317,14 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_extract_audio_message_downloads_and_caches(self):
+    def test_extract_audio_message_classified_as_voice(self):
+        """Feishu native voice recordings (message_type='audio') must enter
+        the auto-STT path via MessageType.VOICE.  gateway/run.py skips STT
+        for MessageType.AUDIO, so returning AUDIO here would silently drop
+        all voice messages — same bug fixed for DingTalk in PR #28922."""
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
+        from gateway.platforms.base import MessageType
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._download_feishu_message_resource = AsyncMock(
@@ -1334,7 +1339,7 @@ class TestAdapterBehavior(unittest.TestCase):
         text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "")
-        self.assertEqual(msg_type.value, "audio")
+        self.assertEqual(msg_type, MessageType.VOICE)
         self.assertEqual(media_urls, ["/tmp/feishu-audio.ogg"])
         self.assertEqual(media_types, ["audio/ogg"])
 

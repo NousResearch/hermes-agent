@@ -2961,6 +2961,38 @@ def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
         pass  # best-effort — never block completion
 
 
+@dataclass
+class ReviewOutcomeProcessResult:
+    processed: list[str] = field(default_factory=list)
+    fix_tasks: list[str] = field(default_factory=list)
+    rereview_tasks: list[str] = field(default_factory=list)
+    human_tasks: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+
+
+REVIEW_OUTCOME_SCHEMA = "cato_review_outcome.v1"
+REVIEW_OUTCOME_HANDLER_AUTHOR = "review-outcome-handler"
+HUMAN_REVIEW_OUTCOMES = {"HUMAN_DECISION_REQUIRED"}
+FIXABLE_REVIEW_OUTCOMES = {"CHANGES_REQUIRED"}
+UNSAFE_REVIEW_FINDING_FLAGS = {
+    "unsafe",
+    "destructive",
+    "external",
+    "expensive",
+    "credential",
+    "credentials",
+    "client_system",
+    "client-system",
+    "client system",
+    "missing_access",
+    "missing access",
+    "ambiguous_scope",
+    "ambiguous scope",
+    "human_decision_required",
+    "human decision required",
+}
+
+
 def edit_completed_task_result(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3026,6 +3058,346 @@ def edit_completed_task_result(
             run_id=run_id,
         )
     return True
+
+
+def _latest_completed_run_metadata(conn: sqlite3.Connection, task_id: str) -> dict:
+    row = conn.execute(
+        """
+        SELECT metadata FROM task_runs
+         WHERE task_id = ?
+           AND (outcome = 'completed' OR status IN ('completed', 'done'))
+         ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+         LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    if not row or not row["metadata"]:
+        return {}
+    try:
+        value = json.loads(row["metadata"])
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _structured_review_outcome(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
+    metadata = _latest_completed_run_metadata(conn, task_id)
+    outcome = metadata.get("review_outcome")
+    if not isinstance(outcome, dict):
+        return None
+    schema = outcome.get("schema") or outcome.get("schema_version")
+    if schema != REVIEW_OUTCOME_SCHEMA:
+        return None
+    raw = outcome.get("outcome") or outcome.get("status")
+    if not isinstance(raw, str):
+        return None
+    normalized = dict(outcome)
+    outcome_name = raw.strip().upper()
+    normalized["schema"] = REVIEW_OUTCOME_SCHEMA
+    normalized["schema_version"] = REVIEW_OUTCOME_SCHEMA
+    normalized["outcome"] = outcome_name
+    normalized["status"] = outcome_name
+    return normalized
+
+
+def _review_outcome_already_handled(conn: sqlite3.Connection, task_id: str) -> bool:
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'review_outcome_handled' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    )
+
+
+def _is_cato_review_task(row: sqlite3.Row) -> bool:
+    return (row["assignee"] or "").casefold() == "cato" or (row["title"] or "").casefold().startswith("cato final review")
+
+
+def _finding_value(finding: dict, *keys: str) -> Optional[str]:
+    for key in keys:
+        value = finding.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _review_outcome_requires_human(outcome: dict) -> bool:
+    if outcome.get("human_action_required") is True or outcome.get("requires_human_decision") is True:
+        return True
+    safety_gate = outcome.get("safety_gate")
+    if isinstance(safety_gate, str) and safety_gate.strip():
+        return safety_gate.strip().casefold() not in {"structured_followup_ok", "false", "none", "no"}
+    return safety_gate is True
+
+
+def _finding_requires_human(finding: dict) -> bool:
+    if finding.get("requires_human_decision") is True or finding.get("human_decision_required") is True:
+        return True
+    unsafe_boolean_keys = {
+        "human_action_required",
+        "safety_gate",
+        "requires_credentials",
+        "requires_credential",
+        "requires_external_access",
+        "requires_destructive_action",
+        "requires_client_system_change",
+        "requires_expensive_action",
+        "requires_missing_access",
+        "ambiguous_scope",
+        "unsafe",
+    }
+    for key in unsafe_boolean_keys:
+        if finding.get(key) is True:
+            return True
+    raw_flags: list[str] = []
+    for key in ("safety_category", "category", "risk", "requires", "safety_gate"):
+        value = finding.get(key)
+        if isinstance(value, str):
+            raw_flags.append(value)
+        elif isinstance(value, list):
+            raw_flags.extend(str(item) for item in value)
+    normalized = {flag.strip().casefold().replace("-", "_").replace(" ", "_") for flag in raw_flags if flag}
+    unsafe = {flag.casefold().replace("-", "_").replace(" ", "_") for flag in UNSAFE_REVIEW_FINDING_FLAGS}
+    return bool(normalized & unsafe)
+
+
+def _reviewed_task_for_review(conn: sqlite3.Connection, review_task_id: str) -> Optional[Task]:
+    parents = parent_ids(conn, review_task_id)
+    for parent_id in parents:
+        task = get_task(conn, parent_id)
+        if task and (task.assignee or "").casefold() != "cato":
+            return task
+    return get_task(conn, parents[0]) if parents else None
+
+
+def _review_finding_id(finding: dict, index: int) -> str:
+    value = _finding_value(finding, "id", "finding_id", "key", "slug")
+    if value:
+        return re.sub(r"[^a-zA-Z0-9_.:-]+", "-", value).strip("-")[:80] or f"finding-{index + 1}"
+    return f"finding-{index + 1}"
+
+
+def _review_finding_title(finding: dict, index: int) -> str:
+    return _finding_value(finding, "title", "summary", "issue") or f"Cato finding {index + 1}"
+
+
+def _review_finding_detail(finding: dict) -> str:
+    return _finding_value(finding, "detail", "details", "description", "required_change", "recommendation") or json.dumps(finding, ensure_ascii=False, sort_keys=True)
+
+
+def _fix_task_body(review_task: Task, reviewed_task: Task, finding: dict, index: int) -> str:
+    return _fix_task_body_for_findings(review_task, reviewed_task, [finding], [index])
+
+
+def _fix_task_body_for_findings(review_task: Task, reviewed_task: Task, findings: list[dict], indexes: list[int]) -> str:
+    finding_ids = [_review_finding_id(finding, index) for finding, index in zip(findings, indexes)]
+    sections = [
+        "Request type: Build / implement",
+        "Mode: Automated Cato changes-required fix",
+        "",
+        f"Parent task: {reviewed_task.id}",
+        f"Cato review task: {review_task.id}",
+        f"Finding ids: {', '.join(finding_ids)}",
+        "",
+        "Cato findings:",
+    ]
+    for finding, index in zip(findings, indexes):
+        sections.extend(
+            [
+                f"- {_review_finding_title(finding, index)} ({_review_finding_id(finding, index)}): {_review_finding_detail(finding)}",
+            ]
+        )
+    sections.extend(
+        [
+            "",
+            "Goal:",
+            "- Address these Cato CHANGES_REQUIRED finding(s) without changing unrelated behavior.",
+            "- Preserve the original review task as immutable evidence.",
+            "- Report validation evidence for the dependent Cato re-review task.",
+        ]
+    )
+    return "\n".join(sections)
+
+
+def _rereview_task_body(review_task: Task, reviewed_task: Task, fix_task_ids: list[str], findings: list[dict]) -> str:
+    finding_ids = [_review_finding_id(finding, index) for index, finding in enumerate(findings)]
+    return "\n".join(
+        [
+            "Request type: Review / audit",
+            "Mode: Automated Cato re-review",
+            "",
+            f"Original task: {reviewed_task.id}",
+            f"Original Cato review task: {review_task.id}",
+            f"Fix tasks: {', '.join(fix_task_ids)}",
+            f"Finding ids: {', '.join(finding_ids)}",
+            "",
+            "Goal:",
+            "- Re-review the completed fixes against the original Cato findings and original acceptance criteria.",
+            "- Return APPROVED or a structured cato_review_outcome.v1 outcome.",
+            "- Do not implement fixes in this review task.",
+        ]
+    )
+
+
+def _human_decision_body(review_task: Task, outcome: dict, finding: Optional[dict] = None) -> str:
+    reason = _finding_value(outcome, "reason", "summary", "detail") or "Cato requires a human decision before safe automation can continue."
+    if finding:
+        reason = _review_finding_detail(finding)
+    return "\n".join(
+        [
+            "Request type: Human decision",
+            "Mode: Review outcome needs Corey",
+            "",
+            f"Cato review task: {review_task.id}",
+            "",
+            "Reason:",
+            reason,
+            "",
+            "Safety gate:",
+            "- The review outcome was not converted into automatic fix work because it requires human approval, access, credentials, external/destructive action, client-system mutation, expense, or scope clarification.",
+        ]
+    )
+
+
+def process_review_outcomes(conn: sqlite3.Connection) -> ReviewOutcomeProcessResult:
+    """Materialize structured Cato review outcomes into actionable Kanban tasks.
+
+    ``CHANGES_REQUIRED`` creates one fix task per safe owner group and one
+    dependent Cato re-review task that fans in on all generated fix tasks.
+    ``HUMAN_DECISION_REQUIRED`` and unsafe findings create blocked Marcus/Corey
+    decision tasks instead. The original review task remains done and immutable;
+    idempotency keys plus a handled audit event keep repeated handler runs from
+    duplicating work.
+    """
+    result = ReviewOutcomeProcessResult()
+    rows = conn.execute(
+        """
+        SELECT id, title, assignee FROM tasks
+         WHERE status = 'done'
+         ORDER BY COALESCE(completed_at, created_at, 0) ASC, id ASC
+        """
+    ).fetchall()
+    for row in rows:
+        if not _is_cato_review_task(row):
+            continue
+        review_id = row["id"]
+        if _review_outcome_already_handled(conn, review_id):
+            continue
+        outcome = _structured_review_outcome(conn, review_id)
+        if not outcome:
+            continue
+        outcome_name = outcome["outcome"]
+        review_task = get_task(conn, review_id)
+        if review_task is None:
+            result.skipped.append(review_id)
+            continue
+        reviewed_task = _reviewed_task_for_review(conn, review_id)
+        review_fix_tasks: list[str] = []
+        review_rereview_tasks: list[str] = []
+        review_human_tasks: list[str] = []
+        findings = outcome.get("findings")
+        if not isinstance(findings, list) or not findings:
+            findings = [{}]
+        if outcome_name in FIXABLE_REVIEW_OUTCOMES:
+            normalized_findings = [
+                raw_finding if isinstance(raw_finding, dict) else {"detail": str(raw_finding)}
+                for raw_finding in findings
+            ]
+            if _review_outcome_requires_human(outcome) or any(_finding_requires_human(finding) for finding in normalized_findings):
+                unsafe_findings = [finding for finding in normalized_findings if _finding_requires_human(finding)] or [None]
+                for index, finding in enumerate(unsafe_findings):
+                    human_id = create_task(
+                        conn,
+                        title=f"Needs Corey: Cato finding for {review_task.title}",
+                        body=_human_decision_body(review_task, outcome, finding),
+                        assignee="marcus",
+                        created_by=REVIEW_OUTCOME_HANDLER_AUTHOR,
+                        parents=[review_id],
+                        priority=(review_task.priority or 0) + 1,
+                        initial_status="blocked",
+                        idempotency_key=f"kanban:review-outcome:{review_id}:human:{_review_finding_id(finding or {}, index)}",
+                    )
+                    result.human_tasks.append(human_id)
+                    review_human_tasks.append(human_id)
+            else:
+                grouped: dict[str, list[tuple[int, dict]]] = {}
+                for index, finding in enumerate(normalized_findings):
+                    owner = _finding_value(finding, "owner_hint", "owner", "assignee", "assigned_to")
+                    if not owner and reviewed_task:
+                        owner = reviewed_task.assignee
+                    if not owner:
+                        owner = "marcus"
+                    grouped.setdefault(owner, []).append((index, finding))
+                for owner, group in grouped.items():
+                    indexes = [index for index, _finding in group]
+                    owner_findings = [finding for _index, finding in group]
+                    finding_ids = [_review_finding_id(finding, index) for index, finding in group]
+                    title_suffix = _review_finding_title(owner_findings[0], indexes[0])
+                    if len(owner_findings) > 1:
+                        title_suffix = f"{len(owner_findings)} Cato findings"
+                    fix_id = create_task(
+                        conn,
+                        title=f"Fix Cato finding: {title_suffix}",
+                        body=_fix_task_body_for_findings(review_task, reviewed_task or review_task, owner_findings, indexes),
+                        assignee=owner,
+                        created_by=REVIEW_OUTCOME_HANDLER_AUTHOR,
+                        parents=[review_id],
+                        priority=(review_task.priority or 0) + 2,
+                        idempotency_key=f"kanban:review-outcome:{review_id}:fix:{owner}:{','.join(finding_ids)}",
+                    )
+                    result.fix_tasks.append(fix_id)
+                    review_fix_tasks.append(fix_id)
+                if review_fix_tasks:
+                    all_finding_ids = [
+                        _review_finding_id(finding, index)
+                        for index, finding in enumerate(normalized_findings)
+                    ]
+                    rereview_id = create_task(
+                        conn,
+                        title=f"Cato re-review: {len(review_fix_tasks)} fix task(s)",
+                        body=_rereview_task_body(review_task, reviewed_task or review_task, review_fix_tasks, normalized_findings),
+                        assignee="cato",
+                        created_by=REVIEW_OUTCOME_HANDLER_AUTHOR,
+                        parents=review_fix_tasks,
+                        priority=(review_task.priority or 0) + 1,
+                        idempotency_key=f"kanban:review-outcome:{review_id}:rereview:{','.join(all_finding_ids)}",
+                        max_runtime_seconds=20 * 60,
+                    )
+                    result.rereview_tasks.append(rereview_id)
+                    review_rereview_tasks.append(rereview_id)
+        elif outcome_name in HUMAN_REVIEW_OUTCOMES:
+            human_id = create_task(
+                conn,
+                title=f"Needs Corey: {review_task.title}",
+                body=_human_decision_body(review_task, outcome),
+                assignee="marcus",
+                created_by=REVIEW_OUTCOME_HANDLER_AUTHOR,
+                parents=[review_id],
+                priority=(review_task.priority or 0) + 1,
+                initial_status="blocked",
+                idempotency_key=f"kanban:review-outcome:{review_id}:human",
+            )
+            result.human_tasks.append(human_id)
+            review_human_tasks.append(human_id)
+        else:
+            result.skipped.append(review_id)
+            continue
+        with write_txn(conn):
+            if not _review_outcome_already_handled(conn, review_id):
+                _append_event(
+                    conn,
+                    review_id,
+                    "review_outcome_handled",
+                    {
+                        "schema": REVIEW_OUTCOME_SCHEMA,
+                        "outcome": outcome_name,
+                        "fix_tasks": review_fix_tasks,
+                        "rereview_tasks": review_rereview_tasks,
+                        "human_tasks": review_human_tasks,
+                    },
+                )
+                result.processed.append(review_id)
+    return result
 
 
 def block_task(
@@ -3710,6 +4082,14 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    review_outcomes_processed: list[str] = field(default_factory=list)
+    """Completed review task ids whose structured Cato outcome was materialized."""
+    review_outcome_fix_tasks: list[str] = field(default_factory=list)
+    """Fix task ids created from structured ``CHANGES_REQUIRED`` review outcomes."""
+    review_outcome_rereview_tasks: list[str] = field(default_factory=list)
+    """Cato re-review task ids created from structured review outcomes."""
+    review_outcome_human_tasks: list[str] = field(default_factory=list)
+    """Blocked human-decision task ids created from structured review outcomes."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4787,6 +5167,12 @@ def dispatch_once(
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
+    if not dry_run:
+        review_outcomes = process_review_outcomes(conn)
+        result.review_outcomes_processed = review_outcomes.processed
+        result.review_outcome_fix_tasks = review_outcomes.fix_tasks
+        result.review_outcome_rereview_tasks = review_outcomes.rereview_tasks
+        result.review_outcome_human_tasks = review_outcomes.human_tasks
     result.promoted = recompute_ready(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather

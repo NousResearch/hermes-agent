@@ -209,6 +209,35 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         pass  # best-effort — don't block gateway startup
 
 
+def _expand_loaded_path_references(original_path: str | None, original_home: str | None) -> None:
+    """Expand shell-style PATH references left literal by python-dotenv.
+
+    python-dotenv expands ``${PATH}`` but not the common shell shorthand
+    ``$PATH``. If a user writes ``PATH=$HOME/.local/bin:$PATH`` in
+    ``~/.hermes/.env``, blindly loading it turns PATH into the literal string
+    ``$HOME/.local/bin:$PATH`` and every subprocess loses Node/Homebrew/etc.
+    Expand only PATH here, using the pre-load PATH as the ``$PATH`` value.
+    """
+
+    current = os.environ.get("PATH")
+    if not current or "$" not in current:
+        return
+
+    home_value = os.environ.get("HOME") or original_home or str(Path.home())
+    path_value = (original_path or "").replace("${HOME}", home_value).replace("$HOME", home_value)
+    # If the pre-load PATH was already polluted with literal $PATH tokens from
+    # a parent shell, do not recursively re-inject those placeholders.
+    path_value = path_value.replace("${PATH}", "").replace("$PATH", "")
+    expanded = (
+        current
+        .replace("${HOME}", home_value)
+        .replace("$HOME", home_value)
+        .replace("${PATH}", path_value)
+        .replace("$PATH", path_value)
+    )
+    os.environ["PATH"] = ":".join(part for part in expanded.split(":") if part)
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
@@ -223,6 +252,8 @@ def load_hermes_dotenv(
     - if no user env exists, the project `.env` also overrides stale shell vars.
     """
     loaded: list[Path] = []
+    original_path = os.environ.get("PATH")
+    original_home = os.environ.get("HOME")
 
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
@@ -242,8 +273,8 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
+    _expand_loaded_path_references(original_path, original_home)
     _apply_external_secret_sources(home_path)
-
     return loaded
 
 

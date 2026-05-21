@@ -635,7 +635,16 @@ def _resolve_named_custom_runtime(
         # Check credential pool first — mirrors the named-custom-provider path
         # so bare `provider: custom` with a configured custom_providers entry
         # also gets its api_key from the pool instead of env var fallbacks.
-        pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
+        # Preserve sub-name (e.g. "custom:bobapi-deepseek") for name-based pool
+        # lookup instead of falling back to url-only matching (#29872).
+        _pool_provider_name = (
+            requested_provider.split(":", 1)[1]
+            if requested_provider and ":" in requested_provider
+            else None
+        )
+        pool_result = _try_resolve_from_custom_pool(
+            base_url, "custom", _pool_provider_name
+        )
         if pool_result:
             pool_result["source"] = "direct-alias"
             return pool_result

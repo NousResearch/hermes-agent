@@ -63,26 +63,18 @@
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  display: flex;
   gap: 0.75rem;
   align-items: start;
-  overflow-x: visible;
-  padding-bottom: 0.35rem;
-  scrollbar-gutter: auto;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
-
-/* Optional: the horizontal scrollbar rules become unnecessary once lanes wrap. */
-.hermes-kanban-columns::-webkit-scrollbar,
-.hermes-kanban-columns::-webkit-scrollbar-track,
-.hermes-kanban-columns::-webkit-scrollbar-thumb,
-.hermes-kanban-columns::-webkit-scrollbar-thumb:hover {
+.hermes-kanban-columns::-webkit-scrollbar {
   display: none;
 }
 
 .hermes-kanban-column {
-  min-width: 0;
-  width: 100%;
+  flex: 0 0 280px;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
@@ -173,11 +165,9 @@
 }
 .hermes-kanban-dot-triage   { background: #b47dd6; }  /* lilac — fresh/unspecified */
 .hermes-kanban-dot-todo     { background: var(--color-muted-foreground); }
-.hermes-kanban-dot-scheduled { background: #8f8bd6; }  /* periwinkle */
 .hermes-kanban-dot-ready    { background: #d4b348; }  /* amber */
 .hermes-kanban-dot-running  { background: #3fb97d; }  /* green */
 .hermes-kanban-dot-blocked  { background: var(--color-destructive, #d14a4a); }
-.hermes-kanban-dot-review   { background: #d67d9d; }  /* rose */
 .hermes-kanban-dot-done     { background: #4a8cd1; }  /* blue */
 .hermes-kanban-dot-archived { background: var(--color-border); }
 

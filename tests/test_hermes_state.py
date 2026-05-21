@@ -2469,6 +2469,23 @@ class TestTitleUniqueness:
         assert result is not None
         assert result["id"] == "s1"
 
+    def test_get_session_by_title_scoped_to_user_id(self, db):
+        db.create_session("s1", "telegram", user_id="user-a")
+        db.create_session("s2", "telegram", user_id="user-b")
+        db.set_session_title("s1", "refactoring auth")
+        db.set_session_title("s2", "deployment notes")
+
+        result = db.get_session_by_title(
+            "deployment notes", source="telegram", user_id="user-a"
+        )
+        assert result is None
+
+        result = db.get_session_by_title(
+            "deployment notes", source="telegram", user_id="user-b"
+        )
+        assert result is not None
+        assert result["id"] == "s2"
+
     def test_get_session_by_title_not_found(self, db):
         assert db.get_session_by_title("nonexistent") is None
 
@@ -2503,6 +2520,26 @@ class TestTitleLineage:
         db.set_session_title("s3", "my project #3")
         # Resolving "my project" should return s3 (latest numbered variant)
         assert db.resolve_session_by_title("my project") == "s3"
+
+    def test_resolve_lineage_scoped_to_user_id(self, db):
+        """Numbered variants owned by another user do not shadow an exact title."""
+        db.create_session("s1", "telegram", user_id="user-a")
+        db.set_session_title("s1", "my project")
+        db.create_session("s2", "telegram", user_id="user-b")
+        db.set_session_title("s2", "my project #2")
+
+        assert (
+            db.resolve_session_by_title(
+                "my project", source="telegram", user_id="user-a"
+            )
+            == "s1"
+        )
+        assert (
+            db.resolve_session_by_title(
+                "my project", source="telegram", user_id="user-b"
+            )
+            == "s2"
+        )
 
     def test_resolve_exact_numbered(self, db):
         """Resolving an exact numbered title returns that specific session."""
@@ -2720,6 +2757,13 @@ class TestListSessionsRich:
         db.create_session("s1", "cli")
         db.create_session("s2", "telegram")
         sessions = db.list_sessions_rich(source="cli")
+        assert len(sessions) == 1
+        assert sessions[0]["id"] == "s1"
+
+    def test_rich_list_user_id_filter(self, db):
+        db.create_session("s1", "telegram", user_id="user-a")
+        db.create_session("s2", "telegram", user_id="user-b")
+        sessions = db.list_sessions_rich(source="telegram", user_id="user-a")
         assert len(sessions) == 1
         assert sessions[0]["id"] == "s1"
 

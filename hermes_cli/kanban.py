@@ -2162,14 +2162,13 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             )
 
     def _ready_queue_nonempty() -> bool:
-        """Cheap probe — is there at least one ready+assigned+unclaimed
-        task whose assignee maps to a real Hermes profile (i.e. one the
-        dispatcher would actually try to spawn for)?
+        """Cheap probe — is there at least one ready task the dispatcher
+        would actually try to spawn for?
 
-        Filters out tasks assigned to control-plane lanes
-        (e.g. ``orion-cc``, ``orion-research``) that are pulled by
-        terminals via ``claim_task`` directly — those are correctly idle
-        from the dispatcher's perspective, not stuck.
+        Filters out non-spawnable control-plane lanes and ready tasks
+        suppressed by the respawn guard (for example ``active_pr``), so
+        intentional duplicate-PR prevention does not look like a broken
+        dispatcher.
         """
         try:
             with kb.connect() as conn:

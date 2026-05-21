@@ -5217,16 +5217,13 @@ class GatewayRunner:
             return out
 
         def _ready_nonempty() -> bool:
-            """Cheap probe: is there at least one ready+assigned+unclaimed
-            task on ANY board whose assignee maps to a real Hermes profile
-            (i.e. one the dispatcher would actually spawn for)?
+            """Cheap probe: is there at least one ready/review task on ANY
+            board that the dispatcher would actually attempt to spawn?
 
-            Tasks assigned to control-plane lanes (e.g. ``orion-cc``,
-            ``orion-research``) are pulled by terminals via
-            ``claim_task`` directly and never spawnable, so a queue full
-            of those is "correctly idle", not "stuck". Filtering them out
-            here keeps the stuck-warn fire only on real failures (broken
-            PATH, missing venv, credential loss for a real Hermes profile).
+            Ready tasks suppressed by the respawn guard (for example a
+            recent ``active_pr`` handoff) are intentionally skipped here so
+            the health warning only fires for actionable spawn failures, not
+            for duplicate-PR prevention.
             """
             try:
                 boards = _kb.list_boards(include_archived=False)

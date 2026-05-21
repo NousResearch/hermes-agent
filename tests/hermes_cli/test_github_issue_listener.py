@@ -514,6 +514,45 @@ def test_poll_skips_stale_running_issue_when_worker_pid_is_alive(monkeypatch, tm
     assert runner.calls == []
 
 
+def test_fresh_dead_worker_can_be_reclaimed_without_waiting_for_stale_window(tmp_path: Path, monkeypatch):
+    github = FakeGitHub()
+    github.issues = [issue(9)]
+    github.comments = {9: [comment(100, "seungjaeryanlee", "ready")]}
+    runner = FakeRunner(response="reclaimed fresh", session_id="session-2")
+    store = ListenerStore(tmp_path / "listener.db")
+    ref = IssueRef("ryanleeai", "tasks", 9)
+    store.upsert(
+        IssueState(
+            owner="ryanleeai",
+            repo="tasks",
+            issue_number=9,
+            status="running",
+            current_run_id="old-run",
+            claimed_at=time.time(),
+            worker_pid=12345,
+        )
+    )
+    monkeypatch.setattr(github_issue_listener, "_pid_is_running", lambda pid: False)
+
+    result = GitHubIssueListener(
+        github=github,
+        runner=runner,
+        store=store,
+        owner="ryanleeai",
+        repo="tasks",
+        assignee="wingboot",
+        stale_after_seconds=3600,
+    ).poll_once()
+
+    assert result["results"][0]["action"] == "ran"
+    assert github.added_comments[0][3] == DEFAULT_WIP_COMMENT_BODY
+    assert github.added_comments[1][3] == "reclaimed fresh"
+    state = store.get(ref)
+    assert state is not None
+    assert state.status == "idle"
+    assert state.current_run_id is None
+
+
 def test_stale_dead_worker_can_be_reclaimed(tmp_path: Path, monkeypatch):
     github = FakeGitHub()
     github.issues = [issue(9)]

@@ -854,11 +854,24 @@ class GitHubIssueListener:
 
             if state and state.status == "running":
                 claimed_at = state.claimed_at or 0
-                if claimed_at > time.time() - self.stale_after_seconds:
+                claimed_is_fresh = claimed_at > time.time() - self.stale_after_seconds
+                if state.worker_pid:
+                    if _pid_is_running(state.worker_pid):
+                        results.append({"issue": ref.key, "action": "skipped_worker_alive", "pid": state.worker_pid})
+                        continue
+                    # A detached worker can die before it writes a log or clears
+                    # the claim. Do not wait for the stale window in that case:
+                    # clear only the dead-worker fields, then fall through and
+                    # let try_claim create a fresh run.
+                    state.status = "idle"
+                    state.current_run_id = None
+                    state.claimed_at = None
+                    state.worker_pid = None
+                    state.worker_started_at = None
+                    state.log_path = None
+                    self.store.upsert(state)
+                elif claimed_is_fresh:
                     results.append({"issue": ref.key, "action": "skipped_running"})
-                    continue
-                if state.worker_pid and _pid_is_running(state.worker_pid):
-                    results.append({"issue": ref.key, "action": "skipped_worker_alive", "pid": state.worker_pid})
                     continue
 
             if state and state.session_id and state.status in {"idle", "awaiting_close_approval"} and not has_new_human_input:

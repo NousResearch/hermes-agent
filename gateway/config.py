@@ -493,6 +493,11 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Experimental Jeeves swarm operator config. Disabled by default; stored on
+    # GatewayConfig so gateway hooks honor the same config users set via the
+    # top-level Hermes config file.
+    swarm_operator: Dict[str, Any] = field(default_factory=dict)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -586,6 +591,7 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "swarm_operator": dict(self.swarm_operator),
         }
     
     @classmethod
@@ -654,6 +660,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            swarm_operator=dict(data.get("swarm_operator") or {}) if isinstance(data.get("swarm_operator"), dict) else {},
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -760,6 +767,10 @@ def load_gateway_config() -> GatewayConfig:
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
+
+            swarm_operator_cfg = yaml_cfg.get("swarm_operator")
+            if isinstance(swarm_operator_cfg, dict):
+                gw_data["swarm_operator"] = swarm_operator_cfg
 
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.

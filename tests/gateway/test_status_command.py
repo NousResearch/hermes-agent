@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.swarm_state import SwarmJob
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -69,6 +70,33 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
     return runner
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_swarm_operator_summary(monkeypatch, tmp_path):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    job = SwarmJob.create("parallel research", session_id="sess-1", created_at="2026-01-01T00:00:00+00:00")
+    job.add_task("look up A", task_id="t1")
+    from agent.swarm_store import SwarmStore
+
+    store = SwarmStore(base_dir=tmp_path)
+    store.save_job(job)
+
+    monkeypatch.setattr("agent.swarm_status.SwarmStore", lambda: store)
+    runner = _make_runner(session_entry)
+
+    result = await runner._handle_status_command(_make_event("/status"))
+
+    assert "Swarm operator status:" in result
+    assert "parallel research" in result
 
 
 @pytest.mark.asyncio

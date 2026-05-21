@@ -1,5 +1,6 @@
 from agent.swarm_state import AuditEvent, PermissionGrant, RoutingPlan, SwarmJob
-from agent.swarm_status import format_swarm_status, redact_secrets
+from agent.swarm_status import format_swarm_status, load_swarm_status_text, redact_secrets
+from agent.swarm_store import SwarmStore
 
 
 def test_formats_active_jobs_with_status_tasks_blockers_and_last_event():
@@ -54,3 +55,12 @@ def test_shows_permission_requests_clearly():
     assert "Permission required before deploy" in text
     assert "prod" in text
     assert "secret" not in text
+
+
+def test_load_swarm_status_text_does_not_fallback_to_other_sessions():
+    job = SwarmJob.create("private other session", session_id="session-a", created_at="2026-01-01T00:00:00+00:00")
+    job.transition("running")
+    SwarmStore().save_job(job)
+
+    assert load_swarm_status_text(session_id="session-b") == ""
+    assert "private other session" in load_swarm_status_text(session_id="session-a")

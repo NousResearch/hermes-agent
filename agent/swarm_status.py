@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Mapping
 
 from agent.swarm_state import SwarmJob
+from agent.swarm_store import SwarmStore
 
 _SECRET_MARKERS = ("secret", "token", "key", "password", "credential", "api_key", "auth", "bearer")
 
@@ -90,4 +91,23 @@ def format_swarm_status(jobs: Iterable[SwarmJob], *, include_completed: bool = F
     return "\n".join(lines)
 
 
-__all__ = ["format_swarm_status", "redact_secrets"]
+def load_swarm_status_text(*, session_id: str = "", include_completed: bool = False) -> str:
+    """Load persisted swarm jobs and format them for status surfaces.
+
+    Fail closed: callers such as gateway /status should never error because the
+    optional swarm status file is absent or unreadable.
+    """
+    try:
+        jobs = list(SwarmStore().load_jobs().values())
+    except Exception:
+        return ""
+    if session_id:
+        scoped = [job for job in jobs if job.session_id == session_id]
+        if not scoped:
+            return ""
+        jobs = scoped
+    text = format_swarm_status(jobs, include_completed=include_completed)
+    return "" if text == "No active swarm operator jobs." else text
+
+
+__all__ = ["format_swarm_status", "load_swarm_status_text", "redact_secrets"]

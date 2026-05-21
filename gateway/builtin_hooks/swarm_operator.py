@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+from agent.swarm_honcho import persist_swarm_honcho_summary
 from agent.swarm_router import route_request
 from agent.swarm_state import AuditEvent, SwarmJob
 from agent.swarm_store import SwarmStore
@@ -22,6 +23,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "dry_run": True,
     "max_children": 3,
     "persist_to_honcho": False,
+    "honcho_summary_enabled": False,
 }
 
 
@@ -44,6 +46,7 @@ def _swarm_config(config: Any) -> Dict[str, Any]:
     except (TypeError, ValueError):
         merged["max_children"] = 3
     merged["persist_to_honcho"] = bool(merged.get("persist_to_honcho", False))
+    merged["honcho_summary_enabled"] = bool(merged.get("honcho_summary_enabled", False))
     return merged
 
 
@@ -67,6 +70,7 @@ def handle(event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
                 "dry_run": cfg["dry_run"],
                 "max_children": cfg["max_children"],
                 "persist_to_honcho": cfg["persist_to_honcho"],
+                "honcho_summary_enabled": cfg["honcho_summary_enabled"],
                 "message_id": ctx.get("message_id"),
             },
         )
@@ -103,6 +107,14 @@ def handle(event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
                 },
             )
         )
+        if cfg["persist_to_honcho"] or cfg["honcho_summary_enabled"]:
+            honcho_result = persist_swarm_honcho_summary(
+                job,
+                enabled=True,
+                writer=ctx.get("swarm_honcho_writer"),
+            )
+            job.metadata["honcho_summary"] = honcho_result
+            store.save_job(job)
     except Exception as exc:
         logger.warning("swarm operator shadow hook failed: %s", exc)
 

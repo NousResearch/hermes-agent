@@ -350,8 +350,8 @@ python -m pytest tests/swarm/test_swarm_honcho.py -q -o 'addopts='
 **Objective:** Require tests/evidence for code/config/automation/source-of-truth work.
 
 **Files:**
-- Create: `tests/swarm/test_swarm_verifier.py`
-- Create: `agent/swarm_verifier.py`
+- Create: `tests/swarm/test_swarm_verification.py`
+- Create: `agent/swarm_verify.py` (`agent/swarm_verifier.py` compatibility alias)
 
 **Test cases:**
 - Code/config jobs require test/lint/typecheck or explicit skipped reason.
@@ -363,7 +363,8 @@ python -m pytest tests/swarm/test_swarm_honcho.py -q -o 'addopts='
 **Objective:** Add structured eval requirements; execution can remain manual/tool-driven in v1.
 
 **Files:**
-- Modify/Create: `agent/swarm_verifier.py`
+- Modify/Create: `agent/swarm_verify.py`
+- Modify/Create: `agent/swarm_verifier.py` alias if external callers use verifier naming
 
 **Verification:**
 
@@ -391,8 +392,7 @@ swarm_operator:
   dry_run: true
   max_children: 3
   persist_to_honcho: false
-  intercept_gateway: false
-  external_side_effects_enabled: false
+  honcho_summary_enabled: false
 ```
 
 ### Task 20: Focused and adjacent tests
@@ -438,3 +438,13 @@ Start with Tasks 1-8 only:
 4. Gateway shadow hook.
 
 This gives us the spine without risking the “oops I accidentally made a self-driving clown car with root access” problem. Once shadow data looks sane, wire Jeeves prompt/executor and then Honcho/status/evals.
+
+## 2026-05-21 Safe Slice Notes
+
+Implemented the next disabled-by-default slice:
+
+- Repo `DEFAULT_CONFIG` now includes `swarm_operator` defaults; no user config changes.
+- Gateway `/status` safely appends persisted swarm status when available.
+- Honcho summary adapter is inert unless enabled and accepts injected writers for tests.
+- Verification planner records parent-owned checklist/eval metadata without executing tools.
+- User docs added at `website/docs/user-guide/features/swarm-operator.md`.

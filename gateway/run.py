@@ -9405,6 +9405,15 @@ class GatewayRunner:
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
 
+        try:
+            from agent.swarm_status import load_swarm_status_text
+
+            swarm_status = load_swarm_status_text(session_id=session_entry.session_id)
+            if swarm_status:
+                lines.extend(["", swarm_status])
+        except Exception as exc:  # pragma: no cover — optional status surface
+            logger.debug("swarm status load failed in /status: %s", exc)
+
         # Session recap — what was this session ABOUT? Pure local compute,
         # no LLM call, no prompt-cache impact. Useful when juggling multiple
         # gateway sessions and you want a one-glance reminder of where this

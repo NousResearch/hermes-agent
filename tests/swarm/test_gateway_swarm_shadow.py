@@ -61,6 +61,31 @@ def test_hook_enabled_dry_run_writes_job_and_metrics_event(tmp_path):
     assert metrics[-1]["metadata"]["job_id"] == job["job_id"]
 
 
+def test_hook_honcho_summary_uses_injected_writer_only_when_enabled(tmp_path):
+    calls = []
+    context = _context(tmp_path, enabled=True)
+    context["gateway_config"]["swarm_operator"]["persist_to_honcho"] = True
+    context["swarm_honcho_writer"] = lambda payload: calls.append(payload)
+
+    swarm_operator.handle("agent:start", context)
+
+    assert len(calls) == 1
+    assert calls[0]["metadata"]["job_id"]
+    state = json.loads((tmp_path / "swarm_operator_state.json").read_text())
+    job = next(iter(state["jobs"].values()))
+    assert job["metadata"]["honcho_summary"]["persisted"] is True
+
+
+def test_hook_honcho_summary_not_called_when_disabled(tmp_path):
+    calls = []
+    context = _context(tmp_path, enabled=True)
+    context["swarm_honcho_writer"] = lambda payload: calls.append(payload)
+
+    swarm_operator.handle("agent:start", context)
+
+    assert calls == []
+
+
 def test_hook_never_blocks_normal_flow_on_store_failure(caplog):
     context = _context(tmp_path="/tmp/unused", enabled=True)
     context["swarm_store"] = FailingStore()

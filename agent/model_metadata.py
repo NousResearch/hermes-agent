@@ -1178,6 +1178,21 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                 if ctx and isinstance(ctx, (int, float)):
                     return int(ctx)
 
+            # llama.cpp: /props reports the actual runtime n_ctx (what user set with -c/--ctx-size).
+            # This overrides the GGUF metadata which may be a smaller hardcoded value.
+            if server_type == "llamacpp":
+                try:
+                    props_resp = client.get(f"{server_url}/v1/props")
+                    if not props_resp.ok:
+                        props_resp = client.get(f"{server_url}/props")
+                    if props_resp.ok:
+                        props = props_resp.json()
+                        n_ctx = (props.get("default_generation_settings") or {}).get("n_ctx")
+                        if n_ctx and isinstance(n_ctx, (int, float)) and n_ctx > 0:
+                            return int(n_ctx)
+                except Exception:
+                    pass
+
             # Try /v1/models and find the model in the list.
             # Use _model_id_matches to handle "publisher/slug" vs bare "slug".
             resp = client.get(f"{server_url}/v1/models")

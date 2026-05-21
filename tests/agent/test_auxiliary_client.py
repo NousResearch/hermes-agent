@@ -40,6 +40,16 @@ def _clean_env(monkeypatch):
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
+    # Module-level unhealthy cache (10-min TTL) leaks between tests;
+    # earlier tests that call _mark_provider_unhealthy() poison the
+    # cache for later ones, causing _resolve_auto to skip providers
+    # that the test patched to return valid clients.
+    import agent.auxiliary_client as _aux_mod
+    _aux_mod._aux_unhealthy_until.clear()
+    _aux_mod._aux_unhealthy_logged_at.clear()
+    yield
+    _aux_mod._aux_unhealthy_until.clear()
+    _aux_mod._aux_unhealthy_logged_at.clear()
 
 
 @pytest.fixture

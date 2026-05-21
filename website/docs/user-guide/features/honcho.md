@@ -96,7 +96,7 @@ Passes bail out early if the prior pass returned strong signal (long, structured
 
 ### Session-Start Prewarm
 
-On session init, Honcho fires a dialectic call in the background at the full configured `dialecticDepth` and hands the result directly to turn 1's context assembly. A single-pass prewarm on a cold peer often returns thin output — multi-pass depth runs the audit/reconcile cycle before the user ever speaks. If prewarm hasn't landed by turn 1, turn 1 falls back to a synchronous call with a bounded timeout.
+On session init, Honcho fires a dialectic call in the background at the full configured `dialecticDepth` and hands the result directly to turn 1's context assembly if it has landed by then. A single-pass prewarm on a cold peer often returns thin output — multi-pass depth runs the audit/reconcile cycle before the user ever speaks. If prewarm hasn't landed by turn 1, turn 1 queues an async recovery prefetch without imposing a Hermes-side timeout; the result is picked up when it naturally completes.
 
 ### Query-Adaptive Reasoning Level
 

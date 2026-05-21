@@ -603,10 +603,9 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
-        # dialectic result is empty.  Run with a bounded timeout so a slow
-        # Honcho connection doesn't block the first response indefinitely.
-        # On timeout we let the thread keep running and write its result into
-        # _prefetch_result under the lock, so the next turn picks it up.
+        # dialectic result is empty. Fire a background prefetch without any
+        # timeout-based wait; if it lands before we read below it can surface
+        # immediately, otherwise the next turn picks it up.
         #
         # Skip if the session-start prewarm already filled _prefetch_result —
         # firing another .chat() would be duplicate work.
@@ -616,9 +615,6 @@ class HonchoMemoryProvider(MemoryProvider):
             self._last_dialectic_turn = self._turn_count
 
         if self._last_dialectic_turn == -999 and query:
-            _first_turn_timeout = (
-                self._config.timeout if self._config and self._config.timeout else 8.0
-            )
             _fired_at = self._turn_count
 
             def _run_first_turn() -> None:
@@ -644,16 +640,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
             )
             self._prefetch_thread.start()
-            self._prefetch_thread.join(timeout=_first_turn_timeout)
-            if self._prefetch_thread.is_alive():
-                logger.debug(
-                    "Honcho first-turn dialectic still running after %.1fs — "
-                    "will surface on next turn",
-                    _first_turn_timeout,
-                )
 
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
             dialectic_result = self._prefetch_result
             fired_at = self._prefetch_result_fired_at
@@ -728,9 +715,10 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho context prefetch failed: %s", e)
 
         # ----- Dialectic prefetch (supplement layer) -----
-        # Thread-alive guard with stale-thread recovery: a hung Honcho call
-        # older than timeout × multiplier is treated as dead so it can't
-        # block subsequent fires.
+        # Thread-alive guard: never stack dialectic calls for the same provider.
+        # We intentionally do not time out or recycle live threads here; slow
+        # Honcho/proxy/model work should finish naturally or be fixed at the
+        # backend layer.
         if self._thread_is_live():
             logger.debug("Honcho dialectic prefetch skipped: prior thread still running")
             return
@@ -796,9 +784,6 @@ class HonchoMemoryProvider(MemoryProvider):
     _HEURISTIC_LENGTH_MEDIUM = 120
     _HEURISTIC_LENGTH_HIGH = 400
 
-    # Liveness constants. A thread older than timeout × multiplier is treated
-    # as dead so a hung Honcho call can't block future retries indefinitely.
-    _STALE_THREAD_MULTIPLIER = 2.0
     # Pending result whose fire-turn is older than cadence × multiplier is
     # discarded on read so we don't inject context for a stale conversational
     # pivot after a gap of trivial-prompt turns.
@@ -808,19 +793,8 @@ class HonchoMemoryProvider(MemoryProvider):
     _BACKOFF_MAX = 8
 
     def _thread_is_live(self) -> bool:
-        """Thread-alive guard that treats threads older than the stale
-        threshold as dead, so a hung Honcho request can't block new fires."""
-        if not self._prefetch_thread or not self._prefetch_thread.is_alive():
-            return False
-        timeout = (self._config.timeout if self._config and self._config.timeout else 8.0)
-        age = time.monotonic() - self._prefetch_thread_started_at
-        if age > timeout * self._STALE_THREAD_MULTIPLIER:
-            logger.debug(
-                "Honcho prefetch thread age %.1fs exceeds stale threshold "
-                "%.1fs — treating as dead", age, timeout * self._STALE_THREAD_MULTIPLIER,
-            )
-            return False
-        return True
+        """Return whether a dialectic prefetch thread is still running."""
+        return bool(self._prefetch_thread and self._prefetch_thread.is_alive())
 
     def _effective_cadence(self) -> int:
         """Cadence plus empty-streak backoff, capped at _BACKOFF_MAX × base."""

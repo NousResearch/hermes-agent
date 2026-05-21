@@ -1301,9 +1301,9 @@ class TestSessionStartDialecticPrewarm:
         # The sync first-turn path must NOT have fired another .chat()
         assert p._manager.dialectic_query.call_count == 0
 
-    def test_turn1_falls_back_to_sync_when_prewarm_missing(self):
+    def test_turn1_queues_async_recovery_when_prewarm_missing(self):
         """If the prewarm produced nothing (empty graph, API blip), turn 1
-        still fires its own sync dialectic."""
+        queues a recovery dialectic without blocking on a timeout."""
         p = self._make_provider(dialectic_result="")  # prewarm returns empty
         if p._prefetch_thread:
             p._prefetch_thread.join(timeout=3.0)
@@ -1317,12 +1317,16 @@ class TestSessionStartDialecticPrewarm:
         p._turn_count = 1
 
         result = p.prefetch("hello world")
-        assert "sync recovery" in result
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=3.0)
+        p._turn_count = 2
+        recovered = p.prefetch("next turn")
+        assert ("sync recovery" in result) or ("sync recovery" in recovered)
         assert p._manager.dialectic_query.call_count == 1
 
 
 class TestDialecticLiveness:
-    """Liveness + observability: stale-thread recovery, stale-result discard,
+    """Liveness + observability: live-thread guarding, stale-result discard,
     empty-streak backoff, and the snapshot method used for diagnostics."""
 
     @staticmethod
@@ -1330,7 +1334,7 @@ class TestDialecticLiveness:
         from unittest.mock import patch, MagicMock
         from plugins.memory.honcho.client import HonchoClientConfig
 
-        defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid", timeout=2.0)
+        defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid")
         if cfg_extra:
             defaults.update(cfg_extra)
         cfg = HonchoClientConfig(**defaults)
@@ -1349,8 +1353,8 @@ class TestDialecticLiveness:
         _settle_prewarm(provider)
         return provider
 
-    def test_stale_thread_is_treated_as_dead(self):
-        """A thread older than timeout × multiplier no longer blocks new fires."""
+    def test_live_thread_is_not_recycled_by_age(self):
+        """A live thread is not recycled based on age; no timeout governs it."""
         import threading as _threading
         p = self._make_provider()
         p._session_key = "test"
@@ -1358,20 +1362,18 @@ class TestDialecticLiveness:
         p._last_dialectic_turn = 0
         p._manager.dialectic_query.return_value = "fresh synthesis"
 
-        # Plant an alive thread with an old timestamp (stale)
+        # Plant an alive thread with an old timestamp. Even if it looks old,
+        # the provider should not use timeout-age logic to recycle it.
         hold = _threading.Event()
         stuck = _threading.Thread(target=lambda: hold.wait(timeout=10.0), daemon=True)
         stuck.start()
         p._prefetch_thread = stuck
-        # timeout=2.0, multiplier=2.0, so anything older than 4s is stale
         p._prefetch_thread_started_at = 0.0  # very old (1970 monotonic baseline)
 
         p.queue_prefetch("hello")
-        # New thread should have been spawned since stuck one is stale
-        assert p._prefetch_thread is not stuck, "stale thread must be recycled"
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=2.0)
-        assert p._manager.dialectic_query.call_count == 1
+        # Existing live thread should remain in place; no new dialectic call.
+        assert p._prefetch_thread is stuck
+        assert p._manager.dialectic_query.call_count == 0
         hold.set()
         stuck.join(timeout=2.0)
 

@@ -196,7 +196,7 @@ If `dialecticDepthLevels` is omitted, rounds use **proportional levels** derived
 
 This keeps earlier passes cheap while using full depth on the final synthesis.
 
-**Depth at session start.** The session-start prewarm runs the full configured `dialecticDepth` in the background before turn 1. A single-pass prewarm on a cold peer often returns thin output — multi-pass depth runs the audit/reconcile cycle before the user ever speaks. Turn 1 consumes the prewarm result directly; if prewarm hasn't landed in time, turn 1 falls back to a synchronous call with a bounded timeout.
+**Depth at session start.** The session-start prewarm runs the full configured `dialecticDepth` in the background before turn 1. A single-pass prewarm on a cold peer often returns thin output — multi-pass depth runs the audit/reconcile cycle before the user ever speaks. Turn 1 consumes the prewarm result directly if it has landed; if prewarm hasn't landed in time, turn 1 queues an async recovery prefetch without imposing a Hermes-side timeout, and the result is picked up when it naturally completes.
 
 ### Level (how hard)
 

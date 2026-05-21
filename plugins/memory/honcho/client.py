@@ -155,33 +155,6 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
     return None
 
 
-# Default HTTP timeout (seconds) applied when no explicit timeout is
-# configured via HonchoClientConfig.timeout, honcho.timeout / requestTimeout,
-# or HONCHO_TIMEOUT. Honcho calls happen on the post-response path of
-# run_conversation; without a cap the agent can block indefinitely when
-# the Honcho backend is unreachable, preventing the gateway from
-# delivering the already-generated response.
-_DEFAULT_HTTP_TIMEOUT = 30.0
-
-
-def _resolve_optional_float(*values: Any) -> float | None:
-    """Return the first non-empty value coerced to a positive float."""
-    for value in values:
-        if value is None:
-            continue
-        if isinstance(value, str):
-            value = value.strip()
-            if not value:
-                continue
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            continue
-        if parsed > 0:
-            return parsed
-    return None
-
-
 _VALID_OBSERVATION_MODES = {"unified", "directional"}
 _OBSERVATION_MODE_ALIASES = {"shared": "unified", "separate": "directional", "cross": "directional"}
 
@@ -247,8 +220,6 @@ class HonchoClientConfig:
     environment: str = "production"
     # Optional base URL for self-hosted Honcho (overrides environment mapping)
     base_url: str | None = None
-    # Optional request timeout in seconds for Honcho SDK HTTP calls
-    timeout: float | None = None
     # Identity
     peer_name: str | None = None
     ai_peer: str = "hermes"
@@ -332,14 +303,12 @@ class HonchoClientConfig:
         resolved_host = host or resolve_active_host()
         api_key = os.environ.get("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
-        timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
         return cls(
             host=resolved_host,
             workspace_id=workspace_id,
             api_key=api_key,
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
             base_url=base_url,
-            timeout=timeout,
             ai_peer=resolved_host,
             enabled=bool(api_key or base_url),
         )
@@ -400,12 +369,6 @@ class HonchoClientConfig:
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
         )
-        timeout = _resolve_optional_float(
-            raw.get("timeout"),
-            raw.get("requestTimeout"),
-            os.environ.get("HONCHO_TIMEOUT"),
-        )
-
         # Auto-enable when API key or base_url is present (unless explicitly disabled)
         # Host-level enabled wins, then root-level, then auto-enable if key/url exists.
         host_enabled = host_block.get("enabled")
@@ -450,7 +413,6 @@ class HonchoClientConfig:
             api_key=api_key,
             environment=environment,
             base_url=base_url,
-            timeout=timeout,
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
             pin_peer_name=_resolve_bool(
@@ -716,8 +678,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     # mapping, enabling remote self-hosted Honcho deployments without
     # requiring the server to live on localhost.
     resolved_base_url = config.base_url
-    resolved_timeout = config.timeout
-    if not resolved_base_url or resolved_timeout is None:
+    if not resolved_base_url:
         try:
             from hermes_cli.config import load_config
             hermes_cfg = load_config()
@@ -725,18 +686,8 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             if isinstance(honcho_cfg, dict):
                 if not resolved_base_url:
                     resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
-                if resolved_timeout is None:
-                    resolved_timeout = _resolve_optional_float(
-                        honcho_cfg.get("timeout"),
-                        honcho_cfg.get("request_timeout"),
-                    )
         except Exception:
             pass
-
-    # Fall back to the default so an unconfigured install cannot hang
-    # indefinitely on a stalled Honcho request.
-    if resolved_timeout is None:
-        resolved_timeout = _DEFAULT_HTTP_TIMEOUT
 
     if resolved_base_url:
         logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)
@@ -769,8 +720,6 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     }
     if resolved_base_url:
         kwargs["base_url"] = resolved_base_url
-    if resolved_timeout is not None:
-        kwargs["timeout"] = resolved_timeout
 
     _honcho_client = Honcho(**kwargs)
 

@@ -28,7 +28,7 @@ class TestHonchoClientConfigDefaults:
         assert config.workspace_id == "hermes"
         assert config.api_key is None
         assert config.environment == "production"
-        assert config.timeout is None
+        assert not hasattr(config, "timeout")
         assert config.enabled is False
         assert config.save_messages is True
         assert config.session_strategy == "per-directory"
@@ -79,12 +79,6 @@ class TestFromEnv:
         assert config.api_key is None
         assert config.base_url == "http://localhost:8000"
         assert config.enabled is True
-
-    def test_reads_timeout_from_env(self):
-        with patch.dict(os.environ, {"HONCHO_TIMEOUT": "90"}, clear=True):
-            config = HonchoClientConfig.from_env()
-        assert config.timeout == 90.0
-
 
 class TestFromGlobalConfig:
     def test_missing_config_falls_back_to_env(self, tmp_path):
@@ -263,21 +257,6 @@ class TestFromGlobalConfig:
 
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://root:9000"
-
-    def test_timeout_from_config_root(self, tmp_path):
-        config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"timeout": 75}))
-
-        config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.timeout == 75.0
-
-    def test_request_timeout_alias_from_config_root(self, tmp_path):
-        config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"requestTimeout": "82.5"}))
-
-        config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.timeout == 82.5
-
 
 class TestResolveSessionName:
     def test_manual_override(self):
@@ -595,11 +574,10 @@ class TestGetHonchoClient:
         not importlib.util.find_spec("honcho"),
         reason="honcho SDK not installed"
     )
-    def test_passes_timeout_from_config(self):
+    def test_does_not_pass_timeout_to_sdk(self):
         fake_honcho = MagicMock(name="Honcho")
         cfg = HonchoClientConfig(
             api_key="test-key",
-            timeout=91.0,
             workspace_id="hermes",
             environment="production",
         )
@@ -609,13 +587,13 @@ class TestGetHonchoClient:
 
         assert client is fake_honcho
         mock_honcho.assert_called_once()
-        assert mock_honcho.call_args.kwargs["timeout"] == 91.0
+        assert "timeout" not in mock_honcho.call_args.kwargs
 
     @pytest.mark.skipif(
         not importlib.util.find_spec("honcho"),
         reason="honcho SDK not installed"
     )
-    def test_hermes_config_timeout_override_used_when_config_timeout_missing(self):
+    def test_hermes_timeout_config_is_ignored(self):
         fake_honcho = MagicMock(name="Honcho")
         cfg = HonchoClientConfig(
             api_key="test-key",
@@ -624,54 +602,12 @@ class TestGetHonchoClient:
         )
 
         with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
-             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 88}}):
+             patch("hermes_cli.config.load_config", return_value={"honcho": {"timeout": 88, "request_timeout": "77.5"}}):
             client = get_honcho_client(cfg)
 
         assert client is fake_honcho
         mock_honcho.assert_called_once()
-        assert mock_honcho.call_args.kwargs["timeout"] == 88.0
-
-    @pytest.mark.skipif(
-        not importlib.util.find_spec("honcho"),
-        reason="honcho SDK not installed"
-    )
-    def test_defaults_to_30s_when_no_timeout_configured(self):
-        from plugins.memory.honcho.client import _DEFAULT_HTTP_TIMEOUT
-
-        fake_honcho = MagicMock(name="Honcho")
-        cfg = HonchoClientConfig(
-            api_key="test-key",
-            workspace_id="hermes",
-            environment="production",
-        )
-
-        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
-             patch("hermes_cli.config.load_config", return_value={}):
-            client = get_honcho_client(cfg)
-
-        assert client is fake_honcho
-        mock_honcho.assert_called_once()
-        assert mock_honcho.call_args.kwargs["timeout"] == _DEFAULT_HTTP_TIMEOUT
-
-    @pytest.mark.skipif(
-        not importlib.util.find_spec("honcho"),
-        reason="honcho SDK not installed"
-    )
-    def test_hermes_request_timeout_alias_used(self):
-        fake_honcho = MagicMock(name="Honcho")
-        cfg = HonchoClientConfig(
-            api_key="test-key",
-            workspace_id="hermes",
-            environment="production",
-        )
-
-        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
-             patch("hermes_cli.config.load_config", return_value={"honcho": {"request_timeout": "77.5"}}):
-            client = get_honcho_client(cfg)
-
-        assert client is fake_honcho
-        mock_honcho.assert_called_once()
-        assert mock_honcho.call_args.kwargs["timeout"] == 77.5
+        assert "timeout" not in mock_honcho.call_args.kwargs
 
 
 class TestResolveSessionNameGatewayKey:

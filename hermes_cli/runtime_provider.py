@@ -522,9 +522,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
+                    provider_key = str(ep_name).strip()
                     result = {
-                        "provider_key": ep_name,
-                        "name": entry.get("name", ep_name),
+                        "provider_key": provider_key,
+                        "name": entry.get("name", provider_key),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
@@ -551,8 +552,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     # Found match by display name
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
+                        provider_key = str(ep_name).strip()
                         result = {
-                            "provider_key": ep_name,
+                            "provider_key": provider_key,
                             "name": display_name,
                             "base_url": base_url.strip(),
                             "api_key": resolved_api_key,
@@ -701,10 +703,13 @@ def _resolve_named_custom_runtime(
     runtime_provider = str(
         custom_provider.get("provider_key") or "custom"
     ).strip() or "custom"
+    provider_key = str(custom_provider.get("provider_key") or "").strip()
 
     # Check if a credential pool exists for this custom endpoint
     pool_result = _try_resolve_from_custom_pool(base_url, runtime_provider, custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
     if pool_result:
+        if provider_key:
+            pool_result["provider_key"] = provider_key
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
         model_name = custom_provider.get("model")
@@ -743,6 +748,8 @@ def _resolve_named_custom_runtime(
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
     }
+    if provider_key:
+        result["provider_key"] = provider_key
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):

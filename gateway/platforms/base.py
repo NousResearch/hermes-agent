@@ -2158,9 +2158,24 @@ class BasePlatformAdapter(ABC):
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
+        # Build extension list from SUPPORTED_DOCUMENT_TYPES + known media types
+        # so the two stay in sync automatically.
+        _media_exts = set()
+        for ext in SUPPORTED_DOCUMENT_TYPES:
+            _media_exts.add(ext.lstrip("."))
+        _media_exts.update({"png", "jpg", "jpeg", "gif", "webp",
+                            "mp4", "mov", "avi", "mkv", "webm",
+                            "ogg", "opus", "mp3", "wav", "m4a", "flac",
+                            "epub", "rar", "7z", "apk", "ipa", "markdown"})
+        _ext_list = sorted(_media_exts, key=lambda x: (-len(x), x))
+        _ext_pattern = "|".join(_ext_list)
+        _MEDIA_RE_STR = (
+            r'''[`"']?MEDIA:\s*(?P<path>'''
+            r'''`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
+            r'''(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:'''
+            + _ext_pattern + r''')(?=[\s`"',;:)\]}]|$))[`"']?'''
         )
+        media_pattern = re.compile(_MEDIA_RE_STR)
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":

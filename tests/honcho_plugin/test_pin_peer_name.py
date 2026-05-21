@@ -614,3 +614,70 @@ class TestCrossPlatformMemoryUnification:
             "multi-user default MUST keep users separate — a regression "
             "here would silently merge unrelated users' memory"
         )
+
+
+class TestPinUserPeerAlias:
+    """``pinUserPeer`` is the canonical name; ``pinPeerName`` is the
+    backwards-compatible alias.
+
+    Both keys land on the same internal ``pin_peer_name`` field.  When
+    both appear, the precedence is: host pinUserPeer → host pinPeerName
+    → root pinUserPeer → root pinPeerName → default.  This matches the
+    rule for every other host/root override in the plugin and lets a
+    host block explicitly disable a root-level pin even via the legacy
+    key.
+    """
+
+    def test_root_pinUserPeer_true_pins(self, tmp_path):
+        from plugins.memory.honcho.client import HonchoClientConfig
+        import json
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "peerName": "eri",
+            "pinUserPeer": True,
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.pin_peer_name is True
+
+    def test_host_pinUserPeer_wins_over_root_pinPeerName(self, tmp_path):
+        from plugins.memory.honcho.client import HonchoClientConfig
+        import json
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "peerName": "eri",
+            "pinPeerName": False,
+            "hosts": {"hermes": {"pinUserPeer": True}},
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.pin_peer_name is True
+
+    def test_host_pinUserPeer_false_disables_root_pinPeerName(self, tmp_path):
+        from plugins.memory.honcho.client import HonchoClientConfig
+        import json
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "peerName": "eri",
+            "pinPeerName": True,
+            "hosts": {"hermes": {"pinUserPeer": False}},
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.pin_peer_name is False, (
+            "Host-level pinUserPeer=false must override the legacy "
+            "root-level pinPeerName=true, otherwise a host can never "
+            "unpin a globally-pinned profile via the new alias."
+        )
+
+    def test_pinPeerName_still_works_unchanged(self, tmp_path):
+        from plugins.memory.honcho.client import HonchoClientConfig
+        import json
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "peerName": "eri",
+            "hosts": {"hermes": {"pinPeerName": True}},
+        }))
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.pin_peer_name is True

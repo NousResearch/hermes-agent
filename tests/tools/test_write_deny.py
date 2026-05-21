@@ -1,8 +1,10 @@
 """Tests for _is_write_denied() — verifies deny list blocks sensitive paths on all platforms."""
 
 import os
+
 import pytest
 from pathlib import Path
+from unittest.mock import patch
 
 from tools.file_operations import _is_write_denied
 
@@ -97,8 +99,22 @@ class TestWriteDenyPrefixes:
     def test_sudoers_d_prefix(self):
         assert _is_write_denied("/etc/sudoers.d/custom") is True
 
-    def test_systemd_prefix(self):
-        assert _is_write_denied("/etc/systemd/system/evil.service") is True
+    def test_systemd_prefix(self, tmp_path):
+        # On NixOS, /etc/systemd is a symlink into /nix/store, so
+        # realpath() resolves it to a store path that doesn't match
+        # the /etc/systemd/ prefix.  Build a real directory tree so
+        # realpath is a no-op and prefix matching works.
+        fake_etc = tmp_path / "etc" / "systemd" / "system"
+        fake_etc.mkdir(parents=True)
+        target = str(fake_etc / "evil.service")
+        # Patch the prefix builder to include our tmp_path prefix
+        import agent.file_safety as _fs
+        _orig = _fs.build_write_denied_prefixes
+        _extra_prefix = str(tmp_path / "etc" / "systemd") + os.sep
+        def _patched(home):
+            return _orig(home) + [_extra_prefix]
+        with patch.object(_fs, "build_write_denied_prefixes", _patched):
+            assert _is_write_denied(target) is True
 
 
 class TestWriteAllowed:

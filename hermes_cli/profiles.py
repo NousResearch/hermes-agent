@@ -902,7 +902,33 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # 4. Remove profile directory
     try:
-        shutil.rmtree(profile_dir)
+        def _make_writable(func, path, exc):
+            """onexc handler: add +w on PermissionError so rmtree can proceed.
+
+            Handles two cases on NixOS (and other systems with read-only
+            copies from immutable stores):
+            1. The path itself isn't writable (e.g. a file with mode 0444)
+            2. The *parent* directory isn't writable (e.g. mode 0555)
+            """
+            import stat as _stat
+            if isinstance(exc, PermissionError):
+                # Make the path writable
+                try:
+                    os.chmod(path, os.stat(path).st_mode | _stat.S_IWUSR)
+                except OSError:
+                    pass
+                # Also make the parent writable (needed for unlink/rmdir)
+                parent = os.path.dirname(path)
+                if parent:
+                    try:
+                        os.chmod(parent, os.stat(parent).st_mode | _stat.S_IWUSR)
+                    except OSError:
+                        pass
+                func(path)
+            else:
+                raise
+
+        shutil.rmtree(profile_dir, onexc=_make_writable)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")

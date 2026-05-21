@@ -130,7 +130,7 @@ class SpawnSpec:
 
 # BSL LS: JVM boot + first-pass analysis on large 1C trees is slow.
 _BSL_INITIALIZE_TIMEOUT = 120.0
-_BSL_DIAGNOSTICS_DOCUMENT_WAIT = 30.0
+_BSL_DIAGNOSTICS_DOCUMENT_WAIT = 180.0
 
 
 @dataclass

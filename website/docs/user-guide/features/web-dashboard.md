@@ -323,14 +323,30 @@ If the gate would engage but **no** `DashboardAuthProvider` is registered (no No
 
 ### Default provider: Nous Research
 
-The bundled `plugins/dashboard_auth/nous` plugin is auto-loaded and registers a `DashboardAuthProvider` named `nous` when these environment variables are present:
+The bundled `plugins/dashboard_auth/nous` plugin is **always installed** and auto-loaded. It auto-registers a `DashboardAuthProvider` named `nous` when the per-instance client ID is set:
 
-| Env var | Format | Provisioned by |
-|---------|--------|----------------|
-| `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | `agent:{instance_id}` | Nous Portal at Fly.io provisioning time |
-| `HERMES_DASHBOARD_PORTAL_URL` | `https://portal.nousresearch.com` | Nous Portal at Fly.io provisioning time |
+| Env var | Required? | Format | Provisioned by |
+|---------|-----------|--------|----------------|
+| `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | **yes** | `agent:{instance_id}` | Nous Portal at Fly.io provisioning time |
+| `HERMES_DASHBOARD_PORTAL_URL` | no | `https://portal.nousresearch.com` (default) | Portal — override only for staging or a custom deployment |
 
-Both are injected automatically when you deploy the Hermes Agent VPS through the Nous Portal — you don't set them by hand. If either is absent, the Nous plugin loads silently and registers nothing (the gate's fail-closed branch then kicks in if a public bind is attempted).
+`HERMES_DASHBOARD_OAUTH_CLIENT_ID` is the only required variable; it's injected automatically when you deploy through the Nous Portal. The portal URL defaults to production, so the typical operator never touches it — set it explicitly only if you're pointing at staging (`portal.rewbs.uk`) or a custom Portal deployment.
+
+If `HERMES_DASHBOARD_OAUTH_CLIENT_ID` is absent or malformed, the plugin reports the specific reason and the dashboard's fail-closed bind error tells you exactly what to fix:
+
+```
+Refusing to bind dashboard to 0.0.0.0 — the OAuth auth gate engages on
+non-loopback binds, but no auth providers are registered.
+
+Bundled providers reported these issues:
+  • nous: HERMES_DASHBOARD_OAUTH_CLIENT_ID is not set. The Nous Portal
+    provisions this env var (shape 'agent:{instance_id}') when it
+    deploys a Hermes Agent instance — set it to your provisioned
+    client id, or pass --insecure to skip the OAuth gate entirely.
+
+Or pass --insecure to skip the auth gate (NOT recommended on untrusted
+networks).
+```
 
 ### OAuth flow
 
@@ -390,9 +406,9 @@ The login page lists all registered providers; multiple providers can be stacked
 ### Verifying the gate is on
 
 ```bash
-# Run the dashboard with the gate engaged (Fly.io shape):
+# Run the dashboard with the gate engaged (Fly.io shape).
+# HERMES_DASHBOARD_PORTAL_URL is optional — defaults to production.
 HERMES_DASHBOARD_OAUTH_CLIENT_ID=agent:test \
-HERMES_DASHBOARD_PORTAL_URL=https://portal.nousresearch.com \
   hermes dashboard --host 0.0.0.0
 
 # Hit /api/status to see the gate state:

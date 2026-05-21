@@ -171,17 +171,29 @@ class TestConstruction:
 class TestPluginRegister:
     def test_skips_when_client_id_missing(self, monkeypatch):
         monkeypatch.delenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", raising=False)
-        monkeypatch.setenv("HERMES_DASHBOARD_PORTAL_URL", "https://p.example")
-        ctx = MagicMock()
-        nous_plugin.register(ctx)
-        ctx.register_dashboard_auth_provider.assert_not_called()
-
-    def test_skips_when_portal_url_missing(self, monkeypatch):
-        monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "agent:x")
         monkeypatch.delenv("HERMES_DASHBOARD_PORTAL_URL", raising=False)
         ctx = MagicMock()
         nous_plugin.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
+        # Skip reason is surfaced for the gate's fail-closed message.
+        assert "HERMES_DASHBOARD_OAUTH_CLIENT_ID" in nous_plugin.LAST_SKIP_REASON
+
+    def test_registers_with_default_portal_url_when_only_client_id_set(
+        self, monkeypatch
+    ):
+        """Phase 7 follow-up: HERMES_DASHBOARD_PORTAL_URL is optional —
+        defaults to the production Nous Portal. The user shouldn't have
+        to set it for the common production deployment path."""
+        monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "agent:inst1")
+        monkeypatch.delenv("HERMES_DASHBOARD_PORTAL_URL", raising=False)
+        ctx = MagicMock()
+        nous_plugin.register(ctx)
+        ctx.register_dashboard_auth_provider.assert_called_once()
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert isinstance(registered, nous_plugin.NousDashboardAuthProvider)
+        assert registered._portal_url == "https://portal.nousresearch.com"
+        # Skip reason cleared on successful registration.
+        assert nous_plugin.LAST_SKIP_REASON == ""
 
     def test_skips_when_client_id_malformed(self, monkeypatch):
         monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "hermes-dashboard")
@@ -189,16 +201,19 @@ class TestPluginRegister:
         ctx = MagicMock()
         nous_plugin.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
+        # Skip reason names the offending value + contract shape.
+        assert "agent:" in nous_plugin.LAST_SKIP_REASON
+        assert "hermes-dashboard" in nous_plugin.LAST_SKIP_REASON
 
-    def test_registers_when_both_present(self, monkeypatch):
+    def test_registers_with_explicit_portal_url(self, monkeypatch):
         monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "agent:inst1")
         monkeypatch.setenv("HERMES_DASHBOARD_PORTAL_URL", "https://p.example")
         ctx = MagicMock()
         nous_plugin.register(ctx)
         ctx.register_dashboard_auth_provider.assert_called_once()
         registered = ctx.register_dashboard_auth_provider.call_args.args[0]
-        assert isinstance(registered, nous_plugin.NousDashboardAuthProvider)
         assert registered._client_id == "agent:inst1"
+        assert registered._portal_url == "https://p.example"
 
     def test_strips_whitespace_from_env_vars(self, monkeypatch):
         monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "  agent:x  ")
@@ -206,6 +221,17 @@ class TestPluginRegister:
         ctx = MagicMock()
         nous_plugin.register(ctx)
         ctx.register_dashboard_auth_provider.assert_called_once()
+
+    def test_empty_portal_url_env_uses_default(self, monkeypatch):
+        """Explicit empty string still falls back to the production
+        default — same handling as 'unset' so an empty Fly secret can't
+        accidentally point the dashboard at nowhere."""
+        monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "agent:inst1")
+        monkeypatch.setenv("HERMES_DASHBOARD_PORTAL_URL", "")
+        ctx = MagicMock()
+        nous_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._portal_url == "https://portal.nousresearch.com"
 
 
 # ---------------------------------------------------------------------------

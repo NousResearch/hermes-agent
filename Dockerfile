@@ -138,18 +138,29 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 
 # stage2-hook handles UID/GID remap, volume chown, config seeding,
-# skills sync, and TUI detection — all the work the old entrypoint.sh
-# did between gosu-drop and `exec hermes`. Wired in as cont-init.d/01-
-# so it runs before any user services start.
+# skills sync — all the work the old entrypoint.sh did between
+# gosu-drop and `exec hermes`. Wired in as cont-init.d/01- so it
+# runs before user services start.
+#
+# 02-reconcile-profiles re-creates per-profile gateway s6 service
+# slots from $HERMES_HOME/profiles/<name>/ after a container restart
+# (the /run/service/ scandir is tmpfs and wiped on restart). Phase 4.
 RUN mkdir -p /etc/cont-init.d && \
     printf '#!/bin/sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
         > /etc/cont-init.d/01-hermes-setup && \
     chmod +x /etc/cont-init.d/01-hermes-setup
+COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-reconcile-profiles
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
-ENV PATH="/opt/data/.local/bin:${PATH}"
+# Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
+# the venv bin onto PATH; Architecture B's main-wrapper.sh does the
+# same for the container's main process, but `docker exec` and our
+# cont-init.d scripts don't pass through the wrapper. Expose the venv
+# bin globally so `docker exec <container> hermes ...` and any
+# subprocess that doesn't activate the venv first still find hermes.
+ENV PATH="/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 

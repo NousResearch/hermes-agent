@@ -53,6 +53,17 @@ if [ "$needs_chown" = true ]; then
         echo "[stage2] Warning: chown .venv failed (rootless container?) — continuing"
 fi
 
+# Always reset ownership of $HERMES_HOME/profiles to hermes on every
+# boot. Profile dirs and files can land owned by root when commands
+# are invoked via `docker exec <container> hermes …` (which defaults
+# to root unless `-u` is passed), and that breaks the cont-init
+# reconciler (02-reconcile-profiles) which runs as hermes and walks
+# the profiles dir. Idempotent; skipped on rootless containers where
+# chown would fail.
+if [ -d "$HERMES_HOME/profiles" ]; then
+    chown -R hermes:hermes "$HERMES_HOME/profiles" 2>/dev/null || true
+fi
+
 # --- config.yaml permissions ---
 # Ensure config.yaml is readable by the hermes runtime user even if it
 # was edited on the host after initial ownership setup.

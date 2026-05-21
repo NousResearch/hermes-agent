@@ -332,8 +332,7 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     assert run_path.is_file()
     assert run_path.stat().st_mode & 0o111  # executable
     run_text = run_path.read_text()
-    assert "hermes -p coder gateway start" in run_text
-    assert "--port 9150" in run_text
+    assert "hermes -p coder gateway run" in run_text
     assert "s6-setuidgid hermes" in run_text
 
     log_run = svc_dir / "log" / "run"

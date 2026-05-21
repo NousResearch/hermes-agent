@@ -360,7 +360,18 @@ class S6ServiceManager:
              time, not Python-substituted at registration time (OQ8-C).
           2. Activates the bundled venv.
           3. Drops to the hermes user and exec's
-             ``hermes -p <profile> gateway start --foreground --port <port>``.
+             ``hermes -p <profile> gateway run``.
+
+        Note: the ``port`` parameter is accepted for API parity with
+        :meth:`register_profile_gateway` but is currently ignored — the
+        gateway picks its bind port from the profile's config.yaml
+        (``[gateway] port = ...``). A future signature change may carry
+        it through as an ``HERMES_GATEWAY_PORT`` env var; until then,
+        the in-config value wins and the constructor's ``port`` arg
+        is essentially documentation for "what port the profile would
+        use if we wired it through". See Phase 4 Task 4.1 for the
+        deterministic allocator and the SHA-256-derived range
+        [9200, 9800).
         """
         import shlex
         lines = [
@@ -373,8 +384,7 @@ class S6ServiceManager:
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")
         lines.append(
-            f"exec s6-setuidgid hermes hermes -p {shlex.quote(profile)} "
-            f"gateway start --foreground --port {port}"
+            f"exec s6-setuidgid hermes hermes -p {shlex.quote(profile)} gateway run"
         )
         return "\n".join(lines) + "\n"
 

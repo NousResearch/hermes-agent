@@ -2987,6 +2987,9 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
     in addition to the built-in kanban-worker."""
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    # Per-task skills are also resolvability-gated now; stub the helper so
+    # synthetic skill names ("translation", "github-code-review") pass.
+    monkeypatch.setattr(kb, "_skill_available_for_home", lambda _n, _h: True)
     captured = {}
 
     class FakeProc:
@@ -3037,6 +3040,7 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
 def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
     """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    monkeypatch.setattr(kb, "_skill_available_for_home", lambda _n, _h: True)
     captured = {}
 
     class FakeProc:
@@ -3068,6 +3072,66 @@ def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monke
     assert len(worker_pairs) == 1, (
         f"kanban-worker appeared {len(worker_pairs)} times in argv: {cmd}"
     )
+
+
+def test_default_spawn_drops_unresolvable_task_skills(
+    kanban_home, monkeypatch, capfd, tmp_path
+):
+    """Per-task skill names that don't resolve under the worker's
+    HERMES_HOME must be dropped from argv (with a stderr warning) instead
+    of being passed through to crash the CLI at startup.
+
+    Regression: a task with ``skills=["some-skill"]`` whose name only
+    exists in the global skills root — not the profile-scoped one the
+    worker actually loads — would crash-loop the worker with
+    ``ValueError: Unknown skill(s): some-skill`` until the watchdog
+    auto-blocked the task (often 100+ respawns).
+    """
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    # Only "good-skill" resolves; "missing-skill" does not.
+    monkeypatch.setattr(
+        kb,
+        "_skill_available_for_home",
+        lambda name, _h: name == "good-skill",
+    )
+    captured = {}
+
+    class FakeProc:
+        pid = 7
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="mixed resolvability",
+            assignee="x",
+            skills=["good-skill", "missing-skill"],
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    skill_names = [
+        cmd[i + 1] for i, tok in enumerate(cmd)
+        if tok == "--skills" and i + 1 < len(cmd)
+    ]
+    assert "good-skill" in skill_names, skill_names
+    assert "missing-skill" not in skill_names, (
+        f"unresolvable skill leaked into argv: {skill_names}"
+    )
+
+    err = capfd.readouterr().err
+    assert "missing-skill" in err, err
+    assert tid in err, err  # Task id surfaced for operators triaging logs.
 
 
 def test_cli_create_skill_flag_repeatable(kanban_home):

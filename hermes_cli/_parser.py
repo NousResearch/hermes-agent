@@ -269,7 +269,11 @@ def build_top_level_parser():
         help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
     )
     chat_parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Verbose output"
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Verbose output",
     )
     chat_parser.add_argument(
         "-Q",

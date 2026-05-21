@@ -3187,6 +3187,56 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{_screenshot_b64}"
 
+        # Fast path: when the active main model supports native vision AND the
+        # provider supports image content inside tool results, short-circuit
+        # the auxiliary LLM and return the image bytes as a multimodal
+        # tool-result envelope. The user can force native vision with the 
+        # supports_vision override. The main model sees the pixels directly on its
+        # next turn — no aux call, no information loss, no extra latency.
+        try:
+            from agent.auxiliary_client import _read_main_model, _read_main_provider
+            from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
+            from hermes_cli.config import load_config
+            from tools.vision_tools import (
+                _build_native_vision_tool_result,
+                _supports_media_in_tool_results,
+            )
+
+            _provider = _read_main_provider()
+            _model = _read_main_model()
+            _cfg = load_config()
+            _mode = decide_image_input_mode(_provider, _model, _cfg)
+            _supports_vision = _lookup_supports_vision(_provider, _model, _cfg) is True
+            if _mode == "native" and (
+                _supports_media_in_tool_results(_provider, _model)
+                or _supports_vision
+            ):
+                native_result = _build_native_vision_tool_result(
+                    image_url=str(screenshot_path),
+                    question=question,
+                    image_data_url=data_url,
+                    image_size_bytes=len(_screenshot_bytes),
+                )
+                native_result.setdefault("meta", {})
+                native_result["meta"]["screenshot_path"] = str(screenshot_path)
+                if _lp_fallback_warning:
+                    native_result["meta"]["fallback_warning"] = _lp_fallback_warning
+                if annotate and result.get("data", {}).get("annotations"):
+                    native_result["meta"]["annotations"] = result["data"]["annotations"]
+                text_parts = native_result.get("content") or []
+                if text_parts and isinstance(text_parts[0], dict) and text_parts[0].get("type") == "text":
+                    text_parts[0]["text"] = (
+                        str(text_parts[0].get("text", ""))
+                        + f"\n\nScreenshot path: {screenshot_path}"
+                    )
+                native_result["text_summary"] = (
+                    str(native_result.get("text_summary") or "")
+                    + f" Screenshot path: {screenshot_path}"
+                ).strip()
+                return native_result
+        except Exception:
+            pass
+
         vision_prompt = (
             f"You are analyzing a screenshot of a web browser.\n\n"
             f"User's question: {question}\n\n"

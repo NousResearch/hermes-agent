@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,26 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
     if mock_client_cls is not None:
         base.append(patch("aiohttp.ClientSession", mock_client_cls))
     return base
+
+
+# ---------------------------------------------------------------------------
+# Adapter configuration defaults
+# ---------------------------------------------------------------------------
+
+class TestWhatsAppAdapterDefaults:
+    def test_default_bridge_port_avoids_common_dev_server_port(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter(PlatformConfig())
+
+        assert adapter._bridge_port == 3099
+
+    def test_configured_bridge_port_is_preserved(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter(PlatformConfig(extra={"bridge_port": 4123}))
+
+        assert adapter._bridge_port == 4123
 
 
 # ---------------------------------------------------------------------------

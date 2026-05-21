@@ -50,6 +50,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
+import { formatRussianCount } from "@/i18n/ruPlural";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -123,7 +124,7 @@ export default function ConfigPage() {
   const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { setEnd } = usePageHeader();
 
   useLayoutEffect(() => {
@@ -161,6 +162,13 @@ export default function ConfigPage() {
     if (t.config.categories[key]) return t.config.categories[key];
     return cat.charAt(0).toUpperCase() + cat.slice(1);
   }
+
+  const fieldCountLabel = (count: number) =>
+    locale === "ru"
+      ? formatRussianCount(count, "поле", "поля", "полей")
+      : t.config.fields
+          .replace("{count}", String(count))
+          .replace("{s}", count !== 1 ? "s" : "");
 
   useEffect(() => {
     api
@@ -592,11 +600,7 @@ export default function ConfigPage() {
                       {t.config.searchResults}
                     </CardTitle>
                     <Badge tone="secondary" className="text-[10px]">
-                      {searchMatchedFields.length}{" "}
-                      {t.config.fields.replace(
-                        "{s}",
-                        searchMatchedFields.length !== 1 ? "s" : "",
-                      )}
+                      {fieldCountLabel(searchMatchedFields.length)}
                     </Badge>
                   </div>
                 </CardHeader>
@@ -623,11 +627,7 @@ export default function ConfigPage() {
                       {prettyCategoryName(activeCategory)}
                     </CardTitle>
                     <Badge tone="secondary" className="text-[10px]">
-                      {activeFields.length}{" "}
-                      {t.config.fields.replace(
-                        "{s}",
-                        activeFields.length !== 1 ? "s" : "",
-                      )}
+                      {fieldCountLabel(activeFields.length)}
                     </Badge>
                   </div>
                 </CardHeader>

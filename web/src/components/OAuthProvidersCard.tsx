@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   ShieldCheck,
   ShieldOff,
@@ -60,20 +60,20 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     useState<OAuthProvider | null>(null);
   const { t } = useI18n();
 
-  const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
-
   const refresh = useCallback(() => {
     setLoading(true);
     api
       .getOAuthProviders()
       .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${e}`))
+      .catch((e) => onError?.(`${t.status.error}: ${e}`))
       .finally(() => setLoading(false));
-  }, []);
+  }, [onError, t.status.error]);
 
   useEffect(() => {
-    refresh();
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [refresh]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
@@ -81,10 +81,10 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     setDisconnectTarget(null);
     try {
       await api.disconnectOAuthProvider(provider.id);
-      onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
+      onSuccess?.(`${provider.name}: ${t.status.disconnected}`);
       refresh();
     } catch (e) {
-      onError?.(`${t.oauth.disconnect} failed: ${e}`);
+      onError?.(`${provider.name}: ${t.status.error} — ${e}`);
     } finally {
       setBusyId(null);
     }

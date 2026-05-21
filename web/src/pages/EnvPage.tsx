@@ -35,6 +35,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
+import { formatRussianCount } from "@/i18n/ruPlural";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -357,7 +358,7 @@ function ProviderGroupCard({
   clearDialogOpen?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
 
   // Separate API keys from base URLs and other settings
   const apiKeys = group.entries.filter(
@@ -374,6 +375,12 @@ function ProviderGroupCard({
   const configuredCount = group.entries.filter(
     ([, info]) => info.is_set,
   ).length;
+  const keysCountLabel =
+    locale === "ru"
+      ? formatRussianCount(group.entries.length, "ключ", "ключа", "ключей")
+      : t.env.keysCount
+          .replace("{count}", String(group.entries.length))
+          .replace("{s}", group.entries.length !== 1 ? "s" : "");
 
   // Get a representative URL for "Get key" link
   const keyUrl = apiKeys.find(([, info]) => info.url)?.[1]?.url ?? null;
@@ -397,7 +404,7 @@ function ProviderGroupCard({
           </span>
           {hasAnyConfigured && (
             <Badge tone="success" className="text-[0.6rem]">
-              {configuredCount} {t.common.set.toLowerCase()}
+              {configuredCount} {t.common.configured}
             </Badge>
           )}
         </div>
@@ -414,9 +421,7 @@ function ProviderGroupCard({
             </a>
           )}
           <span className="text-[0.65rem] text-muted-foreground/60">
-            {t.env.keysCount
-              .replace("{count}", String(group.entries.length))
-              .replace("{s}", group.entries.length !== 1 ? "s" : "")}
+            {keysCountLabel}
           </span>
         </div>
       </ListItem>
@@ -586,7 +591,7 @@ export default function EnvPage() {
         delete n[key];
         return n;
       });
-      showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
+      showToast(`${key}: ${t.common.configured}`, "success");
     } catch (e) {
       showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
     } finally {
@@ -841,7 +846,6 @@ export default function EnvPage() {
 
                 {unsetEntries.length > 0 && (
                   <CollapsibleUnset
-                    category={category}
                     unsetEntries={unsetEntries}
                     edits={edits}
                     setEdits={setEdits}
@@ -869,7 +873,6 @@ export default function EnvPage() {
 /* ------------------------------------------------------------------ */
 
 function CollapsibleUnset({
-  category: _category,
   unsetEntries,
   edits,
   setEdits,
@@ -881,7 +884,6 @@ function CollapsibleUnset({
   onCancelEdit,
   clearDialogOpen = false,
 }: {
-  category: string;
   unsetEntries: [string, EnvVarInfo][];
   edits: Record<string, string>;
   setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>;

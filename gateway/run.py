@@ -6814,26 +6814,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             str(home.thread_id) if home.thread_id else None
         )
 
-        # Determine chat_type for the destination source. If we created a
-        # thread, key the session_key as a thread (build_session_key sets
-        # thread sessions to user-shared by default, which is what we
-        # want — the synthetic turn and any later real-user message both
-        # land on the same key without needing a user_id).
-        if new_thread_id:
+        # Determine chat_type/user_id for the destination source.
+        #
+        # Telegram private-chat DM topics are represented differently from
+        # group/forum threads by the inbound adapter. A handoff-created topic
+        # in a positive Telegram chat_id must therefore use the same DM-topic
+        # source shape as the user's next real message; otherwise the synthetic
+        # handoff turn binds a generic `thread` session key while real replies
+        # arrive on a `dm` session key.
+        home_chat_id = str(home.chat_id)
+        is_telegram_private_chat = False
+        if platform == Platform.TELEGRAM:
+            try:
+                is_telegram_private_chat = int(home_chat_id) > 0
+            except (TypeError, ValueError):
+                is_telegram_private_chat = False
+
+        if new_thread_id and not is_telegram_private_chat:
             dest_chat_type = "thread"
+            dest_user_id = "system:handoff"
         else:
-            # No thread — assume DM-style for the home channel. For
-            # group/channel home channels without thread support
-            # (Matrix/WhatsApp/Signal), the platform's own keying makes
-            # the synthetic turn shared anyway (single-DM platforms).
+            # No thread — assume DM-style for the home channel. For Telegram
+            # private-chat topics, use the real user id (same as chat_id) so
+            # topic-mode checks and binding persistence see the same identity as
+            # subsequent inbound user messages.
             dest_chat_type = "dm"
+            dest_user_id = home_chat_id if is_telegram_private_chat else "system:handoff"
 
         dest_source = SessionSource(
             platform=platform,
-            chat_id=str(home.chat_id),
+            chat_id=home_chat_id,
             chat_name=home.name,
             chat_type=dest_chat_type,
-            user_id="system:handoff",
+            user_id=dest_user_id,
             user_name="Handoff",
             thread_id=effective_thread_id,
         )

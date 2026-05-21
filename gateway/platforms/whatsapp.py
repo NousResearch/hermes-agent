@@ -1268,6 +1268,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            # Per-user/per-group ephemeral prompt (matches Slack/Telegram pattern).
+            # Looks up whatsapp.channel_prompts keyed by senderId (DMs) or chatId (groups).
+            from gateway.platforms.base import resolve_channel_prompt
+            _primary_key = data.get("chatId") if data.get("isGroup") else data.get("senderId")
+            _channel_prompt = resolve_channel_prompt(
+                self.config.extra,
+                str(_primary_key or ""),
+                str(data.get("chatId") or "") if not data.get("isGroup") else None,
+            )
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1276,6 +1286,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                channel_prompt=_channel_prompt,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

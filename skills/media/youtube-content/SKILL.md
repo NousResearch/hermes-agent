@@ -59,8 +59,11 @@ After fetching the transcript, format it based on what the user asks for:
 
 ## Workflow
 
-1. **Fetch** the transcript using the helper script with `--text-only --timestamps`.
-2. **Validate**: confirm the output is non-empty and in the expected language. If empty, retry without `--language` to get any available transcript. If still empty, tell the user the video likely has transcripts disabled.
+1. **Fetch** the transcript. Prefer the built-in `youtube_transcript` tool when it is available. Otherwise use the helper script with `--text-only --timestamps`.
+   - Use `languages` for fallback chains such as `ko,en`.
+   - Use `max_chars` for long videos; check `truncated` and `text_stats` before summarizing.
+   - Use returned `metadata`, `is_generated`, and `is_translatable` as quality/context signals.
+2. **Validate**: confirm the output is non-empty and in the expected language. If the tool returns `success=false`, inspect `error_code` and `available_languages`; retry with a listed language when appropriate. If still empty, tell the user the video likely has transcripts disabled.
 3. **Chunk if needed**: if the transcript exceeds ~50K characters, split into overlapping chunks (~40K with 2K overlap) and summarize each chunk before merging.
 4. **Transform** into the requested output format. If the user did not specify a format, default to a summary.
 5. **Verify**: re-read the transformed output to check for coherence, correct timestamps, and completeness before presenting.

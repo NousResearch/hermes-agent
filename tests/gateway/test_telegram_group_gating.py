@@ -700,3 +700,186 @@ def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_IGNORED_THREADS"] == "31,42"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for location / media observe+attribution tests
+# ---------------------------------------------------------------------------
+
+def _group_location_message(
+    *,
+    chat_id=-100,
+    from_user_id=111,
+    from_user_name="Alice Example",
+    lat=37.7749,
+    lon=-122.4194,
+):
+    return SimpleNamespace(
+        message_id=50,
+        text=None,
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=None,
+        is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=False),
+        from_user=SimpleNamespace(
+            id=from_user_id, full_name=from_user_name,
+            first_name=from_user_name.split()[0],
+        ),
+        reply_to_message=None,
+        date=None,
+        location=SimpleNamespace(latitude=lat, longitude=lon),
+        venue=None,
+        sticker=None,
+        photo=None,
+        video=None,
+        audio=None,
+        voice=None,
+        document=None,
+    )
+
+
+def _group_voice_message(
+    *,
+    chat_id=-100,
+    from_user_id=111,
+    from_user_name="Alice Example",
+    caption=None,
+):
+    return SimpleNamespace(
+        message_id=51,
+        text=None,
+        caption=caption,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=None,
+        is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=False),
+        from_user=SimpleNamespace(
+            id=from_user_id, full_name=from_user_name,
+            first_name=from_user_name.split()[0],
+        ),
+        reply_to_message=None,
+        date=None,
+        location=None,
+        venue=None,
+        sticker=None,
+        photo=None,
+        video=None,
+        audio=None,
+        voice=SimpleNamespace(
+            get_file=AsyncMock(side_effect=Exception("simulated download failure"))
+        ),
+        document=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Observe + attribution parity: location messages
+# ---------------------------------------------------------------------------
+
+def test_unmentioned_location_message_observed_in_group():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        update = SimpleNamespace(
+            update_id=2001,
+            message=_group_location_message(),
+            effective_message=None,
+        )
+
+        await adapter._handle_location_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        _, message, _ = store.messages[0]
+        assert message["observed"] is True
+        assert store.sources[0].user_id is None
+
+    asyncio.run(_run())
+
+
+def test_triggered_location_message_uses_shared_session_in_observe_mode():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=False,
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        adapter.handle_message = AsyncMock()
+        update = SimpleNamespace(
+            update_id=2002,
+            message=_group_location_message(),
+            effective_message=None,
+        )
+
+        await adapter._handle_location_message(update, SimpleNamespace())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.user_id is None
+        assert "[Alice Example|111]" in event.text
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Observe + attribution parity: media messages (voice as representative)
+# ---------------------------------------------------------------------------
+
+def test_unmentioned_voice_message_observed_in_group():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        update = SimpleNamespace(
+            update_id=3001,
+            message=_group_voice_message(),
+            effective_message=None,
+        )
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        _, message, _ = store.messages[0]
+        assert message["observed"] is True
+        assert store.sources[0].user_id is None
+
+    asyncio.run(_run())
+
+
+def test_triggered_voice_message_uses_shared_session_in_observe_mode():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=False,
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        adapter.handle_message = AsyncMock()
+        update = SimpleNamespace(
+            update_id=3002,
+            message=_group_voice_message(caption="check this audio"),
+            effective_message=None,
+        )
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.source.user_id is None
+        assert "[Alice Example|111]" in event.text
+
+    asyncio.run(_run())

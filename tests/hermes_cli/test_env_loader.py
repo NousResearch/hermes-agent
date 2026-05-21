@@ -87,3 +87,69 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_config_yaml_terminal_backend_overrides_stale_env(tmp_path, monkeypatch):
+    """Regression for #29186: a leftover TERMINAL_ENV=docker in ~/.hermes/.env
+    must not silently override the user's choice in config.yaml.  config.yaml
+    is the documented source of truth, so its value must win after load."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TERMINAL_ENV=docker\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "terminal:\n  backend: local\n", encoding="utf-8"
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "local"
+
+
+def test_config_yaml_terminal_backend_overrides_stale_shell(tmp_path, monkeypatch):
+    """config.yaml must also beat a stale TERMINAL_ENV exported in the shell
+    (e.g. set in ~/.zshrc when the user was experimenting with docker)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "terminal:\n  backend: local\n", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "local"
+
+
+def test_no_config_yaml_leaves_env_value_alone(tmp_path, monkeypatch):
+    """When config.yaml doesn't exist we must NOT clobber the .env value —
+    that's still the user's setting."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TERMINAL_ENV=docker\n", encoding="utf-8")
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+def test_config_yaml_terminal_omitted_key_does_not_clear_env(tmp_path, monkeypatch):
+    """If config.yaml has a terminal block but no `backend`, the .env value
+    must survive (don't unset env vars the user didn't override)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TERMINAL_ENV=docker\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "terminal:\n  timeout: 600\n", encoding="utf-8"
+    )
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TERMINAL_ENV") == "docker"
+    assert os.getenv("TERMINAL_TIMEOUT") == "600"

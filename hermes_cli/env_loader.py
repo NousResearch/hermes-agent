@@ -172,4 +172,73 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
+    # config.yaml is the documented source of truth for terminal.backend, but
+    # a stale TERMINAL_ENV in ~/.hermes/.env (e.g. left over from `hermes
+    # setup` after the user later edits config.yaml directly) silently wins
+    # because dotenv loaded with override=True above.  Re-apply config.yaml's
+    # terminal.* values on top so the documented config path always wins
+    # (#29186).
+    _apply_config_yaml_terminal_override(home_path)
+
     return loaded
+
+
+# Mapping of config.yaml terminal.* keys -> env vars downstream code reads.
+# Kept in sync with the equivalent maps in gateway/run.py and
+# hermes_cli/config.py — see tests/tools/test_terminal_config_env_sync.py.
+_TERMINAL_CFG_TO_ENV = {
+    "backend": "TERMINAL_ENV",
+    "docker_image": "TERMINAL_DOCKER_IMAGE",
+    "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+    "modal_image": "TERMINAL_MODAL_IMAGE",
+    "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
+    "timeout": "TERMINAL_TIMEOUT",
+    "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+    "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+    "container_cpu": "TERMINAL_CONTAINER_CPU",
+    "container_memory": "TERMINAL_CONTAINER_MEMORY",
+    "container_disk": "TERMINAL_CONTAINER_DISK",
+    "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+    "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+    "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+}
+
+
+def _apply_config_yaml_terminal_override(home_path: Path) -> None:
+    """Force config.yaml's terminal.* values on top of whatever .env loaded.
+
+    Without this, a stale TERMINAL_ENV=docker in ~/.hermes/.env keeps winning
+    after the user switches terminal.backend in config.yaml — the gateway
+    (per-turn reload), cron scheduler, batch_runner, and doctor would all
+    still run against the old backend until the user manually purged the
+    .env line (#29186).
+    """
+    config_path = home_path / "config.yaml"
+    if not config_path.exists():
+        return
+    try:
+        import yaml
+    except ImportError:
+        return
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return
+    if not isinstance(cfg, dict):
+        return
+    terminal_cfg = cfg.get("terminal")
+    if not isinstance(terminal_cfg, dict):
+        return
+    import json
+    for cfg_key, env_var in _TERMINAL_CFG_TO_ENV.items():
+        if cfg_key not in terminal_cfg:
+            continue
+        val = terminal_cfg[cfg_key]
+        if val is None:
+            continue
+        if isinstance(val, (list, dict)):
+            os.environ[env_var] = json.dumps(val)
+        else:
+            os.environ[env_var] = str(val)

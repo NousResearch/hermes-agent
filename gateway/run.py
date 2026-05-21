@@ -12693,6 +12693,9 @@ class GatewayRunner:
                     reasoning_details=msg.get("reasoning_details"),
                     codex_reasoning_items=msg.get("codex_reasoning_items"),
                     codex_message_items=msg.get("codex_message_items"),
+                    platform_message_id=(
+                        msg.get("platform_message_id") or msg.get("message_id")
+                    ),
                 )
             except Exception:
                 pass  # Best-effort copy

@@ -146,6 +146,7 @@ class SlowSyncBot(FakeBot):
         ("769524422783664158", False),
         ("abhey-gupta", True),
         ("769524422783664158,abhey-gupta", True),
+        ("*", False),
     ],
 )
 async def test_connect_only_requests_members_intent_when_needed(monkeypatch, allowed_users, expected_members_intent):
@@ -171,6 +172,9 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
     assert ok is True
     assert created["bot"].intents.members is expected_members_intent
+    if allowed_users == "*":
+        assert adapter._allow_all_users is True
+        assert adapter._allowed_user_ids == set()
     # Safe-default AllowedMentions must be applied on every connect so the
     # bot cannot @everyone from LLM output.  Granular overrides live in the
     # dedicated test_discord_allowed_mentions.py module.
@@ -180,6 +184,24 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
     assert am.roles is False
 
     await adapter.disconnect()
+
+
+def test_discord_allow_all_flags_short_circuit_user_and_role_allowlists(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._allowed_user_ids = {"123"}
+    adapter._allowed_role_ids = {456}
+
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+
+    assert adapter._is_allowed_user("999") is True
+
+
+def test_discord_allowed_users_star_short_circuits_direct_auth_check():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._allowed_user_ids = {"*"}
+    adapter._allowed_role_ids = {456}
+
+    assert adapter._is_allowed_user("999") is True
 
 
 @pytest.mark.asyncio

@@ -85,6 +85,11 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _env_flag(name: str) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    return raw in {"true", "1", "yes", "on"}
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -556,6 +561,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        self._allow_all_users = False  # DISCORD_ALLOWED_USERS=* / allow-all envs
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         # Voice channel state (per-guild)
@@ -635,11 +641,16 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Parse allowed user entries (may contain usernames or IDs)
             allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
+            self._allow_all_users = _env_flag("DISCORD_ALLOW_ALL_USERS") or _env_flag("GATEWAY_ALLOW_ALL_USERS")
             if allowed_env:
-                self._allowed_user_ids = {
+                allowed_entries = {
                     _clean_discord_id(uid) for uid in allowed_env.split(",")
                     if uid.strip()
                 }
+                if "*" in allowed_entries:
+                    self._allow_all_users = True
+                    allowed_entries.discard("*")
+                self._allowed_user_ids = allowed_entries
 
             # Parse DISCORD_ALLOWED_ROLES — comma-separated role IDs.
             # Users with ANY of these roles can interact with the bot.
@@ -2220,6 +2231,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # (see AGENTS.md pitfall #17 — same pattern as gateway.run).
         allowed_users = getattr(self, "_allowed_user_ids", set())
         allowed_roles = getattr(self, "_allowed_role_ids", set())
+        if (
+            getattr(self, "_allow_all_users", False)
+            or _env_flag("DISCORD_ALLOW_ALL_USERS")
+            or _env_flag("GATEWAY_ALLOW_ALL_USERS")
+            or "*" in allowed_users
+        ):
+            return True
         has_users = bool(allowed_users)
         has_roles = bool(allowed_roles)
         if not has_users and not has_roles:

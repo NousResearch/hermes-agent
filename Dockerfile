@@ -9,13 +9,31 @@ ENV PYTHONUNBUFFERED=1
 # install survives the /opt/data volume overlay at runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 
-# Install system dependencies in one layer, clear APT cache
-# tini reaps orphaned zombie processes (MCP stdio subprocesses, git, bun, etc.)
-# that would otherwise accumulate when hermes runs as PID 1. See #15012.
+# Install system dependencies in one layer, clear APT cache.
+# tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
+# subprocesses, git, bun, etc.) that would otherwise accumulate when hermes
+# ran as PID 1. See #15012. Phase 2 of the s6-overlay supervision plan
+# replaces tini with s6-overlay's /init (PID 1 = s6-svscan), which reaps
+# zombies non-blockingly on SIGCHLD and additionally supervises the main
+# hermes process, the dashboard, and per-profile gateways.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
+    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
+
+# ---------- s6-overlay install ----------
+# s6-overlay provides supervision for the main hermes process, the dashboard,
+# and per-profile gateways. /init becomes PID 1 below — see ENTRYPOINT.
+# x86_64 only for now; aarch64 (Apple Silicon, ARM servers) is a follow-up
+# that needs TARGETARCH plumbing across all three ADDs.
+ARG S6_OVERLAY_VERSION=3.2.3.0
+ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
+ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-x86_64.tar.xz /tmp/
+ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-noarch.tar.xz /tmp/
+RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
+    tar -C / -Jxpf /tmp/s6-overlay-x86_64.tar.xz && \
+    tar -C / -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz && \
+    rm /tmp/s6-overlay-*.tar.xz
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes
@@ -111,10 +129,51 @@ RUN chmod -R a+rX /opt/hermes && \
 # this a fast (~1s) egg-link creation with no resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
+# ---------- s6-overlay service wiring ----------
+# Static services declared at build time: main-hermes + dashboard.
+# Per-profile gateway services are registered dynamically at runtime by
+# the profile create/delete hooks (Phase 4); they live under
+# /run/service/ (tmpfs) and are reconciled on container restart by
+# /etc/cont-init.d/02-reconcile-profiles (Phase 4 Task 4.0).
+COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
+
+# stage2-hook handles UID/GID remap, volume chown, config seeding,
+# skills sync, and TUI detection — all the work the old entrypoint.sh
+# did between gosu-drop and `exec hermes`. Wired in as cont-init.d/01-
+# so it runs before any user services start.
+RUN mkdir -p /etc/cont-init.d && \
+    printf '#!/bin/sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
+        > /etc/cont-init.d/01-hermes-setup && \
+    chmod +x /etc/cont-init.d/01-hermes-setup
+
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
-ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]
+
+# s6-overlay's /init is PID 1. It sets up the supervision tree, runs
+# /etc/cont-init.d/* (our stage2 hook), starts s6-rc services
+# declared in /etc/s6-overlay/s6-rc.d/, then exec's its remaining
+# argv as the container's "main program" with stdin/stdout/stderr
+# inherited (this is what makes interactive --tui work). When the
+# main program exits, /init begins stage 3 shutdown and the container
+# exits with the program's exit code. Replaces tini — see Phase 2 of
+# docs/plans/2026-05-07-s6-overlay-dynamic-subagent-gateways.md.
+#
+# We use the ENTRYPOINT+CMD split rather than CMD alone so the
+# wrapper is prepended to user-supplied args automatically:
+#
+#   docker run <image>                  → /init main-wrapper.sh   (CMD default)
+#   docker run <image> chat -q "hi"     → /init main-wrapper.sh chat -q hi
+#   docker run <image> sleep infinity   → /init main-wrapper.sh sleep infinity
+#   docker run <image> --tui            → /init main-wrapper.sh --tui
+#
+# main-wrapper.sh handles arg routing (bare-exec vs. hermes
+# subcommand vs. no-args), drops to the hermes user via s6-setuidgid,
+# and exec's the final program so its exit code becomes the container
+# exit code. Without the wrapper-as-ENTRYPOINT, leading-dash args
+# like `--version` would be intercepted by /init's POSIX shell.
+ENTRYPOINT [ "/init", "/opt/hermes/docker/main-wrapper.sh" ]
+CMD [ ]

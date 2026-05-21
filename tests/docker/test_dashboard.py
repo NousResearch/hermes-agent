@@ -92,3 +92,67 @@ def test_dashboard_port_override(
         deadline_s=60.0,
     )
     assert ok, f"Dashboard not listening on port 9120: stdout={stdout!r}"
+
+
+def test_dashboard_restarts_after_crash(
+    built_image: str, container_name: str,
+) -> None:
+    """Phase 2 invariant: under s6 supervision, killing the dashboard
+    process should be recovered automatically.
+
+    Pre-s6 (tini) behavior was "stays dead" — the test wouldn't have
+    passed against that image. After the s6-overlay migration the
+    dashboard runs as a longrun s6-rc service and s6-supervise restarts
+    it after a ~1s backoff (the default).
+    """
+    subprocess.run(
+        ["docker", "run", "-d", "--name", container_name,
+         "-e", "HERMES_DASHBOARD=1", built_image, "sleep", "120"],
+        check=True, capture_output=True, timeout=30,
+    )
+    # Wait for the first dashboard to come up.
+    ok, _ = _poll(
+        container_name, "pgrep -f 'hermes dashboard'", deadline_s=30.0,
+    )
+    assert ok, "Dashboard never started initially"
+
+    # Grab the initial PID. s6 may briefly transition through restart
+    # state between our poll-success and the follow-up pgrep, so retry
+    # a couple of times before giving up.
+    first_pid: str | None = None
+    for _attempt in range(10):
+        first_pid_result = subprocess.run(
+            ["docker", "exec", container_name,
+             "pgrep", "-f", "hermes dashboard"],
+            capture_output=True, text=True, timeout=10,
+        )
+        first_pids = first_pid_result.stdout.strip().split()
+        if first_pids:
+            first_pid = first_pids[0]
+            break
+        time.sleep(0.5)
+    assert first_pid is not None, "Could not capture initial dashboard PID"
+
+    # Kill the dashboard.
+    subprocess.run(
+        ["docker", "exec", container_name, "kill", "-9", first_pid],
+        capture_output=True, timeout=10,
+    )
+
+    # s6 backs off ~1s before restart; allow up to 15s for the new
+    # process to appear with a different PID.
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        r = subprocess.run(
+            ["docker", "exec", container_name,
+             "pgrep", "-f", "hermes dashboard"],
+            capture_output=True, text=True, timeout=10,
+        )
+        pids = r.stdout.strip().split() if r.returncode == 0 else []
+        if pids and pids[0] != first_pid:
+            return  # success
+        time.sleep(0.5)
+
+    raise AssertionError(
+        f"Dashboard not restarted after kill (first_pid={first_pid})"
+    )

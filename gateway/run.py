@@ -2081,8 +2081,11 @@ class GatewayRunner:
         and ``_build_message_event`` strips the thread_id on plain replies
         (#3206 — needed for non-topic users). Both route the user to the
         wrong session. When topic mode is on, rewrite the thread_id to the
-        user's most-recent binding if the inbound id is missing/General or
-        not a known topic for this chat. Returns None to leave it alone.
+        user's most-recent binding only when the inbound id is missing or
+        General/root. Explicit non-General topic ids are authoritative even
+        when not yet bound; otherwise the first message in a newly opened topic
+        gets forced back into the user's previous topic. Returns None to leave
+        it alone.
         """
         if (
             source.platform != Platform.TELEGRAM
@@ -2106,8 +2109,12 @@ class GatewayRunner:
             return None
         inbound = str(source.thread_id or "")
         is_lobby = not inbound or inbound in self._TELEGRAM_GENERAL_TOPIC_IDS
-        known = {str(b.get("thread_id") or "") for b in bindings}
-        if not is_lobby and inbound in known:
+        if not is_lobby:
+            # Trust explicit non-General Telegram DM-topic ids.  Rewriting every
+            # unknown topic to the user's last-active binding makes newly opened
+            # topics unusable: all messages get forced back into an older topic.
+            # Recovery is only safe when Telegram stripped the topic id or sent
+            # the root/General lane.
             return None
         user_id = str(source.user_id)
         for b in bindings:  # newest-first

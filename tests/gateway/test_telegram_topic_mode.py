@@ -1231,22 +1231,24 @@ def test_recover_returns_none_for_known_topic(tmp_path):
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="222")) is None
 
 
-def test_recover_rewrites_unknown_thread_id_to_most_recent(tmp_path):
-    # Cross-topic Reply leak: inbound thread_id is a Telegram-only id we never bound.
+def test_recover_returns_none_for_unknown_explicit_topic_id(tmp_path):
+    # First message in a new Telegram topic is explicit but not bound yet.
+    # Do not force it back into the user's last-active topic.
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
 
-    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) == "222"
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) is None
 
 
-def test_recover_rewrites_lobby_thread_id_to_most_recent(tmp_path):
-    # Stripped plain reply: thread_id is None, topic mode is on.
+@pytest.mark.parametrize("thread_id", [None, "1"])
+def test_recover_rewrites_lobby_thread_id_to_most_recent(tmp_path, thread_id):
+    # Stripped plain reply / General root lane: topic mode is on.
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
 
-    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) == "222"
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=thread_id)) == "222"
 
 
 def test_recover_returns_none_when_topic_mode_disabled(tmp_path):

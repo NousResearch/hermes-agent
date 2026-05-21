@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from plugins.burn_router import (
     BurnRouterConfig,
@@ -164,3 +167,34 @@ def test_plugin_config_loads_from_plugins_entries(tmp_path, monkeypatch):
     assert cfg.model == "/tmp/model"
     assert cfg.confidence_threshold == 0.81
     assert cfg.timeout_seconds == 0.12
+
+
+@pytest.mark.integration
+def test_real_burn_router_sidecar_contract_when_configured():
+    """Optional smoke test for reviewers with the real Rust/Burn sidecar.
+
+    Normal CI does not need Rust/Burn artifacts. Set both env vars to verify that
+    the Hermes plugin can execute the real sidecar and parse its JSON contract.
+    """
+
+    binary = os.getenv("HERMES_BURN_ROUTER_TEST_BINARY")
+    model = os.getenv("HERMES_BURN_ROUTER_TEST_MODEL")
+    if not binary or not model:
+        pytest.skip("set HERMES_BURN_ROUTER_TEST_BINARY and HERMES_BURN_ROUTER_TEST_MODEL to run real sidecar smoke test")
+
+    cases = {
+        "search X for trending Base coins": "x_search",
+        "read /tmp/foo.txt": "file",
+        "generate an image of a skull rocket": "media_generation",
+        "schedule this every 2 hours": "cron",
+    }
+    cfg = BurnRouterConfig(enabled=True, mode="observe", binary=binary, model=model, timeout_seconds=0.25)
+
+    for message, expected_category in cases.items():
+        result = get_burn_router_hint(message, cfg)
+        assert result is not None, message
+        assert result.category == expected_category
+        assert result.confidence >= 0.72
+        assert result.mode == "observe"
+        assert result.enabled_toolsets == []
+        assert result.time_us is None or result.time_us >= 0

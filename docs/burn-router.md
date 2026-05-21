@@ -62,6 +62,22 @@ Expected stdout JSON:
 those mapped toolsets are logged as an empty list because the plugin is not yet
 allowed to narrow access.
 
+## Verify with a real sidecar
+
+Unit tests use mocks so CI does not require Rust/Burn artifacts. If you have the
+real sidecar and model, run the optional integration smoke test:
+
+```bash
+HERMES_BURN_ROUTER_TEST_BINARY=/path/to/hermes-burn-tool-router \
+HERMES_BURN_ROUTER_TEST_MODEL=/path/to/tool_router.safetensors \
+python -m pytest tests/plugins/test_burn_router_plugin.py -q -o 'addopts='
+```
+
+This executes the configured binary with the plugin's real subprocess path and
+checks the JSON contract against representative Hermes routes (`x_search`,
+`file`, `media_generation`, and `cron`). Without those env vars the integration
+case is skipped.
+
 ## Logs
 
 Successful predictions emit an info log like:

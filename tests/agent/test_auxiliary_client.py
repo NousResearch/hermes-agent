@@ -2331,6 +2331,57 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert fake_client.responses.kwargs["timeout"] == 12.5
         assert response.choices[0].message.content == "summary"
 
+    def test_zero_timeout_disables_codex_deadline_and_forwards_none(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                # If timeout=0 created a total-timeout watchdog this would fail
+                # before the final response can be collected.
+                time.sleep(0.01)
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="summary")],
+                    )],
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def stream(self, **kwargs):
+                self.kwargs = kwargs
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+            timeout=0,
+        )
+
+        assert fake_client.responses.kwargs["timeout"] is None
+        assert response.choices[0].message.content == "summary"
+
+    def test_task_timeout_zero_means_no_timeout(self):
+        from agent.auxiliary_client import _get_task_timeout
+
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"timeout": 0},
+        ):
+            assert _get_task_timeout("compression") is None
+
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class SlowAliveStream:
             def __enter__(self):

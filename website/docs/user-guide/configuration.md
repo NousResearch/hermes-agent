@@ -859,7 +859,7 @@ auxiliary:
 
   # Context compression timeout (separate from compression.* config)
   compression:
-    timeout: 120               # seconds — compression summarizes long conversations, needs more time
+    timeout: 120               # seconds — compression summarizes long conversations; set 0 to disable
 
   # Skills hub — skill matching and search
   skills_hub:
@@ -891,7 +891,7 @@ auxiliary:
 ```
 
 :::tip
-Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 120s, web_extract 360s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
+Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 120s, web_extract 360s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks, or set an auxiliary task timeout to `0` to disable its request timeout entirely. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
 :::
 
 :::info

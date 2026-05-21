@@ -376,6 +376,7 @@ def _path_from_file_uri(uri: str) -> Path | str:
     return Path(url2pathname(parsed.path)).expanduser()
 
 
+
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------

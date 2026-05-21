@@ -110,8 +110,10 @@ def _save_config_env_sync_keys() -> set[str]:
 
 
 # Keys present in the shared CLI/source-of-truth mapping but intentionally
-# absent from gateway/run.py or set_config_value.  Each entry must be justified.
-_CLI_ONLY_OK = frozenset({
+# not expected in gateway/run.py's terminal bridge.  Each entry must be
+# justified as an alias or non-TERMINAL_* credential, not a terminal_tool
+# setting that gateway merely has not wired yet.
+_GATEWAY_BRIDGE_EXEMPT_KEYS = frozenset({
     # `env_type` is a legacy YAML key alias for `backend` that cli.py
     # accepts for backwards-compat with older cli-config.yaml.  The
     # gateway path normalizes on the canonical `backend` key, which is
@@ -121,14 +123,16 @@ _CLI_ONLY_OK = frozenset({
     # used across backends, bridged to $SUDO_PASSWORD (not TERMINAL_*).
     # Treating it as terminal-only would be misleading.
     "sudo_password",
-    # modal_mode is normalized by CLI setup/subscription flows and consumed by
-    # terminal_tool when present, but gateway does not currently expose the
-    # managed-vs-direct Modal selector through its startup bridge.
-    "modal_mode",
-    # docker_extra_args is a Docker-only escape hatch consumed by terminal_tool;
-    # the gateway bridge intentionally stays on the historically supported
-    # Docker env/config keys until that surface is explicitly expanded.
+})
+
+
+# Temporary Task 3 known gap: these shared terminal keys are consumed by
+# terminal_tool, but gateway/run.py does not bridge them from config.yaml yet.
+# Keep this set exact so Task 3 fails here after wiring the bridge until the
+# temporary marker is removed or updated.
+TASK3_PENDING_GATEWAY_BRIDGE_KEYS = frozenset({
     "docker_extra_args",
+    "modal_mode",
 })
 
 
@@ -142,22 +146,48 @@ def _terminal_tool_env_var_names() -> set[str]:
     return set(pat.findall(source))
 
 
-def test_cli_and_gateway_env_maps_agree():
+def _normalized_gateway_env_map_keys() -> set[str]:
+    """Gateway terminal bridge keys normalized to the shared CLI key surface."""
+    # Normalize the legacy `env_type` alias: cli.py accepts both `env_type`
+    # and `backend` as source keys for TERMINAL_ENV; gateway only accepts
+    # `backend`.  Since cli.py copies `backend` → `env_type` before the
+    # lookup, they're equivalent.  Remove `backend` from the gateway side
+    # to avoid a spurious "backend missing from cli" failure.
+    return _gateway_env_map_keys() - {"backend"}
+
+
+def _shared_terminal_keys_missing_from_gateway() -> set[str]:
+    """Shared terminal keys that are neither gateway-bridged nor exempt aliases."""
+    cli_terminal_keys = _cli_env_map_keys() - _GATEWAY_BRIDGE_EXEMPT_KEYS
+    return cli_terminal_keys - _normalized_gateway_env_map_keys()
+
+
+def test_task3_pending_gateway_bridge_gaps_are_exact():
+    """Track temporary Task 3 gateway bridge omissions explicitly.
+
+    These keys are not CLI-only: terminal_tool consumes their TERMINAL_* env
+    vars.  Keep the pending set exact so wiring either key in Task 3 causes
+    this test to fail until the temporary marker is removed or updated.
+    """
+    assert (
+        _shared_terminal_keys_missing_from_gateway()
+        == TASK3_PENDING_GATEWAY_BRIDGE_KEYS
+    )
+
+
+def test_cli_and_gateway_env_maps_agree_except_task3_pending_gaps():
     """Shared CLI config and gateway/run.py must bridge the same terminal keys.
 
     Both feed the same downstream consumer (terminal_tool).  Drift between
     them means a config.yaml setting that "works in CLI mode but not gateway
     mode" (or vice-versa) — the bug class that shipped twice already.
     """
-    cli_keys = _cli_env_map_keys() - _CLI_ONLY_OK
-    gw_keys = _gateway_env_map_keys()
-
-    # Normalize the legacy `env_type` alias: cli.py accepts both `env_type`
-    # and `backend` as source keys for TERMINAL_ENV; gateway only accepts
-    # `backend`.  Since cli.py copies `backend` → `env_type` before the
-    # lookup, they're equivalent.  Remove `backend` from the gateway side
-    # to avoid a spurious "backend missing from cli" failure.
-    gw_keys = gw_keys - {"backend"}
+    cli_keys = (
+        _cli_env_map_keys()
+        - _GATEWAY_BRIDGE_EXEMPT_KEYS
+        - TASK3_PENDING_GATEWAY_BRIDGE_KEYS
+    )
+    gw_keys = _normalized_gateway_env_map_keys()
 
     missing_in_gateway = cli_keys - gw_keys
     missing_in_cli = gw_keys - cli_keys
@@ -170,7 +200,9 @@ def test_cli_and_gateway_env_maps_agree():
     )
     assert not missing_in_cli, (
         f"Keys in gateway/run.py _terminal_env_map but missing from shared "
-        f"TERMINAL_ENV_MAPPINGS: {sorted(missing_in_cli)}. Add them to both maps."
+        f"TERMINAL_ENV_MAPPINGS or still listed in "
+        f"TASK3_PENDING_GATEWAY_BRIDGE_KEYS: {sorted(missing_in_cli)}. Add them "
+        f"to both maps, or remove resolved Task 3 pending keys from the test."
     )
 
 

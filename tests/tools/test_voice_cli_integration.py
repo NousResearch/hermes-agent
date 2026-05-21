@@ -1214,6 +1214,11 @@ class TestVoiceStopAndTranscribeReal:
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
         assert cli._pending_input.empty()
+        _unl.assert_not_called()
+        assert any(
+            "Recording preserved at: /tmp/test.wav" in str(call)
+            for call in _cp.call_args_list
+        )
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")
@@ -1227,6 +1232,11 @@ class TestVoiceStopAndTranscribeReal:
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()  # Should not raise
+        _unl.assert_not_called()
+        assert any(
+            "Recording preserved at: /tmp/test.wav" in str(call)
+            for call in _cp.call_args_list
+        )
 
     @patch("cli._cprint")
     @patch("tools.voice_mode.play_beep")

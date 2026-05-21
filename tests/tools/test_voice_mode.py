@@ -586,6 +586,73 @@ class TestTranscribeRecording:
         assert result["transcript"] == "Thank you for helping me with this code."
         assert "filtered" not in result
 
+    def test_oversized_wav_is_chunked_and_stitched(self, tmp_path, monkeypatch):
+        wav_path = tmp_path / "long.wav"
+        n_frames = 50000
+        audio = struct.pack(f"<{n_frames}h", *([1000] * n_frames))
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(audio)
+
+        temp_dir = tmp_path / "chunks"
+        temp_dir.mkdir()
+        monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(temp_dir))
+        monkeypatch.setattr("tools.transcription_tools.MAX_FILE_SIZE", 70 * 1024)
+
+        seen_paths = []
+
+        def fake_transcribe(path, model=None):
+            seen_paths.append(path)
+            assert model == "base"
+            assert path != str(wav_path)
+            assert os.path.getsize(path) <= 70 * 1024
+            return {
+                "success": True,
+                "transcript": f"part {len(seen_paths)}",
+                "provider": "local",
+            }
+
+        with patch("tools.transcription_tools.transcribe_audio", side_effect=fake_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording(str(wav_path), model="base")
+
+        assert result["success"] is True
+        assert result["transcript"] == " ".join(
+            f"part {i}" for i in range(1, len(seen_paths) + 1)
+        )
+        assert result["chunks"] == len(seen_paths)
+        assert len(seen_paths) > 1
+        assert all(not os.path.exists(path) for path in seen_paths)
+
+    def test_oversized_wav_reports_failing_chunk(self, tmp_path, monkeypatch):
+        wav_path = tmp_path / "long.wav"
+        n_frames = 50000
+        audio = struct.pack(f"<{n_frames}h", *([1000] * n_frames))
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(audio)
+
+        temp_dir = tmp_path / "chunks"
+        temp_dir.mkdir()
+        monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(temp_dir))
+        monkeypatch.setattr("tools.transcription_tools.MAX_FILE_SIZE", 70 * 1024)
+
+        def fake_transcribe(path, model=None):
+            return {"success": False, "transcript": "", "error": "provider rejected audio"}
+
+        with patch("tools.transcription_tools.transcribe_audio", side_effect=fake_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording(str(wav_path), model="base")
+
+        assert result["success"] is False
+        assert result["error"].startswith("Chunk 1/")
+        assert "provider rejected audio" in result["error"]
+        assert list(temp_dir.iterdir()) == []
+
 
 class TestWhisperHallucinationFilter:
     def test_known_hallucinations(self):

@@ -11216,6 +11216,7 @@ class HermesCLI:
                     agent_message = _srn + "\n\n" + agent_message
                     self._pending_skills_reload_note = None
                 try:
+                    self._cli_last_run_old_session_id = getattr(self.agent, "session_id", None)
                     result = self.agent.run_conversation(
                         user_message=agent_message,
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
@@ -11359,8 +11360,25 @@ class HermesCLI:
             sys.stdout.flush()
             time.sleep(0.15)
 
-            # Update history with full conversation
-            self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
+            # Update history with full conversation.
+            # If auto-compression rotated the session mid-turn, result["messages"]
+            # is inflated (compressed baseline + this turn's growth). Use the
+            # agent's internal _session_messages instead — it holds the actual
+            # post-loop state the agent used for its final API call(s). Mirrors
+            # the gateway path fix in PR #29505.
+            if result:
+                compressed = getattr(self.agent, "_session_messages", None)
+                session_rotated = (
+                    self.agent
+                    and self._cli_last_run_old_session_id is not None
+                    and getattr(self.agent, "session_id", None) != self._cli_last_run_old_session_id
+                )
+                if session_rotated and compressed:
+                    self.conversation_history = list(compressed)
+                else:
+                    self.conversation_history = result.get("messages", self.conversation_history)
+            elif self.conversation_history:
+                pass  # Keep existing history on error/null result
 
             # If auto-compression fired mid-turn, the agent created a new
             # continuation session and mutated self.agent.session_id. Sync

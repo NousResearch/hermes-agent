@@ -95,7 +95,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "motion_pose_estimate" -> motionPoseEstimateRow(row)
                 "sensor_capability" -> sensorCapabilityRow(row)
                 "agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness", "kai_operations_matrix",
-                "agent_observation_matrix", "agent_observation_routes",
+                "agent_observation_matrix", "agent_observation_routes", "agent_signal_context_matrix",
                 "wifi_analyzer_feature_matrix", "wifi_analyzer_workflow_routes", "wifi_scan_policy_matrix",
                 "wifi_filter_application",
                 "bluetooth_analyzer_feature_matrix", "bluetooth_analyzer_workflow_routes", "bluetooth_scan_policy_matrix",

@@ -2025,6 +2025,13 @@ object HermesDeviceDiagnosticsBridge {
         val radioReport = radioSignalStatusJson(appContext)
         val signalReport = signalAwarenessReportJson(appContext)
         val environmentReport = agentEnvironmentReportJson(appContext)
+        val signalContextRows = agentSignalContextFusionRows(
+            wifiReport = wifiReport,
+            bluetoothReport = bluetoothReport,
+            sensorReport = sensorReport,
+            radioReport = radioReport,
+            signalReport = signalReport,
+        )
         val observationRows = agentObservationMatrixRows(
             wifiReport = wifiReport,
             bluetoothReport = bluetoothReport,
@@ -2032,6 +2039,7 @@ object HermesDeviceDiagnosticsBridge {
             radioReport = radioReport,
             signalReport = signalReport,
             environmentReport = environmentReport,
+            signalContextRows = signalContextRows,
         )
         val routeRows = agentObservationRouteRows()
         return JSONObject()
@@ -2045,6 +2053,9 @@ object HermesDeviceDiagnosticsBridge {
             .put("radio_observation_summary", observationSummaryJson(radioReport, "radio_signal_status"))
             .put("signal_observation_summary", observationSummaryJson(signalReport, "signal_awareness_report"))
             .put("agent_environment_observation_summary", observationSummaryJson(environmentReport, "agent_environment_report"))
+            .put("agent_signal_context_matrix", signalContextRows)
+            .put("agent_signal_context_count", signalContextRows.length())
+            .put("ready_agent_signal_context_count", countReadyRows(signalContextRows))
             .put("agent_observation_matrix", observationRows)
             .put("agent_observation_routes", routeRows)
             .put("agent_observation_count", observationRows.length())
@@ -2054,6 +2065,7 @@ object HermesDeviceDiagnosticsBridge {
                 "gemma_observation_directives",
                 JSONArray()
                     .put("Read agent_observation_matrix first to decide which signal, sensor, radio, SOC, or Kai surface is actually available on this device.")
+                    .put("Read agent_signal_context_matrix before summarizing nearby RF context so Wi-Fi channel/band rows, Bluetooth RSSI/history rows, motion pose rows, and radio hardware limits stay fused.")
                     .put("Use agent_observation_routes for the next precise android_device_diagnostics_tool action instead of guessing from text.")
                     .put("Open the expandable cards before explaining Wi-Fi channels, Bluetooth proximity, radio limits, motion context, or local model readiness.")
                     .put("Prefer passive analyzer reports for planning; request refresh or active sampling only when the user needs current live data."),
@@ -2067,6 +2079,14 @@ object HermesDeviceDiagnosticsBridge {
                             body = "${observationRows.length()} Gemma-visible row(s) summarizing Wi-Fi, Bluetooth, sensors, radio, SOC, local model, Kai operations, and card coverage.",
                             graphType = "agent_observation_matrix",
                             rows = observationRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Signal Context Fusion",
+                            body = "${signalContextRows.length()} fused context row(s) combining Wi-Fi channel/band coverage, Bluetooth RSSI/history metadata, motion pose context, and radio hardware limits for Gemma.",
+                            graphType = "agent_signal_context_matrix",
+                            rows = signalContextRows,
                         ),
                     )
                     .put(
@@ -2327,6 +2347,7 @@ object HermesDeviceDiagnosticsBridge {
         radioReport: JSONObject,
         signalReport: JSONObject,
         environmentReport: JSONObject,
+        signalContextRows: JSONArray,
     ): JSONArray {
         val wifiNetworkCount = wifiReport.optInt("total_scan_result_count", wifiReport.optJSONArray("wifi_networks")?.length() ?: 0)
         val wifiDetailCount = wifiReport.optJSONArray("wifi_access_point_details")?.length() ?: 0
@@ -2339,6 +2360,8 @@ object HermesDeviceDiagnosticsBridge {
         val signalRouteCount = signalReport.optInt("signal_workflow_route_count", signalReport.optJSONArray("signal_workflow_routes")?.length() ?: 0)
         val kaiOperationsCount = environmentReport.optInt("kai_operations_count", environmentReport.optJSONArray("kai_operations_matrix")?.length() ?: 0)
         val capabilityCount = environmentReport.optInt("agent_capability_count", environmentReport.optJSONArray("agent_capability_matrix")?.length() ?: 0)
+        val signalContextCount = signalContextRows.length()
+        val readySignalContextCount = countReadyRows(signalContextRows)
         return JSONArray()
             .put(
                 capabilityRow(
@@ -2350,6 +2373,20 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Use this first when the user asks what Hermes can currently see about nearby signals or device readiness.",
                     fraction = 0.95f,
                     extra = JSONObject().put("tool_action", "agent_observation_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_signal_context",
+                    label = "Signal context fusion matrix",
+                    ready = signalContextCount > 0,
+                    valueLabel = "$readySignalContextCount/$signalContextCount fused row(s)",
+                    detail = "Machine-readable rows bind Wi-Fi channel/band coverage, Bluetooth RSSI/history metadata, motion pose context, radio hardware limits, and source-card routes before Gemma explains nearby signals.",
+                    recommendation = "Open the Signal Context Fusion card before producing a nearby-signal summary or choosing a scanner.",
+                    fraction = if (signalContextCount > 0) (readySignalContextCount / signalContextCount.toFloat()).coerceIn(0.35f, 0.95f) else 0.25f,
+                    extra = JSONObject()
+                        .put("tool_action", "agent_observation_report")
+                        .put("graph_type", "agent_signal_context_matrix"),
                 ),
             )
             .put(
@@ -2458,6 +2495,163 @@ object HermesDeviceDiagnosticsBridge {
             )
     }
 
+    private fun agentSignalContextFusionRows(
+        wifiReport: JSONObject,
+        bluetoothReport: JSONObject,
+        sensorReport: JSONObject,
+        radioReport: JSONObject,
+        signalReport: JSONObject,
+    ): JSONArray {
+        val wifiNetworkCount = wifiReport.optInt("total_scan_result_count", wifiReport.optJSONArray("wifi_networks")?.length() ?: 0)
+        val wifiBandCoverageCount = wifiReport.optInt("wifi_band_coverage_count", wifiReport.optJSONArray("wifi_band_coverage")?.length() ?: 0)
+        val wifiChannelRatingCount = wifiReport.optJSONArray("wifi_channel_ratings")?.length() ?: 0
+        val wifiChannelUtilizationCount = wifiReport.optInt("wifi_channel_utilization_count", wifiReport.optJSONArray("wifi_channel_utilization")?.length() ?: 0)
+        val wifiHistoryCount = wifiReport.optJSONArray("wifi_signal_history")?.length() ?: 0
+        val bluetoothDeviceCount = bluetoothReport.optInt("bluetooth_device_count", bluetoothReport.optJSONArray("bluetooth_devices")?.length() ?: 0)
+        val bluetoothMetadataCount = bluetoothReport.optInt("bluetooth_metadata_count", bluetoothReport.optJSONArray("bluetooth_metadata_summary")?.length() ?: 0)
+        val bluetoothHistoryCount = bluetoothReport.optInt("bluetooth_signal_history_count", bluetoothReport.optJSONArray("bluetooth_signal_history")?.length() ?: 0)
+        val bluetoothServiceLabelCount = bluetoothReport.optInt("bluetooth_service_label_count", 0)
+        val bluetoothManufacturerNameCount = bluetoothReport.optInt("bluetooth_manufacturer_name_count", 0)
+        val sensorCapabilityCount = sensorReport.optInt("sensor_capability_count", sensorReport.optJSONArray("sensor_capabilities")?.length() ?: 0)
+        val motionPoseCount = sensorReport.optInt("motion_pose_estimate_count", sensorReport.optJSONArray("motion_pose_estimates")?.length() ?: 0)
+        val motionHistoryCount = sensorReport.optInt("motion_sensor_history_count", sensorReport.optJSONArray("motion_sensor_history")?.length() ?: 0)
+        val radioBandCount = radioReport.optInt("radio_band_plan_count", radioReport.optJSONArray("radio_bands")?.length() ?: 0)
+        val radioConstraintCount = radioReport.optInt("radio_signal_constraint_count", radioReport.optJSONArray("radio_signal_constraint_matrix")?.length() ?: 0)
+        val signalRouteCount = signalReport.optInt("signal_workflow_route_count", signalReport.optJSONArray("signal_workflow_routes")?.length() ?: 0)
+        val wifiReady = wifiReport.optBoolean("success", false) && wifiBandCoverageCount > 0
+        val bluetoothReady = bluetoothReport.optBoolean("success", false) &&
+            (bluetoothDeviceCount > 0 || bluetoothMetadataCount > 0 || bluetoothHistoryCount > 0)
+        val sensorReady = sensorReport.optBoolean("sensor_service_available", false) ||
+            sensorCapabilityCount > 0 || motionPoseCount > 0 || motionHistoryCount > 0
+        val radioReady = radioBandCount > 0
+        val readyDomainCount = listOf(wifiReady, bluetoothReady, sensorReady, radioReady).count { it }
+
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "agent_signal_context",
+                    label = "Gemma signal context contract",
+                    ready = readyDomainCount > 0,
+                    valueLabel = "$readyDomainCount/4 source domain(s)",
+                    detail = "Fuses Wi-Fi channel/band rows, Bluetooth RSSI/history metadata, motion pose context, and radio-boundary rows into one card before natural-language reasoning.",
+                    recommendation = "Read this matrix before summarizing nearby signals; then open the exact source card for evidence.",
+                    fraction = (readyDomainCount / 4f).coerceIn(0.25f, 0.95f),
+                    extra = JSONObject()
+                        .put("fusion_key", "signal_context_contract")
+                        .put("context_domains", JSONArray().put("wifi").put("bluetooth").put("motion_sensors").put("radio_rf_limits"))
+                        .put("source_actions", JSONArray().put("wifi_analyzer_report").put("bluetooth_analyzer_report").put("sensor_analyzer_report").put("radio_signal_status").put("signal_awareness_report")),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_signal_context",
+                    label = "Wi-Fi channel and band context",
+                    ready = wifiReady,
+                    valueLabel = "$wifiNetworkCount AP(s), $wifiBandCoverageCount band row(s)",
+                    detail = "$wifiChannelRatingCount channel rating row(s), $wifiChannelUtilizationCount utilization row(s), $wifiHistoryCount cached history row(s) available for Wi-Fi Analyzer-style graphing.",
+                    recommendation = "Use this row to keep channel rating, band coverage, utilization, RSSI history, vendor, and security metadata together.",
+                    fraction = when {
+                        wifiNetworkCount > 0 && wifiChannelRatingCount > 0 -> 0.95f
+                        wifiBandCoverageCount > 0 -> 0.8f
+                        wifiReport.optBoolean("success", false) -> 0.55f
+                        else -> 0.25f
+                    },
+                    extra = JSONObject()
+                        .put("fusion_key", "wifi_channel_band_context")
+                        .put("source_actions", JSONArray().put("wifi_analyzer_report").put("wifi_channel_rating").put("wifi_channel_utilization"))
+                        .put("card_graph_types", JSONArray().put("wifi_band_coverage").put("wifi_channel_rating").put("wifi_channel_utilization").put("wifi_signal_history"))
+                        .put("wifi_network_count", wifiNetworkCount)
+                        .put("wifi_band_coverage_count", wifiBandCoverageCount)
+                        .put("wifi_channel_rating_count", wifiChannelRatingCount)
+                        .put("wifi_channel_utilization_count", wifiChannelUtilizationCount)
+                        .put("wifi_signal_history_count", wifiHistoryCount),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_signal_context",
+                    label = "Bluetooth RSSI and identity context",
+                    ready = bluetoothReady,
+                    valueLabel = "$bluetoothDeviceCount device(s), $bluetoothHistoryCount trend row(s)",
+                    detail = "$bluetoothMetadataCount metadata row(s), $bluetoothServiceLabelCount service label(s), and $bluetoothManufacturerNameCount manufacturer name(s) available for nearby-device reasoning.",
+                    recommendation = "Use this row to keep Bluetooth proximity, service UUID labels, manufacturer IDs, and history trends linked to the same observation.",
+                    fraction = when {
+                        bluetoothDeviceCount > 0 && bluetoothMetadataCount > 0 -> 0.95f
+                        bluetoothHistoryCount > 0 -> 0.75f
+                        bluetoothReport.optBoolean("success", false) -> 0.5f
+                        else -> 0.25f
+                    },
+                    extra = JSONObject()
+                        .put("fusion_key", "bluetooth_rssi_identity_context")
+                        .put("source_actions", JSONArray().put("bluetooth_analyzer_report").put("bluetooth_signal_history").put("bluetooth_scan"))
+                        .put("card_graph_types", JSONArray().put("bluetooth_metadata_summary").put("bluetooth_signal_history").put("bluetooth_rssi"))
+                        .put("bluetooth_device_count", bluetoothDeviceCount)
+                        .put("bluetooth_metadata_count", bluetoothMetadataCount)
+                        .put("bluetooth_signal_history_count", bluetoothHistoryCount)
+                        .put("bluetooth_service_label_count", bluetoothServiceLabelCount)
+                        .put("bluetooth_manufacturer_name_count", bluetoothManufacturerNameCount),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_signal_context",
+                    label = "Motion pose and sensor context",
+                    ready = sensorReady,
+                    valueLabel = "$sensorCapabilityCount sensor row(s), $motionPoseCount pose row(s)",
+                    detail = "$motionHistoryCount cached motion trend row(s) available to bind nearby-signal changes to phone movement, heading, acceleration, and orientation.",
+                    recommendation = "Use this row before attributing Wi-Fi or Bluetooth changes to distance, movement, pocket state, heading, or user motion.",
+                    fraction = when {
+                        motionPoseCount > 0 -> 0.95f
+                        sensorCapabilityCount > 0 -> 0.8f
+                        motionHistoryCount > 0 -> 0.7f
+                        else -> 0.3f
+                    },
+                    extra = JSONObject()
+                        .put("fusion_key", "motion_pose_sensor_context")
+                        .put("source_actions", JSONArray().put("sensor_analyzer_report").put("motion_pose").put("motion_sensor_history"))
+                        .put("card_graph_types", JSONArray().put("motion_pose_estimate").put("motion_sensor_history").put("sensor_capability"))
+                        .put("sensor_capability_count", sensorCapabilityCount)
+                        .put("motion_pose_estimate_count", motionPoseCount)
+                        .put("motion_sensor_history_count", motionHistoryCount),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_signal_context",
+                    label = "Radio hardware boundary context",
+                    ready = radioReady,
+                    valueLabel = "$radioBandCount band row(s), $radioConstraintCount constraint row(s)",
+                    detail = "AM/FM scan support=${radioReport.optBoolean("am_fm_public_android_scan_supported", false)}, broad RF support=${radioReport.optBoolean("general_radio_spectrum_supported", false)}, external SDR required=${radioReport.optBoolean("requires_external_sdr_for_broad_rf", true)}.",
+                    recommendation = "Use this row to keep public Android Wi-Fi/Bluetooth signal access separate from vendor tuner or external SDR requirements.",
+                    fraction = if (radioReady) 0.85f else 0.25f,
+                    extra = JSONObject()
+                        .put("fusion_key", "radio_hardware_boundary_context")
+                        .put("source_actions", JSONArray().put("radio_signal_status").put("signal_awareness_report"))
+                        .put("card_graph_types", JSONArray().put("radio_frequency_capability").put("radio_signal_constraint_matrix").put("radio_signal_workflow_routes"))
+                        .put("radio_band_plan_count", radioBandCount)
+                        .put("radio_signal_constraint_count", radioConstraintCount)
+                        .put("am_fm_public_android_scan_supported", radioReport.optBoolean("am_fm_public_android_scan_supported", false))
+                        .put("requires_external_sdr_for_broad_rf", radioReport.optBoolean("requires_external_sdr_for_broad_rf", true)),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_signal_context",
+                    label = "Source card drill-down",
+                    ready = signalRouteCount > 0,
+                    valueLabel = "$signalRouteCount signal route row(s)",
+                    detail = "Routes link the fused matrix back to Wi-Fi Analyzer, Bluetooth Analyzer, Sensor Analyzer, radio band plan, and signal-awareness cards.",
+                    recommendation = "Use the source_actions and card_graph_types fields when the answer needs evidence instead of a text-only summary.",
+                    fraction = if (signalRouteCount > 0) 0.9f else 0.45f,
+                    extra = JSONObject()
+                        .put("fusion_key", "source_card_drill_down")
+                        .put("source_actions", JSONArray().put("agent_observation_report").put("wifi_analyzer_report").put("bluetooth_analyzer_report").put("sensor_analyzer_report").put("radio_signal_status"))
+                        .put("card_graph_types", JSONArray().put("agent_signal_context_matrix").put("wifi_channel_rating").put("bluetooth_signal_history").put("motion_pose_estimate").put("radio_frequency_capability"))
+                        .put("signal_workflow_route_count", signalRouteCount),
+                ),
+            )
+    }
+
     private fun agentObservationRouteRows(): JSONArray {
         return JSONArray()
             .put(
@@ -2494,6 +2688,18 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Use refresh=false for passive rows and refresh=true only when the user needs a live nearby scan.",
                     fraction = 0.9f,
                     extra = JSONObject().put("tool_action", "bluetooth_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_observation_route",
+                    label = "Open signal context fusion card",
+                    ready = true,
+                    valueLabel = "agent_observation_report",
+                    detail = "Use for the combined Wi-Fi channel/band, Bluetooth RSSI/history, motion pose, and radio-boundary matrix before writing a nearby-signal explanation.",
+                    recommendation = "Open after the observation dashboard when the user asks what the agent can see across nearby signals.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "agent_observation_report"),
                 ),
             )
             .put(

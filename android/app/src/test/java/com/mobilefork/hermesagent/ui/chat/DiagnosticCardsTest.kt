@@ -514,6 +514,45 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesAgentSignalContextFusionRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Signal Context Fusion")
+                        .put("body", "Fused signal context.")
+                        .put("graph_type", "agent_signal_context_matrix")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("category", "agent_signal_context")
+                                    .put("label", "Wi-Fi channel and band context")
+                                    .put("ready", true)
+                                    .put("value_label", "2 AP(s), 3 band row(s)")
+                                    .put("detail", "Channel rating and band coverage rows are available.")
+                                    .put("recommendation", "Open source card for evidence.")
+                                    .put("fraction", 0.9),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val card = extractDiagnosticCards(content).single()
+        val row = card.rows.single()
+
+        assertEquals("Signal Context Fusion", card.title)
+        assertEquals("agent_signal_context_matrix", card.graphType)
+        assertEquals("Wi-Fi channel and band context", row.label)
+        assertEquals("2 AP(s), 3 band row(s)", row.valueLabel)
+        assertTrue(row.detail.contains("agent signal context"))
+        assertTrue(row.detail.contains("Open source card"))
+        assertTrue(row.fraction > 0.85f)
+    }
+
+    @Test
     fun parsesSignalAwarenessRowsForExpandableCards() {
         val content = JSONObject()
             .put(

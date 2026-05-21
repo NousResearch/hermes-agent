@@ -252,6 +252,55 @@ class TestGoalManager:
         assert mgr2.state.goal == "do the thing"
         assert mgr2.is_active()
 
+    def test_migrate_goal_session_preserves_active_goal_after_compression_split(self, hermes_home):
+        """Compression rotates session_id; the active /goal must follow the new session.
+
+        Regression: the goal was keyed as goal:<old_session_id>. After context
+        compression created <new_session_id>, GoalManager(new_session_id) saw no
+        goal, so the autonomous /goal loop stopped long before goals.max_turns.
+        """
+        from hermes_cli.goals import GoalManager, load_goal, migrate_goal_session
+
+        old_mgr = GoalManager(session_id="goal-before-compression", default_max_turns=240)
+        old_state = old_mgr.set("finish milestone")
+        old_state.turns_used = 7
+        old_state.last_verdict = "continue"
+        old_state.last_reason = "more work"
+        old_state.subgoals.append("tests pass")
+        from hermes_cli.goals import save_goal
+        save_goal("goal-before-compression", old_state)
+
+        migrated = migrate_goal_session(
+            "goal-before-compression",
+            "goal-after-compression",
+        )
+
+        assert migrated is True
+        old_after = load_goal("goal-before-compression")
+        assert old_after is not None
+        assert old_after.status == "cleared"
+        new_mgr = GoalManager(session_id="goal-after-compression", default_max_turns=20)
+        assert new_mgr.is_active()
+        assert new_mgr.state is not None
+        assert new_mgr.state.goal == "finish milestone"
+        assert new_mgr.state.max_turns == 240
+        assert new_mgr.state.turns_used == 7
+        assert new_mgr.state.last_verdict == "continue"
+        assert new_mgr.state.last_reason == "more work"
+        assert new_mgr.state.subgoals == ["tests pass"]
+
+    def test_migrate_goal_session_ignores_inactive_or_missing_goal(self, hermes_home):
+        from hermes_cli.goals import GoalManager, load_goal, migrate_goal_session
+
+        assert migrate_goal_session("missing-old", "new") is False
+
+        mgr = GoalManager(session_id="done-old")
+        mgr.set("already done")
+        mgr.mark_done("complete")
+
+        assert migrate_goal_session("done-old", "done-new") is False
+        assert load_goal("done-new") is None
+
     def test_evaluate_after_turn_done(self, hermes_home):
         """Judge says done → status=done, no continuation."""
         from hermes_cli import goals

@@ -8,7 +8,9 @@ goal is done, turn budget is exhausted, the user pauses/clears it, or the
 user sends a new message (which takes priority and pauses the goal loop).
 
 State is persisted in SessionDB's ``state_meta`` table keyed by
-``goal:<session_id>`` so ``/resume`` picks it up.
+``goal:<session_id>`` so ``/resume`` picks it up. When context compression
+rotates a session_id, the active goal state is migrated to the new key so
+autonomous continuation survives compaction.
 
 Design notes / invariants:
 
@@ -277,6 +279,42 @@ def clear_goal(session_id: str) -> None:
         return
     state.status = "cleared"
     save_goal(session_id, state)
+
+
+def migrate_goal_session(old_session_id: str, new_session_id: str) -> bool:
+    """Move an active goal from an old session_id to a new session_id.
+
+    Context compression splits the transcript and rotates ``agent.session_id``.
+    Goals are keyed by session_id, so without this migration the next gateway
+    post-turn hook binds ``GoalManager(new_session_id)`` and sees no active
+    goal, stopping the autonomous /goal loop before the configured turn budget.
+
+    Returns True when an active goal was copied. The old key is marked cleared
+    (audit-preserving) instead of deleted.
+    """
+    if not old_session_id or not new_session_id or old_session_id == new_session_id:
+        return False
+
+    state = load_goal(old_session_id)
+    if state is None or state.status != "active":
+        return False
+
+    existing = load_goal(new_session_id)
+    if existing is not None and existing.status == "active":
+        logger.warning(
+            "GoalManager: refusing to overwrite active goal on compressed session %s",
+            new_session_id,
+        )
+        return False
+
+    save_goal(new_session_id, state)
+    clear_goal(old_session_id)
+    logger.info(
+        "GoalManager: migrated active goal from %s to %s during session split",
+        old_session_id,
+        new_session_id,
+    )
+    return True
 
 
 # ──────────────────────────────────────────────────────────────────────

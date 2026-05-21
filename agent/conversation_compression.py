@@ -396,6 +396,15 @@ def compress_context(
                 parent_session_id=old_session_id,
             )
             agent._session_db_created = True
+            try:
+                from hermes_cli.goals import migrate_goal_session
+
+                migrate_goal_session(old_session_id, agent.session_id)
+            except Exception as goal_exc:
+                logger.debug(
+                    "Goal state migration after compression split failed: %s",
+                    goal_exc,
+                )
             # Auto-number the title for the continuation session
             if old_title:
                 try:

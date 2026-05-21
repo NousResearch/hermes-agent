@@ -112,7 +112,7 @@ def _clean_discord_id(entry: str) -> str:
 # and grouped-subcommand variants.  Without normalisation these payloads fall
 # through the `/cmd` command dispatch entirely.  See #29528.
 _APP_COMMAND_MENTION_RE = re.compile(
-    r"</([a-zA-Z0-9_-]+(?:\s[a-zA-Z0-9_-]+){0,2}):\d+>"
+    r"</([a-zA-Z0-9_-]+(?: [a-zA-Z0-9_-]+){0,2}):\d+>"
 )
 
 
@@ -4547,11 +4547,14 @@ class DiscordAdapter(BasePlatformAdapter):
         # Clicked Discord slash-command suggestions arrive as `</cmd:id>` and
         # must be normalised back to `/cmd` text before the command dispatch
         # below; run after mention-stripping so the `</cmd:id>` payload is no
-        # longer adjacent to a bot mention.  See #29528.
+        # longer adjacent to a bot mention.  See #29528.  The `</` substring
+        # check is a cheap pre-filter; only strip when the regex actually
+        # rewrote something so unrelated content (e.g. `</tag>` with leading
+        # whitespace) is left untouched.
         if "</" in normalized_content:
-            new_normalized = _normalize_app_command_mentions(normalized_content).strip()
-            if new_normalized != normalized_content:
-                normalized_content = new_normalized
+            rewritten = _normalize_app_command_mentions(normalized_content)
+            if rewritten != normalized_content:
+                normalized_content = rewritten.strip()
                 message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

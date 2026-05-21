@@ -75,7 +75,11 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from gateway.platforms.base import MessageType  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    DiscordAdapter,
+    _normalize_app_command_mentions,
+)
 
 
 class FakeTree:
@@ -999,9 +1003,6 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
 # ------------------------------------------------------------------
 # Application-command mention normalisation (clicked slash suggestions)
 # ------------------------------------------------------------------
-
-from gateway.platforms.base import MessageType  # noqa: E402
-from gateway.platforms.discord import _normalize_app_command_mentions  # noqa: E402
 
 
 @pytest.mark.parametrize(

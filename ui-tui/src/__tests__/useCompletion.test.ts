@@ -32,4 +32,28 @@ describe('completionRequestForInput', () => {
   it('leaves plain text alone', () => {
     expect(completionRequestForInput('hello there')).toBeNull()
   })
+
+  it('returns slash completion for bare /model (so the entry stays visible)', () => {
+    expect(completionRequestForInput('/model')).toMatchObject({
+      method: 'complete.slash',
+      params: { text: '/model' },
+      replaceFrom: 1
+    })
+  })
+
+  it('returns slash completion for partial /mode prefix', () => {
+    expect(completionRequestForInput('/mode')).toMatchObject({
+      method: 'complete.slash',
+      params: { text: '/mode' },
+      replaceFrom: 1
+    })
+  })
+
+  it('defers to the ModelPicker once /model has args (trailing space)', () => {
+    expect(completionRequestForInput('/model ')).toBeNull()
+  })
+
+  it('defers to the ModelPicker once /model has a value', () => {
+    expect(completionRequestForInput('/model gpt-4')).toBeNull()
+  })
 })

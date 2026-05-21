@@ -42,7 +42,7 @@ export function completionRequestForInput(
 
   // `/model` uses the two-step ModelPicker (real curated IDs).
   // Slash completion here only showed short aliases + vendor/family meta.
-  if (isSlashCommand && /^\/model(?:\s|$)/.test(input)) {
+  if (isSlashCommand && /^\/model\s/.test(input)) {
     return null
   }
 

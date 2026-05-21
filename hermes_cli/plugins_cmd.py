@@ -68,6 +68,11 @@ class PluginOperationError(Exception):
 # future breaking changes to the manifest schema bump this.
 _SUPPORTED_MANIFEST_VERSION = 1
 
+# Sidecar written into each sub-plugin extracted from a multi-plugin repo, so
+# ``hermes plugins update`` can re-clone the source repo and refresh just the
+# sub-plugin subtree (single-plugin installs use the cloned ``.git`` instead).
+_SOURCE_SIDECAR_NAME = ".hermes_source.json"
+
 
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
@@ -337,88 +342,268 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     return target
 
 
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
+def _discover_manifests_in_clone(
+    clone_dir: Path,
+) -> tuple[bool, list[tuple[Path, dict]]]:
+    """Discover plugin manifests inside a freshly cloned repo.
 
+    Returns ``(is_root_manifest, manifests)``.
 
-def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:
-    """Clone Git plugin into ``~/.hermes/plugins``.
-
-    Returns ``(target_dir, installed_manifest, canonical_name)``.
-    Raises ``PluginOperationError`` on failure.
+    - If ``clone_dir/plugin.yaml`` (or .yml) exists, treats this as a
+      single-plugin repo and returns ``(True, [(clone_dir, manifest)])``.
+      Root wins even if ``plugins/*/plugin.yaml`` files also exist — this
+      preserves back-compat for repos with both layouts (e.g. mid-migration).
+    - Otherwise scans ``clone_dir/plugins/*/plugin.yaml`` and direct children
+      ``clone_dir/*/plugin.yaml`` (depth-1 each), deduped, sorted by manifest
+      name then path.
+    - Returns ``(False, [])`` if no manifests are found.
     """
-    import tempfile
+    root_manifest = _read_manifest(clone_dir)
+    if root_manifest:
+        return True, [(clone_dir, root_manifest)]
 
+    found: dict[Path, dict] = {}
+    scan_roots = [clone_dir / "plugins", clone_dir]
+    for root in scan_roots:
+        if not root.is_dir():
+            continue
+        for child in sorted(root.iterdir()):
+            if not child.is_dir():
+                continue
+            if child.name.startswith("."):
+                continue
+            # When scanning the clone root itself, don't re-enter "plugins/"
+            # (already covered by the first scan root).
+            if root == clone_dir and child.name == "plugins":
+                continue
+            resolved = child.resolve()
+            if resolved in found:
+                continue
+            manifest = _read_manifest(child)
+            if manifest:
+                found[resolved] = manifest
+
+    if not found:
+        return False, []
+
+    pairs = sorted(
+        found.items(),
+        key=lambda kv: (kv[1].get("name") or kv[0].name, str(kv[0])),
+    )
+    return False, [(p, m) for p, m in pairs]
+
+
+def _prompt_subset_selection(
+    manifests: list[tuple[Path, dict]], console
+) -> list[int]:
+    """Prompt the user to select which discovered sub-plugins to install.
+
+    Returns indices into ``manifests``. Non-interactive contexts return all.
+    Empty list means the user cancelled (caller should abort).
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        console.print(
+            "[dim]Non-interactive — installing all discovered plugins.[/dim]"
+        )
+        return list(range(len(manifests)))
+
+    console.print()
+    console.print(f"[bold]Discovered {len(manifests)} plugins in this repo:[/bold]")
+    for i, (_path, manifest) in enumerate(manifests, start=1):
+        name = manifest.get("name") or "(unnamed)"
+        desc = manifest.get("description") or ""
+        line = f"  {i}. [cyan]{name}[/cyan]"
+        if desc:
+            line += f" — {desc}"
+        console.print(line)
+    console.print()
+
+    while True:
+        try:
+            answer = input("Install all? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[yellow]Cancelled.[/yellow]")
+            return []
+        if answer in {"", "y", "yes"}:
+            return list(range(len(manifests)))
+        if answer in {"n", "no"}:
+            break
+        console.print("[dim]Please answer y or n.[/dim]")
+
+    while True:
+        try:
+            raw = input(
+                f"Select plugins (comma-separated, 1-{len(manifests)}): "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[yellow]Cancelled.[/yellow]")
+            return []
+        if not raw:
+            console.print("[dim]Enter at least one number, or Ctrl-C to cancel.[/dim]")
+            continue
+        try:
+            indices = sorted(
+                {int(x.strip()) - 1 for x in raw.split(",") if x.strip()}
+            )
+        except ValueError:
+            console.print("[red]Invalid input — use numbers separated by commas.[/red]")
+            continue
+        if not indices or any(i < 0 or i >= len(manifests) for i in indices):
+            console.print(
+                f"[red]Out of range — values must be 1-{len(manifests)}.[/red]"
+            )
+            continue
+        return indices
+
+
+def _filter_manifests_by_names(
+    manifests: list[tuple[Path, dict]], names: list[str]
+) -> list[tuple[Path, dict]]:
+    """Filter discovered manifests by canonical name, preserving the order in *names*.
+
+    Raises ``PluginOperationError`` if any requested name is missing from *manifests*.
+    """
+    by_name: dict[str, tuple[Path, dict]] = {}
+    for p, m in manifests:
+        n = m.get("name")
+        if n:
+            by_name[n] = (p, m)
+    selected: list[tuple[Path, dict]] = []
+    unknown: list[str] = []
+    for n in names:
+        if n in by_name:
+            selected.append(by_name[n])
+        else:
+            unknown.append(n)
+    if unknown:
+        available = ", ".join(sorted(by_name.keys())) or "(none)"
+        raise PluginOperationError(
+            f"Plugin(s) not found in repo: {', '.join(unknown)}. "
+            f"Available: {available}"
+        )
+    return selected
+
+
+def _validate_manifest_version(manifest: dict, plugin_name: str) -> None:
+    """Reject manifests requiring a newer schema than this installer supports."""
+    mv = manifest.get("manifest_version")
+    if mv is None:
+        return
+    try:
+        mv_int = int(mv)
+    except (ValueError, TypeError):
+        raise PluginOperationError(
+            f"Plugin '{plugin_name}' has invalid manifest_version "
+            f"'{mv}' (expected an integer)."
+        ) from None
+    if mv_int > _SUPPORTED_MANIFEST_VERSION:
+        from hermes_cli.config import recommended_update_command
+
+        raise PluginOperationError(
+            f"Plugin '{plugin_name}' requires manifest_version {mv}, "
+            f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
+            f"Run {recommended_update_command()} to update Hermes."
+        ) from None
+
+
+def _write_source_sidecar(target: Path, source_repo: str, sub_path: str) -> None:
+    """Write ``.hermes_source.json`` recording where a sub-plugin came from."""
+    import json
+    from datetime import datetime, timezone
+
+    sidecar = target / _SOURCE_SIDECAR_NAME
+    payload = {
+        "source_repo": source_repo,
+        "sub_path": sub_path,
+        "installed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        sidecar.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Failed to write %s: %s", sidecar, exc)
+
+
+def _read_source_sidecar(target: Path) -> Optional[dict]:
+    """Read ``.hermes_source.json`` if present, otherwise return None."""
+    import json
+
+    sidecar = target / _SOURCE_SIDECAR_NAME
+    if not sidecar.exists():
+        return None
+    try:
+        return json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("Failed to read %s: %s", sidecar, exc)
+        return None
+
+
+def _clone_repo(identifier: str, dest: Path) -> str:
+    """Clone the repo at *identifier* into *dest*. Returns the resolved git URL.
+
+    Raises ``PluginOperationError`` on any failure (unresolved identifier,
+    missing ``git``, network error, non-zero exit). The clone is shallow
+    (``--depth 1``) with a 60-second timeout.
+    """
     try:
         git_url = _resolve_git_url(identifier)
     except ValueError as e:
         raise PluginOperationError(str(e)) from e
 
-    plugins_dir = _plugins_dir()
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError("git is not installed or not in PATH.")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_target = Path(tmp) / "plugin"
+    try:
+        result = subprocess.run(
+            [git_exe, "clone", "--depth", "1", git_url, str(dest)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError as e:
+        raise PluginOperationError("git is not installed or not in PATH.") from e
+    except subprocess.TimeoutExpired as e:
+        raise PluginOperationError("Git clone timed out after 60 seconds.") from e
 
-        git_exe = _resolve_git_executable()
-        if not git_exe:
-            raise PluginOperationError("git is not installed or not in PATH.")
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        raise PluginOperationError(f"Git clone failed:\n{err}")
 
-        try:
-            result = subprocess.run(
-                [git_exe, "clone", "--depth", "1", git_url, str(tmp_target)],
-                capture_output=True,
-                text=True,
-                timeout=60,
+    return git_url
+
+
+def _install_root_plugin(
+    clone_root: Path,
+    manifest: dict,
+    plugins_dir: Path,
+    *,
+    force: bool,
+    git_url: str,
+) -> tuple[Path, dict, str]:
+    """Install a single-plugin repo by moving the whole clone into the plugins dir.
+
+    Preserves the historical behavior of ``_install_plugin_core``: no
+    ``.hermes_source.json`` is written, ``cmd_update`` continues to work via
+    the ``.git`` directory inside the moved clone.
+    """
+    plugin_name = manifest.get("name") or _repo_name_from_url(git_url)
+
+    try:
+        target = _sanitize_plugin_name(plugin_name, plugins_dir)
+    except ValueError as e:
+        raise PluginOperationError(str(e)) from e
+
+    _validate_manifest_version(manifest, plugin_name)
+
+    if target.exists():
+        if not force:
+            raise PluginOperationError(
+                f"Plugin '{plugin_name}' already exists. Use force reinstall "
+                f"or run `hermes plugins update {plugin_name}`."
             )
-        except FileNotFoundError as e:
-            raise PluginOperationError(
-                "git is not installed or not in PATH.",
-            ) from e
-        except subprocess.TimeoutExpired as e:
-            raise PluginOperationError(
-                "Git clone timed out after 60 seconds.",
-            ) from e
+        shutil.rmtree(target)
 
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or "").strip()
-            raise PluginOperationError(f"Git clone failed:\n{err}")
-
-        manifest = _read_manifest(tmp_target)
-        plugin_name = manifest.get("name") or _repo_name_from_url(git_url)
-
-        try:
-            target = _sanitize_plugin_name(plugin_name, plugins_dir)
-        except ValueError as e:
-            raise PluginOperationError(str(e)) from e
-
-        mv = manifest.get("manifest_version")
-        if mv is not None:
-            try:
-                mv_int = int(mv)
-            except (ValueError, TypeError):
-                raise PluginOperationError(
-                    f"Plugin '{plugin_name}' has invalid manifest_version "
-                    f"'{mv}' (expected an integer).",
-                ) from None
-            if mv_int > _SUPPORTED_MANIFEST_VERSION:
-                from hermes_cli.config import recommended_update_command
-
-                raise PluginOperationError(
-                    f"Plugin '{plugin_name}' requires manifest_version {mv}, "
-                    f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
-                    f"Run {recommended_update_command()} to update Hermes.",
-                ) from None
-
-        if target.exists():
-            if not force:
-                raise PluginOperationError(
-                    f"Plugin '{plugin_name}' already exists. Use force reinstall "
-                    f"or run `hermes plugins update {plugin_name}`.",
-                )
-            shutil.rmtree(target)
-
-        shutil.move(str(tmp_target), str(target))
+    shutil.move(str(clone_root), str(target))
 
     has_yaml = (target / "plugin.yaml").exists() or (target / "plugin.yml").exists()
     if not has_yaml and not (target / "__init__.py").exists():
@@ -435,16 +620,156 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
     return target, installed_manifest, installed_name
 
 
+def _install_subplugin_dir(
+    src_subdir: Path,
+    manifest: dict,
+    plugins_dir: Path,
+    *,
+    force: bool,
+    source_repo: str,
+    sub_path: str,
+) -> tuple[Path, dict, str]:
+    """Move one sub-plugin subtree out of a multi-plugin clone into the plugins dir.
+
+    Writes a ``.hermes_source.json`` sidecar so ``cmd_update`` can re-clone the
+    source repo and refresh just this sub-plugin (the sub-plugin dir has no
+    ``.git`` of its own).
+    """
+    plugin_name = manifest.get("name") or src_subdir.name
+
+    try:
+        target = _sanitize_plugin_name(plugin_name, plugins_dir)
+    except ValueError as e:
+        raise PluginOperationError(str(e)) from e
+
+    _validate_manifest_version(manifest, plugin_name)
+
+    if target.exists():
+        if not force:
+            raise PluginOperationError(
+                f"Plugin '{plugin_name}' already exists. Use --force to reinstall "
+                f"or run `hermes plugins update {plugin_name}`."
+            )
+        shutil.rmtree(target)
+
+    shutil.move(str(src_subdir), str(target))
+
+    _write_source_sidecar(target, source_repo, sub_path)
+
+    has_yaml = (target / "plugin.yaml").exists() or (target / "plugin.yml").exists()
+    if not has_yaml and not (target / "__init__.py").exists():
+        logger.warning(
+            "%s has no plugin.yaml / __init__.py; may not be a valid plugin",
+            plugin_name,
+        )
+
+    from rich.console import Console
+
+    _copy_example_files(target, Console())
+    installed_manifest = _read_manifest(target)
+    installed_name = installed_manifest.get("name") or target.name
+    return target, installed_manifest, installed_name
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:
+    """Single-plugin install path (back-compat wrapper around the new helpers).
+
+    Clones the repo, requires a root ``plugin.yaml``, and installs it. Raises
+    ``PluginOperationError`` if the repo has a multi-plugin layout — callers
+    that need multi-plugin support should use ``_clone_repo`` +
+    ``_discover_manifests_in_clone`` + ``_install_subplugin_dir`` directly.
+    """
+    import tempfile
+
+    plugins_dir = _plugins_dir()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        clone_root = Path(tmp) / "plugin"
+        git_url = _clone_repo(identifier, clone_root)
+
+        is_root, manifests = _discover_manifests_in_clone(clone_root)
+        if not manifests:
+            raise PluginOperationError(
+                f"No plugin.yaml found in {git_url}."
+            )
+        if not is_root:
+            raise PluginOperationError(
+                f"{git_url} is a multi-plugin repo. Use `hermes plugins install` "
+                f"(which handles selection) rather than the legacy core install."
+            )
+        return _install_root_plugin(
+            clone_root, manifests[0][1], plugins_dir,
+            force=force, git_url=git_url,
+        )
+
+
+def _resolve_enable_choice(
+    enable: Optional[bool], label: str
+) -> bool:
+    """Resolve the enable-after-install choice (CLI flag, prompt, or default)."""
+    if enable is not None:
+        return enable
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    try:
+        answer = input(f"  Enable {label} now? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in {"y", "yes"}
+
+
+def _apply_enable_state(names: list[str], should_enable: bool, console) -> None:
+    """Apply enable/disable bookkeeping for newly installed plugins and report."""
+    if should_enable:
+        enabled = _get_enabled_set()
+        disabled = _get_disabled_set()
+        for n in names:
+            enabled.add(n)
+            disabled.discard(n)
+        _save_enabled_set(enabled)
+        _save_disabled_set(disabled)
+        if len(names) == 1:
+            console.print(
+                f"[green]✓[/green] Plugin [bold]{names[0]}[/bold] enabled.",
+            )
+        else:
+            joined = ", ".join(f"[bold]{n}[/bold]" for n in names)
+            console.print(f"[green]✓[/green] Plugins enabled: {joined}")
+    else:
+        if len(names) == 1:
+            console.print(
+                f"[dim]Plugin installed but not enabled. "
+                f"Run `hermes plugins enable {names[0]}` to activate.[/dim]",
+            )
+        else:
+            console.print(
+                "[dim]Plugins installed but not enabled. "
+                "Run `hermes plugins enable <name>` for each.[/dim]",
+            )
+
+
 def cmd_install(
     identifier: str,
     force: bool = False,
     enable: Optional[bool] = None,
+    select: Optional[list[str]] = None,
 ) -> None:
-    """Install a plugin from a Git URL or owner/repo shorthand.
+    """Install one or more plugins from a Git URL or owner/repo shorthand.
 
-    After install, prompt "Enable now? [y/N]" unless *enable* is provided
-    (True = auto-enable without prompting, False = install disabled).
+    Supports both single-plugin repos (root ``plugin.yaml``) and multi-plugin
+    repos (``plugins/<name>/plugin.yaml``). For multi-plugin repos, prompts
+    the user to install all-or-subset (skipped when *select* is provided or
+    stdin is non-interactive — in which case all are installed).
+
+    After install, prompts "Enable now? [y/N]" unless *enable* is provided
+    (True = auto-enable, False = install disabled).
     """
+    import tempfile
     from rich.console import Console
 
     console = Console()
@@ -463,63 +788,136 @@ def cmd_install(
 
     console.print(f"[dim]Cloning {git_url}...[/dim]")
 
-    try:
-        target, installed_manifest, installed_name = _install_plugin_core(
-            identifier,
-            force=force,
-        )
-    except PluginOperationError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        sys.exit(1)
+    plugins_dir = _plugins_dir()
 
-    if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (
-        target / "__init__.py"
-    ).exists():
-        console.print(
-            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml "
-            f"or __init__.py. It may not be a valid Hermes plugin.",
-        )
+    with tempfile.TemporaryDirectory() as tmp:
+        clone_root = Path(tmp) / "plugin"
+        try:
+            _clone_repo(identifier, clone_root)
+        except PluginOperationError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            sys.exit(1)
 
-    _prompt_plugin_env_vars(installed_manifest, console)
+        is_root, manifests = _discover_manifests_in_clone(clone_root)
+        if not manifests:
+            console.print(
+                f"[red]Error:[/red] No plugin.yaml found in {git_url}. "
+                f"Expected a root plugin.yaml or one or more "
+                f"plugins/<name>/plugin.yaml files.",
+            )
+            sys.exit(1)
 
-    _display_after_install(target, identifier)
-
-    should_enable = enable
-    if should_enable is None:
-        if sys.stdin.isatty() and sys.stdout.isatty():
+        # ── Single-plugin repo (root manifest wins) ────────────────────────
+        if is_root:
             try:
-                answer = input(
-                    f"  Enable '{installed_name}' now? [y/N]: ",
-                ).strip().lower()
-                should_enable = answer in {"y", "yes"}
-            except (EOFError, KeyboardInterrupt):
-                should_enable = False
+                target, installed_manifest, installed_name = _install_root_plugin(
+                    clone_root, manifests[0][1], plugins_dir,
+                    force=force, git_url=git_url,
+                )
+            except PluginOperationError as e:
+                console.print(f"[red]Error:[/red] {e}")
+                sys.exit(1)
+
+            if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (
+                target / "__init__.py"
+            ).exists():
+                console.print(
+                    f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml "
+                    f"or __init__.py. It may not be a valid Hermes plugin.",
+                )
+
+            _prompt_plugin_env_vars(installed_manifest, console)
+            _display_after_install(target, identifier)
+
+            should_enable = _resolve_enable_choice(enable, f"'{installed_name}'")
+            _apply_enable_state([installed_name], should_enable, console)
+
+            console.print("[dim]Restart the gateway for the plugin to take effect:[/dim]")
+            console.print("[dim]  hermes gateway restart[/dim]")
+            console.print()
+            return
+
+        # ── Multi-plugin repo ───────────────────────────────────────────────
+        if select:
+            try:
+                selected = _filter_manifests_by_names(manifests, select)
+            except PluginOperationError as e:
+                console.print(f"[red]Error:[/red] {e}")
+                sys.exit(1)
+        elif len(manifests) > 1:
+            indices = _prompt_subset_selection(manifests, console)
+            if not indices:
+                console.print("[yellow]No plugins selected — nothing to install.[/yellow]")
+                sys.exit(1)
+            selected = [manifests[i] for i in indices]
         else:
-            should_enable = False
+            selected = manifests
 
-    if should_enable:
-        enabled = _get_enabled_set()
-        disabled = _get_disabled_set()
-        enabled.add(installed_name)
-        disabled.discard(installed_name)
-        _save_enabled_set(enabled)
-        _save_disabled_set(disabled)
-        console.print(
-            f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
-        )
-    else:
-        console.print(
-            f"[dim]Plugin installed but not enabled. "
-            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]",
-        )
+        # Capture root after-install.md while the clone is still on disk.
+        root_after_install = clone_root / "after-install.md"
+        has_root_after_install = root_after_install.exists()
 
-    console.print("[dim]Restart the gateway for the plugin to take effect:[/dim]")
-    console.print("[dim]  hermes gateway restart[/dim]")
-    console.print()
+        installed_plugins: list[tuple[Path, dict, str]] = []
+        for sub_dir, sub_manifest in selected:
+            try:
+                sub_path = sub_dir.relative_to(clone_root).as_posix()
+            except ValueError:
+                sub_path = sub_dir.name
+            label = sub_manifest.get("name", sub_dir.name)
+            try:
+                target, installed_manifest, installed_name = _install_subplugin_dir(
+                    sub_dir, sub_manifest, plugins_dir,
+                    force=force, source_repo=git_url, sub_path=sub_path,
+                )
+            except PluginOperationError as e:
+                console.print(f"[red]Error installing {label}:[/red] {e}")
+                if installed_plugins:
+                    done = ", ".join(n for _, _, n in installed_plugins)
+                    console.print(
+                        f"[yellow]Note:[/yellow] Already-installed plugins kept: {done}"
+                    )
+                sys.exit(1)
+            installed_plugins.append((target, installed_manifest, installed_name))
+            console.print(
+                f"[green]✓[/green] Installed [bold]{installed_name}[/bold] "
+                f"from {sub_path}",
+            )
+
+        for _, installed_manifest, _ in installed_plugins:
+            _prompt_plugin_env_vars(installed_manifest, console)
+
+        if has_root_after_install:
+            _display_after_install(clone_root, identifier)
+        else:
+            for target, _, installed_name in installed_plugins:
+                if (target / "after-install.md").exists():
+                    _display_after_install(target, installed_name)
+
+        names = [n for _, _, n in installed_plugins]
+        label = (
+            f"'{names[0]}'"
+            if len(names) == 1
+            else f"all {len(names)} plugins"
+        )
+        should_enable = _resolve_enable_choice(enable, label)
+        _apply_enable_state(names, should_enable, console)
+
+        console.print("[dim]Restart the gateway for the plugins to take effect:[/dim]")
+        console.print("[dim]  hermes gateway restart[/dim]")
+        console.print()
 
 
 def cmd_update(name: str) -> None:
-    """Update an installed plugin by pulling latest from its git remote."""
+    """Update an installed plugin.
+
+    For sub-plugins extracted from a multi-plugin repo (sidecar
+    ``.hermes_source.json`` present), re-clones the source repo and refreshes
+    just the sub-plugin subtree, preserving the sidecar.
+
+    For traditional installs (clone left in place with ``.git``), runs
+    ``git pull`` against the existing remote.
+    """
+    import tempfile
     from rich.console import Console
 
     console = Console()
@@ -530,6 +928,53 @@ def cmd_update(name: str) -> None:
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
+
+    sidecar = _read_source_sidecar(target)
+    if sidecar:
+        source_repo = sidecar.get("source_repo")
+        sub_path = sidecar.get("sub_path") or ""
+        if not source_repo:
+            console.print(
+                f"[red]Error:[/red] Plugin '{name}' has a malformed "
+                f"{_SOURCE_SIDECAR_NAME} (missing source_repo)."
+            )
+            sys.exit(1)
+
+        console.print(f"[dim]Refreshing {name} from {source_repo}...[/dim]")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_clone = Path(tmp) / "src"
+            try:
+                _clone_repo(source_repo, tmp_clone)
+            except PluginOperationError as exc:
+                console.print(f"[red]Error:[/red] {exc}")
+                sys.exit(1)
+
+            src_subdir = tmp_clone / sub_path if sub_path else tmp_clone
+            if not src_subdir.is_dir():
+                console.print(
+                    f"[red]Error:[/red] sub_path '{sub_path}' no longer exists "
+                    f"in {source_repo} (repo layout may have changed)."
+                )
+                sys.exit(1)
+            if not (src_subdir / "plugin.yaml").exists() and not (
+                src_subdir / "plugin.yml"
+            ).exists():
+                console.print(
+                    f"[red]Error:[/red] No plugin.yaml at '{sub_path}' in "
+                    f"{source_repo} (repo layout may have changed)."
+                )
+                sys.exit(1)
+
+            shutil.rmtree(target)
+            shutil.copytree(src_subdir, target)
+            _write_source_sidecar(target, source_repo, sub_path)
+
+        _copy_example_files(target, console)
+        console.print(
+            f"[green]✓[/green] Plugin [bold]{name}[/bold] refreshed from {source_repo}."
+        )
+        return
 
     if not (target / ".git").exists():
         console.print(
@@ -1343,8 +1788,27 @@ def dashboard_install_plugin(
     *,
     force: bool,
     enable: bool,
+    select: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
+    """Non-interactive install for the web dashboard. Returns a JSON-serializable dict.
+
+    Single-plugin repos (root ``plugin.yaml``) return the historical shape::
+
+        {ok, plugin_name, warnings, missing_env, after_install_path, enabled}
+
+    Multi-plugin repos return an extended shape with ``multi: true`` as a
+    discriminator and a ``plugins`` list, each entry carrying its own
+    ``name``, ``missing_env``, ``enabled`` (plus ``ok``/``error`` per plugin
+    so partial failures surface)::
+
+        {ok, multi: true, plugins: [{name, missing_env, enabled, ok}, ...],
+         warnings, after_install_path, after_install_md}
+
+    *select* (optional) filters to a subset by manifest ``name`` (multi-plugin
+    only); errors if any requested name is missing.
+    """
+    import tempfile
+
     warnings: list[str] = []
     try:
         git_url = _resolve_git_url(identifier)
@@ -1355,36 +1819,123 @@ def dashboard_install_plugin(
     except ValueError:
         pass
 
-    try:
-        target, installed_manifest, installed_name = _install_plugin_core(
-            identifier,
-            force=force,
-        )
-    except PluginOperationError as exc:
-        return {"ok": False, "error": str(exc)}
+    plugins_dir = _plugins_dir()
 
-    missing_env = _missing_requires_env_names(installed_manifest)
-    if enable:
-        en = _get_enabled_set()
-        dis = _get_disabled_set()
-        en.add(installed_name)
-        dis.discard(installed_name)
-        _save_enabled_set(en)
-        _save_disabled_set(dis)
+    with tempfile.TemporaryDirectory() as tmp:
+        clone_root = Path(tmp) / "plugin"
+        try:
+            git_url = _clone_repo(identifier, clone_root)
+        except PluginOperationError as exc:
+            return {"ok": False, "error": str(exc)}
 
-    hint: str | None = None
-    ap = target / "after-install.md"
-    if ap.exists():
-        hint = str(ap)
+        is_root, manifests = _discover_manifests_in_clone(clone_root)
+        if not manifests:
+            return {
+                "ok": False,
+                "error": (
+                    f"No plugin.yaml found in {git_url}. Expected a root "
+                    f"plugin.yaml or plugins/<name>/plugin.yaml files."
+                ),
+            }
 
-    return {
-        "ok": True,
-        "plugin_name": installed_name,
-        "warnings": warnings,
-        "missing_env": missing_env,
-        "after_install_path": hint,
-        "enabled": enable,
-    }
+        if is_root:
+            try:
+                target, installed_manifest, installed_name = _install_root_plugin(
+                    clone_root, manifests[0][1], plugins_dir,
+                    force=force, git_url=git_url,
+                )
+            except PluginOperationError as exc:
+                return {"ok": False, "error": str(exc)}
+
+            missing_env = _missing_requires_env_names(installed_manifest)
+            if enable:
+                en = _get_enabled_set()
+                dis = _get_disabled_set()
+                en.add(installed_name)
+                dis.discard(installed_name)
+                _save_enabled_set(en)
+                _save_disabled_set(dis)
+
+            hint: str | None = None
+            ap = target / "after-install.md"
+            if ap.exists():
+                hint = str(ap)
+
+            return {
+                "ok": True,
+                "plugin_name": installed_name,
+                "warnings": warnings,
+                "missing_env": missing_env,
+                "after_install_path": hint,
+                "enabled": enable,
+            }
+
+        # ── Multi-plugin path ───────────────────────────────────────────────
+        if select:
+            try:
+                selected = _filter_manifests_by_names(manifests, select)
+            except PluginOperationError as exc:
+                return {"ok": False, "error": str(exc)}
+        else:
+            selected = manifests
+
+        # Capture root after-install.md content before sub-plugins are moved out
+        # (the clone directory will be cleaned up when the `with` block exits).
+        root_after_install = clone_root / "after-install.md"
+        after_install_md: Optional[str] = None
+        if root_after_install.exists():
+            try:
+                after_install_md = root_after_install.read_text(encoding="utf-8")
+            except OSError:
+                after_install_md = None
+
+        installed_results: list[dict[str, Any]] = []
+        en = _get_enabled_set() if enable else None
+        dis = _get_disabled_set() if enable else None
+
+        for sub_dir, sub_manifest in selected:
+            try:
+                sub_path = sub_dir.relative_to(clone_root).as_posix()
+            except ValueError:
+                sub_path = sub_dir.name
+            display_name = sub_manifest.get("name") or sub_dir.name
+            try:
+                target, installed_manifest, installed_name = _install_subplugin_dir(
+                    sub_dir, sub_manifest, plugins_dir,
+                    force=force, source_repo=git_url, sub_path=sub_path,
+                )
+            except PluginOperationError as exc:
+                installed_results.append({
+                    "name": display_name,
+                    "ok": False,
+                    "error": str(exc),
+                })
+                continue
+
+            missing_env = _missing_requires_env_names(installed_manifest)
+            if enable and en is not None:
+                en.add(installed_name)
+                dis.discard(installed_name)
+
+            installed_results.append({
+                "name": installed_name,
+                "ok": True,
+                "missing_env": missing_env,
+                "enabled": enable,
+            })
+
+        if enable and en is not None:
+            _save_enabled_set(en)
+            _save_disabled_set(dis)
+
+        return {
+            "ok": True,
+            "multi": True,
+            "plugins": installed_results,
+            "warnings": warnings,
+            "after_install_path": None,
+            "after_install_md": after_install_md,
+        }
 
 
 def _get_plugin_toolset_key(name: str) -> Optional[str]:
@@ -1592,10 +2143,15 @@ def plugins_command(args) -> None:
             enable_arg = True
         elif getattr(args, "no_enable", False):
             enable_arg = False
+        select_arg: Optional[list[str]] = None
+        raw_select = getattr(args, "select", None)
+        if raw_select:
+            select_arg = [s.strip() for s in str(raw_select).split(",") if s.strip()]
         cmd_install(
             args.identifier,
             force=getattr(args, "force", False),
             enable=enable_arg,
+            select=select_arg,
         )
     elif action == "update":
         cmd_update(args.name)

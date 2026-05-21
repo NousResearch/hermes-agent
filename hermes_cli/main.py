@@ -12005,6 +12005,15 @@ Examples:
         action="store_true",
         help="Install disabled (skip confirmation prompt); enable later with `hermes plugins enable <name>`",
     )
+    plugins_install.add_argument(
+        "--select",
+        metavar="NAMES",
+        default=None,
+        help=(
+            "Comma-separated list of plugin names to install from a multi-plugin "
+            "repo (skips the interactive selection prompt)."
+        ),
+    )
 
     plugins_update = plugins_subparsers.add_parser(
         "update", help="Pull latest changes for an installed plugin"

@@ -47,6 +47,8 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
+    "me@promplate.dev": "CNSeniorious000",
+    "erhanyasarx@gmail.com": "erhnysr",
     "30366221+WorldWriter@users.noreply.github.com": "WorldWriter",
     "dafeng@DafengdeMacBook-Pro.local": "WorldWriter",
     "anadi.jaggia@gmail.com": "Jaggia",
@@ -58,6 +60,7 @@ AUTHOR_MAP = {
     "altriatree@gmail.com": "TruaShamu",
     "m@mobrienv.dev": "mikeyobrien",
     "saeed919@pm.me": "falasi",
+    "omar@techdeveloper.site": "nycomar",
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "mr.aashiz@gmail.com": "aashizpoudel",
     "70629228+shaun0927@users.noreply.github.com": "shaun0927",
@@ -74,6 +77,7 @@ AUTHOR_MAP = {
     "108427749+buntingszn@users.noreply.github.com": "buntingszn",
     "yanglongwei06@gmail.com": "Alex-yang00",
     "teknium@nousresearch.com": "teknium1",
+    "markuscontasul@gmail.com": "Glucksberg",
     "piyushvp1@gmail.com": "thelumiereguy",
     "dskwelmcy@163.com": "dskwe",
     "421774554@qq.com": "wuli666",
@@ -714,6 +718,7 @@ AUTHOR_MAP = {
     "9219265+cresslank@users.noreply.github.com": "cresslank",
     "trevmanthony@gmail.com": "trevthefoolish",
     "ziliangpeng@users.noreply.github.com": "ziliangpeng",
+    "ziliangdotme@gmail.com": "ziliangpeng",
     "centripetal-star@users.noreply.github.com": "centripetal-star",
     "LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",

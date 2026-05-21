@@ -13,6 +13,8 @@ from typing import Any, Dict, List
 
 import pytest
 
+from tests.tools.conftest import register_all_web_providers
+
 
 # ---------------------------------------------------------------------------
 # ABC enforcement
@@ -275,6 +277,15 @@ class TestUnconfiguredErrorEnvelopeParity:
     must surface at the top level so function-calling models that check
     ``result.get("error")`` detect the failure cleanly.
     """
+
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
 
     def _clear_web_creds(self, monkeypatch):
         for k in (

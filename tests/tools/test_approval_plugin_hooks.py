@@ -22,18 +22,28 @@ from tools.approval import (
 
 
 @pytest.fixture
-def isolated_session(monkeypatch):
-    """Give each test a fresh session_key and clean approval-state."""
+def isolated_session(monkeypatch, tmp_path):
+    """Give each test a fresh session_key, clean approval-state, and isolated
+    HERMES_HOME so the real user's command_allowlist doesn't leak in."""
+    import tools.approval as _am
+
     session_key = "test:session:approval_hooks"
     token = set_current_session_key(session_key)
     monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
     # Make sure we don't skip guards via yolo / approvals.mode=off
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    # Isolate from the real user's permanent allowlist + session state
+    _saved_permanent = _am._permanent_approved.copy()
+    _saved_session = {k: v.copy() for k, v in _am._session_approved.items()}
+    _am._permanent_approved.clear()
+    _am._session_approved.clear()
     try:
         yield session_key
     finally:
+        _am._permanent_approved.update(_saved_permanent)
+        _am._session_approved.update(_saved_session)
         try:
-            approval_module._approval_session_key.reset(token)
+            _am._approval_session_key.reset(token)
         except Exception:
             pass
         clear_session(session_key)

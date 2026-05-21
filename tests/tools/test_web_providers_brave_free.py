@@ -15,6 +15,10 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from tests.tools.conftest import register_all_web_providers
+
 
 # ---------------------------------------------------------------------------
 # BraveFreeWebSearchProvider unit tests
@@ -239,6 +243,15 @@ class TestBraveFreeBackendWiring:
 
 
 class TestBraveFreeSearchOnlyErrors:
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+
     def test_web_extract_returns_search_only_error(self, monkeypatch):
         import asyncio
         from tools import web_tools
@@ -246,6 +259,7 @@ class TestBraveFreeSearchOnlyErrors:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         result_str = asyncio.get_event_loop().run_until_complete(
@@ -264,6 +278,8 @@ class TestBraveFreeSearchOnlyErrors:
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        monkeypatch.setattr(web_tools, "check_website_access", lambda url: None)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         result_str = asyncio.get_event_loop().run_until_complete(

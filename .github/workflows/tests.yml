@@ -23,13 +23,24 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
@@ -44,9 +55,26 @@ jobs:
           uv pip install -e ".[all,dev]"
 
       - name: Run tests
+        # Per-file isolation via scripts/run_tests_parallel.py: discovers
+        # every test_*.py file under tests/ (excluding integration/ + e2e/),
+        # then runs `python -m pytest <file>` in a freshly-spawned subprocess
+        # with bounded parallelism. No xdist, no shared workers, no
+        # module-level state leakage between files.
+        #
+        # Why per-file (not per-test): per-test spawn cost (~250ms × 17k
+        # tests = 70min CPU minimum) blew the wall-clock budget. Per-file
+        # spawn (~250ms × ~850 files = ~3.5min) fits while still giving
+        # every file a fresh interpreter — the only isolation boundary
+        # that matters in practice (cross-file leakage was the original
+        # flake source; intra-file is the test author's responsibility).
+        #
+        # Why drop xdist entirely: xdist's persistent workers accumulate
+        # state across files, which is exactly the leakage we wanted to
+        # fix. ThreadPoolExecutor + subprocess.run is ~60 lines and does
+        # the job with cleaner semantics.
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto --timeout=30 --timeout-method=signal
+          python scripts/run_tests_parallel.py
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
@@ -60,8 +88,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5

@@ -22,19 +22,26 @@ from gateway.config import PlatformConfig
 
 
 def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
     telegram_mod = MagicMock()
     telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
 
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
+    # Register telegram.constants as a separate module mock so that
+    # ``from telegram.constants import ChatType`` resolves to our mock
+    # with string-valued members (not auto-generated MagicMocks).
+    constants_mod = MagicMock()
+    constants_mod.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    constants_mod.ChatType.GROUP = "group"
+    constants_mod.ChatType.SUPERGROUP = "supergroup"
+    constants_mod.ChatType.CHANNEL = "channel"
+    constants_mod.ChatType.PRIVATE = "private"
+
+    sys.modules["telegram"] = telegram_mod
+    sys.modules["telegram.ext"] = telegram_mod.ext
+    sys.modules["telegram.constants"] = constants_mod
+    sys.modules["telegram.request"] = telegram_mod.request
+
+    # Force reimport so the adapter picks up the mock ChatType.
+    sys.modules.pop("gateway.platforms.telegram", None)
 
 
 _ensure_telegram_mock()

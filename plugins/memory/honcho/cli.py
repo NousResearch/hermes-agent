@@ -441,6 +441,86 @@ def cmd_setup(args) -> None:
     if new_workspace:
         hermes_host["workspace"] = new_workspace
 
+    # --- 3b. Deployment shape ---
+    # Determines how runtime user identities (Telegram UIDs, Discord
+    # snowflakes, etc.) map to Honcho peers in gateway sessions.  Three
+    # shapes cover the realistic deployments; each writes a different
+    # combination of pinPeerName / userPeerAliases / runtimePeerPrefix.
+    # See plugins/memory/honcho/README.md for the resolver ladder.
+    current_pin = bool(hermes_host.get("pinPeerName", False))
+    current_aliases = hermes_host.get("userPeerAliases", {})
+    current_prefix = hermes_host.get("runtimePeerPrefix", "")
+
+    if current_pin:
+        current_shape = "single"
+    elif current_aliases:
+        current_shape = "hybrid"
+    else:
+        current_shape = "multi"
+
+    print("\n  Deployment shape (how gateway users map to peers):")
+    print("    single -- all platforms route to your peer (recommended for personal use)")
+    print("    multi  -- each platform user gets their own peer (multi-user bots)")
+    print("    hybrid -- multi-user, but YOUR runtime IDs alias to your peer")
+    print("    skip   -- don't touch identity-mapping config")
+    new_shape = _prompt("Deployment shape", default=current_shape).strip().lower()
+
+    if new_shape == "single":
+        hermes_host["pinPeerName"] = True
+        hermes_host.pop("userPeerAliases", None)
+        hermes_host.pop("runtimePeerPrefix", None)
+        print(f"  pinPeerName=true → all gateway users route to '{hermes_host.get('peerName', '?')}'.")
+    elif new_shape == "multi":
+        hermes_host["pinPeerName"] = False
+        # Preserve any existing operator-curated aliases / prefix.
+        if "userPeerAliases" not in hermes_host:
+            hermes_host["userPeerAliases"] = {}
+        _prefix_default = current_prefix or ""
+        _new_prefix = _prompt(
+            "Runtime peer prefix (e.g. 'telegram_', blank for none)",
+            default=_prefix_default,
+        ).strip()
+        if _new_prefix:
+            hermes_host["runtimePeerPrefix"] = _new_prefix
+        else:
+            hermes_host.pop("runtimePeerPrefix", None)
+        print("  Multi-user mode: each runtime ID → own peer. Use 'hermes honcho status' to inspect.")
+    elif new_shape == "hybrid":
+        hermes_host["pinPeerName"] = False
+        peer_target = hermes_host.get("peerName") or current_peer or "user"
+        existing_aliases = dict(current_aliases) if isinstance(current_aliases, dict) else {}
+        print(f"\n  Add runtime IDs that should alias to peer '{peer_target}'.")
+        print("  Leave blank to skip a platform.  Existing aliases are preserved.")
+        for platform_label, alias_hint in (
+            ("Telegram UID", "e.g. 86701400"),
+            ("Discord snowflake", "e.g. 491827364"),
+            ("Slack user ID", "e.g. U04ABCDEF"),
+            ("Matrix MXID", "e.g. @you:matrix.org"),
+        ):
+            entered = _prompt(f"  {platform_label} ({alias_hint})", default="").strip()
+            if entered:
+                existing_aliases[entered] = peer_target
+        if existing_aliases:
+            hermes_host["userPeerAliases"] = existing_aliases
+        elif "userPeerAliases" in hermes_host:
+            # No aliases entered and none pre-existing — leave the key absent.
+            if not hermes_host["userPeerAliases"]:
+                hermes_host.pop("userPeerAliases", None)
+        _prefix_default = current_prefix or ""
+        _new_prefix = _prompt(
+            "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)",
+            default=_prefix_default,
+        ).strip()
+        if _new_prefix:
+            hermes_host["runtimePeerPrefix"] = _new_prefix
+        else:
+            hermes_host.pop("runtimePeerPrefix", None)
+        print(f"  Hybrid mode: your runtime IDs → '{peer_target}', others → own peer.")
+    elif new_shape == "skip":
+        pass  # leave config untouched
+    else:
+        print(f"  Unknown shape '{new_shape}' — leaving identity-mapping config untouched.")
+
     # --- 4. Observation mode ---
     current_obs = hermes_host.get("observationMode") or cfg.get("observationMode", "directional")
     print("\n  Observation mode:")

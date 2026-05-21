@@ -21,6 +21,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
+| **Ambient** | `AMBIENT_API_KEY` in `~/.hermes/.env` (provider: `ambient`; verified inference with cryptographic proof — GLM-5.1) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
@@ -315,6 +316,26 @@ model:
 ```
 
 Get your API key at [novita.ai/settings/key-management](https://novita.ai/settings/key-management). The base URL can be overridden with `NOVITA_BASE_URL`.
+
+### Ambient
+
+[Ambient](https://ambiententerprise.ai) is verified AI infrastructure — every API call is accompanied by cryptographic proof of which model ran, what input was used, and what output was produced. Ambient serves GLM-5.1 at roughly half the cost of major providers while protecting all data, including reasoning content.
+
+```bash
+# Use GLM-5.1 through Ambient
+hermes chat --provider ambient --model zai-org/GLM-5.1-FP8
+# Requires: AMBIENT_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "ambient"
+  default: "zai-org/GLM-5.1-FP8"
+  base_url: "https://api.ambient.xyz/v1"
+```
+
+Get your API key at [app.ambient.xyz](https://app.ambient.xyz). The base URL can be overridden with `AMBIENT_BASE_URL`.
 
 ### Ollama Cloud — Managed Ollama Models, OAuth + API Key
 

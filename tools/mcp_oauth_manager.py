@@ -146,6 +146,68 @@ def _make_hermes_provider_class() -> Optional[type]:
             # clients. See _maybe_flag_poisoned_client.
             self._hermes_preregistered = preregistered
 
+        def _coerce_client_secret_post(self) -> None:
+            """Use client_secret_post when dynamic registration returned a secret.
+
+            Some MCP OAuth providers, notably Supabase, return a
+            ``client_secret`` from dynamic client registration but omit
+            ``token_endpoint_auth_method``. The MCP SDK treats the missing
+            value as public-client auth (``none``), so token exchange omits the
+            secret and Supabase rejects it with ``Required parameter:
+            client_secret``. Coerce the in-memory client info before token and
+            refresh requests.
+            """
+            info = getattr(self.context, "client_info", None)
+            if not info or not getattr(info, "client_secret", None):
+                return
+            method = getattr(info, "token_endpoint_auth_method", None)
+            if method not in (None, "none", ""):
+                return
+            from mcp.shared.auth import OAuthClientInformationFull
+
+            data = info.model_dump(mode="json", exclude_none=True)
+            data["token_endpoint_auth_method"] = "client_secret_post"
+            self.context.client_info = OAuthClientInformationFull.model_validate(data)
+
+        async def _exchange_token_authorization_code(self, *args: Any, **kwargs: Any):
+            self._coerce_client_secret_post()
+            return await super()._exchange_token_authorization_code(*args, **kwargs)
+
+        async def _refresh_token(self):
+            self._coerce_client_secret_post()
+            return await super()._refresh_token()
+
+        async def _handle_token_response(self, response):
+            """Accept any 2xx token response and avoid leaking token bodies in errors."""
+            if 200 <= response.status_code < 300:
+                from mcp.client.auth.utils import handle_token_response_scopes
+
+                token_response = await handle_token_response_scopes(response)
+                self.context.current_tokens = token_response
+                self.context.update_token_expiry(token_response)
+                await self.context.storage.set_tokens(token_response)
+                return
+
+            from mcp.client.auth.oauth2 import OAuthTokenError
+
+            raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
+
+        async def _handle_refresh_response(self, response) -> bool:
+            """Accept any 2xx refresh response and avoid logging token bodies."""
+            if not (200 <= response.status_code < 300):
+                logger.warning("Token refresh failed: %s", response.status_code)
+                self.context.clear_tokens()
+                return False
+
+            from mcp.shared.auth import OAuthToken
+
+            content = await response.aread()
+            token_response = OAuthToken.model_validate_json(content)
+            self.context.current_tokens = token_response
+            self.context.update_token_expiry(token_response)
+            await self.context.storage.set_tokens(token_response)
+            return True
+
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.
 

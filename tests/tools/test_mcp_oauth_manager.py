@@ -553,3 +553,29 @@ def test_bridge_forwards_requests_and_poisons_on_token_endpoint_400(
     assert not (d / "srv.client.json").exists()
     assert provider._initialized is False
     assert provider.context.client_info is None
+@pytest.mark.asyncio
+async def test_manager_provider_token_exchange_includes_dcr_secret(tmp_path, monkeypatch):
+    """The manager provider path applies the same Supabase DCR secret fix."""
+    from urllib.parse import parse_qs
+
+    from mcp.shared.auth import OAuthClientInformationFull
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider("supabase", "https://mcp.supabase.com/mcp", None)
+    provider.context.client_info = OAuthClientInformationFull.model_validate({
+        "client_id": "client-id",
+        "client_secret": "secret",
+        "redirect_uris": [str(provider.context.client_metadata.redirect_uris[0])],
+        "token_endpoint_auth_method": "none",
+    })
+
+    request = await provider._exchange_token_authorization_code("auth-code", "verifier")
+    body = parse_qs(request.content.decode())
+
+    assert body["client_secret"] == ["secret"]
+    assert provider.context.client_info.token_endpoint_auth_method == "client_secret_post"
+

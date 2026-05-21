@@ -47,53 +47,58 @@ logger = logging.getLogger("agent.lsp.install")
 #     ``pkg`` in the same node_modules tree.  Used when an LSP server
 #     has a runtime peer dependency that npm doesn't auto-pull (e.g.
 #     typescript-language-server needs ``typescript``).
+# LSP auto-installs intentionally use exact package versions rather than
+# registry-floating ``latest`` tags.  The pins below were verified on
+# 2026-05-20 with ``npm view <pkg> version`` and the Go module proxy's
+# ``@latest`` endpoint for gopls.  Bump them with a focused review just like
+# application dependency updates.
 INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # Python
-    "pyright": {"strategy": "npm", "pkg": "pyright", "bin": "pyright-langserver"},
+    "pyright": {"strategy": "npm", "pkg": "pyright@1.1.409", "bin": "pyright-langserver"},
     # JS/TS family
     "typescript-language-server": {
         "strategy": "npm",
-        "pkg": "typescript-language-server",
+        "pkg": "typescript-language-server@5.2.0",
         "bin": "typescript-language-server",
         # typescript-language-server requires the `typescript` SDK
         # (tsserver) to be importable from the same node_modules tree;
         # otherwise initialize() fails with "Could not find a valid
         # TypeScript installation".  Install them together.
-        "extra_pkgs": ["typescript"],
+        "extra_pkgs": ["typescript@6.0.3"],
     },
     "@vue/language-server": {
         "strategy": "npm",
-        "pkg": "@vue/language-server",
+        "pkg": "@vue/language-server@3.3.1",
         "bin": "vue-language-server",
     },
     "svelte-language-server": {
         "strategy": "npm",
-        "pkg": "svelte-language-server",
+        "pkg": "svelte-language-server@0.18.0",
         "bin": "svelteserver",
     },
     "@astrojs/language-server": {
         "strategy": "npm",
-        "pkg": "@astrojs/language-server",
+        "pkg": "@astrojs/language-server@2.16.9",
         "bin": "astro-ls",
     },
     "yaml-language-server": {
         "strategy": "npm",
-        "pkg": "yaml-language-server",
+        "pkg": "yaml-language-server@1.23.0",
         "bin": "yaml-language-server",
     },
     "bash-language-server": {
         "strategy": "npm",
-        "pkg": "bash-language-server",
+        "pkg": "bash-language-server@5.6.0",
         "bin": "bash-language-server",
     },
-    "intelephense": {"strategy": "npm", "pkg": "intelephense", "bin": "intelephense"},
+    "intelephense": {"strategy": "npm", "pkg": "intelephense@1.18.3", "bin": "intelephense"},
     "dockerfile-language-server-nodejs": {
         "strategy": "npm",
-        "pkg": "dockerfile-language-server-nodejs",
+        "pkg": "dockerfile-language-server-nodejs@0.15.0",
         "bin": "docker-langserver",
     },
     # Go
-    "gopls": {"strategy": "go", "pkg": "golang.org/x/tools/gopls@latest", "bin": "gopls"},
+    "gopls": {"strategy": "go", "pkg": "golang.org/x/tools/gopls@v0.22.0", "bin": "gopls"},
     # Rust — too heavy (hundreds of MB to bootstrap).  We do NOT
     # auto-install rust-analyzer; users install via rustup.
     "rust-analyzer": {"strategy": "manual", "pkg": "", "bin": "rust-analyzer"},

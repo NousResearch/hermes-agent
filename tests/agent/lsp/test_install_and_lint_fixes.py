@@ -31,11 +31,41 @@ from agent.lsp.install import INSTALL_RECIPES
 def test_typescript_recipe_includes_typescript_sdk():
     recipe = INSTALL_RECIPES["typescript-language-server"]
     extras = recipe.get("extra_pkgs") or []
-    assert "typescript" in extras, (
+    assert any(pkg.startswith("typescript@") for pkg in extras), (
         "typescript-language-server requires the `typescript` SDK as a "
         "sibling install — without it `initialize` fails with "
         "'Could not find a valid TypeScript installation'."
     )
+
+
+def _npm_package_is_exactly_pinned(pkg: str) -> bool:
+    """Return True when an npm package spec includes an explicit version.
+
+    Handles both unscoped packages (``pyright@1.2.3``) and scoped packages
+    (``@vue/language-server@1.2.3``).
+    """
+    if pkg.startswith("@"):
+        return pkg.count("@") == 2 and not pkg.endswith("@latest")
+    return "@" in pkg and not pkg.endswith("@latest")
+
+
+def test_lsp_auto_install_recipes_do_not_float_registry_versions():
+    """Auto-install recipes must not resolve moving registry ``latest`` tags."""
+    for name, recipe in INSTALL_RECIPES.items():
+        strategy = recipe.get("strategy")
+        if strategy == "manual":
+            continue
+
+        pkg = recipe.get("pkg") or name
+        assert "@latest" not in pkg
+        if strategy == "npm":
+            assert _npm_package_is_exactly_pinned(pkg), f"{name} must pin npm package {pkg!r}"
+            for extra_pkg in recipe.get("extra_pkgs") or []:
+                assert _npm_package_is_exactly_pinned(extra_pkg), (
+                    f"{name} extra package {extra_pkg!r} must be pinned"
+                )
+        elif strategy == "go":
+            assert "@v" in pkg, f"{name} must pin Go module package {pkg!r}"
 
 
 def test_install_npm_passes_extras_to_npm_command(tmp_path, monkeypatch):

@@ -148,23 +148,23 @@ class SkinConfig:
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
     "default": {
         "name": "default",
-        "description": "Autolycus — high-contrast teal and blue for FreeBSD (colorblind-friendly)",
+        "description": "Autolycus — accessible teal/blue palette (OKLCH, colorblind-safe, WCAG AA)",
         "colors": {
-            "banner_border": "#0a3d62",      # Dark navy border for contrast
-            "banner_title": "#00d4aa",       # Bright teal title
-            "banner_accent": "#00d4aa",      # Bright teal accent
-            "banner_dim": "#1a5f7a",         # Medium blue-gray dim text
-            "banner_text": "#ffffff",        # White text for max contrast
-            "ui_accent": "#00d4aa",          # Bright teal UI accent
-            "ui_label": "#00b894",           # Slightly darker teal labels
-            "ui_ok": "#00b862",              # Green for success
+            "banner_border": "#0b1f35",      # Deeper navy border (less visible)
+            "banner_title": "#00c9a7",       # Brand teal
+            "banner_accent": "#6ba3d6",      # Interactive blue accent (more saturated)
+            "banner_dim": "#6e8294",         # Cool gray dim text (hierarchy fix)
+            "banner_text": "#e6ebf0",        # Warm white (slightly softer)
+            "ui_accent": "#6ba3d6",          # Blue UI accent (more saturated)
+            "ui_label": "#5a9ad4",           # Blue labels (more saturated)
+            "ui_ok": "#27ae60",              # Green for success (slightly deeper)
             "ui_error": "#e74c3c",           # Red for errors
-            "ui_warn": "#ff8c00",            # Orange for warnings (replaces yellow)
-            "prompt": "#ffffff",             # White prompt text
-            "input_rule": "#0a3d62",         # Dark navy input rule
-            "response_border": "#00d4aa",    # Bright teal response border
-            "session_label": "#1a5f7a",      # Medium blue-gray session label
-            "session_border": "#0a3d62",     # Dark navy session border
+            "ui_warn": "#f09609",            # Amber for warnings (slightly deeper)
+            "prompt": "#e6ebf0",             # Warm white prompt text
+            "input_rule": "#0b1f35",         # Deep navy input rule
+            "response_border": "#00c9a7",    # Teal response border
+            "session_label": "#6e8294",      # Cool gray session label
+            "session_border": "#0b1f35",     # Deep navy session border
         },
         "spinner": {
             # Empty = use hardcoded defaults in display.py

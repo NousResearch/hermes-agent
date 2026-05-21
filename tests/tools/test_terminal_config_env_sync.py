@@ -6,7 +6,7 @@ at startup, by the config source-of-truth and by adjacent entry-point code paths
 
   1. hermes_cli.terminal_config.TERMINAL_ENV_MAPPINGS
                        -> shared CLI / TUI source-of-truth used by cli.py
-  2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
+  2. gateway/run.py    -> shared terminal_config helpers (gateway / messaging
                           platforms)
   3. hermes_cli/config.py:save_config_value
                        -> ``_config_to_env_sync`` dict (one-shot when the
@@ -20,7 +20,7 @@ for ``docker_run_as_host_user`` (gateway and CLI maps) and once for
 This test guards against future drift by treating the shared terminal_config
 mapping as the CLI source-of-truth, source-inspecting the remaining inline maps,
 and asserting the load-bearing terminal env vars stay aligned.  Source
-inspection for gateway/config maps (rather than executing their bridge paths)
+inspection for the remaining config map (rather than executing its bridge path)
 keeps the test independent of the user's ~/.hermes/config.yaml and mirrors the
 pattern used in tests/hermes_cli/test_config_drift.py.
 """
@@ -82,20 +82,20 @@ def _cli_env_map_keys() -> set[str]:
 
 
 def _gateway_env_map_keys() -> set[str]:
-    """terminal config keys bridged by gateway/run.py at module load."""
-    # gateway/run.py builds the dict at module top-level (not inside a
-    # function), so inspect the whole module source.
-    import gateway.run as gr
-    source = inspect.getsource(gr)
-    return _extract_dict_keys(source, "_terminal_env_map")
+    """Terminal config keys bridged by gateway/run.py via shared helpers."""
+    from hermes_cli.terminal_config import TERMINAL_ENV_MAPPINGS
+
+    # gateway/run.py additionally accepts the canonical `backend` key before
+    # terminal_env_values serializes it to TERMINAL_ENV.  The parity helper
+    # normalizes this alias away before comparing against the CLI map.
+    return set(TERMINAL_ENV_MAPPINGS) | {"backend"}
 
 
 def _gateway_env_map_values() -> set[str]:
-    """TERMINAL_* env vars bridged by gateway/run.py at module load."""
-    import gateway.run as gr
+    """TERMINAL_* env vars bridged by gateway/run.py via shared helpers."""
+    from hermes_cli.terminal_config import TERMINAL_ENV_MAPPINGS
 
-    source = inspect.getsource(gr)
-    return _extract_dict_values(source, "_terminal_env_map")
+    return set(TERMINAL_ENV_MAPPINGS.values())
 
 
 def _save_config_env_sync_keys() -> set[str]:
@@ -126,14 +126,10 @@ _GATEWAY_BRIDGE_EXEMPT_KEYS = frozenset({
 })
 
 
-# Temporary Task 3 known gap: these shared terminal keys are consumed by
-# terminal_tool, but gateway/run.py does not bridge them from config.yaml yet.
-# Keep this set exact so Task 3 fails here after wiring the bridge until the
-# temporary marker is removed or updated.
-TASK3_PENDING_GATEWAY_BRIDGE_KEYS = frozenset({
-    "docker_extra_args",
-    "modal_mode",
-})
+# Task 3 wires the gateway bridge through the shared terminal config helpers;
+# this set must remain empty so newly shared terminal keys cannot be hidden as
+# temporary gateway-only omissions.
+TASK3_PENDING_GATEWAY_BRIDGE_KEYS = frozenset()
 
 
 def _terminal_tool_env_var_names() -> set[str]:
@@ -148,12 +144,10 @@ def _terminal_tool_env_var_names() -> set[str]:
 
 def _normalized_gateway_env_map_keys() -> set[str]:
     """Gateway terminal bridge keys normalized to the shared CLI key surface."""
-    # Normalize the legacy `env_type` alias: cli.py accepts both `env_type`
-    # and `backend` as source keys for TERMINAL_ENV; gateway only accepts
-    # `backend`.  Since cli.py copies `backend` → `env_type` before the
-    # lookup, they're equivalent.  Remove `backend` from the gateway side
-    # to avoid a spurious "backend missing from cli" failure.
-    return _gateway_env_map_keys() - {"backend"}
+    # Normalize the legacy/backend aliases: `env_type` is a legacy YAML key
+    # alias and `backend` is the canonical gateway spelling for TERMINAL_ENV.
+    # Both serialize to the same env var, so exclude them from key-drift parity.
+    return _gateway_env_map_keys() - {"backend", "env_type"}
 
 
 def _shared_terminal_keys_missing_from_gateway() -> set[str]:
@@ -163,16 +157,22 @@ def _shared_terminal_keys_missing_from_gateway() -> set[str]:
 
 
 def test_task3_pending_gateway_bridge_gaps_are_exact():
-    """Track temporary Task 3 gateway bridge omissions explicitly.
-
-    These keys are not CLI-only: terminal_tool consumes their TERMINAL_* env
-    vars.  Keep the pending set exact so wiring either key in Task 3 causes
-    this test to fail until the temporary marker is removed or updated.
-    """
+    """Task 3 consumed all known gateway bridge omissions."""
     assert (
         _shared_terminal_keys_missing_from_gateway()
         == TASK3_PENDING_GATEWAY_BRIDGE_KEYS
     )
+
+
+def test_gateway_bridge_uses_shared_terminal_config_helpers():
+    """gateway/run.py should not carry a drift-prone inline terminal map."""
+    import gateway.run as gr
+
+    source = inspect.getsource(gr)
+    assert "normalize_terminal_config" in source
+    assert "resolve_gateway_terminal_cwd" in source
+    assert "terminal_env_values" in source
+    assert "_terminal_env_map" not in source
 
 
 def test_cli_and_gateway_env_maps_agree_except_task3_pending_gaps():
@@ -194,15 +194,15 @@ def test_cli_and_gateway_env_maps_agree_except_task3_pending_gaps():
 
     assert not missing_in_gateway, (
         f"Keys in shared TERMINAL_ENV_MAPPINGS but missing from gateway/run.py "
-        f"_terminal_env_map: {sorted(missing_in_gateway)}.  Add them to "
-        f"both maps (same bug class as docker_run_as_host_user shipping "
-        f"wired in cli but not gateway in April 2026)."
+        f"shared terminal bridge: {sorted(missing_in_gateway)}. Keep gateway "
+        f"wired through terminal_env_values so shared terminal config keys do "
+        f"not drift by entry point."
     )
     assert not missing_in_cli, (
-        f"Keys in gateway/run.py _terminal_env_map but missing from shared "
+        f"Keys in the gateway terminal bridge but missing from shared "
         f"TERMINAL_ENV_MAPPINGS or still listed in "
         f"TASK3_PENDING_GATEWAY_BRIDGE_KEYS: {sorted(missing_in_cli)}. Add them "
-        f"to both maps, or remove resolved Task 3 pending keys from the test."
+        f"to the shared map, or remove resolved Task 3 pending keys from the test."
     )
 
 
@@ -224,7 +224,7 @@ def test_gateway_terminal_env_map_points_at_terminal_tool_consumers():
     missing_consumers = _gateway_env_map_values() - _terminal_tool_env_var_names()
 
     assert not missing_consumers, (
-        "gateway/run.py _terminal_env_map contains env vars terminal_tool does "
+        "gateway/run.py shared terminal bridge contains env vars terminal_tool does "
         f"not consume: {sorted(missing_consumers)}. Remove dead mappings or add "
         "the terminal_tool consumer."
     )
@@ -264,10 +264,9 @@ def test_docker_run_as_host_user_is_bridged_everywhere():
     """Explicit pin for the bug we just fixed.
 
     docker_run_as_host_user was added to terminal_tool._get_env_config and
-    DockerEnvironment but NOT to the CLI env map or gateway/run.py's
-    _terminal_env_map, so ``terminal.docker_run_as_host_user: true`` in
-    config.yaml had no effect at runtime.  This guard makes the regression
-    impossible to reintroduce silently.
+    DockerEnvironment but NOT to the then-inline CLI/gateway bridge maps, so
+    ``terminal.docker_run_as_host_user: true`` in config.yaml had no effect at
+    runtime.  This guard makes the regression impossible to reintroduce silently.
     """
     assert "docker_run_as_host_user" in _cli_env_map_keys()
     assert "docker_run_as_host_user" in _gateway_env_map_keys()
@@ -277,8 +276,8 @@ def test_docker_run_as_host_user_is_bridged_everywhere():
 
 def test_docker_mount_cwd_to_workspace_is_bridged_everywhere():
     """Same regression class — docker_mount_cwd_to_workspace was missing from
-    gateway/run.py's _terminal_env_map until the docker_run_as_host_user
-    audit caught it.
+    gateway/run.py's legacy bridge until the docker_run_as_host_user audit
+    caught it.
     """
     assert "docker_mount_cwd_to_workspace" in _cli_env_map_keys()
     assert "docker_mount_cwd_to_workspace" in _gateway_env_map_keys()

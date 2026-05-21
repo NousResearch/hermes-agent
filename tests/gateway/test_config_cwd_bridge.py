@@ -10,8 +10,15 @@ asserting the expected env var outcomes.
 """
 
 import os
-import json
+from collections.abc import Mapping
+
 import pytest
+
+from hermes_cli.terminal_config import (
+    normalize_terminal_config,
+    resolve_gateway_terminal_cwd,
+    terminal_env_values,
+)
 
 
 def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
@@ -26,53 +33,27 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
         if isinstance(val, (str, int, float, bool)) and key not in env:
             env[key] = str(val)
 
-    # --- Replicate lines 59-87: terminal config bridge ---
-    terminal_cfg = cfg.get("terminal", {})
-    if terminal_cfg and isinstance(terminal_cfg, dict):
-        terminal_env_map = {
-            "backend": "TERMINAL_ENV",
-            "cwd": "TERMINAL_CWD",
-            "timeout": "TERMINAL_TIMEOUT",
-            "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
-            "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-            "container_cpu": "TERMINAL_CONTAINER_CPU",
-            "container_memory": "TERMINAL_CONTAINER_MEMORY",
-            "container_disk": "TERMINAL_CONTAINER_DISK",
-        }
-        for cfg_key, env_var in terminal_env_map.items():
-            if cfg_key in terminal_cfg:
-                val = terminal_cfg[cfg_key]
-                # Skip cwd placeholder values — don't overwrite already-resolved
-                # TERMINAL_CWD.  Mirrors the fix in gateway/run.py.
-                if cfg_key == "cwd" and str(val) in {".", "auto", "cwd"}:
-                    continue
-                # Expand shell tilde so subprocess.Popen never receives a literal
-                # "~/" which the kernel rejects.
-                if cfg_key == "cwd" and isinstance(val, str):
-                    val = os.path.expanduser(val)
-                if isinstance(val, list):
-                    env[env_var] = json.dumps(val)
-                else:
-                    env[env_var] = str(val)
+    # --- Replicate the gateway's shared terminal config bridge. ---
+    terminal_raw = cfg.get("terminal", {})
+    if not isinstance(terminal_raw, Mapping):
+        terminal_raw = {}
+    else:
+        terminal_raw = dict(terminal_raw)
 
-    # --- NEW: top-level aliases (the fix being tested) ---
-    top_level_aliases = {
-        "cwd": "TERMINAL_CWD",
-        "backend": "TERMINAL_ENV",
-    }
-    for alias_key, alias_env in top_level_aliases.items():
-        if alias_env not in env:
-            alias_val = cfg.get(alias_key)
-            if isinstance(alias_val, str) and alias_val.strip():
-                if alias_key == "cwd":
-                    alias_val = os.path.expanduser(alias_val)
-                env[alias_env] = alias_val.strip()
+    # Backwards-compatible top-level aliases are copied into the raw terminal
+    # config only when the terminal section itself did not specify the key.
+    for alias_key in ("backend", "cwd"):
+        if alias_key not in terminal_raw and alias_key in cfg:
+            terminal_raw[alias_key] = cfg[alias_key]
 
-    # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
-    configured_cwd = env.get("TERMINAL_CWD", "")
-    if not configured_cwd or configured_cwd in {".", "auto", "cwd"}:
-        messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
-        env["TERMINAL_CWD"] = messaging_cwd
+    terminal_cfg = normalize_terminal_config(terminal_raw)
+    terminal_cfg["cwd"] = resolve_gateway_terminal_cwd(
+        terminal_cfg,
+        existing_env=env,
+        messaging_cwd=env.get("MESSAGING_CWD"),
+        home=os.path.expanduser("~"),
+    )
+    env.update(terminal_env_values(terminal_cfg))
 
     return env
 
@@ -95,6 +76,14 @@ class TestTopLevelCwdAlias:
         result = _simulate_config_bridge(cfg)
         assert result["TERMINAL_CWD"] == "/home/hermes/projects"
         assert result["TERMINAL_ENV"] == "local"
+
+    def test_terminal_none_uses_shared_defaults_and_messaging_cwd(self):
+        cfg = {"terminal": None}
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/home/hermes/projects"})
+
+        assert result["TERMINAL_ENV"] == "local"
+        assert result["TERMINAL_CWD"] == "/home/hermes/projects"
+        assert result["TERMINAL_TIMEOUT"] == "180"
 
     def test_nested_terminal_takes_precedence_over_top_level(self):
         """terminal.cwd should win over top-level cwd."""
@@ -121,7 +110,7 @@ class TestTopLevelCwdAlias:
     def test_no_cwd_no_messaging_cwd_falls_back_to_home(self):
         cfg = {}
         result = _simulate_config_bridge(cfg)
-        assert result["TERMINAL_CWD"] == "/root"  # Path.home() for root user
+        assert result["TERMINAL_CWD"] == os.path.expanduser("~")
 
     def test_dot_cwd_triggers_messaging_fallback(self):
         """cwd: '.' should trigger MESSAGING_CWD fallback."""

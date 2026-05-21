@@ -610,51 +610,33 @@ if _config_path.exists():
                 os.environ[_key] = str(_val)
         # Terminal config is nested — bridge to TERMINAL_* env vars.
         # config.yaml overrides .env for these since it's the documented config path.
-        _terminal_cfg = _cfg.get("terminal", {})
-        if _terminal_cfg and isinstance(_terminal_cfg, dict):
-            _terminal_env_map = {
-                "backend": "TERMINAL_ENV",
-                "cwd": "TERMINAL_CWD",
-                "timeout": "TERMINAL_TIMEOUT",
-                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "docker_image": "TERMINAL_DOCKER_IMAGE",
-                "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-                "modal_image": "TERMINAL_MODAL_IMAGE",
-                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
-                "ssh_host": "TERMINAL_SSH_HOST",
-                "ssh_user": "TERMINAL_SSH_USER",
-                "ssh_port": "TERMINAL_SSH_PORT",
-                "ssh_key": "TERMINAL_SSH_KEY",
-                "container_cpu": "TERMINAL_CONTAINER_CPU",
-                "container_memory": "TERMINAL_CONTAINER_MEMORY",
-                "container_disk": "TERMINAL_CONTAINER_DISK",
-                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-                "docker_env": "TERMINAL_DOCKER_ENV",
-                "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-                "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-                "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-                "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-            }
-            for _cfg_key, _env_var in _terminal_env_map.items():
-                if _cfg_key in _terminal_cfg:
-                    _val = _terminal_cfg[_cfg_key]
-                    # Skip cwd placeholder values (".", "auto", "cwd") — the
-                    # gateway resolves these to Path.home() later (line ~255).
-                    # Writing the raw placeholder here would just be noise.
-                    # Only bridge explicit absolute paths from config.yaml.
-                    if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
-                        continue
-                    # Expand shell tilde in cwd so subprocess.Popen never
-                    # receives a literal "~/" which the kernel rejects.
-                    if _cfg_key == "cwd" and isinstance(_val, str):
-                        _val = os.path.expanduser(_val)
-                    if isinstance(_val, (list, dict)):
-                        os.environ[_env_var] = json.dumps(_val)
-                    else:
-                        os.environ[_env_var] = str(_val)
+        from hermes_cli.terminal_config import (
+            normalize_terminal_config,
+            resolve_gateway_terminal_cwd,
+            terminal_env_values,
+        )
+
+        _terminal_raw = _cfg.get("terminal", {})
+        if not isinstance(_terminal_raw, dict):
+            _terminal_raw = {}
+        else:
+            _terminal_raw = dict(_terminal_raw)
+
+        # Backwards-compatible top-level aliases are copied into the raw
+        # terminal config only when the terminal section itself did not specify
+        # the canonical key.
+        for _terminal_alias in ("backend", "cwd"):
+            if _terminal_alias not in _terminal_raw and _terminal_alias in _cfg:
+                _terminal_raw[_terminal_alias] = _cfg[_terminal_alias]
+
+        _terminal_cfg = normalize_terminal_config(_terminal_raw)
+        _terminal_cfg["cwd"] = resolve_gateway_terminal_cwd(
+            _terminal_cfg,
+            existing_env=os.environ,
+            messaging_cwd=os.getenv("MESSAGING_CWD"),
+        )
+        for _env_var, _env_value in terminal_env_values(_terminal_cfg).items():
+            os.environ[_env_var] = _env_value
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
         # Auxiliary model/direct-endpoint overrides (vision, web_extract).

@@ -14,6 +14,25 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     assert "tvly...cdef" in output
 
 
+def test_show_status_all_redacts_api_keys(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    nvidia_key = "nvapi-secret-value-that-must-not-leak-123456"
+    openai_key = "openai-status-test-token-abcdef"
+    monkeypatch.setenv("NVIDIA_API_KEY", nvidia_key)
+    monkeypatch.setenv("OPENAI_API_KEY", openai_key)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "NVIDIA NIM" in output
+    assert "OpenAI" in output
+    assert nvidia_key not in output
+    assert openai_key not in output
+    assert "nvap...3456" in output
+    assert "open...cdef" in output
+
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod

@@ -2683,8 +2683,11 @@ def run_job(
     agent = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
+    # This env var is process-wide, but the scheduler often lives in the same
+    # gateway process that serves interactive chats.  Restore the previous
+    # value in finally so a cron tick does not make later interactive tool
+    # calls look like non-interactive cron executions.
+    _prior_cron_session = os.environ.get("HERMES_CRON_SESSION", "_UNSET_")
     os.environ["HERMES_CRON_SESSION"] = "1"
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
@@ -3323,6 +3326,13 @@ def run_job(
                 os.environ.pop("TERMINAL_CWD", None)
             else:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
+        # Restore process-wide cron marker after this job. The scheduler runs
+        # inside long-lived gateway processes, so do not taint later interactive
+        # sessions and their terminal tools.
+        if _prior_cron_session == "_UNSET_":
+            os.environ.pop("HERMES_CRON_SESSION", None)
+        else:
+            os.environ["HERMES_CRON_SESSION"] = _prior_cron_session
         # Release the cwd lock now that the env is restored, so a waiting
         # workdir job (or queued reader) can proceed without seeing the override.
         if _holds_cwd_write:

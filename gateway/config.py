@@ -36,6 +36,19 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
+def _normalize_reply_to_mode(value: Any) -> str:
+    """Normalize reply threading mode from YAML and legacy config values."""
+    if value is False:
+        return "off"
+    if isinstance(value, str):
+        mode = value.strip().lower()
+        if mode in {"off", "false"}:
+            return "off"
+        if mode in {"first", "all"}:
+            return mode
+    return "first"
+
+
 def _coerce_float(value: Any, default: float) -> float:
     """Coerce numeric config values, falling back on malformed input."""
     if value is None:
@@ -335,7 +348,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=_normalize_reply_to_mode(data.get("reply_to_mode")),
             gateway_restart_notification=_coerce_bool(_grn, True),
             extra=data.get("extra", {}),
         )

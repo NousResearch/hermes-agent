@@ -233,6 +233,14 @@ class TestConfigSerialization:
         config = PlatformConfig.from_dict(data)
         assert config.reply_to_mode == "off"
 
+    def test_from_dict_normalizes_legacy_false_reply_to_mode(self):
+        data = {"enabled": True, "token": "***", "reply_to_mode": False}
+        config = PlatformConfig.from_dict(data)
+        adapter = DiscordAdapter(config)
+
+        assert config.reply_to_mode == "off"
+        assert adapter._reply_to_mode == "off"
+
     def test_from_dict_defaults_to_first(self):
         data = {"enabled": True, "token": "***"}
         config = PlatformConfig.from_dict(data)

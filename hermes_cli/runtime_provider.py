@@ -100,6 +100,63 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _host_derived_api_key(base_url: str) -> str:
+    """Look up `<VENDOR>_API_KEY` in the env, derived from the base URL host.
+
+    Examples:
+        https://api.deepseek.com/v1   → DEEPSEEK_API_KEY
+        https://api.groq.com/openai/v1 → GROQ_API_KEY
+        https://api.mistral.ai/v1     → MISTRAL_API_KEY
+        https://generativelanguage.googleapis.com/v1beta/openai/ → GOOGLEAPIS_API_KEY
+
+    Returns the env value (stripped) or "". Never returns env vars whose names
+    are already explicitly checked elsewhere — those are handled by their own
+    host-gated paths (OPENAI/OPENROUTER/OLLAMA).
+
+    The vendor label is the *registrable* portion of the hostname: strip
+    ``api.`` / ``www.`` prefixes, then take the second-to-last label
+    (``api.deepseek.com`` → ``deepseek``). Falls back to "" for hostnames
+    that don't yield a usable vendor label (IPs, loopback, single-label
+    hosts).
+    """
+    hostname = base_url_hostname(base_url)
+    if not hostname:
+        return ""
+    # Reject IPv4 / IPv6 / loopback — no meaningful vendor label.
+    if any(ch.isdigit() for ch in hostname.split(".")[-1]):
+        # Last label starts with a digit → likely IP. (TLDs are never numeric.)
+        return ""
+    if hostname in ("localhost",) or ":" in hostname:
+        return ""
+    labels = [lbl for lbl in hostname.split(".") if lbl]
+    # Strip common API/CDN prefixes.
+    while labels and labels[0] in ("api", "www"):
+        labels.pop(0)
+    if len(labels) < 2:
+        return ""
+    # Take the *registrable* label (second-to-last). For typical provider
+    # hosts this is what users intuitively call "the vendor":
+    #   deepseek.com               → labels[-2] = "deepseek"  ✓
+    #   api.groq.com → groq.com    → labels[-2] = "groq"      ✓
+    #   api.mistral.ai             → labels[-2] = "mistral"   ✓
+    # Crucially, lookalike hosts pick the ATTACKER's label, not the spoofed
+    # vendor:
+    #   api.deepseek.com.attacker.test → labels[-2] = "attacker"
+    # so DEEPSEEK_API_KEY stays put and the chain falls through to
+    # no-key-required. This mirrors how `base_url_host_matches` resists the
+    # same lookalike attack for explicit hosts.
+    vendor = labels[-2]
+    # Sanitize to env var charset: A-Z, 0-9, underscore.
+    sanitized = "".join(ch if ch.isalnum() else "_" for ch in vendor).upper()
+    if not sanitized or not sanitized[0].isalpha():
+        return ""
+    # Don't re-derive env vars already handled by explicit host-gated paths.
+    if sanitized in ("OPENAI", "OPENROUTER", "OLLAMA"):
+        return ""
+    env_name = f"{sanitized}_API_KEY"
+    return (os.getenv(env_name, "") or "").strip()
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -589,6 +646,10 @@ def _resolve_named_custom_runtime(
             # Gate env key fallbacks on authoritative hosts (#28660)
             (os.getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""),
             (os.getenv("OPENROUTER_API_KEY", "").strip() if _da_is_openrouter  else ""),
+            # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
+            # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
+            # intuitive match without configuring `custom_providers` first.
+            _host_derived_api_key(base_url),
         ]
         api_key = next(
             (c for c in api_key_candidates if has_usable_secret(c)),
@@ -634,6 +695,9 @@ def _resolve_named_custom_runtime(
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
         (os.getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),
         (os.getenv("OPENROUTER_API_KEY", "").strip() if _cp_is_openrouter  else ""),
+        # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host as a final
+        # fallback when key_env wasn't set explicitly.
+        _host_derived_api_key(base_url),
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
@@ -749,6 +813,11 @@ def _resolve_openrouter_runtime(
             (os.getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
             (os.getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
             (os.getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""),
+            # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
+            # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
+            # intuitive match. Helper returns "" for IPs/loopback and for env
+            # vars already handled by the explicit host-gated paths above.
+            _host_derived_api_key(base_url),
         ]
     api_key = next(
         (str(candidate or "").strip() for candidate in api_key_candidates if has_usable_secret(candidate)),

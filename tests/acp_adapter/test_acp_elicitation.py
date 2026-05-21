@@ -200,6 +200,9 @@ class ToolSurfaceConn:
     async def session_update(self, *_args, **_kwargs):
         return None
 
+    async def request_permission(self, *_args, **_kwargs):
+        return SimpleNamespace(outcome="allow")
+
 
 def install_fake_model_tools(monkeypatch):
     calls = []
@@ -266,3 +269,62 @@ async def test_new_session_refreshes_supported_client_tool_surface(monkeypatch):
 
     assert state is not None
     assert "clarify" in state.agent.valid_tool_names
+
+
+class ClarifyFakeAgent(ToolSurfaceFakeAgent):
+    def __init__(self):
+        super().__init__()
+        self.clarify_callback = None
+        self.clarify_answers = []
+
+    def run_conversation(self, *, user_message, conversation_history, task_id, **kwargs):
+        answer = None
+        if callable(self.clarify_callback):
+            answer = self.clarify_callback("Q?", ["A"])
+            self.clarify_answers.append(answer)
+        messages = list(conversation_history or [])
+        messages.append({"role": "user", "content": user_message})
+        messages.append({"role": "assistant", "content": f"answer: {answer}"})
+        return {"final_response": f"answer: {answer}", "messages": messages}
+
+
+class ElicitationConn(ToolSurfaceConn):
+    def __init__(self):
+        self.updates = []
+        self.requests = []
+        self.request_permission_calls = []
+        self._conn = self
+
+    async def session_update(self, *args, **kwargs):
+        self.updates.append((args, kwargs))
+
+    async def request_permission(self, *args, **kwargs):
+        self.request_permission_calls.append((args, kwargs))
+        return SimpleNamespace(outcome="allow")
+
+    async def send_request(self, method, params):
+        self.requests.append((method, params))
+        return {"action": "accept", "content": {"answer": "Elicited"}}
+
+
+@pytest.mark.asyncio
+async def test_prompt_wires_clarify_callback_to_elicitation(monkeypatch):
+    install_fake_model_tools(monkeypatch)
+    fake = ClarifyFakeAgent()
+    original_callback = lambda _q, _c: "original"
+    fake.clarify_callback = original_callback
+    manager = SessionManager(agent_factory=lambda: fake, db=NoopDb())
+    agent = HermesACPAgent(session_manager=manager)
+    conn = ElicitationConn()
+    agent.on_connect(conn)
+    await agent.initialize(client_capabilities=SimpleNamespace(elicitation={"form": {}}))
+    response = await agent.new_session(cwd=".")
+
+    await agent.prompt(
+        session_id=response.session_id,
+        prompt=[TextContentBlock(type="text", text="ask if needed")],
+    )
+
+    assert fake.clarify_answers == ["Elicited"]
+    assert conn.requests[0][0] == "elicitation/create"
+    assert fake.clarify_callback is original_callback

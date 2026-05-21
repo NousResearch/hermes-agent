@@ -1222,15 +1222,14 @@ class WeComAdapter(BasePlatformAdapter):
         return response
 
     async def _send_reply_markdown(self, reply_req_id: str, content: str) -> Dict[str, Any]:
-        response = await self._send_reply_request(
-            reply_req_id,
-            {
-                "msgtype": "markdown",
-                "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
-            },
-        )
-        self._raise_for_wecom_error(response, "send reply markdown")
-        return response
+       body = {"msgtype": "markdown", "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]}}
+       response = await self._send_reply_request(reply_req_id, body)
+       if self._is_transient_ws_error(response):
+           logger.warning("[%s] Transient WS error in reply markdown (ercode %s) — reconnecting", self.name, response.get("errcode"))
+           await self._connect_ws()
+           response = await self._send_reply_request(reply_req_id, body)
+       self._raise_for_wecom_error(response, "send reply markdown")
+       return response
 
     async def _send_reply_media_message(
         self,

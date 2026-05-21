@@ -3768,14 +3768,33 @@ def mount_spa(application: FastAPI):
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
         or empty string when served at root.
+
+        When the OAuth auth gate is active (``app.state.auth_required``),
+        the legacy ``_SESSION_TOKEN`` is NOT injected — the SPA reads
+        identity from ``/api/auth/me`` over cookie auth instead.  The
+        ``__HERMES_AUTH_REQUIRED__`` flag lets the SPA pick the right
+        auth scheme for /api/pty and /api/ws (ticket vs token).
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
-        token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
-            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-            f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
-        )
+        gated = bool(getattr(app.state, "auth_required", False))
+        gated_js = "true" if gated else "false"
+        if gated:
+            bootstrap_script = (
+                f"<script>"
+                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+                f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"</script>"
+            )
+        else:
+            bootstrap_script = (
+                f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+                f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"</script>"
+            )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
             # browser fetches them through the same proxy prefix.
@@ -3785,7 +3804,7 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
-        html = html.replace("</head>", f"{token_script}</head>", 1)
+        html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
         return HTMLResponse(
             html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
@@ -4744,19 +4763,35 @@ def start_server(
     _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
-    # injection / WS-auth paths can branch on it consistently.  At Phase 0 the
-    # flag is set but nothing reads it yet — later phases register the gate
-    # middleware and the gated /auth/* routes.
+    # injection / WS-auth paths can branch on it consistently.  Phase 3.5
+    # uses this to decide whether to refuse the bind, log the gate-on
+    # banner, and enable uvicorn proxy_headers.
     app.state.auth_required = should_require_auth(host, allow_public)
 
-    _LOCALHOST = ("127.0.0.1", "localhost", "::1")
-    if host not in _LOCALHOST and not allow_public:
-        raise SystemExit(
-            f"Refusing to bind to {host} — the dashboard exposes API keys "
-            f"and config without robust authentication.\n"
-            f"Use --insecure to override (NOT recommended on untrusted networks)."
+    if app.state.auth_required:
+        # Phase 3.5: the gate engages on non-loopback binds.  The legacy
+        # "refusing to bind" guard is replaced by "require at least one
+        # provider to be registered, else fail closed".
+        from hermes_cli.dashboard_auth import list_providers
+        if not list_providers():
+            raise SystemExit(
+                f"Refusing to bind dashboard to {host} — the OAuth auth "
+                f"gate engages on non-loopback binds, but no auth providers "
+                f"are registered.\n"
+                f"Install the default Nous provider "
+                f"(plugins/dashboard-auth-nous) or another "
+                f"DashboardAuthProvider plugin.\n"
+                f"Or pass --insecure to skip the auth gate (NOT recommended "
+                f"on untrusted networks)."
+            )
+        _log.info(
+            "Dashboard binding to %s with OAuth auth gate enabled. "
+            "Providers: %s",
+            host,
+            ", ".join(p.name for p in list_providers()),
         )
-    if host not in _LOCALHOST:
+    elif host not in _LOOPBACK_HOST_VALUES and allow_public:
+        # --insecure path — no auth, loud warning.
         _log.warning(
             "Binding to %s with --insecure — the dashboard has no robust "
             "authentication. Only use on trusted networks.", host,
@@ -4801,7 +4836,13 @@ def start_server(
             )
 
     print(f"  Hermes Web UI → http://{host}:{port}")
-    # proxy_headers=False so _ws_client_is_allowed sees the real connection peer
-    # rather than X-Forwarded-For's rewritten value (which would defeat the
-    # loopback gate when behind a reverse proxy).
-    uvicorn.run(app, host=host, port=port, log_level="warning", proxy_headers=False)
+    # proxy_headers defaults to False so _ws_client_is_allowed sees the real
+    # connection peer rather than X-Forwarded-For's rewritten value (which
+    # would defeat the loopback gate when behind a reverse proxy).  When the
+    # OAuth gate is active we are explicitly running behind a TLS terminator
+    # (Fly.io) and need X-Forwarded-Proto to decide cookie Secure flags, so
+    # we flip proxy_headers on for that mode.
+    uvicorn.run(
+        app, host=host, port=port, log_level="warning",
+        proxy_headers=bool(app.state.auth_required),
+    )

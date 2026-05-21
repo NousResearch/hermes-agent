@@ -1033,18 +1033,23 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     # Fast path: when the active main model supports native vision AND the
     # provider supports image content inside tool results, short-circuit
     # the auxiliary LLM and return the image bytes as a multimodal
-    # tool-result envelope. The main model sees the pixels directly on its
+    # tool-result envelope. The user can force native vision with the 
+    # supports_vision override. The main model sees the pixels directly on its
     # next turn — no aux call, no information loss, no extra latency.
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from agent.image_routing import decide_image_input_mode
+        from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
         from hermes_cli.config import load_config
 
         _provider = _read_main_provider()
         _model = _read_main_model()
         _cfg = load_config()
         _mode = decide_image_input_mode(_provider, _model, _cfg)
-        if _mode == "native" and _supports_media_in_tool_results(_provider, _model):
+        _supports_vision = _lookup_supports_vision(_provider, _model, _cfg) is True
+        if _mode == "native" and (
+            _supports_media_in_tool_results(_provider, _model)
+            or _supports_vision
+        ):
             logger.info(
                 "vision_analyze: native fast path (provider=%s, model=%s)",
                 _provider, _model,

@@ -68,11 +68,14 @@ TERMINAL_ENV_MAPPINGS: dict[str, str] = {
     "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-    "sudo_password": "SUDO_PASSWORD",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
     "ssh_key": "TERMINAL_SSH_KEY",
+}
+
+SENSITIVE_TERMINAL_ENV_MAPPINGS: dict[str, str] = {
+    "sudo_password": "SUDO_PASSWORD",
 }
 
 
@@ -102,9 +105,10 @@ def normalize_terminal_config(raw: Any) -> dict[str, Any]:
     raw_env_type = None
 
     if isinstance(raw, Mapping):
-        config.update(raw)
-        raw_backend = raw.get("backend")
-        raw_env_type = raw.get("env_type")
+        raw_config = copy.deepcopy(raw)
+        config.update(raw_config)
+        raw_backend = raw_config.get("backend")
+        raw_env_type = raw_config.get("env_type")
 
     backend = _stripped_nonempty(raw_backend)
     env_type = _stripped_nonempty(raw_env_type)
@@ -130,11 +134,14 @@ def _expand_user(value: Any, home: str | os.PathLike[str] | None = None) -> str:
 
 def resolve_cli_terminal_cwd(
     config: Mapping[str, Any], invocation_cwd: str | os.PathLike[str] | None = None
-) -> str:
-    """Resolve CLI cwd placeholders against the process invocation cwd."""
+) -> str | None:
+    """Resolve CLI cwd placeholders against the process invocation cwd for local backends."""
 
     cwd = config.get("cwd")
     if _is_placeholder_cwd(cwd):
+        backend = _stripped_nonempty(config.get("backend")) or _stripped_nonempty(config.get("env_type")) or "local"
+        if backend != "local":
+            return None
         return _expand_user(invocation_cwd or os.getcwd())
     return _expand_user(cwd)
 
@@ -156,11 +163,18 @@ def resolve_gateway_terminal_cwd(
     return _expand_user(fallback, home=home)
 
 
-def terminal_env_values(config: Mapping[str, Any]) -> dict[str, str]:
+def terminal_env_values(config: Mapping[str, Any], *, include_secrets: bool = False) -> dict[str, str]:
     """Serialize terminal config values for process environment variables."""
 
     env: dict[str, str] = {}
-    for config_key, env_key in TERMINAL_ENV_MAPPINGS.items():
+    if "env_type" not in config and config.get("backend") is not None:
+        env["TERMINAL_ENV"] = str(config["backend"])
+
+    mappings = TERMINAL_ENV_MAPPINGS
+    if include_secrets:
+        mappings = {**TERMINAL_ENV_MAPPINGS, **SENSITIVE_TERMINAL_ENV_MAPPINGS}
+
+    for config_key, env_key in mappings.items():
         if config_key not in config:
             continue
         value = config[config_key]
@@ -176,6 +190,7 @@ def terminal_env_values(config: Mapping[str, Any]) -> dict[str, str]:
 __all__ = [
     "CWD_PLACEHOLDERS",
     "DEFAULT_TERMINAL_CONFIG",
+    "SENSITIVE_TERMINAL_ENV_MAPPINGS",
     "TERMINAL_ENV_MAPPINGS",
     "default_terminal_config",
     "normalize_terminal_config",

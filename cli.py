@@ -110,6 +110,12 @@ from hermes_cli.browser_connect import (
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.terminal_config import (
+    default_terminal_config,
+    normalize_terminal_config,
+    resolve_cli_terminal_cwd,
+    terminal_env_values,
+)
 from utils import base_url_host_matches, is_truthy_value
 
 _hermes_home = get_hermes_home()
@@ -307,19 +313,7 @@ def load_cli_config() -> Dict[str, Any]:
             "base_url": "",
             "provider": "auto",
         },
-        "terminal": {
-            "env_type": "local",
-            "cwd": ".",  # "." is resolved to os.getcwd() at runtime
-            "timeout": 60,
-            "lifetime_seconds": 300,
-            "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-            "docker_forward_env": [],
-            "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-            "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-            "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-            "docker_volumes": [],  # host:container volume mounts for Docker backend
-            "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
-        },
+        "terminal": default_terminal_config(),
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
             "record_sessions": False,  # Auto-record browser sessions as WebM videos
@@ -404,7 +398,6 @@ def load_cli_config() -> Dict[str, Any]:
     # When using defaults (no config file / no terminal section), we should NOT
     # overwrite env vars that were already set by .env -- only a user's config
     # file should be authoritative.
-    default_terminal_config = defaults["terminal"].copy()
     _file_has_terminal_config = False
 
     # Load from file if exists
@@ -480,81 +473,27 @@ def load_cli_config() -> Dict[str, Any]:
     defaults = cast(Dict[str, Any], _expand_env_vars(defaults))
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
-    terminal_config = defaults.get("terminal", {})
-    if not isinstance(terminal_config, dict):
-        terminal_config = default_terminal_config.copy()
-        defaults["terminal"] = terminal_config
-    
-    # Normalize config key: the new config system (hermes_cli/config.py) and all
-    # documentation use "backend", the legacy cli-config.yaml uses "env_type".
-    # Accept both, with "backend" taking precedence (it's the documented key).
-    if "backend" in terminal_config:
-        terminal_config["env_type"] = terminal_config["backend"]
-    
-    # CWD resolution for CLI/TUI. The gateway has its own config bridge in
-    # gateway/run.py but may lazily import cli.py (triggering this code).
-    # Local backend: always os.getcwd(). Use `cd /dir && hermes` to control it.
-    # Non-local with placeholder: pop so terminal_tool uses its per-backend default.
-    # Non-local with explicit path: keep as-is.
-    _CWD_PLACEHOLDERS = (".", "auto", "cwd")
-    effective_backend = terminal_config.get("env_type", "local")
+    terminal_config = normalize_terminal_config(defaults.get("terminal", {}))
+    terminal_config["cwd"] = resolve_cli_terminal_cwd(
+        terminal_config,
+        invocation_cwd=os.getcwd(),
+    )
+    defaults["terminal"] = terminal_config
 
-    if effective_backend == "local":
-        terminal_config["cwd"] = os.getcwd()
-        defaults["terminal"]["cwd"] = terminal_config["cwd"]
-    elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
-        terminal_config.pop("cwd", None)
-    
-    env_mappings = {
-        "env_type": "TERMINAL_ENV",
-        "cwd": "TERMINAL_CWD",
-        "timeout": "TERMINAL_TIMEOUT",
-        "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-        "docker_image": "TERMINAL_DOCKER_IMAGE",
-        "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-        "modal_image": "TERMINAL_MODAL_IMAGE",
-        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
-        # SSH config
-        "ssh_host": "TERMINAL_SSH_HOST",
-        "ssh_user": "TERMINAL_SSH_USER",
-        "ssh_port": "TERMINAL_SSH_PORT",
-        "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal, daytona, vercel_sandbox -- ignored for local/ssh)
-        "container_cpu": "TERMINAL_CONTAINER_CPU",
-        "container_memory": "TERMINAL_CONTAINER_MEMORY",
-        "container_disk": "TERMINAL_CONTAINER_DISK",
-        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-        "docker_env": "TERMINAL_DOCKER_ENV",
-        "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-        "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-        "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        # Persistent shell (non-local backends)
-        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-        # Sudo support (works with all backends)
-        "sudo_password": "SUDO_PASSWORD",
-    }
-    
     # Bridge config → env vars for terminal_tool. TERMINAL_CWD is force-exported
     # UNLESS we're inside a gateway process (detected by _HERMES_GATEWAY marker)
     # where it was already set correctly by gateway/run.py's config bridge.
     _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
-    for config_key, env_var in env_mappings.items():
-        if config_key in terminal_config:
-            if env_var == "TERMINAL_CWD":
-                if _is_gateway:
-                    continue
-                # CLI: always export (overrides stale .env or inherited values)
-                os.environ[env_var] = str(terminal_config[config_key])
+    terminal_env = terminal_env_values(terminal_config, include_secrets=True)
+    for env_var, value in terminal_env.items():
+        if env_var == "TERMINAL_CWD":
+            if _is_gateway:
                 continue
-            if _file_has_terminal_config or env_var not in os.environ:
-                val = terminal_config[config_key]
-                if isinstance(val, (list, dict)):
-                    os.environ[env_var] = json.dumps(val)
-                else:
-                    os.environ[env_var] = str(val)
+            # CLI: always export (overrides stale .env or inherited values)
+            os.environ[env_var] = value
+            continue
+        if _file_has_terminal_config or env_var not in os.environ:
+            os.environ[env_var] = value
     
     # Apply browser config to environment variables
     browser_config = defaults.get("browser", {})

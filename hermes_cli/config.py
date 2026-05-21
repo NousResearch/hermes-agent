@@ -148,6 +148,7 @@ import yaml
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
+from hermes_cli.terminal_config import default_terminal_config, normalize_terminal_config
 
 
 # =============================================================================
@@ -588,86 +589,7 @@ DEFAULT_CONFIG = {
         "disabled_toolsets": [],
     },
     
-    "terminal": {
-        "backend": "local",
-        "modal_mode": "auto",
-        "cwd": ".",  # Use current directory
-        "timeout": 180,
-        # Environment variables to pass through to sandboxed execution
-        # (terminal and execute_code).  Skill-declared required_environment_variables
-        # are passed through automatically; this list is for non-skill use cases.
-        "env_passthrough": [],
-        # Extra files to source in the login shell when building the
-        # per-session environment snapshot.  Use this when tools like nvm,
-        # pyenv, asdf, or custom PATH entries are registered by files that
-        # a bash login shell would skip — most commonly ``~/.bashrc``
-        # (bash doesn't source bashrc in non-interactive login mode) or
-        # zsh-specific files like ``~/.zshrc`` / ``~/.zprofile``.
-        # Paths support ``~`` / ``${VAR}``. Missing files are silently
-        # skipped. When empty, Hermes auto-sources ``~/.profile``,
-        # ``~/.bash_profile``, and ``~/.bashrc`` (in that order) if the
-        # snapshot shell is bash (this is the ``auto_source_bashrc``
-        # behaviour — disable with that key if you want strict login-only
-        # semantics).
-        "shell_init_files": [],
-        # When true (default), Hermes sources the user's shell rc files
-        # (``~/.profile``, ``~/.bash_profile``, ``~/.bashrc``) in the
-        # login shell used to build the environment snapshot. This
-        # captures PATH additions, shell functions, and aliases — which a
-        # plain ``bash -l -c`` would otherwise miss because bash skips
-        # bashrc in non-interactive login mode, and because a default
-        # Debian/Ubuntu ``~/.bashrc`` short-circuits on non-interactive
-        # sources. ``~/.profile`` and ``~/.bash_profile`` are tried first
-        # because ``n`` / ``nvm`` / ``asdf`` installers typically write
-        # their PATH exports there without an interactivity guard. Turn
-        # this off if your rc files misbehave when sourced
-        # non-interactively (e.g. one that hard-exits on TTY checks).
-        "auto_source_bashrc": True,
-        "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "docker_forward_env": [],
-        # Explicit environment variables to set inside Docker containers.
-        # Unlike docker_forward_env (which reads values from the host process),
-        # docker_env lets you specify exact key-value pairs — useful when Hermes
-        # runs as a systemd service without access to the user's shell environment.
-        # Example: {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
-        "docker_env": {},
-        "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-        "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "vercel_runtime": "node24",
-        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
-        "container_cpu": 1,
-        "container_memory": 5120,       # MB (default 5GB)
-        "container_disk": 51200,        # MB (default 50GB)
-        "container_persistent": True,   # Persist filesystem across sessions
-        # Docker volume mounts — share host directories with the container.
-        # Each entry is "host_path:container_path" (standard Docker -v syntax).
-        # Example:
-        # ["/home/user/projects:/workspace/projects",
-        #  "/home/user/.hermes/cache/documents:/output"]
-        # For gateway MEDIA delivery, write inside Docker to /output/... and emit
-        # the host-visible path in MEDIA:, not the container path.
-        "docker_volumes": [],
-        # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
-        # Default off because passing host directories into a sandbox weakens isolation.
-        "docker_mount_cwd_to_workspace": False,
-        "docker_extra_args": [],        # Extra flags passed verbatim to docker run
-        # Explicit opt-in: run the Docker container as the host user's uid:gid
-        # (via `--user`).  When enabled, files written into bind-mounted dirs
-        # (docker_volumes, the persistent workspace, or the auto-mounted cwd)
-        # are owned by your host user instead of root, which avoids needing
-        # `sudo chown` after container runs. Default off to preserve behavior
-        # for images whose entrypoints expect to start as root (e.g. the
-        # bundled Hermes image, which drops to the `hermes` user via gosu).
-        # When on, SETUID/SETGID caps are omitted from the container since
-        # no privilege drop is needed.
-        "docker_run_as_host_user": False,
-        # Persistent shell — keep a long-lived bash shell across execute() calls
-        # so cwd/env vars/shell variables survive between commands.
-        # Enabled by default for non-local backends (SSH); local is always opt-in
-        # via TERMINAL_LOCAL_PERSISTENT env var.
-        "persistent_shell": True,
-    },
+    "terminal": default_terminal_config(),
 
     "web": {
         "backend": "",           # shared fallback — applies to both search and extract
@@ -5038,9 +4960,7 @@ def show_config():
     # Terminal
     print()
     print(color("◆ Terminal", Colors.CYAN, Colors.BOLD))
-    terminal = config.get('terminal', {})
-    if not isinstance(terminal, dict):
-        terminal = DEFAULT_CONFIG.get('terminal', {})
+    terminal = normalize_terminal_config(config.get('terminal', {}))
     print(f"  Backend:      {terminal.get('backend', 'local')}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")

@@ -33,10 +33,24 @@ def _clean_env(monkeypatch):
     those writes aren't tracked by monkeypatch and won't be undone by it.
     We add explicit cleanup on yield to prevent cross-test pollution.
     """
-    for var in ("HERMES_IGNORE_USER_CONFIG", "HERMES_IGNORE_RULES"):
+    for var in (
+        "HERMES_IGNORE_USER_CONFIG",
+        "HERMES_IGNORE_RULES",
+        "TERMINAL_CWD",
+        "TERMINAL_ENV",
+        "TERMINAL_TIMEOUT",
+        "_HERMES_GATEWAY",
+    ):
         monkeypatch.delenv(var, raising=False)
     yield
-    for var in ("HERMES_IGNORE_USER_CONFIG", "HERMES_IGNORE_RULES"):
+    for var in (
+        "HERMES_IGNORE_USER_CONFIG",
+        "HERMES_IGNORE_RULES",
+        "TERMINAL_CWD",
+        "TERMINAL_ENV",
+        "TERMINAL_TIMEOUT",
+        "_HERMES_GATEWAY",
+    ):
         os.environ.pop(var, None)
 
 
@@ -124,6 +138,50 @@ class TestIgnoreUserConfigEnvGate:
 
         assert cfg["terminal"]["env_type"] == "local"
         assert cfg["terminal"]["cwd"]
+
+    def test_partial_terminal_config_uses_shared_defaults(self, tmp_path, monkeypatch):
+        """A partial terminal section should inherit shared terminal defaults."""
+        (tmp_path / "config.yaml").write_text(
+            textwrap.dedent(
+                """
+                terminal:
+                  backend: local
+                """
+            ).lstrip(),
+            encoding="utf-8",
+        )
+
+        load_cli_config = self._reload_cli(monkeypatch, tmp_path)
+        cfg = load_cli_config()
+
+        assert cfg["terminal"]["backend"] == "local"
+        assert cfg["terminal"]["env_type"] == "local"
+        assert cfg["terminal"]["timeout"] == 180
+        assert os.environ["TERMINAL_TIMEOUT"] == "180"
+
+    def test_local_terminal_cwd_uses_invocation_cwd(self, tmp_path, monkeypatch):
+        """Local CLI/TUI ignores configured cwd and uses invocation cwd."""
+        configured_cwd = tmp_path / "configured"
+        invocation_dir = tmp_path / "invocation"
+        configured_cwd.mkdir()
+        invocation_dir.mkdir()
+        (tmp_path / "config.yaml").write_text(
+            textwrap.dedent(
+                f"""
+                terminal:
+                  backend: local
+                  cwd: {configured_cwd}
+                """
+            ).lstrip(),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(invocation_dir)
+
+        load_cli_config = self._reload_cli(monkeypatch, tmp_path)
+        cfg = load_cli_config()
+
+        assert cfg["terminal"]["cwd"] == str(invocation_dir)
+        assert os.environ["TERMINAL_CWD"] == str(invocation_dir)
 
 
 class TestIgnoreRulesEnvGate:

@@ -1521,6 +1521,28 @@ _TRUE_RE = re.compile(r"^(1|true|on|yes|y)$")
 _FALSE_RE = re.compile(r"^(0|false|off|no|n)$")
 _LIGHT_DEFAULT_TERM_PROGRAMS = frozenset()  # Apple_Terminal doesn't reliably indicate; require explicit
 
+# Terminals known to consume OSC 11 replies internally instead of leaking
+# them into the application's stdin (which prompt_toolkit then reads as
+# user input).  Apple_Terminal is deliberately NOT on this list — it
+# echoes the reply into the input buffer.  See issue #30092.
+_OSC11_SAFE_TERM_PROGRAMS = frozenset({"iTerm.app", "WezTerm", "ghostty", "Hyper"})
+_OSC11_SAFE_TERM_PREFIXES = ("xterm-kitty", "foot", "alacritty", "tmux", "screen")
+
+
+def _osc11_probe_is_safe() -> bool:
+    """Return True only when the active terminal is known to consume OSC 11
+    replies internally.  Conservative default: unknown/unrecognised terminals
+    are treated as unsafe so we don't pollute prompt_toolkit's input buffer."""
+    if (os.environ.get("HERMES_DISABLE_OSC11") or "").strip().lower() in {"1", "true", "on", "yes", "y"}:
+        return False
+    term_program = (os.environ.get("TERM_PROGRAM") or "").strip()
+    if term_program in _OSC11_SAFE_TERM_PROGRAMS:
+        return True
+    term = (os.environ.get("TERM") or "").strip()
+    if any(term.startswith(prefix) for prefix in _OSC11_SAFE_TERM_PREFIXES):
+        return True
+    return False
+
 
 def _luminance_from_hex(hex_str: str) -> float | None:
     s = (hex_str or "").strip().lstrip("#")
@@ -1654,8 +1676,11 @@ def _detect_light_mode() -> bool:
                 if 0 <= bg < 16:
                     _LIGHT_MODE_CACHE = result
                     return result
-        # 5. OSC 11 query (best-effort, only when stdin/stdout are TTY)
-        bg_color = _query_osc11_background()
+        # 5. OSC 11 query (best-effort, only when stdin/stdout are TTY).
+        # Gated by an allow-list — Apple_Terminal and other terminals that
+        # don't consume the OSC 11 reply internally would leak the response
+        # into prompt_toolkit's input buffer (issue #30092).
+        bg_color = _query_osc11_background() if _osc11_probe_is_safe() else None
         if bg_color:
             lum = _luminance_from_hex(bg_color)
             if lum is not None:

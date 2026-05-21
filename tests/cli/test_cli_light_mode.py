@@ -133,6 +133,111 @@ class TestLightModeRemap:
             )
 
 
+class TestOsc11ProbeAllowList:
+    """Guards the OSC 11 background-color probe behind a terminal allow-list
+    so the reply does not leak into prompt_toolkit's input buffer on
+    terminals like macOS Terminal.app.  Regression for issue #30092.
+    """
+
+    def _clear_env(self, monkeypatch):
+        for var in (
+            "HERMES_DISABLE_OSC11",
+            "TERM_PROGRAM",
+            "TERM",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_apple_terminal_is_unsafe(self, cli_mod, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+        assert cli_mod._osc11_probe_is_safe() is False
+
+    def test_unknown_term_program_is_unsafe(self, cli_mod, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("TERM_PROGRAM", "SomeOtherTerminalEmulator")
+        assert cli_mod._osc11_probe_is_safe() is False
+
+    def test_no_terminal_env_is_unsafe(self, cli_mod, monkeypatch):
+        self._clear_env(monkeypatch)
+        assert cli_mod._osc11_probe_is_safe() is False
+
+    @pytest.mark.parametrize("prog", ["iTerm.app", "WezTerm", "ghostty", "Hyper"])
+    def test_known_safe_term_program(self, cli_mod, monkeypatch, prog):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("TERM_PROGRAM", prog)
+        assert cli_mod._osc11_probe_is_safe() is True
+
+    @pytest.mark.parametrize(
+        "term",
+        ["xterm-kitty", "foot", "alacritty", "tmux-256color", "screen.xterm-256color"],
+    )
+    def test_known_safe_term_prefix(self, cli_mod, monkeypatch, term):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("TERM", term)
+        assert cli_mod._osc11_probe_is_safe() is True
+
+    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on"])
+    def test_hermes_disable_osc11_forces_unsafe(self, cli_mod, monkeypatch, val):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")  # would otherwise be safe
+        monkeypatch.setenv("HERMES_DISABLE_OSC11", val)
+        assert cli_mod._osc11_probe_is_safe() is False
+
+    def test_hermes_disable_osc11_falsey_keeps_safe(self, cli_mod, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+        monkeypatch.setenv("HERMES_DISABLE_OSC11", "0")
+        assert cli_mod._osc11_probe_is_safe() is True
+
+    def test_detect_light_mode_skips_osc11_on_unsafe_terminal(
+        self, cli_mod, monkeypatch
+    ):
+        """Mode S regression: when the probe is unsafe, _detect_light_mode
+        must NOT call _query_osc11_background — otherwise the reply leaks
+        into prompt_toolkit input on terminals like Apple_Terminal."""
+        self._clear_env(monkeypatch)
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
+        monkeypatch.delenv("COLORFGBG", raising=False)
+        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+
+        called = {"n": 0}
+
+        def _fake_probe():
+            called["n"] += 1
+            return "#FFFFFF"
+
+        monkeypatch.setattr(cli_mod, "_query_osc11_background", _fake_probe)
+        cli_mod._detect_light_mode()
+        assert called["n"] == 0, "OSC 11 probe must not run on Apple_Terminal"
+
+    def test_detect_light_mode_runs_osc11_on_safe_terminal(
+        self, cli_mod, monkeypatch
+    ):
+        """Counterpart: on a known-safe terminal, the OSC 11 probe still
+        runs so light-mode auto-detection keeps working."""
+        self._clear_env(monkeypatch)
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
+        monkeypatch.delenv("COLORFGBG", raising=False)
+        monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+
+        called = {"n": 0}
+
+        def _fake_probe():
+            called["n"] += 1
+            return "#FFFFFF"  # a light bg
+
+        monkeypatch.setattr(cli_mod, "_query_osc11_background", _fake_probe)
+        result = cli_mod._detect_light_mode()
+        assert called["n"] == 1
+        assert result is True
+
+
 class TestSkinConfigHook:
     """The salvage wraps SkinConfig.get_color at module import time so
     every skin color read goes through the light-mode remap.  Verify

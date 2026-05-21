@@ -158,7 +158,7 @@ def review_agent_skills() -> list[str]:
         return [part.strip() for part in value.split(",") if part.strip()]
     if isinstance(value, (list, tuple)):
         return [str(part).strip() for part in value if str(part).strip()]
-    return ["cursor-bugbot-sweep", "github-pr-workflow"]
+    return ["github/cursor-bugbot-sweep", "github/github-pr-workflow"]
 
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:

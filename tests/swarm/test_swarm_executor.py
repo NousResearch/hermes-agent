@@ -1,7 +1,7 @@
 import json
 
 from agent.swarm_executor import build_delegate_tasks, execute_swarm
-from agent.swarm_state import RoutingPlan, SwarmJob
+from agent.swarm_state import EvidenceRequirement, RoutingPlan, SwarmJob
 
 
 def _plan(tasks, mode="swarm"):
@@ -100,3 +100,62 @@ def test_permission_required_tasks_remain_blocked_and_are_not_dispatched():
     assert result.blocked[0]["title"] == "send"
     assert job.tasks[1].status == "blocked"
     assert job.status == "partially_completed"
+
+
+def test_weak_child_output_without_required_evidence_is_marked_needs_review():
+    job = SwarmJob.create("research and cite sources", created_at="2026-01-01T00:00:00+00:00")
+    plan = RoutingPlan(
+        mode="swarm",
+        reason="research",
+        suggested_tasks=[{"title": "research"}],
+        verification_required=True,
+        evidence_requirements=[EvidenceRequirement("citation", "Cite sources")],
+    )
+
+    def delegate_fn(**kwargs):
+        return {"results": [{"summary": "Looks good"}]}
+
+    execute_swarm(job, plan, delegate_fn, max_children=3)
+
+    assert job.tasks[0].status == "needs_review"
+    assert job.tasks[0].result["weak_output"]["weak"] is True
+    assert "no_evidence" in job.tasks[0].result["weak_output"]["reasons"]
+    assert job.status == "partially_completed"
+
+
+def test_weak_output_detector_enforces_dry_run_kind_not_generic_evidence():
+    job = SwarmJob.create("run pipe", created_at="2026-01-01T00:00:00+00:00")
+    plan = RoutingPlan(
+        mode="pipe",
+        reason="pipe",
+        suggested_tasks=[{"title": "dry run"}],
+        verification_required=True,
+        evidence_requirements=[EvidenceRequirement("dry_run", "Show dry-run output")],
+    )
+
+    def delegate_fn(**kwargs):
+        return {"results": [{"summary": "done", "evidence": "some notes"}]}
+
+    execute_swarm(job, plan, delegate_fn, max_children=3)
+
+    assert job.tasks[0].status == "needs_review"
+    assert "missing_dry_run" in job.tasks[0].result["weak_output"]["reasons"]
+
+
+def test_weak_output_detector_accepts_dict_evidence_requirements():
+    job = SwarmJob.create("research", created_at="2026-01-01T00:00:00+00:00")
+    plan = RoutingPlan(
+        mode="swarm",
+        reason="research",
+        suggested_tasks=[{"title": "research"}],
+        verification_required=True,
+        evidence_requirements=[{"kind": "citation", "description": "Cite sources"}],
+    )
+
+    def delegate_fn(**kwargs):
+        return {"results": [{"summary": "done", "evidence": "generic"}]}
+
+    execute_swarm(job, plan, delegate_fn, max_children=3)
+
+    assert job.tasks[0].status == "needs_review"
+    assert "missing_citation" in job.tasks[0].result["weak_output"]["reasons"]

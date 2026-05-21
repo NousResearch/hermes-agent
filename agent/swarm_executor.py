@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.swarm_learning import detect_weak_output
 from agent.swarm_state import AuditEvent, JobStatus, RoutingPlan, SwarmJob, SwarmTask, TaskStatus
 
 
@@ -173,26 +174,36 @@ def execute_swarm(
         results = [{"error": str(exc), "status": "failed", "critical": True}]
 
     failures = 0
+    weak_count = 0
     critical_failure = False
     for index, delegate in enumerate(delegates):
         task = by_id.get(str(delegate.get("swarm_task_id") or ""))
         result = results[index] if index < len(results) else {"error": "missing child result", "status": "failed"}
         failed = _result_failed(result)
+        weak_output = detect_weak_output(result, getattr(routing_plan, "evidence_requirements", []) or [])
+        if weak_output["weak"]:
+            result = {**result, "weak_output": weak_output}
+            if index < len(results):
+                results[index] = result
+        weak = bool(weak_output["weak"])
+        weak_count += 1 if weak else 0
         failures += 1 if failed else 0
         suggested = (routing_plan.suggested_tasks or [])[index] if index < len(routing_plan.suggested_tasks or []) else {}
         is_critical = bool(result.get("critical") or (isinstance(suggested, dict) and suggested.get("critical")))
         critical_failure = critical_failure or (failed and is_critical)
         if task:
             task.result = dict(result)
-            task.status = TaskStatus.FAILED.value if failed else TaskStatus.COMPLETED.value
+            task.status = TaskStatus.FAILED.value if failed else (TaskStatus.NEEDS_REVIEW.value if weak else TaskStatus.COMPLETED.value)
+            if weak:
+                job.audit.append(AuditEvent("weak_child_output", "Child result lacked required evidence", metadata={"task_id": task.task_id, **weak_output}))
 
     if critical_failure:
         final_status = JobStatus.FAILED.value
-    elif failures or blocked:
+    elif failures or blocked or weak_count:
         final_status = JobStatus.PARTIALLY_COMPLETED.value
     else:
         final_status = JobStatus.COMPLETED.value
-    job.transition(final_status, metadata={"failure_count": failures, "blocked_count": len(blocked)})
+    job.transition(final_status, metadata={"failure_count": failures, "blocked_count": len(blocked), "weak_output_count": weak_count})
 
     execution = SwarmExecutionResult(dispatched=delegates, results=results, blocked=blocked, status=job.status)
     job.metadata["swarm_execution"] = execution.to_dict()

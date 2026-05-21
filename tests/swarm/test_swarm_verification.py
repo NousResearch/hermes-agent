@@ -1,4 +1,4 @@
-from agent.swarm_state import RoutingPlan, SwarmJob
+from agent.swarm_state import EvidenceRequirement, RoutingPlan, SwarmJob
 from agent.swarm_verify import build_verification_plan, apply_verification_results
 
 
@@ -68,3 +68,26 @@ def test_verification_plan_requires_human_review_for_external_actions():
 
     step_ids = [step["id"] for step in verification.steps]
     assert "human_approval_review" in step_ids
+
+
+def test_verification_plan_maps_explicit_evidence_requirements_to_steps():
+    job = SwarmJob.create("research current docs and prove it", created_at="2026-01-01T00:00:00+00:00")
+    plan = RoutingPlan(
+        mode="swarm",
+        reason="research",
+        verification_required=True,
+        evidence_requirements=[
+            EvidenceRequirement("citation", "Cite current source"),
+            EvidenceRequirement("artifact", "Return output file path"),
+            EvidenceRequirement("human_approval", "Get Garrett approval before send"),
+        ],
+    )
+
+    verification = build_verification_plan(job, plan)
+
+    step_ids = [step["id"] for step in verification.steps]
+    assert "evidence_citation" in step_ids
+    assert "evidence_artifact" in step_ids
+    assert "evidence_human_approval" in step_ids
+    citation_step = next(step for step in verification.steps if step["id"] == "evidence_citation")
+    assert citation_step["evidence_kind"] == "citation"

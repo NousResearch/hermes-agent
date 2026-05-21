@@ -53,8 +53,8 @@ class VerificationPlan:
         return {"status": status, "total": total, "passed": passed, "failed": failed}
 
 
-def _step(step_id: str, title: str, *, required: bool = True, source: str = "parent") -> dict[str, Any]:
-    return {"id": step_id, "title": title, "required": required, "source": source}
+def _step(step_id: str, title: str, *, required: bool = True, source: str = "parent", **metadata: Any) -> dict[str, Any]:
+    return {"id": step_id, "title": title, "required": required, "source": source, **metadata}
 
 
 def _job_text(job: SwarmJob, plan: RoutingPlan | None) -> str:
@@ -100,6 +100,22 @@ def build_verification_plan(job: SwarmJob, routing_plan: RoutingPlan | None = No
         steps.append(_step("dry_run_payload_contract", "Require dry-run output or payload-contract evidence before live execution"))
     if _contains_any(text, ("send", "email", "slack message", "client-facing", "external", "publish", "deploy")):
         steps.append(_step("human_approval_review", "Require reviewer or human approval before external/client-facing action"))
+
+    for requirement in getattr(plan, "evidence_requirements", []) or []:
+        kind = str(getattr(requirement, "kind", "") or "artifact")
+        description = str(getattr(requirement, "description", "") or f"Provide {kind} evidence")
+        required_flag = bool(getattr(requirement, "required", True))
+        source = str(getattr(requirement, "source", "router") or "router")
+        steps.append(
+            _step(
+                f"evidence_{kind}",
+                description,
+                required=required_flag,
+                source=source,
+                evidence_kind=kind,
+                evidence_metadata=dict(getattr(requirement, "metadata", {}) or {}),
+            )
+        )
 
     # Stable de-duplication if several signals produced the same step.
     deduped: list[dict[str, Any]] = []

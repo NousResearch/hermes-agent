@@ -192,6 +192,67 @@ class SwarmTask:
 
 
 @dataclass
+class EvidenceRequirement:
+    kind: str
+    description: str
+    required: bool = True
+    source: str = "parent"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "description": self.description,
+            "required": self.required,
+            "source": self.source,
+            "metadata": _copy_dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EvidenceRequirement":
+        return cls(
+            kind=str(data.get("kind") or "artifact"),
+            description=str(data.get("description") or ""),
+            required=bool(data.get("required", True)),
+            source=str(data.get("source") or "parent"),
+            metadata=_copy_dict(data.get("metadata")),
+        )
+
+
+@dataclass
+class RoutingTelemetry:
+    complexity_risk: int = 0
+    context_pressure: int = 0
+    illusion_risk: int = 0
+    required_scaffold: str = "none"
+    weak_output_risk: bool = False
+    signals: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "complexity_risk": self.complexity_risk,
+            "context_pressure": self.context_pressure,
+            "illusion_risk": self.illusion_risk,
+            "required_scaffold": self.required_scaffold,
+            "weak_output_risk": self.weak_output_risk,
+            "signals": _copy_dict(self.signals),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "RoutingTelemetry":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            complexity_risk=int(data.get("complexity_risk") or 0),
+            context_pressure=int(data.get("context_pressure") or 0),
+            illusion_risk=int(data.get("illusion_risk") or 0),
+            required_scaffold=str(data.get("required_scaffold") or "none"),
+            weak_output_risk=bool(data.get("weak_output_risk", False)),
+            signals=_copy_dict(data.get("signals")),
+        )
+
+
+@dataclass
 class RoutingPlan:
     mode: str
     reason: str
@@ -199,8 +260,21 @@ class RoutingPlan:
     permission_requests: List[PermissionGrant] = field(default_factory=list)
     verification_required: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
+    evidence_requirements: List[EvidenceRequirement] = field(default_factory=list)
+    routing_telemetry: RoutingTelemetry = field(default_factory=RoutingTelemetry)
+    panel_policy: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        evidence_items = [
+            item.to_dict() if hasattr(item, "to_dict") else EvidenceRequirement.from_dict(item).to_dict()
+            for item in self.evidence_requirements
+            if isinstance(item, dict) or hasattr(item, "to_dict")
+        ]
+        telemetry = (
+            self.routing_telemetry.to_dict()
+            if hasattr(self.routing_telemetry, "to_dict")
+            else RoutingTelemetry.from_dict(self.routing_telemetry).to_dict()
+        )
         return {
             "mode": self.mode,
             "reason": self.reason,
@@ -208,6 +282,9 @@ class RoutingPlan:
             "permission_requests": [item.to_dict() for item in self.permission_requests],
             "verification_required": self.verification_required,
             "metadata": _copy_dict(self.metadata),
+            "evidence_requirements": evidence_items,
+            "routing_telemetry": telemetry,
+            "panel_policy": _copy_dict(self.panel_policy),
         }
 
     @classmethod
@@ -221,6 +298,9 @@ class RoutingPlan:
             permission_requests=[PermissionGrant.from_dict(item) for item in data.get("permission_requests") or [] if isinstance(item, dict)],
             verification_required=bool(data.get("verification_required", False)),
             metadata=_copy_dict(data.get("metadata")),
+            evidence_requirements=[EvidenceRequirement.from_dict(item) for item in data.get("evidence_requirements") or [] if isinstance(item, dict)],
+            routing_telemetry=RoutingTelemetry.from_dict(data.get("routing_telemetry")),
+            panel_policy=_copy_dict(data.get("panel_policy")),
         )
 
 
@@ -358,10 +438,12 @@ def transition(job: SwarmJob, status: str, message: str = "", metadata: Optional
 
 __all__ = [
     "AuditEvent",
+    "EvidenceRequirement",
     "EvalResult",
     "JobStatus",
     "PermissionGrant",
     "RoutingPlan",
+    "RoutingTelemetry",
     "SwarmJob",
     "SwarmTask",
     "TaskStatus",

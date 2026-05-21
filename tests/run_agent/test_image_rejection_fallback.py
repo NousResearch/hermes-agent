@@ -140,6 +140,7 @@ class TestImageRejectionPhraseIsolation:
         "image_url'. expected",
         "no endpoints found that support image input",
         "failed to decode image",
+        "image data you provided does not represent a valid image",
     )
 
     def _matches(self, body: str) -> bool:
@@ -169,5 +170,22 @@ class TestImageRejectionPhraseIsolation:
 
 
 
+    def test_real_image_rejection_bodies_trip(self):
+        """Positive cases — real-world error wordings that should trigger."""
+        bodies = [
+            "Only 'text' content type is supported.",
+            "Bad request: multimodal is not supported by this model",
+            "This model does not support images",
+            "vision is not supported on this endpoint",
+            "model does not support image input",
+            # ChatGPT-account Codex backend (issue #23570) — rejects
+            # data:image/...base64 URLs in input_image fields. Without this
+            # match the agent cascaded into compression / context-too-large
+            # recovery instead of just stripping the images.
+            "Invalid 'input[56].content[1].image_url'. Expected a valid URL, but got a value with an invalid format.",
+            "The image data you provided does not represent a valid image. Please check your input and try again.",
+        ]
+        for body in bodies:
+            assert self._matches(body) is True, f"false negative on: {body}"
 
 

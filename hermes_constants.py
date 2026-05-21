@@ -235,14 +235,13 @@ def display_hermes_home() -> str:
         return str(home)
 
 
-
-
 def secure_parent_dir(path: Path) -> None:
     """Chmod ``0o700`` on the parent directory of *path*, but only if safe.
 
-    Refuses to chmod ``/`` or any top-level directory (depth < 2) to
-    prevent catastrophic host bricking when ``HERMES_HOME`` or other
-    path env vars resolve to an unexpected location.
+    Refuses to chmod ``/`` or any top-level directory (resolved parent with
+    fewer than 3 parts, i.e. ``/`` or any direct child like ``/usr``) to
+    prevent catastrophic host bricking when ``HERMES_HOME`` or other path
+    env vars resolve to an unexpected location.
 
     See https://github.com/NousResearch/hermes-agent/issues/25821.
     """

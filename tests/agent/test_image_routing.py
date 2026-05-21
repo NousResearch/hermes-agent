@@ -9,8 +9,11 @@ from unittest.mock import patch
 import pytest
 
 from agent.image_routing import (
+    _coerce_capability_bool,
     _coerce_mode,
     _explicit_aux_vision_override,
+    _lookup_supports_vision,
+    _supports_vision_override,
     build_native_content_parts,
     decide_image_input_mode,
 )
@@ -123,6 +126,168 @@ class TestDecideImageInputMode:
         }
         with patch("agent.models_dev.fetch_models_dev", return_value=registry):
             assert decide_image_input_mode("xiaomi", "mimo-v2.5-pro", {}) == "text"
+
+
+# ─── _coerce_capability_bool ─────────────────────────────────────────────────
+
+
+class TestCoerceCapabilityBool:
+    def test_real_bool_passes_through(self):
+        assert _coerce_capability_bool(True) is True
+        assert _coerce_capability_bool(False) is False
+
+    def test_int_0_and_1(self):
+        assert _coerce_capability_bool(1) is True
+        assert _coerce_capability_bool(0) is False
+
+    def test_other_ints_return_none(self):
+        assert _coerce_capability_bool(2) is None
+        assert _coerce_capability_bool(-1) is None
+
+    def test_yaml_true_tokens(self):
+        for s in ("true", "TRUE", "True", "yes", "on", "1", "  true  "):
+            assert _coerce_capability_bool(s) is True
+
+    def test_yaml_false_tokens(self):
+        for s in ("false", "FALSE", "False", "no", "off", "0", "  false  "):
+            assert _coerce_capability_bool(s) is False
+
+    def test_quoted_false_does_not_silently_become_true(self):
+        # Regression: bool("false") is True in Python. A user writing
+        # supports_vision: "false" must NOT enable native vision routing.
+        assert _coerce_capability_bool("false") is False
+
+    def test_unrecognised_strings_return_none(self):
+        # None == fall through to models.dev, not a silent truthy.
+        assert _coerce_capability_bool("maybe") is None
+        assert _coerce_capability_bool("") is None
+        assert _coerce_capability_bool("definitely") is None
+
+    def test_other_types_return_none(self):
+        assert _coerce_capability_bool(None) is None
+        assert _coerce_capability_bool([]) is None
+        assert _coerce_capability_bool({}) is None
+        assert _coerce_capability_bool(1.5) is None
+
+
+# ─── _supports_vision_override ───────────────────────────────────────────────
+
+
+class TestSupportsVisionOverride:
+    def test_no_cfg_returns_none(self):
+        assert _supports_vision_override(None, "custom", "my-llava") is None
+        assert _supports_vision_override({}, "custom", "my-llava") is None
+
+    def test_top_level_shortcut_wins(self):
+        cfg = {"model": {"supports_vision": True}}
+        assert _supports_vision_override(cfg, "custom", "my-llava") is True
+
+    def test_top_level_false_propagates(self):
+        cfg = {"model": {"supports_vision": False}}
+        assert _supports_vision_override(cfg, "custom", "my-llava") is False
+
+    def test_per_provider_per_model_via_runtime_name(self):
+        cfg = {
+            "providers": {
+                "custom": {"models": {"my-llava": {"supports_vision": True}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "my-llava") is True
+
+    def test_per_provider_per_model_via_config_name(self):
+        # Named custom provider — runtime self.provider == "custom", config
+        # holds the original name under model.provider.
+        cfg = {
+            "model": {"provider": "my-vllm"},
+            "providers": {
+                "my-vllm": {"models": {"my-llava": {"supports_vision": True}}},
+            },
+        }
+        assert _supports_vision_override(cfg, "custom", "my-llava") is True
+
+    def test_quoted_false_string_in_yaml_does_not_enable(self):
+        # Real-world: user writes supports_vision: "false" (quoted).
+        cfg = {"model": {"supports_vision": "false"}}
+        assert _supports_vision_override(cfg, "custom", "my-llava") is False
+
+    def test_unrecognised_value_falls_through(self):
+        cfg = {"model": {"supports_vision": "maybe"}}
+        assert _supports_vision_override(cfg, "custom", "my-llava") is None
+
+    def test_no_override_returns_none(self):
+        cfg = {"model": {"default": "my-llava"}}
+        assert _supports_vision_override(cfg, "custom", "my-llava") is None
+
+    def test_malformed_sections_are_ignored(self):
+        # User accidentally wrote a string where a section was expected —
+        # don't blow up, just fall through.
+        cfg = {"model": "some-string", "providers": ["not-a-dict"]}
+        assert _supports_vision_override(cfg, "custom", "my-llava") is None
+
+
+# ─── _lookup_supports_vision (override-aware) ────────────────────────────────
+
+
+class TestLookupSupportsVisionOverride:
+    def test_config_override_short_circuits_models_dev(self):
+        # Config says True, models.dev says None — config wins.
+        cfg = {"model": {"supports_vision": True}}
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert _lookup_supports_vision("custom", "my-llava", cfg) is True
+
+    def test_config_override_false_beats_vision_capable_models_dev(self):
+        # User explicitly disables vision on a models.dev-vision-capable model.
+        fake_caps = type("Caps", (), {"supports_vision": True})()
+        cfg = {"model": {"supports_vision": False}}
+        with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
+            assert _lookup_supports_vision("anthropic", "claude-sonnet-4", cfg) is False
+
+    def test_no_override_falls_back_to_models_dev(self):
+        fake_caps = type("Caps", (), {"supports_vision": True})()
+        with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
+            assert _lookup_supports_vision("anthropic", "claude-sonnet-4", {}) is True
+
+    def test_no_override_no_models_dev_entry_returns_none(self):
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert _lookup_supports_vision("custom", "my-llava", {}) is None
+
+    def test_cfg_none_falls_back_to_models_dev(self):
+        # Caller didn't pass cfg at all — old call sites must still work.
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert _lookup_supports_vision("openrouter", "x", None) is None
+
+
+# ─── decide_image_input_mode with auto + override ────────────────────────────
+
+
+class TestAutoModeRespectsOverride:
+    def test_auto_native_for_custom_with_supports_vision_true(self):
+        # The motivating bug: Qwen3.6 on local llama.cpp via provider=custom.
+        # Without the override, auto falls back to text. With it, auto picks
+        # native — no need to also set agent.image_input_mode: native.
+        cfg = {"model": {"supports_vision": True}}
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "native"
+
+    def test_auto_text_for_custom_with_supports_vision_false(self):
+        cfg = {"model": {"supports_vision": False}}
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", "some-text-only", cfg) == "text"
+
+    def test_auto_text_for_custom_with_no_override(self):
+        # Unchanged baseline: unknown custom model → text.
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", "unknown", {}) == "text"
+
+    def test_explicit_aux_vision_override_still_wins(self):
+        # If the user has configured a dedicated vision aux backend, respect
+        # it even when supports_vision: true is also set.
+        cfg = {
+            "model": {"supports_vision": True},
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "text"
 
 
 # ─── build_native_content_parts ──────────────────────────────────────────────

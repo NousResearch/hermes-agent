@@ -198,7 +198,7 @@ def _usage_from_run_snapshots(board_slug: Optional[str], task_ids: list[str]) ->
         return {}
     wanted = set(task_ids)
     placeholders = ", ".join(["?"] * len(task_ids))
-    out: dict[str, dict[str, Any]] = {}
+    latest_by_task: dict[str, dict[str, Any]] = {}
     try:
         conn = kanban_db.connect(board=board_slug)
     except Exception as exc:
@@ -230,35 +230,46 @@ def _usage_from_run_snapshots(board_slug: Optional[str], task_ids: list[str]) ->
         snapshot = meta.get("usage_snapshot") if isinstance(meta, dict) else None
         if not isinstance(snapshot, dict):
             continue
-        agg = out.setdefault(tid, {
+        bucket = latest_by_task.setdefault(tid, {
             "runs": 0,
-            "sessions": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "reasoning_tokens": 0,
-            "estimated_cost_usd": 0.0,
-            "actual_cost_usd": 0.0,
-            "_session_ids": set(),
-            "_sessionless_seen": False,
+            "by_session": {},
+            "sessionless": None,
         })
-        agg["runs"] += 1
+        bucket["runs"] += 1
         sid = snapshot.get("session_id") or meta.get("worker_session_id")
         if sid:
-            session_key = str(sid)
-            if session_key in agg["_session_ids"]:
-                continue
-            agg["_session_ids"].add(session_key)
-        elif agg["_sessionless_seen"]:
+            # Rows are newest-first, so the first snapshot per session is the
+            # safest board-local estimate for that cumulative session total.
+            bucket["by_session"].setdefault(str(sid), snapshot)
+        elif bucket["sessionless"] is None:
+            bucket["sessionless"] = snapshot
+
+    out: dict[str, dict[str, Any]] = {}
+    for tid, bucket in latest_by_task.items():
+        by_session = bucket["by_session"]
+        if len(by_session) > 1:
+            # usage_snapshot values are cumulative per session, not per-run
+            # deltas. Summing multiple sessions can charge unrelated work from
+            # reused agent sessions to this card, so let _usage_by_task fall
+            # back to the project ledger, which correlates each session once.
             continue
+        if by_session:
+            snapshot = next(iter(by_session.values()))
+            sessions = 1
         else:
-            agg["_sessionless_seen"] = True
-        for key in ("input_tokens", "output_tokens", "reasoning_tokens"):
-            agg[key] += int(snapshot.get(key) or 0)
-        for key in ("estimated_cost_usd", "actual_cost_usd"):
-            agg[key] += float(snapshot.get(key) or 0.0)
-    for agg in out.values():
-        sessionless_seen = bool(agg.pop("_sessionless_seen", False))
-        agg["sessions"] = len(agg.pop("_session_ids")) + (1 if sessionless_seen else 0)
+            snapshot = bucket["sessionless"]
+            sessions = 1 if snapshot is not None else 0
+        if not isinstance(snapshot, dict):
+            continue
+        out[tid] = {
+            "runs": int(bucket["runs"]),
+            "sessions": sessions,
+            "input_tokens": int(snapshot.get("input_tokens") or 0),
+            "output_tokens": int(snapshot.get("output_tokens") or 0),
+            "reasoning_tokens": int(snapshot.get("reasoning_tokens") or 0),
+            "estimated_cost_usd": float(snapshot.get("estimated_cost_usd") or 0.0),
+            "actual_cost_usd": float(snapshot.get("actual_cost_usd") or 0.0),
+        }
     return out
 
 

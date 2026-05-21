@@ -2776,7 +2776,7 @@ def release_stale_claims(
                 continue
             run_id = _end_run(
                 conn, row["id"],
-                outcome="reclaimed", status="reclaimed",
+                outcome="reclaimed", status=restore_status,
                 error=f"stale_lock={row['claim_lock']}",
                 metadata=termination,
             )
@@ -2848,7 +2848,7 @@ def reclaim_task(
             return False
         run_id = _end_run(
             conn, task_id,
-            outcome="reclaimed", status="reclaimed",
+            outcome="reclaimed", status="ready",
             error=(
                 f"manual_reclaim: {reason}" if reason
                 else f"manual_reclaim lock={prev_lock}"
@@ -4155,7 +4155,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # outcome='reclaimed' so attempt history isn't orphaned.
         run_id = _end_run(
             conn, task_id,
-            outcome="reclaimed", status="reclaimed",
+            outcome="reclaimed", status="archived",
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
@@ -4791,7 +4791,7 @@ def enforce_max_runtime(
                 }
                 run_id = _end_run(
                     conn, tid,
-                    outcome="timed_out", status="timed_out",
+                    outcome="timed_out", status=restore_status,
                     error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
                     metadata=payload,
                 )
@@ -4920,7 +4920,7 @@ def detect_stale_running(
 
             run_id = _end_run(
                 conn, tid,
-                outcome="stale", status="stale",
+                outcome="stale", status=restore_status,
                 error=(
                     f"no heartbeat for {int(hb_age)}s "
                     if hb_age is not None
@@ -5064,7 +5064,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             if cur.rowcount == 1:
                 run_id = _end_run(
                     conn, row["id"],
-                    outcome="crashed", status="crashed",
+                    outcome="crashed", status=restore_status,
                     error=error_text,
                     metadata=dict(event_payload),
                 )
@@ -5223,7 +5223,7 @@ def _record_task_failure(
                 # Only the spawn path has an open run to close.
                 run_id = _end_run(
                     conn, task_id,
-                    outcome="gave_up", status="gave_up",
+                    outcome="gave_up", status="blocked",
                     error=error[:500],
                     metadata={
                         "failures": failures,
@@ -5271,7 +5271,7 @@ def _record_task_failure(
                 # Spawn path: close the open run with outcome.
                 run_id = _end_run(
                     conn, task_id,
-                    outcome=outcome, status=outcome,
+                    outcome=outcome, status=restore_status,
                     error=error[:500],
                     metadata={"failures": failures, "restore_status": restore_status},
                 )

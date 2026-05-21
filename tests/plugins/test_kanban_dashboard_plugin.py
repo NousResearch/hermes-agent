@@ -2327,6 +2327,75 @@ def test_board_usage_rollup_reads_fresh_task_run_snapshots(client, kanban_home):
     assert card["usage"]["estimated_cost_usd"] == pytest.approx(0.016)
 
 
+def test_board_usage_rollup_falls_back_for_multiple_snapshot_sessions(monkeypatch, kanban_home):
+    """Do not add cumulative usage_snapshot totals from distinct sessions."""
+    import hermes_cli
+
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_kanban_usage_multisession_test", plugin_file,
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="multi-session snapshots", assignee="worker")
+        now = int(time.time())
+        for session_id, ended_at, tokens in (
+            ("sess-a", now, 100),
+            ("sess-b", now + 60, 200),
+        ):
+            conn.execute(
+                """
+                INSERT INTO task_runs(
+                    task_id, profile, status, started_at, ended_at, outcome,
+                    summary, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tid,
+                    "worker",
+                    "done",
+                    ended_at - 10,
+                    ended_at,
+                    "completed",
+                    "cumulative snapshot",
+                    json.dumps({
+                        "worker_session_id": session_id,
+                        "usage_snapshot": {
+                            "session_id": session_id,
+                            "input_tokens": tokens,
+                            "output_tokens": 1,
+                            "estimated_cost_usd": 0.001 * tokens,
+                        },
+                    }),
+                ),
+            )
+
+    class FakeUsage:
+        def get_task_rollups(self, *, board=None, task_ids=None, refresh=True):
+            return [{
+                "task_id": tid,
+                "runs": 2,
+                "sessions": 2,
+                "input_tokens": 17,
+                "output_tokens": 3,
+                "reasoning_tokens": 0,
+                "estimated_cost_usd": 0.017,
+                "actual_cost_usd": 0.0,
+            }]
+
+    monkeypatch.setattr(hermes_cli, "project_usage_ledger", FakeUsage(), raising=False)
+
+    assert mod._usage_from_run_snapshots("default", [tid]) == {}
+    rollup = mod._usage_by_task("default", [tid])[tid]
+    assert rollup["input_tokens"] == 17
+    assert rollup["estimated_cost_usd"] == pytest.approx(0.017)
+
+
 def test_usage_route_returns_board_filtered_summary(client, kanban_home):
     from hermes_state import SessionDB
 

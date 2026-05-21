@@ -2974,7 +2974,7 @@ def test_dispatch_review_spawn_failure_returns_to_review_below_threshold(
     assert task.assignee == "alice"
     assert task.claim_lock is None
     assert run is not None
-    assert run.status == "spawn_failed"
+    assert run.status == "review"
     assert run.outcome == "spawn_failed"
     assert (run.metadata or {}).get("restore_status") == "review"
 
@@ -3001,7 +3001,7 @@ def test_dispatch_review_spawn_failure_blocks_intentionally_at_threshold(
     assert task.assignee == "alice"
     assert task.claim_lock is None
     assert run is not None
-    assert run.status == "gave_up"
+    assert run.status == "blocked"
     assert run.outcome == "gave_up"
     assert (run.metadata or {}).get("restore_status") == "review"
     gave_up = [event for event in events if event.kind == "gave_up"][-1]
@@ -3020,11 +3020,15 @@ def test_review_origin_crash_breaker_keeps_restore_status_metadata(
 
         crashed = kb.detect_crashed_workers(conn)
         task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
         events = kb.list_events(conn, t)
 
     assert crashed == [t]
     assert task is not None
     assert task.status == "blocked"
+    assert run is not None
+    assert run.status == "review"
+    assert run.outcome == "crashed"
     gave_up = [event for event in events if event.kind == "gave_up"][-1]
     assert (gave_up.payload or {}).get("restore_status") == "review"
 
@@ -3043,10 +3047,14 @@ def test_review_origin_stale_claim_restores_to_review(kanban_home):
 
         assert kb.release_stale_claims(conn) == 1
         task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
         events = kb.list_events(conn, t)
 
     assert task is not None
     assert task.status == "review"
+    assert run is not None
+    assert run.status == "review"
+    assert run.outcome == "reclaimed"
     reclaimed = [event for event in events if event.kind == "reclaimed"][-1]
     assert (reclaimed.payload or {}).get("restore_status") == "review"
 

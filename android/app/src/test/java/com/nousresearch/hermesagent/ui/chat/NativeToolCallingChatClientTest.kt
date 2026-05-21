@@ -438,6 +438,8 @@ class NativeToolCallingChatClientTest {
             .put("agent_capability_count", 20)
             .put("ready_capability_count", 10)
             .put("kai_parity_count", 1)
+            .put("kai_operations_count", 1)
+            .put("ready_kai_operations_count", 1)
             .put("workflow_readiness_count", 1)
             .put("agent_capability_matrix", capabilities)
             .put(
@@ -449,6 +451,17 @@ class NativeToolCallingChatClientTest {
                         .put("ready", true)
                         .put("value_label", "30s interval")
                         .put("parity_source", "Kai autonomous heartbeat"),
+                    ),
+            )
+            .put(
+                "kai_operations_matrix",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "kai_operations")
+                        .put("label", "Tool and MCP bridge route")
+                        .put("ready", true)
+                        .put("value_label", "tool_catalog")
+                        .put("tool_action", "android_device_diagnostics_tool:tool_catalog"),
                 ),
             )
             .put(
@@ -468,6 +481,7 @@ class NativeToolCallingChatClientTest {
         val parsed = JSONObject(compacted)
         val capabilityMatrix = parsed.getJSONObject("agent_capability_matrix")
         val kaiParity = parsed.getJSONArray("kai_parity_matrix")
+        val kaiOperations = parsed.getJSONArray("kai_operations_matrix")
         val readiness = parsed.getJSONArray("workflow_readiness_matrix")
 
         assertTrue(parsed.getBoolean("_hermes_context_compressed"))
@@ -477,6 +491,8 @@ class NativeToolCallingChatClientTest {
         assertEquals("Capability 0", capabilityMatrix.getJSONArray("items").getJSONObject(0).getString("label"))
         assertEquals(true, capabilityMatrix.getJSONArray("items").getJSONObject(0).getBoolean("ready"))
         assertEquals("Autonomous heartbeat", kaiParity.getJSONObject(0).getString("label"))
+        assertEquals("Tool and MCP bridge route", kaiOperations.getJSONObject(0).getString("label"))
+        assertEquals("android_device_diagnostics_tool:tool_catalog", kaiOperations.getJSONObject(0).getString("tool_action"))
         assertEquals("Analyze nearby Wi-Fi", readiness.getJSONObject(0).getString("label"))
     }
 

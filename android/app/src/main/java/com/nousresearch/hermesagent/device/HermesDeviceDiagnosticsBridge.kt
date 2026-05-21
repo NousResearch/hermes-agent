@@ -1524,11 +1524,12 @@ object HermesDeviceDiagnosticsBridge {
             availableSensors = availableSensors,
         )
         val kaiParityRows = kaiParityMatrixRows(preferredModel, hindsightStatus, automationStatus, modelRouting)
+        val kaiOperationsRows = kaiOperationsMatrixRows(automationStatus, modelRouting)
         val readinessRows = workflowReadinessRows(diagnostics, signalStatus, preferredModel, automationStatus, modelRouting, availableSensors)
         return JSONObject()
             .put("success", true)
             .put("action", "agent_environment_report")
-            .put("report_scope", "Hermes agent environment, Kai parity, wireless/radio/sensor inputs, and SOC/backend compatibility context.")
+            .put("report_scope", "Hermes agent environment, Kai parity and operations, wireless/radio/sensor inputs, and SOC/backend compatibility context.")
             .put("android_device_identity", deviceIdentityJson())
             .put("soc_profile", socProfile)
             .put("preferred_local_model", preferredModel)
@@ -1538,10 +1539,13 @@ object HermesDeviceDiagnosticsBridge {
             .put("signal_capability_status", compactSignalCapabilityJson(signalStatus))
             .put("agent_capability_matrix", capabilityRows)
             .put("kai_parity_matrix", kaiParityRows)
+            .put("kai_operations_matrix", kaiOperationsRows)
             .put("workflow_readiness_matrix", readinessRows)
             .put("agent_capability_count", capabilityRows.length())
             .put("ready_capability_count", countReadyRows(capabilityRows))
             .put("kai_parity_count", kaiParityRows.length())
+            .put("kai_operations_count", kaiOperationsRows.length())
+            .put("ready_kai_operations_count", countReadyRows(kaiOperationsRows))
             .put("workflow_readiness_count", readinessRows.length())
             .put(
                 "ai_experience_elevation_plan",
@@ -1551,7 +1555,8 @@ object HermesDeviceDiagnosticsBridge {
                     .put("Use sensor_snapshot or sensor watchers for motion, orientation, ambient, and workflow-trigger context.")
                     .put("Use radio_signal_status/signal_capability_status to explain AM/FM/RF limits honestly and route broad RF work to external SDR/vendor hardware.")
                     .put("Use SOC and LiteRT backend policy fields to avoid Snapdragon-only assumptions and keep MediaTek/Mali/PowerVR devices on GPU-first with CPU fallback when available.")
-                    .put("Use hindsight_memory_tool and operator heartbeat/status rows to retain durable context and expose autonomous task readiness."),
+                    .put("Use hindsight_memory_tool and operator heartbeat/status rows to retain durable context and expose autonomous task readiness.")
+                    .put("Use kai_operations_matrix to route Kai-style provider fallback, tool bridge, encrypted storage, backup, TTS, image, and shell-boundary work through native Hermes surfaces."),
             )
             .put(
                 "cards",
@@ -1570,6 +1575,14 @@ object HermesDeviceDiagnosticsBridge {
                             body = "${kaiParityRows.length()} Kai-inspired parity row(s) for memory, on-device inference, tools, heartbeat, backup/restore, and multimodal UX.",
                             graphType = "kai_parity_matrix",
                             rows = kaiParityRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Kai Operations",
+                            body = "${kaiOperationsRows.length()} operation row(s) mapping Kai-style provider fallback, tool bridge, secure storage, backup, TTS, and shell capabilities onto Hermes Android routes.",
+                            graphType = "kai_operations_matrix",
+                            rows = kaiOperationsRows,
                         ),
                     )
                     .put(
@@ -1865,6 +1878,18 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 capabilityRow(
                     category = "kai_parity",
+                    label = "Multi-provider priority and fallback",
+                    ready = modelRouting.optBoolean("role_routing_supported", false) || modelRouting.optBoolean("single_runtime_fallback", false),
+                    valueLabel = modelRouting.optString("active_provider_label").ifBlank { modelRouting.optString("active_provider").ifBlank { "provider route" } },
+                    detail = "Hermes exposes active provider/model routing plus local LiteRT fallback and Android-native action execution roles.",
+                    recommendation = "Use android_automation_tool operator_model_routing before choosing remote provider, local LiteRT, or Android-native execution.",
+                    fraction = if (modelRouting.optBoolean("role_routing_supported", false) || modelRouting.optBoolean("single_runtime_fallback", false)) 0.9f else 0.45f,
+                    extra = JSONObject().put("parity_source", "Kai multi-service fallback"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_parity",
                     label = "Tool execution",
                     ready = true,
                     valueLabel = "native Android tools",
@@ -1872,6 +1897,18 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Prefer native Android APIs first, then Linux/shell tooling when the task truly needs it.",
                     fraction = 0.95f,
                     extra = JSONObject().put("parity_source", "Kai tool execution and Linux sandbox"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_parity",
+                    label = "MCP and external tool equivalents",
+                    ready = true,
+                    valueLabel = "native tool bridge",
+                    detail = "Hermes maps Kai-style tool-server work to terminal, file, system, UI, automation, diagnostics, and memory tools while MCP-server parity remains an explicit future bridge.",
+                    recommendation = "Call tool_catalog first, then choose the narrow native tool before adding an external MCP server dependency.",
+                    fraction = 0.8f,
+                    extra = JSONObject().put("parity_source", "Kai MCP server support"),
                 ),
             )
             .put(
@@ -1889,6 +1926,18 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 capabilityRow(
                     category = "kai_parity",
+                    label = "Encrypted credentials and local storage",
+                    ready = true,
+                    valueLabel = "secure secrets store",
+                    detail = "Hermes stores provider credentials in AndroidX encrypted preferences with sealed integrity envelopes and keeps app state local unless a provider route is selected.",
+                    recommendation = "Use provider auth/session stores for credentials and keep diagnostic exports free of raw secrets.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("parity_source", "Kai encrypted storage"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_parity",
                     label = "Settings and automation backup",
                     ready = true,
                     valueLabel = "export/import supported",
@@ -1901,6 +1950,18 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 capabilityRow(
                     category = "kai_parity",
+                    label = "Text to speech",
+                    ready = true,
+                    valueLabel = "speak last reply",
+                    detail = "Hermes exposes Android TextToSpeech through chat speak buttons and the /speak last command.",
+                    recommendation = "Use the chat TTS route for read-aloud responses and keep automation audio actions separate from assistant speech.",
+                    fraction = 0.8f,
+                    extra = JSONObject().put("parity_source", "Kai text to speech"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_parity",
                     label = "Image attachments and screen vision",
                     ready = modelRouting.optBoolean("vision_capable", false),
                     valueLabel = if (modelRouting.optBoolean("vision_capable", false)) "vision-ready" else "model dependent",
@@ -1908,6 +1969,117 @@ object HermesDeviceDiagnosticsBridge {
                     recommendation = "Use a vision-capable LiteRT model before relying on image attachments for local-only reasoning.",
                     fraction = if (modelRouting.optBoolean("vision_capable", false)) 0.9f else 0.5f,
                     extra = JSONObject().put("parity_source", "Kai image attachments"),
+                ),
+            )
+    }
+
+    private fun kaiOperationsMatrixRows(
+        automationStatus: JSONObject,
+        modelRouting: JSONObject,
+    ): JSONArray {
+        val providerLabel = modelRouting.optString("active_provider_label").ifBlank {
+            modelRouting.optString("active_provider").ifBlank { "provider route" }
+        }
+        val activeModel = modelRouting.optString("active_model").ifBlank { "model route" }
+        val heartbeatReady = automationStatus.optBoolean("standby_heartbeat_supported", false)
+        val routingReady = modelRouting.optBoolean("role_routing_supported", false) || modelRouting.optBoolean("single_runtime_fallback", false)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "kai_operations",
+                    label = "Provider priority and fallback route",
+                    ready = routingReady,
+                    valueLabel = providerLabel,
+                    detail = "$providerLabel -> $activeModel; role routing keeps planning, supervision, VLM, summarization, and action execution explicit.",
+                    recommendation = "Call android_automation_tool operator_model_routing before model/provider-sensitive work.",
+                    fraction = if (routingReady) 0.9f else 0.45f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_automation_tool:operator_model_routing")
+                        .put("source_surface", "operator_model_routing"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_operations",
+                    label = "Tool and MCP bridge route",
+                    ready = true,
+                    valueLabel = "tool_catalog",
+                    detail = "Terminal, file, Android system, UI, automation, diagnostics, and hindsight memory tools cover the first Kai-style tool bridge before external MCP endpoints are added.",
+                    recommendation = "Call android_device_diagnostics_tool action=tool_catalog, then invoke the narrow native tool for the requested operation.",
+                    fraction = 0.85f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_device_diagnostics_tool:tool_catalog")
+                        .put("source_surface", "native_tool_catalog"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_operations",
+                    label = "System behavior and tool permissions",
+                    ready = true,
+                    valueLabel = "settings and guards",
+                    detail = "Provider/model settings, accessibility state, app permissions, Shizuku/Sui gates, and external-send review checks keep agent behavior editable and bounded.",
+                    recommendation = "Check settings/auth status plus android_ui_tool or social preflight rows before external sends, privileged actions, or UI control.",
+                    fraction = 0.85f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_ui_tool:status")
+                        .put("source_surface", "settings_permissions_guards"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_operations",
+                    label = "Encrypted credentials and backup route",
+                    ready = true,
+                    valueLabel = "secure store + JSON export",
+                    detail = "Provider secrets use AndroidX encrypted preferences, while automations and variables can be exported/imported as JSON for migration.",
+                    recommendation = "Use secure auth/session stores for credentials and android_automation_tool export_automations/import_automations for backup.",
+                    fraction = 0.9f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_automation_tool:export_automations")
+                        .put("source_surface", "secure_secrets_store"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_operations",
+                    label = "Heartbeat and dispatch route",
+                    ready = heartbeatReady,
+                    valueLabel = if (heartbeatReady) "${automationStatus.optInt("heartbeat_interval_seconds", 30)}s heartbeat" else "standby status only",
+                    detail = "${automationStatus.optInt("enabled_automation_count", 0)} enabled automation(s), ${automationStatus.optInt("recent_run_count", 0)} recent run(s), batch heartbeat supported=${automationStatus.optBoolean("batch_heartbeat_supported", false)}.",
+                    recommendation = "Use operator_standby_status/operator_heartbeat for Kai-style self-check visibility and remote task dispatch.",
+                    fraction = if (heartbeatReady) 0.9f else 0.45f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_automation_tool:operator_heartbeat")
+                        .put("source_surface", "operator_standby"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_operations",
+                    label = "TTS and image conversation route",
+                    ready = true,
+                    valueLabel = if (modelRouting.optBoolean("vision_capable", false)) "speech + vision" else "speech + image route",
+                    detail = "Chat supports TextToSpeech read-aloud, image attachments, and screenshot visual snapshots when the active model can consume vision inputs.",
+                    recommendation = "Use /speak last for read-aloud and prefer a vision-capable LiteRT model before depending on local image reasoning.",
+                    fraction = if (modelRouting.optBoolean("vision_capable", false)) 0.9f else 0.65f,
+                    extra = JSONObject()
+                        .put("tool_action", "chat:/speak last")
+                        .put("source_surface", "chat_tts_image_attachments"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "kai_operations",
+                    label = "Android shell boundary route",
+                    ready = true,
+                    valueLabel = "terminal workspace",
+                    detail = "Hermes routes shell work through the terminal tool and app workspace while keeping Android host, root, and permission boundaries explicit.",
+                    recommendation = "Use terminal_tool for short workspace commands and prefer Android-native tools when device APIs provide structured data.",
+                    fraction = 0.8f,
+                    extra = JSONObject()
+                        .put("tool_action", "terminal_tool")
+                        .put("source_surface", "android_terminal_workspace"),
                 ),
             )
     }
@@ -1970,6 +2142,17 @@ object HermesDeviceDiagnosticsBridge {
                         preferredModel.optBoolean("ready") -> 0.7f
                         else -> 0.35f
                     },
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "automation_workflow",
+                    label = "Route Kai-style tool orchestration",
+                    ready = true,
+                    valueLabel = "call agent_environment_report",
+                    detail = "Best next tools: android_device_diagnostics_tool action=agent_environment_report or tool_catalog, then route provider/model/tool work through the Kai Operations card.",
+                    recommendation = "Use before combining provider fallback, native tools, memory, backup, TTS, image, or shell work in one local-agent plan.",
+                    fraction = 0.85f,
                 ),
             )
             .put(

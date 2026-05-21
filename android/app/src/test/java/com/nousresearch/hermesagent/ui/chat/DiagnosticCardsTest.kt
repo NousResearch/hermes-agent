@@ -428,6 +428,25 @@ class DiagnosticCardsTest {
                                         .put("fraction", 0.9),
                                 ),
                             ),
+                    )
+                    .put(
+                        JSONObject()
+                            .put("title", "Kai Operations")
+                            .put("body", "Operations rows.")
+                            .put("graph_type", "kai_operations_matrix")
+                            .put(
+                                "rows",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("category", "kai_operations")
+                                        .put("label", "Tool and MCP bridge route")
+                                        .put("ready", true)
+                                        .put("value_label", "tool_catalog")
+                                        .put("detail", "Terminal, file, UI, diagnostics, and memory tools.")
+                                        .put("recommendation", "Call tool_catalog first.")
+                                        .put("fraction", 0.85),
+                                ),
+                            ),
                     ),
             )
             .toString()
@@ -435,6 +454,7 @@ class DiagnosticCardsTest {
         val cards = extractDiagnosticCards(content)
         val socRow = cards[0].rows.single()
         val heartbeatRow = cards[1].rows.single()
+        val operationsRow = cards[2].rows.single()
 
         assertEquals("SOC and LiteRT backend policy", socRow.label)
         assertEquals("ARM MediaTek/Mali", socRow.valueLabel)
@@ -444,6 +464,10 @@ class DiagnosticCardsTest {
         assertEquals("Autonomous heartbeat", heartbeatRow.label)
         assertEquals("30s interval", heartbeatRow.valueLabel)
         assertTrue(heartbeatRow.detail.contains("kai parity"))
+        assertEquals("Tool and MCP bridge route", operationsRow.label)
+        assertEquals("tool_catalog", operationsRow.valueLabel)
+        assertTrue(operationsRow.detail.contains("kai operations"))
+        assertTrue(operationsRow.detail.contains("tool_catalog"))
     }
 
     @Test

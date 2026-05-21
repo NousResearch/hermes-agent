@@ -202,16 +202,25 @@ def test_android_diagnostics_exposes_agent_environment_report_for_kai_parity():
     assert 'agentEnvironmentReportJson(appContext)' in diagnostics_bridge
     assert 'agentCapabilityMatrixRows(' in diagnostics_bridge
     assert 'kaiParityMatrixRows(' in diagnostics_bridge
+    assert 'kaiOperationsMatrixRows(' in diagnostics_bridge
     assert 'workflowReadinessRows(' in diagnostics_bridge
     assert '"agent_capability_matrix"' in diagnostics_bridge
     assert '"kai_parity_matrix"' in diagnostics_bridge
+    assert '"kai_operations_matrix"' in diagnostics_bridge
     assert '"workflow_readiness_matrix"' in diagnostics_bridge
+    assert 'Multi-provider priority and fallback' in diagnostics_bridge
+    assert 'Tool and MCP bridge route' in diagnostics_bridge
+    assert 'Encrypted credentials and backup route' in diagnostics_bridge
+    assert 'TTS and image conversation route' in diagnostics_bridge
+    assert 'Route Kai-style tool orchestration' in diagnostics_bridge
     assert 'Use SOC and LiteRT backend policy fields to avoid Snapdragon-only assumptions' in diagnostics_bridge
     assert 'Use hindsight_memory_tool and operator heartbeat/status rows' in diagnostics_bridge
     assert 'agent_environment_report' in chat_client
     assert '"agent_capability_matrix"' in chat_client
     assert '"kai_parity_matrix"' in chat_client
+    assert '"kai_operations_matrix"' in chat_client
     assert '"workflow_readiness_matrix"' in chat_client
+    assert '"kai_operations_matrix"' in diagnostic_cards
     assert '"agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness"' in diagnostic_cards
     assert 'capabilityMatrixRow(row)' in diagnostic_cards
 

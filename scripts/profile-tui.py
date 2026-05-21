@@ -45,8 +45,10 @@ except ImportError:
         return Path(val) if val else Path.home() / ".hermes"
 
 DEFAULT_TUI_DIR = Path(
-    os.environ.get("HERMES_TUI_DIR")
-    or str(Path(__file__).resolve().parent.parent / "ui-tui")
+    os.environ.get(
+        "HERMES_TUI_DIR",
+        str(Path(__file__).resolve().parent.parent / "ui-tui"),
+    )
 )
 DEFAULT_LOG = Path(os.environ.get("HERMES_PERF_LOG", str(Path.home() / ".hermes" / "perf.log")))
 DEFAULT_STATE_DB = Path.home() / ".hermes" / "state.db"

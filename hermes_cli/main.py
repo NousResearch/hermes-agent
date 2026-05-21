@@ -1374,7 +1374,16 @@ def _pin_kanban_board_env() -> None:
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
+    no_gui = bool(getattr(args, "no_gui", False))
+    if no_gui:
+        os.environ["HERMES_NO_GUI"] = "1"
+    if no_gui and getattr(args, "tui", False):
+        print("Error: --no-gui cannot be combined with --tui.", file=sys.stderr)
+        sys.exit(1)
+    use_tui = (
+        not no_gui
+        and (getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1")
+    )
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
@@ -1521,7 +1530,7 @@ def cmd_chat(args):
         "max_turns": getattr(args, "max_turns", None),
         "ignore_rules": getattr(args, "ignore_rules", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False),
-        "headless": getattr(args, "no_gui", False),
+        "headless": no_gui,
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}

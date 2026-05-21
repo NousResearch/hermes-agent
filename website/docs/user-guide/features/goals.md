@@ -21,6 +21,26 @@ Use `/goal` for tasks where you want Hermes to iterate on its own without you re
 
 Tasks where the agent does one turn and stops don't need `/goal`. Tasks where *you'd otherwise have to say "keep going" three times* are where this shines.
 
+## What `/goal` does not do
+
+`/goal` is a same-session continuation loop. It does not create Kanban tasks,
+spawn named worker profiles, or hand work to the Kanban dispatcher for parallel
+execution. Each continuation is appended as a normal user-role message in the
+current conversation, so the same agent keeps taking the next step until the
+judge marks the goal done or the turn budget is exhausted.
+
+Use Kanban instead when the work needs durable task rows, named profiles,
+multi-agent dispatch, human comments, retries, or audit history:
+
+```text
+/kanban create "Port feature X and add regression tests" --assignee coder
+/kanban dispatch --max 3
+```
+
+The two systems can be combined intentionally: set a `/goal` for a single agent
+to keep iterating in the current session, or use `/kanban` when you want the
+board and dispatcher to coordinate work across profiles.
+
 ## Quick start
 
 ```

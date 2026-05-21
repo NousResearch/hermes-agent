@@ -142,6 +142,21 @@ class TestAgentConfigSignature:
         )
         assert sig1 != sig2
 
+    def test_model_models_change_busts_cache(self):
+        """Editing model.models overlays must produce a new signature."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.models": {"m": {"max_tokens": 4096}}},
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.models": {"m": {"max_tokens": 8192}}},
+        )
+        assert sig1 != sig2
+
     def test_compression_threshold_change_busts_cache(self):
         from gateway.run import GatewayRunner
 
@@ -214,12 +229,14 @@ class TestExtractCacheBustingConfig:
                 "model": {
                     "context_length": 272_000,
                     "max_tokens": 4096,
+                    "models": {"gpt-5.5": {"max_tokens": 65536}},
                     "provider": "openrouter",
                 }
             }
         )
         assert out["model.context_length"] == 272_000
         assert out["model.max_tokens"] == 4096
+        assert out["model.models"] == {"gpt-5.5": {"max_tokens": 65536}}
 
     def test_reads_compression_subkeys(self):
         from gateway.run import GatewayRunner

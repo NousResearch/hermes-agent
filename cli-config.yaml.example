@@ -73,6 +73,17 @@ model:
   #
 # max_tokens: 8192
 
+  # Per-model overrides for profile-global model settings. These are useful
+  # when one profile switches between models with different output ceilings.
+  # The active model's max_tokens wins over the flat model.max_tokens above;
+  # unmatched models keep using the flat value or the provider default.
+  #
+  # models:
+  #   anthropic/claude-opus-4.6:
+  #     max_tokens: 32768
+  #   gpt-5.5:
+  #     max_tokens: 65536
+
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
 # and per-model exceptions.

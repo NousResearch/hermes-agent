@@ -813,6 +813,96 @@ class TestInit:
         assert a.max_tokens == 4096
         assert kwargs["max_tokens"] == 4096
 
+    def test_model_models_max_tokens_overlay_wins(self):
+        """model.models.<active>.max_tokens overrides the flat fallback."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "model": {
+                        "max_tokens": 4096,
+                        "models": {
+                            "claude-opus-4-6-thinking": {"max_tokens": 8192},
+                            "gpt-5.5": {"max_tokens": 65536},
+                        },
+                    }
+                },
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert a.max_tokens == 8192
+        assert kwargs["max_tokens"] == 8192
+
+    def test_model_models_max_tokens_overlay_falls_back_when_unmatched(self):
+        """Unmatched per-model entries leave model.max_tokens behavior unchanged."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "model": {
+                        "max_tokens": 4096,
+                        "models": {"gpt-5.5": {"max_tokens": 65536}},
+                    }
+                },
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert a.max_tokens == 4096
+
+    def test_model_models_invalid_max_tokens_falls_back_to_flat(self):
+        """Invalid per-model max_tokens warns and uses model.max_tokens."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "model": {
+                        "max_tokens": 4096,
+                        "models": {"claude-opus-4-6-thinking": {"max_tokens": "64K"}},
+                    }
+                },
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert a.max_tokens == 4096
+
     def test_constructor_max_tokens_wins_over_config(self):
         """Explicit constructor max_tokens keeps programmatic callers stable."""
         with (

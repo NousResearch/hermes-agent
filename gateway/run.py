@@ -14637,6 +14637,7 @@ class GatewayRunner:
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
         ("model", "context_length"),
         ("model", "max_tokens"),
+        ("model", "models"),
         ("compression", "enabled"),
         ("compression", "threshold"),
         ("compression", "target_ratio"),

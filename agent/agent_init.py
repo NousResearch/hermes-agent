@@ -1149,32 +1149,51 @@ def init_agent(
             _aux_context_config = None
     agent._aux_compression_context_length_config = _aux_context_config
 
+    def _parse_config_max_tokens(raw_value, config_path: str) -> int | None:
+        if raw_value is None:
+            return None
+        try:
+            if isinstance(raw_value, bool):
+                raise ValueError
+            parsed = int(raw_value)
+            if parsed <= 0:
+                raise ValueError
+            return parsed
+        except (TypeError, ValueError):
+            _ra().logger.warning(
+                "Invalid %s in config.yaml: %r — "
+                "must be a positive integer (e.g. 4096). "
+                "Falling back to the next max_tokens default.",
+                config_path,
+                raw_value,
+            )
+            print(
+                f"\n⚠ Invalid {config_path} in config.yaml: {raw_value!r}\n"
+                f"  Must be a positive integer (e.g. 4096).\n"
+                f"  Falling back to the next max_tokens default.\n",
+                file=sys.stderr,
+            )
+            return None
+
     # Read explicit model output-token override from config when the
-    # caller did not pass one directly.
+    # caller did not pass one directly. Per-model overlays let one profile
+    # switch between models with different output ceilings without changing
+    # the flat fallback.
     _model_cfg = _agent_cfg.get("model", {})
     if agent.max_tokens is None and isinstance(_model_cfg, dict):
-        _config_max_tokens = _model_cfg.get("max_tokens")
-        if _config_max_tokens is not None:
-            try:
-                if isinstance(_config_max_tokens, bool):
-                    raise ValueError
-                _parsed_max_tokens = int(_config_max_tokens)
-                if _parsed_max_tokens <= 0:
-                    raise ValueError
-                agent.max_tokens = _parsed_max_tokens
-            except (TypeError, ValueError):
-                _ra().logger.warning(
-                    "Invalid model.max_tokens in config.yaml: %r — "
-                    "must be a positive integer (e.g. 4096). "
-                    "Falling back to provider default.",
-                    _config_max_tokens,
+        _models_cfg = _model_cfg.get("models")
+        if isinstance(_models_cfg, dict):
+            _model_overlay = _models_cfg.get(agent.model)
+            if isinstance(_model_overlay, dict) and "max_tokens" in _model_overlay:
+                agent.max_tokens = _parse_config_max_tokens(
+                    _model_overlay.get("max_tokens"),
+                    f"model.models.{agent.model}.max_tokens",
                 )
-                print(
-                    f"\n⚠ Invalid model.max_tokens in config.yaml: {_config_max_tokens!r}\n"
-                    f"  Must be a positive integer (e.g. 4096).\n"
-                    f"  Falling back to provider default.\n",
-                    file=sys.stderr,
-                )
+        if agent.max_tokens is None:
+            agent.max_tokens = _parse_config_max_tokens(
+                _model_cfg.get("max_tokens"),
+                "model.max_tokens",
+            )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
     # Read explicit context_length override from model config

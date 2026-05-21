@@ -166,6 +166,35 @@ def test_gateway_placeholder_cwd_uses_existing_terminal_cwd_first():
     )
 
 
+@pytest.mark.parametrize("existing_cwd", [".", "auto", "cwd"])
+def test_gateway_placeholder_existing_terminal_cwd_uses_messaging_cwd(existing_cwd):
+    config = normalize_terminal_config({"cwd": "."})
+
+    assert (
+        resolve_gateway_terminal_cwd(
+            config,
+            existing_env={"TERMINAL_CWD": existing_cwd},
+            messaging_cwd="/chat/workspace",
+            home="/home/hermes",
+        )
+        == "/chat/workspace"
+    )
+
+
+def test_gateway_placeholder_existing_terminal_cwd_without_messaging_cwd_uses_home():
+    config = normalize_terminal_config({"cwd": "."})
+
+    assert (
+        resolve_gateway_terminal_cwd(
+            config,
+            existing_env={"TERMINAL_CWD": "auto"},
+            messaging_cwd=None,
+            home="/home/hermes",
+        )
+        == "/home/hermes"
+    )
+
+
 def test_gateway_explicit_cwd_expands_home():
     config = normalize_terminal_config({"cwd": "~/project"})
 

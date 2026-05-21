@@ -158,8 +158,11 @@ def resolve_gateway_terminal_cwd(
     if not _is_placeholder_cwd(cwd):
         return _expand_user(cwd, home=home)
 
-    existing_cwd = (existing_env or {}).get("TERMINAL_CWD")
-    fallback = existing_cwd or messaging_cwd or home or Path.home()
+    existing_cwd = _stripped_nonempty((existing_env or {}).get("TERMINAL_CWD"))
+    if existing_cwd is not None and not _is_placeholder_cwd(existing_cwd):
+        fallback = existing_cwd
+    else:
+        fallback = messaging_cwd or home or Path.home()
     return _expand_user(fallback, home=home)
 
 

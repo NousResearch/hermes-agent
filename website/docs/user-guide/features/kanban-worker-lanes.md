@@ -194,10 +194,27 @@ worker_lane_request:
 
 Model output is not trusted execution config. Requests must pass a deterministic validator: type allowlist, model allowlist, sandbox allowlist, approval allowlist, max concurrency cap, fixed command shape, and no arbitrary shell command fields.
 
+Operators can validate a request without enabling it:
+
+```bash
+hermes kanban worker-lane-request request.yaml --json
+```
+
+After approval, enable it for the current Hermes process, or persist the sanitized config to `config.yaml`:
+
+```bash
+hermes kanban worker-lane-request request.yaml --enable
+hermes kanban worker-lane-request request.yaml --persist
+```
+
+`--persist` writes only the sanitized adapter fields under `kanban.worker_lanes`; it does not store arbitrary command strings or the model's free-form reason.
+For a standalone shell invocation, prefer `--persist` when a later dispatcher process must see the lane; `--enable` is mainly useful for in-process slash/gateway calls.
+
 ## Progress queries
 
 Progress queries should read Kanban state, events, logs, and run metadata:
 
+- `hermes kanban progress <task_id> --json`
 - `hermes kanban show <task_id>`
 - `hermes kanban tail <task_id>`
 - `hermes kanban log <task_id>`

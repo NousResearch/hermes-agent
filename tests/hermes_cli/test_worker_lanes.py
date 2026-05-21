@@ -17,6 +17,7 @@ from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from hermes_cli.worker_lanes import (
     WorkerLane,
     clear_worker_lanes,
+    enable_worker_lane_request,
     get_worker_lane,
     list_worker_lanes,
     register_configured_worker_lanes,
@@ -137,6 +138,57 @@ def test_lane_request_validator_rejects_shell_command():
             "type": "codex_cli",
             "command": "rm -rf /",
         })
+
+
+def test_enable_worker_lane_request_registers_sanitized_lane():
+    lane = enable_worker_lane_request({
+        "name": "codex-long-context",
+        "type": "codex_cli",
+        "model": "gpt-5.5",
+        "sandbox": "workspace-write",
+        "approval": "never",
+        "max_concurrency": 1,
+        "success_policy": "block_for_review",
+        "reason": "large refactor",
+    })
+
+    assert lane.name == "codex-long-context"
+    assert lane.kind == "codex_cli"
+    assert lane.source == "lane_request"
+    assert get_worker_lane("codex-long-context") is lane
+    assert resolve_worker_assignee("codex-long-context", refresh_config=False).kind == "worker_lane"
+
+
+def test_enable_worker_lane_request_can_persist_sanitized_config(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    lane = enable_worker_lane_request(
+        {
+            "name": "codex-approved",
+            "type": "codex_cli",
+            "model": "gpt-5.4-mini",
+            "sandbox": "workspace-write",
+            "approval": "never",
+            "max_concurrency": 2,
+            "success_policy": "block_for_review",
+            "reason": "operator approved",
+        },
+        persist=True,
+    )
+
+    assert lane.source == "config"
+    from hermes_cli.config import read_raw_config
+
+    raw = read_raw_config()
+    stored = raw["kanban"]["worker_lanes"]["codex-approved"]
+    assert stored["type"] == "codex_cli"
+    assert stored["model"] == "gpt-5.4-mini"
+    assert stored["max_concurrency"] == 2
+    assert "reason" not in stored
+    assert "command" not in stored
 
 
 def test_dispatcher_uses_external_lane_assignee(kanban_home, monkeypatch):

@@ -27,6 +27,11 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
+try:
+    import yaml
+except Exception:  # pragma: no cover - yaml is a declared runtime dep.
+    yaml = None  # type: ignore[assignment]
+
 
 # ---------------------------------------------------------------------------
 # Small formatting helpers
@@ -732,6 +737,35 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_asg.add_argument("--json", action="store_true")
 
+    # --- worker-lane-request ---
+    p_lane_req = sub.add_parser(
+        "worker-lane-request",
+        aliases=["lane-request"],
+        help="Validate and optionally enable a skill-generated worker lane request",
+    )
+    p_lane_req.add_argument(
+        "path",
+        nargs="?",
+        default="-",
+        help="JSON/YAML file containing worker_lane_request, or '-' for stdin",
+    )
+    p_lane_req.add_argument(
+        "--enable",
+        action="store_true",
+        help="Enable the validated request in the current process registry",
+    )
+    p_lane_req.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist the sanitized lane under kanban.worker_lanes in config.yaml",
+    )
+    p_lane_req.add_argument(
+        "--replace",
+        action="store_true",
+        help="Replace an existing lane with the same name",
+    )
+    p_lane_req.add_argument("--json", action="store_true")
+
     # --- context --- (for spawned workers)
     p_ctx = sub.add_parser(
         "context",
@@ -940,6 +974,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "runs":     _cmd_runs,
         "heartbeat": _cmd_heartbeat,
         "assignees": _cmd_assignees,
+        "worker-lane-request": _cmd_worker_lane_request,
+        "lane-request": _cmd_worker_lane_request,
         "notify-subscribe":   _cmd_notify_subscribe,
         "notify-list":        _cmd_notify_list,
         "notify-unsubscribe": _cmd_notify_unsubscribe,
@@ -1294,6 +1330,88 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
         counts = entry["counts"] or {}
         count_str = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "(idle)"
         print(f"{entry['name']:20s}  {entry_type:14s}  {count_str}")
+    return 0
+
+
+def _load_lane_request_payload(path: str) -> dict[str, Any]:
+    raw_path = (path or "-").strip()
+    if raw_path == "-":
+        text = sys.stdin.read()
+    else:
+        text = Path(raw_path).expanduser().read_text(encoding="utf-8")
+    if not text.strip():
+        raise ValueError("worker lane request input is empty")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        if yaml is None:
+            raise ValueError("worker lane request is not JSON and PyYAML is unavailable")
+        data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        raise ValueError("worker lane request input must be a mapping")
+    req = data.get("worker_lane_request", data)
+    if not isinstance(req, dict):
+        raise ValueError("worker_lane_request must be a mapping")
+    return req
+
+
+def _cmd_worker_lane_request(args: argparse.Namespace) -> int:
+    from hermes_cli.worker_lanes import (
+        enable_worker_lane_request,
+        validate_worker_lane_request,
+    )
+
+    try:
+        req = _load_lane_request_payload(args.path)
+        valid = validate_worker_lane_request(req)
+    except Exception as exc:
+        print(f"kanban worker-lane-request: {exc}", file=sys.stderr)
+        return 1
+
+    enabled = False
+    lane_info = None
+    if getattr(args, "enable", False) or getattr(args, "persist", False):
+        try:
+            lane = enable_worker_lane_request(
+                req,
+                persist=bool(getattr(args, "persist", False)),
+                replace=bool(getattr(args, "replace", False)),
+            )
+        except Exception as exc:
+            print(f"kanban worker-lane-request: {exc}", file=sys.stderr)
+            return 1
+        enabled = True
+        lane_info = {
+            "name": lane.name,
+            "kind": lane.kind,
+            "source": lane.source,
+            "success_policy": lane.success_policy,
+            "max_concurrency": lane.max_concurrency,
+        }
+
+    payload = {
+        "valid": True,
+        "enabled": enabled,
+        "persisted": bool(getattr(args, "persist", False)),
+        "lane": lane_info,
+        "config": valid,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    status = "enabled" if enabled else "validated"
+    if payload["persisted"]:
+        status += " and persisted"
+    print(f"Worker lane request {status}: {valid['name']}")
+    print(f"  type: {valid['type']}")
+    if valid.get("model"):
+        print(f"  model: {valid['model']}")
+    print(f"  sandbox: {valid['sandbox']}")
+    print(f"  approval: {valid['approval']}")
+    print(f"  max_concurrency: {valid['max_concurrency']}")
+    print(f"  success_policy: {valid['success_policy']}")
+    if not enabled:
+        print("  pass --enable to register it, or --persist to write config.yaml")
     return 0
 
 

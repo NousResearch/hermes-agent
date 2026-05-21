@@ -439,6 +439,80 @@ def test_run_slash_progress_json_is_read_only(kanban_home):
     assert after.claim_lock == before.claim_lock
 
 
+def test_run_slash_worker_lane_request_validates_without_enabling(
+    kanban_home, tmp_path,
+):
+    from hermes_cli.worker_lanes import get_worker_lane
+
+    req = tmp_path / "lane.yaml"
+    req.write_text(
+        "worker_lane_request:\n"
+        "  name: codex-cli-request\n"
+        "  type: codex_cli\n"
+        "  model: gpt-5.4-mini\n"
+        "  sandbox: workspace-write\n"
+        "  approval: never\n"
+        "  max_concurrency: 1\n"
+        "  success_policy: block_for_review\n",
+        encoding="utf-8",
+    )
+
+    payload = json.loads(kc.run_slash(f"worker-lane-request {req} --json"))
+
+    assert payload["valid"] is True
+    assert payload["enabled"] is False
+    assert payload["config"]["name"] == "codex-cli-request"
+    assert get_worker_lane("codex-cli-request") is None
+
+
+def test_run_slash_worker_lane_request_persist_enables_config_lane(
+    kanban_home, tmp_path,
+):
+    from hermes_cli.worker_lanes import get_worker_lane
+    from hermes_cli.config import read_raw_config
+
+    req = tmp_path / "lane.json"
+    req.write_text(json.dumps({
+        "worker_lane_request": {
+            "name": "codex-persisted",
+            "type": "codex_cli",
+            "model": "gpt-5.5",
+            "sandbox": "workspace-write",
+            "approval": "never",
+            "max_concurrency": 1,
+            "success_policy": "block_for_review",
+            "reason": "approved by test",
+        }
+    }), encoding="utf-8")
+
+    payload = json.loads(kc.run_slash(f"worker-lane-request {req} --persist --json"))
+
+    assert payload["enabled"] is True
+    assert payload["persisted"] is True
+    lane = get_worker_lane("codex-persisted")
+    assert lane is not None
+    assert lane.source == "config"
+    stored = read_raw_config()["kanban"]["worker_lanes"]["codex-persisted"]
+    assert stored["type"] == "codex_cli"
+    assert stored["model"] == "gpt-5.5"
+    assert "reason" not in stored
+
+
+def test_run_slash_worker_lane_request_rejects_shell_command(
+    kanban_home, tmp_path,
+):
+    req = tmp_path / "lane.json"
+    req.write_text(json.dumps({
+        "name": "codex-bad",
+        "type": "codex_cli",
+        "command": "codex exec -",
+    }), encoding="utf-8")
+
+    out = kc.run_slash(f"worker-lane-request {req} --json")
+
+    assert "may not include executable command fields" in out
+
+
 # ---------------------------------------------------------------------------
 # /kanban specify — slash surface (same entry point CLI + gateway use)
 # ---------------------------------------------------------------------------

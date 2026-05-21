@@ -273,6 +273,66 @@ def validate_worker_lane_request(request: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _lane_from_validated_config(
+    config: dict[str, Any],
+    *,
+    source: str,
+) -> WorkerLane:
+    lane_type = config["type"]
+    if lane_type == "codex_cli":
+        from hermes_cli.codex_worker import make_codex_worker_lane
+        return make_codex_worker_lane(config, source=source)
+    raise ValueError(f"unsupported worker lane type {lane_type!r}")
+
+
+def enable_worker_lane_request(
+    request: dict[str, Any],
+    *,
+    persist: bool = False,
+    replace: bool = False,
+    config: Optional[dict[str, Any]] = None,
+) -> WorkerLane:
+    """Validate and enable a skill-generated worker lane request.
+
+    Model output is accepted only as a request object. This helper runs the
+    deterministic validator, instantiates the adapter from the sanitized
+    config, registers it in the trusted in-process registry, and optionally
+    persists the sanitized config under ``kanban.worker_lanes``.
+    """
+    valid = validate_worker_lane_request(request)
+    source = "config" if persist else "lane_request"
+    lane = _lane_from_validated_config(valid, source=source)
+    existing = get_worker_lane(lane.name)
+    if existing is not None and not replace:
+        raise ValueError(
+            f"worker lane {lane.name!r} already registered "
+            f"(kind={existing.kind}, source={existing.source or 'unknown'})"
+        )
+    if persist:
+        try:
+            from hermes_cli.config import load_config, save_config
+
+            cfg = load_config() if config is None else config
+            kanban_cfg = cfg.setdefault("kanban", {})
+            if not isinstance(kanban_cfg, dict):
+                raise ValueError("config key 'kanban' must be a mapping")
+            lanes_cfg = kanban_cfg.setdefault("worker_lanes", {})
+            if not isinstance(lanes_cfg, dict):
+                raise ValueError("config key 'kanban.worker_lanes' must be a mapping")
+            existing_cfg = lanes_cfg.get(lane.name)
+            if existing_cfg is not None and not replace:
+                raise ValueError(f"worker lane {lane.name!r} already exists in config")
+            stored = {k: v for k, v in valid.items() if k not in {"name", "reason"}}
+            lanes_cfg[lane.name] = stored
+            if config is None:
+                save_config(cfg)
+        except Exception:
+            # Do not leave a memory-only lane enabled when the caller asked
+            # for persistence and config write/validation failed.
+            raise
+    return register_worker_lane(lane, replace=replace)
+
+
 def register_configured_worker_lanes(config: Optional[dict[str, Any]] = None) -> None:
     """Register lanes from ``kanban.worker_lanes`` in config.yaml.
 
@@ -315,12 +375,7 @@ def register_configured_worker_lanes(config: Optional[dict[str, Any]] = None) ->
         req.setdefault("name", raw_name)
         try:
             valid = validate_worker_lane_request(req)
-            lane_type = valid["type"]
-            if lane_type == "codex_cli":
-                from hermes_cli.codex_worker import make_codex_worker_lane
-                lane = make_codex_worker_lane(valid, source="config")
-            else:  # pragma: no cover - validator currently prevents this.
-                raise ValueError(f"unsupported worker lane type {lane_type!r}")
+            lane = _lane_from_validated_config(valid, source="config")
 
             existing = get_worker_lane(lane.name)
             if existing is not None and existing.source != "config":

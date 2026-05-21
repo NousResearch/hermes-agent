@@ -98,7 +98,17 @@ def _make_adapter(telegram_adapter_cls):
     return a
 
 
-def _make_channel_message(text="channel id test @hermes_bot"):
+def _make_channel_message(
+    text="channel id test @hermes_bot",
+    *,
+    caption=None,
+    sticker=None,
+    photo=None,
+    video=None,
+    audio=None,
+    voice=None,
+    document=None,
+):
     chat = SimpleNamespace(
         id=-1003950368353,
         type="channel",
@@ -110,9 +120,16 @@ def _make_channel_message(text="channel id test @hermes_bot"):
         chat=chat,
         from_user=None,
         text=text,
-        caption=None,
+        caption=caption,
         entities=[],
         caption_entities=[],
+        sticker=sticker,
+        photo=photo,
+        video=video,
+        audio=audio,
+        voice=voice,
+        document=document,
+        media_group_id=None,
         message_thread_id=None,
         is_topic_message=False,
         message_id=11,
@@ -177,5 +194,23 @@ async def test_command_handler_uses_effective_message_for_channel_post(telegram_
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "/status"
     assert event.message_type == MessageType.COMMAND
+    assert event.source.chat_type == "channel"
+    assert event.source.chat_id == "-1003950368353"
+
+
+@pytest.mark.asyncio
+async def test_media_handler_uses_effective_message_for_channel_post(telegram_adapter_cls):
+    adapter = _make_adapter(telegram_adapter_cls)
+    msg = _make_channel_message(text=None, sticker=SimpleNamespace())
+    update = _make_channel_update(msg)
+    adapter._handle_sticker = AsyncMock()
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_media_message(update, MagicMock())
+
+    adapter._handle_sticker.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.message_type == MessageType.STICKER
     assert event.source.chat_type == "channel"
     assert event.source.chat_id == "-1003950368353"

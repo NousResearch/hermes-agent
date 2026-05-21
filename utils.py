@@ -193,18 +193,47 @@ def atomic_roundtrip_yaml_update(
     key_path: str,
     value: Any,
 ) -> None:
-    """Update one dotted YAML key while preserving comments and readable text.
+    """Update one dotted YAML key while preserving comments when possible.
 
     This is intentionally narrower than :func:`atomic_yaml_write`: it is for
     user-edited config files where comments, ordering, quoting, and Unicode
     should survive a single setting mutation.  Writes still use the same temp
     file + fsync + atomic replace pattern.
-    """
-    from ruamel.yaml import YAML
-    from ruamel.yaml.comments import CommentedMap
 
+    ``ruamel.yaml`` is the preferred backend because it preserves comments, but
+    config persistence is too important to fail completely when a partial or
+    editable install is missing that dependency.  In that case, fall back to a
+    PyYAML update that still preserves existing keys, uses the same atomic-write
+    path, and leaves users with a working slash-command/config toggle.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from ruamel.yaml import YAML  # type: ignore[import-not-found]
+        from ruamel.yaml.comments import CommentedMap  # type: ignore[import-not-found]
+    except ModuleNotFoundError as exc:
+        if exc.name and not exc.name.startswith("ruamel"):
+            raise
+        config: Any = {}
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+        if not isinstance(config, dict):
+            config = dict(config)
+
+        current = config
+        keys = key_path.split(".")
+        for key in keys[:-1]:
+            next_value = current.get(key)
+            if not isinstance(next_value, dict):
+                next_value = {}
+                current[key] = next_value
+            current = next_value
+        current[keys[-1]] = value
+
+        atomic_yaml_write(path, config, default_flow_style=False, sort_keys=False)
+        return
 
     yaml_rt = YAML(typ="rt")
     yaml_rt.preserve_quotes = True

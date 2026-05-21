@@ -24,17 +24,28 @@ def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
     callback: Optional[Callable] = None,
+    hint_text: Optional[str] = None,
+    other_label: Optional[str] = None,
 ) -> str:
     """
     Ask the user a question, optionally with multiple-choice options.
 
     Args:
-        question: The question text to present.
-        choices:  Up to 4 predefined answer choices. When omitted the
-                  question is purely open-ended.
-        callback: Platform-provided function that handles the actual UI
-                  interaction. Signature: callback(question, choices) -> str.
-                  Injected by the agent runner (cli.py / gateway).
+        question:    The question text to present.
+        choices:     Up to 4 predefined answer choices. When omitted the
+                     question is purely open-ended.
+        callback:    Platform-provided function that handles the actual UI
+                     interaction. Signature: callback(question, choices,
+                     hint_text, other_label) -> str.
+                     Injected by the agent runner (cli.py / gateway).
+        hint_text:   Optional footer instruction shown below the numbered
+                     choices (e.g. "回复数字或自行输入" for Chinese). When
+                     omitted, the platform uses its default English string.
+                     The agent SHOULD populate this in the conversation
+                     language so users see fully localised prompts.
+        other_label: Optional label for the free-text fallback button/option
+                     (e.g. "✏️ その他" for Japanese). When omitted, the
+                     platform uses its default English string.
 
     Returns:
         JSON string with the user's response.
@@ -61,7 +72,16 @@ def clarify_tool(
         )
 
     try:
-        user_response = callback(question, choices)
+        user_response = callback(question, choices, hint_text, other_label)
+    except TypeError:
+        # Older callback signatures (question, choices) — call without new args
+        try:
+            user_response = callback(question, choices)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"Failed to get user input: {exc}"},
+                ensure_ascii=False,
+            )
     except Exception as exc:
         return json.dumps(
             {"error": f"Failed to get user input: {exc}"},
@@ -100,7 +120,11 @@ CLARIFY_SCHEMA = {
         "- A decision has meaningful trade-offs the user should weigh in on\n\n"
         "Do NOT use this tool for simple yes/no confirmation of dangerous "
         "commands (the terminal tool handles that). Prefer making a reasonable "
-        "default choice yourself when the decision is low-stakes."
+        "default choice yourself when the decision is low-stakes.\n\n"
+        "IMPORTANT — localisation: if the conversation is not in English, set "
+        "hint_text and other_label in the conversation language so the entire "
+        "prompt feels native to the user (e.g. for Chinese set hint_text to "
+        "'请回复数字、选项文字，或直接输入您的答案。' and other_label to '✏️ 其他（自行输入）')."
     ),
     "parameters": {
         "type": "object",
@@ -119,6 +143,26 @@ CLARIFY_SCHEMA = {
                     "automatically appends an 'Other (type your answer)' option."
                 ),
             },
+            "hint_text": {
+                "type": "string",
+                "description": (
+                    "Optional. Instruction shown below the numbered choices, "
+                    "telling the user how to reply. Write this in the "
+                    "conversation language. Example for Chinese: "
+                    "'请回复数字、选项文字，或直接输入您的答案。' "
+                    "Leave unset to use the platform default (English)."
+                ),
+            },
+            "other_label": {
+                "type": "string",
+                "description": (
+                    "Optional. Label for the free-text fallback button or "
+                    "option (the escape hatch when none of the choices fit). "
+                    "Write this in the conversation language. "
+                    "Example for Japanese: '✏️ その他（自由入力）' "
+                    "Leave unset to use the platform default (English)."
+                ),
+            },
         },
         "required": ["question"],
     },
@@ -135,7 +179,10 @@ registry.register(
     handler=lambda args, **kw: clarify_tool(
         question=args.get("question", ""),
         choices=args.get("choices"),
-        callback=kw.get("callback")),
+        callback=kw.get("callback"),
+        hint_text=args.get("hint_text"),
+        other_label=args.get("other_label"),
+    ),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

@@ -4098,6 +4098,8 @@ class DiscordAdapter(BasePlatformAdapter):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        hint_text: Optional[str] = None,
+        other_label: Optional[str] = None,
     ) -> SendResult:
         """Render a clarify prompt with one Discord button per choice.
 
@@ -4142,10 +4144,15 @@ class DiscordAdapter(BasePlatformAdapter):
             # We reserve one slot for the "Other" button, so cap at 24 choices.
             clean_choices = clean_choices[:24]
 
+            # Agent supplies hint_text / other_label in the user's language.
+            # Fall back to English if the agent didn't provide them.
+            _field_choices_value = hint_text or "Pick one below, or click ✏️ Other to type a custom answer."
+            _other_btn = other_label or "✏️ Other (type answer)"
+
             if clean_choices:
                 embed.add_field(
                     name="Choices",
-                    value="Pick one below, or click ✏️ Other to type a custom answer.",
+                    value=_field_choices_value,
                     inline=False,
                 )
                 view = ClarifyChoiceView(
@@ -4153,11 +4160,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
+                    other_button_label=_other_btn,
                 )
             else:
                 embed.add_field(
                     name="Reply",
-                    value="Reply in this channel with your answer.",
+                    value=hint_text or "Reply in this channel with your answer.",
                     inline=False,
                 )
                 view = None
@@ -5519,6 +5527,7 @@ def _define_discord_view_classes() -> None:
             clarify_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            other_button_label: str = "✏️ Other (type answer)",
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.choices = list(choices)[:24]
@@ -5539,7 +5548,7 @@ def _define_discord_view_classes() -> None:
                 self.add_item(button)
 
             other_btn = discord.ui.Button(
-                label="✏️ Other (type answer)",
+                label=other_button_label,
                 style=discord.ButtonStyle.secondary,
                 custom_id=f"clarify:{clarify_id}:other",
             )

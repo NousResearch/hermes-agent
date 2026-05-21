@@ -191,6 +191,37 @@ class TestTelegramSendClarify:
         assert "<script>" not in kwargs["text"]
         assert "&lt;script&gt;" in kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_custom_labels_are_passed_to_buttons(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        import telegram
+        # Reset mock calls
+        telegram.InlineKeyboardButton.reset_mock()
+
+        await adapter.send_clarify(
+            chat_id="12345",
+            question="?",
+            choices=["a", "b"],
+            clarify_id="cid6",
+            session_key="sk6",
+            other_label="✏️ অন্য কিছু",
+        )
+
+        # InlineKeyboardButton should be called to create buttons
+        assert telegram.InlineKeyboardButton.called
+        # Check that the other button has the custom label
+        calls = telegram.InlineKeyboardButton.call_args_list
+        # We offered 2 choices + 1 Other = 3 buttons total
+        assert len(calls) == 3
+        # The last call is the "Other" button
+        last_call_args = calls[-1][0]
+        assert last_call_args[0] == "✏️ অন্য কিছু"
+        assert calls[-1][1]["callback_data"] == "cl:cid6:other"
+
 
 # ===========================================================================
 # Callback dispatch — _handle_callback_query routing for cl:* prefixes

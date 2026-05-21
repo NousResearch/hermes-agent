@@ -406,3 +406,32 @@ class TestDiscordSendClarify:
         # Only 1 real choice + 1 Other = 2 children
         assert len(view.children) == 2
         assert "real-choice" in view.children[0].label
+
+    @pytest.mark.asyncio
+    async def test_custom_labels_are_passed_to_discord(self):
+        adapter = _make_adapter()
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 555
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        await adapter.send_clarify(
+            chat_id="9001",
+            question="?",
+            choices=["a", "b"],
+            clarify_id="cidC",
+            session_key="sk-C",
+            hint_text="পছন্দ করুন",
+            other_label="অন্য কিছু",
+        )
+        kwargs = channel.send.call_args.kwargs
+        embed = kwargs["embed"]
+        view = kwargs["view"]
+
+        # Check embed field for hint_text
+        assert embed.fields[0]["value"] == "পছন্দ করুন"
+
+        # Check view for other_label
+        assert len(view.children) == 3
+        assert view.children[-1].label == "অন্য কিছু"

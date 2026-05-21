@@ -1782,8 +1782,16 @@ class BasePlatformAdapter(ABC):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        hint_text: Optional[str] = None,
+        other_label: Optional[str] = None,
     ) -> SendResult:
         """Send a clarify prompt to the user.
+
+        ``hint_text`` and ``other_label`` are optionally supplied by the LLM
+        agent (via the clarify tool's ``hint_text``/``other_label`` schema
+        fields) already in the conversation language.  When the agent omits
+        them the platform falls back to its own detection/default strings so
+        this is always a quality improvement, never a regression.
 
         Two render modes:
 
@@ -1813,11 +1821,13 @@ class BasePlatformAdapter(ABC):
         override this for a richer UX.
         """
         if choices:
+            # Use agent-supplied hint_text; fall back to English.
+            _hint = hint_text or "Reply with the number, the option text, or your own answer."
             lines = [f"❓ {question}", ""]
             for i, choice in enumerate(choices, start=1):
                 lines.append(f"  {i}. {choice}")
             lines.append("")
-            lines.append("Reply with the number, the option text, or your own answer.")
+            lines.append(_hint)
             text = "\n".join(lines)
             # Text fallback: enable text-capture so the gateway intercept
             # picks up the user's typed reply (e.g. "2" or choice text).

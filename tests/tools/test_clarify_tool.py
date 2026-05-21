@@ -156,6 +156,31 @@ class TestClarifyToolCallbackHandling:
         result = json.loads(clarify_tool("Q?", callback=mock_callback))
         assert result["user_response"] == "response with spaces"
 
+    def test_callback_receives_hint_and_label(self):
+        """Callback should receive new hint_text and other_label parameters when provided."""
+        received = {}
+
+        def mock_new_callback(question: str, choices: Optional[List[str]], hint_text: Optional[str] = None, other_label: Optional[str] = None) -> str:
+            received["hint_text"] = hint_text
+            received["other_label"] = other_label
+            return "ok"
+
+        clarify_tool("Choose", choices=["A", "B"], hint_text="Select", other_label="Other", callback=mock_new_callback)
+        assert received["hint_text"] == "Select"
+        assert received["other_label"] == "Other"
+
+    def test_callback_fallback_older_signature(self):
+        """Fallback gracefully if the callback only accepts (question, choices)."""
+        received = []
+
+        def mock_legacy_callback(question: str, choices: Optional[List[str]]) -> str:
+            received.append(question)
+            return "legacy"
+
+        result = json.loads(clarify_tool("Old", choices=["A"], hint_text="Ignored", other_label="Ignored", callback=mock_legacy_callback))
+        assert result["user_response"] == "legacy"
+        assert received == ["Old"]
+
 
 class TestCheckClarifyRequirements:
     """Tests for the requirements check function."""

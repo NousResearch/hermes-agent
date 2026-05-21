@@ -2505,6 +2505,8 @@ class TelegramAdapter(BasePlatformAdapter):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        hint_text: Optional[str] = None,
+        other_label: Optional[str] = None,
     ) -> SendResult:
         """Render a clarify prompt with one inline button per choice.
 
@@ -2545,6 +2547,8 @@ class TelegramAdapter(BasePlatformAdapter):
             if choices:
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
                 # short.
+                # Agent-supplied label takes priority; English fallback otherwise.
+                _other_label = other_label or "✏️ Other (type answer)"
                 rows = []
                 for idx in range(len(choices)):
                     rows.append([
@@ -2555,7 +2559,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     ])
                 rows.append([
                     InlineKeyboardButton(
-                        "✏️ Other (type answer)",
+                        _other_label,
                         callback_data=f"cl:{clarify_id}:other",
                     )
                 ])

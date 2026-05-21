@@ -24,6 +24,7 @@ Design:
 """
 
 import json
+import locale
 import logging
 import os
 import re
@@ -32,12 +33,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
+from utils import atomic_replace
 
 try:
     import fcntl  # POSIX
-except ImportError:  # pragma: no cover - Windows fallback
+except ImportError:  # pragma: no cover - platform-specific fallback
     fcntl = None
+try:
     import msvcrt
+except ImportError:  # pragma: no cover - platform-specific fallback
+    msvcrt = None
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +149,14 @@ class MemoryStore:
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if fcntl is None and msvcrt is None:
+            yield
+            return
+
+        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+            lock_path.write_text(" ", encoding="utf-8")
+
         fd = open(lock_path, "a+", encoding="utf-8")
         try:
             if fcntl is not None:
@@ -408,6 +421,8 @@ class MemoryStore:
             return []
         try:
             raw = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raw = path.read_text(encoding=locale.getpreferredencoding(False))
         except (OSError, IOError):
             return []
 

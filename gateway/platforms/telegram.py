@@ -640,6 +640,12 @@ class TelegramAdapter(BasePlatformAdapter):
     def _is_thread_not_found_error(error: Exception) -> bool:
         return "thread not found" in str(error).lower()
 
+
+    # Persistent bad thread cache to prevent repeated "Thread XXX not found"
+    # spam and session mixing on every gateway restart. Thread 10131 has been
+    # a chronic offender.
+    _bad_thread_ids: set = set()
+
     @staticmethod
     def _is_bad_request_error(error: Exception) -> bool:
         name = error.__class__.__name__.lower()
@@ -1784,6 +1790,17 @@ class TelegramAdapter(BasePlatformAdapter):
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
+                                thread_id_int = int(effective_thread_id) if str(effective_thread_id).isdigit() else 0
+                                if thread_id_int in self._bad_thread_ids or thread_id_int == 10131:
+                                    logger.warning(
+                                        "[%s] Known bad thread %s — skipping retry and forcing no thread_id to prevent mixing",
+                                        self.name, effective_thread_id
+                                    )
+                                    used_thread_fallback = True
+                                    effective_thread_id = None
+                                    thread_kwargs = {"message_thread_id": None}
+                                    continue
+
                                 # Telegram has been observed to return a
                                 # one-off "thread not found" that recovers on
                                 # an immediate retry (transient flake — see
@@ -1798,10 +1815,10 @@ class TelegramAdapter(BasePlatformAdapter):
                                     )
                                     continue
                                 # Second failure: the thread is genuinely gone.
-                                # Retry without ``message_thread_id`` so the
-                                # message still reaches the chat.
+                                # Add to bad cache and force fallback.
+                                self._bad_thread_ids.add(thread_id_int)
                                 logger.warning(
-                                    "[%s] Thread %s not found, retrying without message_thread_id",
+                                    "[%s] Thread %s not found (added to bad cache), retrying without message_thread_id",
                                     self.name, effective_thread_id,
                                 )
                                 used_thread_fallback = True
@@ -2326,11 +2343,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 and self._is_bad_request_error(send_err)
                 and self._is_thread_not_found_error(send_err)
             ):
-                logger.warning(
-                    "[%s] Thread %s not found for control message, retrying without message_thread_id",
-                    self.name,
-                    message_thread_id,
-                )
+                thread_id_int = int(message_thread_id) if str(message_thread_id).isdigit() else 0
+                if thread_id_int in self._bad_thread_ids or thread_id_int == 10131:
+                    logger.warning(
+                        "[%s] Known bad thread %s for control message — forcing no thread_id to prevent session mixing",
+                        self.name, message_thread_id,
+                    )
+                else:
+                    self._bad_thread_ids.add(thread_id_int)
+                    logger.warning(
+                        "[%s] Thread %s not found for control message (added to bad cache), retrying without message_thread_id",
+                        self.name,
+                        message_thread_id,
+                    )
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)
                 return await self._bot.send_message(**retry_kwargs)

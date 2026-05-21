@@ -57,25 +57,33 @@ const FILTER_LABEL: Record<FilterMode, string> = {
 }
 
 const STATUS_RANK: Record<Status, number> = {
+  error: 0,
   failed: 0,
   interrupted: 1,
+  timeout: 1,
   running: 2,
   queued: 3,
   completed: 4
 }
 
+const statusRank = (status: string): number => STATUS_RANK[status as Status] ?? STATUS_RANK.error
+
 const SORT_COMPARATORS: Record<SortMode, (a: SubagentNode, b: SubagentNode) => number> = {
   'depth-first': (a, b) => a.item.depth - b.item.depth || a.item.index - b.item.index,
   'tools-desc': (a, b) => b.aggregate.totalTools - a.aggregate.totalTools,
   'duration-desc': (a, b) => b.aggregate.totalDuration - a.aggregate.totalDuration,
-  status: (a, b) => STATUS_RANK[a.item.status] - STATUS_RANK[b.item.status]
+  status: (a, b) => statusRank(a.item.status) - statusRank(b.item.status)
 }
 
 const FILTER_PREDICATES: Record<FilterMode, (n: SubagentNode) => boolean> = {
   all: () => true,
   leaf: n => n.children.length === 0,
   running: n => n.item.status === 'running' || n.item.status === 'queued',
-  failed: n => n.item.status === 'failed' || n.item.status === 'interrupted'
+  failed: n =>
+    n.item.status === 'error' ||
+    n.item.status === 'failed' ||
+    n.item.status === 'interrupted' ||
+    n.item.status === 'timeout'
 }
 
 const STATUS_GLYPH: Record<Status, { color: (t: Theme) => string; glyph: string }> = {
@@ -83,7 +91,9 @@ const STATUS_GLYPH: Record<Status, { color: (t: Theme) => string; glyph: string 
   queued: { color: t => t.color.muted, glyph: '○' },
   completed: { color: t => t.color.statusGood, glyph: '✓' },
   interrupted: { color: t => t.color.warn, glyph: '■' },
-  failed: { color: t => t.color.error, glyph: '✗' }
+  failed: { color: t => t.color.error, glyph: '✗' },
+  timeout: { color: t => t.color.warn, glyph: '⌛' },
+  error: { color: t => t.color.error, glyph: '⚠' }
 }
 
 // Heatmap palette — cold → hot, resolved against the active theme.
@@ -111,7 +121,8 @@ const formatRowId = (n: number): string => String(n + 1).padStart(2, ' ')
 const cycle = <T,>(order: readonly T[], current: T): T => order[(order.indexOf(current) + 1) % order.length]!
 
 const statusGlyph = (item: SubagentProgress, t: Theme) => {
-  const g = STATUS_GLYPH[item.status]
+  // Defensive fallback for cross-version snapshots with unknown statuses.
+  const g = STATUS_GLYPH[item.status] ?? STATUS_GLYPH.error
 
   return { color: g.color(t), glyph: g.glyph }
 }

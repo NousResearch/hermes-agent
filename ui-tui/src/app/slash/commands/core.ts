@@ -93,6 +93,17 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'update Hermes Agent to the latest version (exits TUI)',
+    name: 'update',
+    run: (_arg, ctx) => {
+      ctx.transcript.sys('exiting TUI to run update...')
+      // Exit code 42 signals the Python wrapper to exec `hermes update`.
+      // Use dieWithCode for proper cleanup (gateway kill + Ink unmount).
+      setTimeout(() => ctx.session.dieWithCode(42), 100)
+    }
+  },
+
+  {
     aliases: ['scroll'],
     help: 'toggle mouse/wheel tracking [on|off|toggle]',
     name: 'mouse',
@@ -334,7 +345,7 @@ export const coreCommands: SlashCommand[] = [
           return sys(`copied ${text.length} characters`)
         } else {
           return sys(
-            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence; HERMES_TUI_DEBUG_CLIPBOARD=1 for details'
+            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
           )
         }
       }

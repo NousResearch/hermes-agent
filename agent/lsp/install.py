@@ -151,7 +151,7 @@ def try_install(pkg: str, strategy: str = "auto") -> Optional[str]:
     same path (or ``None``) without reinstalling.  Concurrent calls
     are serialized.
     """
-    if strategy not in ("auto",):
+    if strategy not in {"auto",}:
         # Only ``auto`` triggers an actual install.  In manual/off,
         # we still check whether the binary already exists.
         recipe = INSTALL_RECIPES.get(pkg, {})

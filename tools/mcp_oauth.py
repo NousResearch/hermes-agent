@@ -48,6 +48,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from hermes_constants import secure_parent_dir
 
 logger = logging.getLogger(__name__)
 
@@ -175,10 +176,8 @@ def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to the creds.
     # No-op on Windows (POSIX mode bits aren't enforced); ignore failures.
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
+    # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
+    secure_parent_dir(path)
     # Per-process random suffix avoids collisions between concurrent
     # writers and stale leftovers from a prior crashed write.
     tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
@@ -400,6 +399,23 @@ async def _redirect_handler(authorization_url: str) -> None:
         f"    {authorization_url}\n"
     )
     print(msg, file=sys.stderr)
+
+    # On a remote SSH session the OAuth provider redirects to
+    # http://127.0.0.1:<port>/callback, which reaches the callback server on
+    # the *remote* machine — not the user's local machine where the browser
+    # opened.  Print a port-forward hint so the user knows to tunnel first.
+    if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
+        print(
+            f"  Remote session detected. The OAuth provider will redirect your browser to\n"
+            f"    http://127.0.0.1:{_oauth_port}/callback\n"
+            f"  which the callback listener on THIS machine is waiting on. If your browser\n"
+            f"  is on a different machine, forward the port first in a separate terminal:\n"
+            f"\n"
+            f"    ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
+            f"\n"
+            f"  Then open the URL above. See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
+            file=sys.stderr,
+        )
 
     if _can_open_browser():
         try:

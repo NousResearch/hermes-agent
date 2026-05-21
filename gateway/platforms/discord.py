@@ -111,6 +111,7 @@ def check_discord_requirements() -> bool:
     Intents = _Intents
     commands = _commands
     DISCORD_AVAILABLE = True
+    _define_discord_view_classes()
     return True
 
 
@@ -2705,8 +2706,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Discord's TYPING_START gateway event is unreliable in DMs for bots.
         Instead, start a background loop that hits the typing endpoint every
-        8 seconds (typing indicator lasts ~10s).  The loop is cancelled when
+        12 seconds (typing indicator lasts ~10s).  The loop is cancelled when
         stop_typing() is called (after the response is sent).
+
+        Rate-limit handling: if a 429 is encountered, the loop logs a
+        warning, sleeps for the ``retry_after`` duration (or a sensible
+        default), and continues — it does NOT die on a single rate-limit
+        hit.  Only CancelledError (from stop_typing) stops the loop.
         """
         if not self._client:
             return
@@ -2726,9 +2732,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     except asyncio.CancelledError:
                         return
                     except Exception as e:
-                        logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
-                        return
-                    await asyncio.sleep(8)
+                        # Don't die on 429 — backoff and continue
+                        retry_after = self._extract_discord_retry_after(e)
+                        if retry_after is not None:
+                            logger.warning(
+                                "Typing indicator rate-limited for %s; retrying in %.1fs",
+                                chat_id, retry_after,
+                            )
+                        else:
+                            logger.debug(
+                                "Discord typing indicator failed for %s: %s",
+                                chat_id, e,
+                            )
+                            return
+                        await asyncio.sleep(retry_after)
+                        continue
+                    await asyncio.sleep(12)
             except asyncio.CancelledError:
                 pass
             finally:
@@ -3564,6 +3583,61 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_allow_any_attachment(self) -> bool:
+        """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
+
+        When True, any uploaded file is cached to disk and surfaced to the
+        agent as a local path so it can be inspected via terminal / read_file
+        / ffprobe / etc. Default False preserves the historical behaviour of
+        dropping unsupported types with a warning log.
+        """
+        configured = self.config.extra.get("allow_any_attachment")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off", ""}
+            return bool(configured)
+        return os.getenv("DISCORD_ALLOW_ANY_ATTACHMENT", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _discord_max_attachment_bytes(self) -> int:
+        """Return the per-attachment byte cap. 0 means unlimited.
+
+        The whole attachment is held in memory while being written to the
+        cache, so unlimited carries a real memory cost. Default 32 MiB
+        matches the historical hardcoded value.
+        """
+        configured = self.config.extra.get("max_attachment_bytes")
+        if configured is None:
+            configured = os.getenv("DISCORD_MAX_ATTACHMENT_BYTES")
+        if configured is None or configured == "":
+            return 32 * 1024 * 1024
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[Discord] Invalid max_attachment_bytes value %r, falling back to 32 MiB",
+                configured,
+            )
+            return 32 * 1024 * 1024
+        return max(0, value)
+
+    @staticmethod
+    def _is_discord_voice_message_attachment(att: Any) -> bool:
+        """Return True when a Discord audio attachment is a native voice note."""
+        marker = getattr(att, "is_voice_message", None)
+        if marker is not None:
+            if callable(marker):
+                try:
+                    return bool(marker())
+                except Exception as exc:
+                    logger.debug("[Discord] is_voice_message() failed for attachment: %s", exc)
+                    return False
+            return bool(marker)
+
+        return (
+            getattr(att, "duration", None) is not None
+            and getattr(att, "waveform", None) is not None
+        )
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
 
@@ -3602,18 +3676,18 @@ class DiscordAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("thread_require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() not in ("false", "0", "no", "off")
+                return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
         configured = self.config.extra.get("history_backfill")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() not in ("false", "0", "no", "off")
+                return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in ("true", "1", "yes")
+        return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in {"true", "1", "yes"}
 
     def _discord_history_backfill_limit(self) -> int:
         """Return the max number of messages to scan backwards for context.
@@ -3700,7 +3774,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     break
 
                 # Skip system messages (pins, joins, thread renames, etc.)
-                if msg.type not in (discord.MessageType.default, discord.MessageType.reply):
+                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     continue
 
                 # Respect DISCORD_ALLOW_BOTS for other bots.
@@ -4495,6 +4569,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif all_attachments:
+            _allow_any = self._discord_allow_any_attachment()
             # Check attachment types
             for att in all_attachments:
                 if att.content_type:
@@ -4503,14 +4578,23 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif att.content_type.startswith("video/"):
                         msg_type = MessageType.VIDEO
                     elif att.content_type.startswith("audio/"):
-                        msg_type = MessageType.AUDIO
+                        if self._is_discord_voice_message_attachment(att):
+                            msg_type = MessageType.VOICE
+                        else:
+                            msg_type = MessageType.AUDIO
                     else:
                         doc_ext = ""
                         if att.filename:
                             _, doc_ext = os.path.splitext(att.filename)
                             doc_ext = doc_ext.lower()
-                        if doc_ext in SUPPORTED_DOCUMENT_TYPES:
+                        if doc_ext in SUPPORTED_DOCUMENT_TYPES or _allow_any:
                             msg_type = MessageType.DOCUMENT
+                    break
+                elif _allow_any:
+                    # No content_type at all (rare — discord usually fills it
+                    # in). Treat as a document so downstream pipelines surface
+                    # the path to the agent.
+                    msg_type = MessageType.DOCUMENT
                     break
 
         # When auto-threading kicked in, route responses to the new thread
@@ -4594,31 +4678,48 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not ext and content_type:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(content_type, "")
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
+                allow_any_attachment = self._discord_allow_any_attachment()
+                in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
+                if not in_allowlist and not allow_any_attachment:
                     logger.warning(
                         "[Discord] Unsupported document type '%s' (%s), skipping",
                         ext or "unknown", content_type,
                     )
                 else:
-                    MAX_DOC_BYTES = 32 * 1024 * 1024
-                    if att.size and att.size > MAX_DOC_BYTES:
+                    max_doc_bytes = self._discord_max_attachment_bytes()
+                    if max_doc_bytes and att.size and att.size > max_doc_bytes:
                         logger.warning(
-                            "[Discord] Document too large (%s bytes), skipping: %s",
-                            att.size, att.filename,
+                            "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
+                            att.size, max_doc_bytes, att.filename,
                         )
                     else:
                         try:
                             raw_bytes = await self._cache_discord_document(att, ext)
                             cached_path = cache_document_from_bytes(
-                                raw_bytes, att.filename or f"document{ext}"
+                                raw_bytes, att.filename or f"document{ext or '.bin'}"
                             )
-                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                            if in_allowlist:
+                                doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                            else:
+                                # allow_any_attachment path: untyped file. Use the
+                                # source content_type if discord gave us one,
+                                # otherwise fall back to octet-stream so the agent
+                                # knows it's binary and reaches for terminal tools.
+                                doc_mime = (
+                                    content_type
+                                    if content_type and content_type != "unknown"
+                                    else "application/octet-stream"
+                                )
                             media_urls.append(cached_path)
                             media_types.append(doc_mime)
-                            logger.info("[Discord] Cached user document: %s", cached_path)
+                            logger.info(
+                                "[Discord] Cached user %s: %s",
+                                "document" if in_allowlist else "attachment",
+                                cached_path,
+                            )
                             # Inject text content for plain-text documents (capped at 100 KB)
                             MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            if in_allowlist and ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
                                     display_name = att.filename or f"document{ext}"
@@ -4630,6 +4731,13 @@ class DiscordAdapter(BasePlatformAdapter):
                                         pending_text_injection = injection
                                 except UnicodeDecodeError:
                                     pass
+                            # NOTE: for the allow_any_attachment path we deliberately
+                            # do NOT inject a path string here. ``gateway/run.py``
+                            # already detects DOCUMENT-typed events with
+                            # ``application/octet-stream`` MIME and emits a context
+                            # note with the sandbox-translated cache path via
+                            # ``to_agent_visible_cache_path()`` (important for
+                            # Docker/Modal terminal backends).
                         except Exception as e:
                             logger.warning(
                                 "[Discord] Failed to cache document %s: %s",
@@ -4881,7 +4989,17 @@ def _component_check_auth(
     return False
 
 
-if DISCORD_AVAILABLE:
+def _define_discord_view_classes() -> None:
+    """Register Discord UI view classes as module globals.
+
+    Called at module load (when discord.py is pre-installed) and also from
+    check_discord_requirements() after a lazy install, so view classes are
+    always defined whenever DISCORD_AVAILABLE is True.  Without this,
+    ExecApprovalView and siblings are only defined at import time; a later
+    lazy install sets DISCORD_AVAILABLE=True but leaves the classes
+    undefined, causing NameError on the first button interaction.
+    """
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -5581,3 +5699,7 @@ if DISCORD_AVAILABLE:
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+
+
+if DISCORD_AVAILABLE:
+    _define_discord_view_classes()

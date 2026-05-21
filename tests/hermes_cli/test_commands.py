@@ -107,6 +107,7 @@ class TestResolveCommand:
         assert resolve_command("gateway").name == "platforms"
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
+        assert resolve_command("codex_runtime").name == "codex-runtime"
         assert resolve_command("tasks").name == "agents"
 
     def test_topic_is_gateway_command(self):
@@ -250,6 +251,12 @@ class TestTelegramBotCommands:
         assert "background" in names
         assert "queue" in names
         assert "steer" in names
+
+    def test_hyphenated_codex_runtime_is_exposed_as_underscore_command(self):
+        """Telegram autocomplete exposes /codex-runtime as /codex_runtime."""
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "codex_runtime" in names
+        assert "codex-runtime" not in names
 
 
 class TestSlackSubcommandMap:
@@ -943,6 +950,30 @@ class TestTelegramMenuCommands:
             assert 1 <= len(name) <= _TG_NAME_LIMIT, (
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
+
+    def test_operational_builtins_survive_thirty_command_cap(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "display:\n  tool_progress_command: true\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu, hidden = telegram_menu_commands(max_commands=30)
+        names = [name for name, _desc in menu]
+
+        assert len(names) == 30
+        assert hidden > 0
+        for name in (
+            "debug",
+            "restart",
+            "update",
+            "verbose",
+            "commands",
+            "help",
+            "new",
+            "stop",
+            "status",
+        ):
+            assert name in names
 
     def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
         """Telegram menu generation should discover plugin slash commands on first access."""

@@ -303,7 +303,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     _PER_SOURCE_LIMIT = {
         "official": 200, "skills-sh": 200, "well-known": 50,
         "github": 200, "clawhub": 500, "claude-marketplace": 100,
-        "lobehub": 500,
+        "lobehub": 500, "browse-sh": 500,
     }
 
     with c.status("[bold]Fetching skills from registries..."):
@@ -319,12 +319,14 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print("[dim]No skills found in the Skills Hub.[/]\n")
         return
 
-    # Deduplicate by name, preferring higher trust
+    # Deduplicate by identifier, preferring higher trust.
+    # identifier is always unique per skill; name is not (browse-sh skills from different
+    # sites can share the same task name, e.g. "search-listings" on Airbnb and Booking.com).
     seen: dict = {}
     for r in all_results:
         rank = _TRUST_RANK.get(r.trust_level, 0)
-        if r.name not in seen or rank > _TRUST_RANK.get(seen[r.name].trust_level, 0):
-            seen[r.name] = r
+        if r.identifier not in seen or rank > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
+            seen[r.identifier] = r
     deduped = list(seen.values())
 
     # Sort: official first, then by trust level (desc), then alphabetically
@@ -684,7 +686,7 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     page_size = max(1, min(page_size, 100))
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
     _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
-                         "claude-marketplace": 50, "lobehub": 50}
+                         "claude-marketplace": 50, "lobehub": 50, "browse-sh": 500}
     auth = GitHubAuth()
     sources = create_source_router(auth)
     all_results: list = []
@@ -702,8 +704,8 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     seen: dict = {}
     for r in all_results:
         rank = _TRUST_RANK.get(r.trust_level, 0)
-        if r.name not in seen or rank > _TRUST_RANK.get(seen[r.name].trust_level, 0):
-            seen[r.name] = r
+        if r.identifier not in seen or rank > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
+            seen[r.identifier] = r
     deduped = list(seen.values())
     deduped.sort(key=lambda r: (-_TRUST_RANK.get(r.trust_level, 0), r.source != "official", r.name.lower()))
     total = len(deduped)

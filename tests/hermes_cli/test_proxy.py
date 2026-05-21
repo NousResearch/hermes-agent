@@ -15,6 +15,7 @@ import pytest
 from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
+from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -26,15 +27,26 @@ def test_registry_lists_nous():
     assert "nous" in ADAPTERS
 
 
+def test_registry_lists_xai():
+    assert "xai" in ADAPTERS
+
+
 def test_get_adapter_returns_instance():
     adapter = get_adapter("nous")
     assert isinstance(adapter, NousPortalAdapter)
     assert isinstance(adapter, UpstreamAdapter)
 
 
+def test_get_adapter_returns_xai_instance():
+    adapter = get_adapter("xai")
+    assert isinstance(adapter, XAIGrokAdapter)
+    assert isinstance(adapter, UpstreamAdapter)
+
+
 def test_get_adapter_case_insensitive():
     assert isinstance(get_adapter("NOUS"), NousPortalAdapter)
     assert isinstance(get_adapter("  Nous  "), NousPortalAdapter)
+    assert isinstance(get_adapter("XAI"), XAIGrokAdapter)
 
 
 def test_get_adapter_unknown_provider_raises():
@@ -103,7 +115,7 @@ def test_nous_adapter_authenticated_with_refresh_token_only(tmp_path, monkeypatc
     assert NousPortalAdapter().is_authenticated()
 
 
-def test_nous_adapter_get_credential_refreshes_and_persists(tmp_path, monkeypatch):
+def test_nous_adapter_get_credential_uses_runtime_resolver(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
@@ -114,31 +126,82 @@ def test_nous_adapter_get_credential_refreshes_and_persists(tmp_path, monkeypatc
     })
 
     refreshed_state = {
-        "access_token": "access-tok",
-        "refresh_token": "refresh-tok",
-        "client_id": "hermes-cli",
-        "portal_base_url": "https://portal.nousresearch.com",
-        "inference_base_url": "https://inference-api.nousresearch.com/v1",
-        "agent_key": "minted-bearer",
-        "agent_key_expires_at": "2099-01-01T00:00:00Z",
+        "api_key": "minted-bearer",
+        "base_url": "https://inference-api.nousresearch.com/v1",
+        "expires_at": "2099-01-01T00:00:00Z",
     }
 
     with patch(
-        "hermes_cli.proxy.adapters.nous_portal.refresh_nous_oauth_from_state",
+        "hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
         return_value=refreshed_state,
-    ) as mock_refresh:
+    ) as mock_resolve:
         adapter = NousPortalAdapter()
         cred = adapter.get_credential()
 
-    mock_refresh.assert_called_once()
+    mock_resolve.assert_called_once()
     assert cred.bearer == "minted-bearer"
     assert cred.base_url == "https://inference-api.nousresearch.com/v1"
     assert cred.expires_at == "2099-01-01T00:00:00Z"
     assert cred.token_type == "Bearer"
 
-    # Verify state was persisted back
-    stored = json.loads((tmp_path / "auth.json").read_text())
-    assert stored["providers"]["nous"]["agent_key"] == "minted-bearer"
+
+def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_auth_store(tmp_path, {
+        "access_token": "jwt-access",
+        "refresh_token": "refresh-tok",
+        "client_id": "hermes-cli",
+        "portal_base_url": "https://portal.nousresearch.com",
+        "inference_base_url": "https://inference-api.nousresearch.com/v1",
+        "agent_key": "jwt-access",
+    })
+
+    refreshed_state = {
+        "api_key": "legacy-bearer",
+        "base_url": "https://inference-api.nousresearch.com/v1",
+        "expires_at": "2099-01-01T00:00:00Z",
+    }
+
+    with patch(
+        "hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
+        return_value=refreshed_state,
+    ) as mock_resolve:
+        adapter = NousPortalAdapter()
+        cred = adapter.get_retry_credential(
+            failed_credential=UpstreamCredential(
+                bearer="header.jwt.signature",
+                base_url="https://inference-api.nousresearch.com/v1",
+            ),
+            status_code=401,
+        )
+
+    assert cred is not None
+    assert cred.bearer == "legacy-bearer"
+    assert mock_resolve.call_args.kwargs["inference_auth_mode"] == "legacy"
+
+
+def test_nous_adapter_retry_credential_skips_opaque_bearer(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_auth_store(tmp_path, {
+        "access_token": "jwt-access",
+        "refresh_token": "refresh-tok",
+        "agent_key": "opaque-bearer",
+    })
+
+    with patch(
+        "hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
+    ) as mock_resolve:
+        adapter = NousPortalAdapter()
+        cred = adapter.get_retry_credential(
+            failed_credential=UpstreamCredential(
+                bearer="opaque-bearer",
+                base_url="https://inference-api.nousresearch.com/v1",
+            ),
+            status_code=401,
+        )
+
+    assert cred is None
+    mock_resolve.assert_not_called()
 
 
 def test_nous_adapter_get_credential_raises_when_not_logged_in(tmp_path, monkeypatch):
@@ -156,12 +219,46 @@ def test_nous_adapter_get_credential_raises_on_refresh_failure(tmp_path, monkeyp
     })
 
     with patch(
-        "hermes_cli.proxy.adapters.nous_portal.refresh_nous_oauth_from_state",
+        "hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
         side_effect=RuntimeError("Refresh session has been revoked"),
     ):
         adapter = NousPortalAdapter()
         with pytest.raises(RuntimeError, match="Refresh session has been revoked"):
             adapter.get_credential()
+
+
+def test_nous_adapter_quarantines_terminal_refresh_failure(tmp_path, monkeypatch):
+    from hermes_cli.auth import AuthError
+    from agent.credential_pool import load_pool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_auth_store(tmp_path, {
+        "access_token": "access-tok",
+        "refresh_token": "refresh-tok",
+        "agent_key": "stale-agent-key",
+    })
+    assert load_pool("nous").select() is not None
+
+    with patch(
+        "hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
+        side_effect=AuthError(
+            "Refresh session has been revoked",
+            provider="nous",
+            code="invalid_grant",
+            relogin_required=True,
+        ),
+    ):
+        adapter = NousPortalAdapter()
+        with pytest.raises(RuntimeError, match="Refresh session has been revoked"):
+            adapter.get_credential()
+
+    stored = json.loads((tmp_path / "auth.json").read_text())
+    nous_state = stored["providers"]["nous"]
+    assert not nous_state.get("refresh_token")
+    assert not nous_state.get("access_token")
+    assert not nous_state.get("agent_key")
+    assert nous_state["last_auth_error"]["code"] == "invalid_grant"
+    assert stored.get("credential_pool", {}).get("nous") == []
 
 
 def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path, monkeypatch):
@@ -173,7 +270,7 @@ def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path,
     })
 
     with patch(
-        "hermes_cli.proxy.adapters.nous_portal.refresh_nous_oauth_from_state",
+        "hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
         return_value={"access_token": "a", "refresh_token": "r"},
     ):
         adapter = NousPortalAdapter()
@@ -194,7 +291,7 @@ def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
     counter = [0]
     counter_lock = threading.Lock()
 
-    def serializing_refresh(state, **kwargs):
+    def serializing_refresh(**kwargs):
         # If another thread is already inside refresh, the lock is broken.
         if in_flight.is_set():
             overlap_detected.set()
@@ -208,10 +305,9 @@ def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
                 counter[0] += 1
                 idx = counter[0]
             return {
-                **state,
-                "agent_key": f"key-{idx}",
-                "agent_key_expires_at": "2099-01-01T00:00:00Z",
-                "inference_base_url": "https://inference-api.nousresearch.com/v1",
+                "api_key": f"key-{idx}",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "base_url": "https://inference-api.nousresearch.com/v1",
             }
         finally:
             in_flight.clear()
@@ -227,7 +323,7 @@ def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
             errors.append(exc)
 
     with patch(
-        "hermes_cli.proxy.adapters.nous_portal.refresh_nous_oauth_from_state",
+        "hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
         side_effect=serializing_refresh,
     ):
         threads = [threading.Thread(target=worker) for _ in range(3)]
@@ -241,6 +337,117 @@ def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
     assert len(call_log) == 3
     assert not overlap_detected.is_set(), "refresh calls overlapped — lock is broken"
     assert all(r.startswith("key-") for r in results)
+
+
+# ---------------------------------------------------------------------------
+# XAIGrokAdapter
+# ---------------------------------------------------------------------------
+
+
+def _write_xai_pool_entry(
+    hermes_home: Path,
+    *,
+    access_token: str = "xai-access-token",
+    refresh_token: str = "xai-refresh-token",
+    base_url: str = "https://api.x.ai/v1",
+    source: str = "manual:xai_pkce",
+) -> Path:
+    """Write an xai-oauth pool entry into a hermetic HERMES_HOME."""
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "xai-oauth": [
+                {
+                    "id": "xai123",
+                    "label": "xai-test",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": source,
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "base_url": base_url,
+                }
+            ]
+        },
+    }))
+    return auth_path
+
+
+def test_xai_adapter_metadata():
+    adapter = XAIGrokAdapter()
+    assert adapter.name == "xai"
+    assert adapter.display_name == "xAI Grok OAuth"
+    assert "/responses" in adapter.allowed_paths
+    assert "/chat/completions" in adapter.allowed_paths
+    assert "/models" in adapter.allowed_paths
+
+
+def test_xai_adapter_not_authenticated_when_no_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {},
+    }))
+    assert not XAIGrokAdapter().is_authenticated()
+
+
+def test_xai_adapter_authenticated_with_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_pool_entry(tmp_path)
+    assert XAIGrokAdapter().is_authenticated()
+
+
+def test_xai_adapter_get_credential_uses_oauth_pool(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_pool_entry(
+        tmp_path,
+        access_token="pool-access-token",
+        base_url="https://api.x.ai/v1/",
+    )
+
+    cred = XAIGrokAdapter().get_credential()
+
+    assert cred.bearer == "pool-access-token"
+    assert cred.base_url == "https://api.x.ai/v1"
+    assert cred.token_type == "Bearer"
+
+
+def test_xai_adapter_get_credential_defaults_base_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_pool_entry(tmp_path, base_url="")
+
+    cred = XAIGrokAdapter().get_credential()
+
+    assert cred.base_url == "https://api.x.ai/v1"
+
+
+def test_xai_adapter_retry_refreshes_current_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_pool_entry(tmp_path, access_token="old-access-token")
+
+    def fake_refresh(access_token, refresh_token, **kwargs):
+        assert access_token == "old-access-token"
+        assert refresh_token == "xai-refresh-token"
+        return {
+            "access_token": "new-access-token",
+            "refresh_token": "new-refresh-token",
+            "last_refresh": "2026-05-19T00:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", fake_refresh)
+
+    adapter = XAIGrokAdapter()
+    failed = adapter.get_credential()
+    retry = adapter.get_retry_credential(
+        failed_credential=failed,
+        status_code=401,
+    )
+
+    assert retry is not None
+    assert retry.bearer == "new-access-token"
 
 
 # ---------------------------------------------------------------------------
@@ -260,12 +467,15 @@ class FakeAdapter(UpstreamAdapter):
     """A test adapter that returns a fixed credential without touching disk."""
 
     def __init__(self, base_url: str, bearer: str = "test-bearer",
-                 allowed=None, raise_on_credential=False):
+                 allowed=None, raise_on_credential=False,
+                 retry_bearer: str | None = None):
         self._base_url = base_url
         self._bearer = bearer
         self._allowed = frozenset(allowed or ["/chat/completions"])
         self._raise = raise_on_credential
+        self._retry_bearer = retry_bearer
         self.calls = 0
+        self.retry_calls = 0
 
     @property
     def name(self): return "fake"
@@ -284,6 +494,17 @@ class FakeAdapter(UpstreamAdapter):
             raise RuntimeError("simulated auth failure")
         return UpstreamCredential(
             bearer=self._bearer, base_url=self._base_url,
+            expires_at="2099-01-01T00:00:00Z",
+        )
+
+    def get_retry_credential(self, *, failed_credential, status_code):
+        _ = failed_credential
+        self.retry_calls += 1
+        if status_code != 401 or not self._retry_bearer:
+            return None
+        return UpstreamCredential(
+            bearer=self._retry_bearer,
+            base_url=self._base_url,
             expires_at="2099-01-01T00:00:00Z",
         )
 
@@ -327,6 +548,25 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
     return app
 
 
+def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
+    async def maybe_unauthorized(request):
+        body = await request.read()
+        auth = request.headers.get("Authorization")
+        captured["requests"].append({
+            "method": request.method,
+            "path": request.path,
+            "auth": auth,
+            "body": body.decode("utf-8") if body else "",
+        })
+        if auth == "Bearer jwt-bearer":
+            return web.json_response({"error": "bad token"}, status=401)
+        return web.json_response({"ok": True})
+
+    app = web.Application()
+    app.router.add_route("*", "/v1/chat/completions", maybe_unauthorized)
+    return app
+
+
 def test_server_forwards_chat_completions():
     async def run():
         captured: Dict[str, Any] = {"requests": []}
@@ -350,6 +590,41 @@ def test_server_forwards_chat_completions():
             req = captured["requests"][0]
             assert req["auth"] == "Bearer real-portal-key"
             assert "Hermes-4-70B" in req["body"]
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_retries_once_with_adapter_retry_credential_on_401():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(
+            _build_retrying_fake_upstream(captured)
+        )
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="jwt-bearer",
+            retry_bearer="legacy-bearer",
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"model": "Hermes-4-70B"},
+                ) as resp:
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["ok"] is True
+
+            assert adapter.retry_calls == 1
+            assert [req["auth"] for req in captured["requests"]] == [
+                "Bearer jwt-bearer",
+                "Bearer legacy-bearer",
+            ]
         finally:
             await proxy_runner.cleanup()
             await upstream_runner.cleanup()

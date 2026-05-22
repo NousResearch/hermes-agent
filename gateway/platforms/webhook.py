@@ -326,6 +326,17 @@ class WebhookAdapter(BasePlatformAdapter):
                         _INSECURE_NO_AUTH,
                     )
                     continue
+                if (
+                    effective_secret == _INSECURE_NO_AUTH
+                    and not _is_loopback_host(self._host)
+                ):
+                    logger.warning(
+                        "[webhook] Dynamic route '%s' skipped: INSECURE_NO_AUTH "
+                        "is only allowed on loopback hosts. Current host: '%s'.",
+                        k,
+                        self._host,
+                    )
+                    continue
                 new_dynamic[k] = v
             self._dynamic_routes = new_dynamic
             self._routes = {**self._dynamic_routes, **self._static_routes}

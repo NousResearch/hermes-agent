@@ -1146,6 +1146,7 @@ AUTHOR_MAP = {
     "aviarchi1994@gmail.com": "avifenesh",  # PR #25902 (docs: computer-use-linux MCP)
     "55848801+avifenesh@users.noreply.github.com": "avifenesh",
     "279959838+BROCCOLO1D@users.noreply.github.com": "BROCCOLO1D",  # PR #26796 (docs: spotify + HA)
+    "hermes-agent@users.noreply.github.com": "BROCCOLO1D",  # PR #30510 (skills official index fallback)
     "m@matthewlai.ca": "matthewlai",  # PR #25293 (feat: gemma 4 reasoning allowlist)
     "4296245+matthewlai@users.noreply.github.com": "matthewlai",
     "109617724+0xchainer@users.noreply.github.com": "0xchainer",  # PR #27154/27138/27147 salvage

@@ -21,6 +21,8 @@ class NativeToolCallingChatClientTest {
         assertTrue(content.contains("Kai-style custom agent persona/system prompt"))
         assertTrue(content.contains("schedule_task/list_tasks/cancel_task"))
         assertTrue(content.contains("not unrestricted background AI prompt execution"))
+        assertTrue(content.contains("action=agent_signal_evidence_report"))
+        assertTrue(content.contains("what Hermes/Gemma can see from nearby signals"))
         assertTrue(content.contains("User-configured agent persona"))
         assertTrue(content.contains("Stay concise and use Wi-Fi analyzer cards"))
         assertTrue(content.contains("Promoted local memory context"))
@@ -120,6 +122,23 @@ class NativeToolCallingChatClientTest {
 
         requireNotNull(parsed)
         assertEquals("agent_signal_evidence_report", parsed.getString("action"))
+    }
+
+    @Test
+    fun extractsImplicitSignalEvidenceForNearbySignalQuestionsOnly() {
+        val parsed = NativeToolCallingChatClient.extractImplicitSignalEvidenceArguments(
+            "What can Hermes see from nearby Wi-Fi, Bluetooth, and radio signals right now?",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("agent_signal_evidence_report", parsed.getString("action"))
+        assertEquals(
+            "agent_signal_evidence_report",
+            NativeToolCallingChatClient.extractImplicitSignalEvidenceArguments("Show the current signal evidence bundle.")?.getString("action"),
+        )
+        assertNull(
+            NativeToolCallingChatClient.extractImplicitSignalEvidenceArguments("What can you see on the screen?"),
+        )
     }
 
     @Test

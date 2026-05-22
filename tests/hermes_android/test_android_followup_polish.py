@@ -323,6 +323,9 @@ def test_android_diagnostics_exposes_signal_evidence_bundle_for_gemma_visible_cu
     assert 'local_inference_compatibility_report' in diagnostics_bridge
     assert 'agent_signal_evidence_report' in chat_client
     assert 'signal_evidence_bundle' in chat_client
+    assert 'extractImplicitSignalEvidenceArguments(userText)' in chat_client
+    assert 'what Hermes/Gemma can see from nearby signals' in chat_client
+    assert 'first call android_device_diagnostics_tool action=agent_signal_evidence_report' in chat_client
     assert '"signal_evidence_matrix"' in chat_client
     assert '"signal_evidence_routes"' in chat_client
     assert '"signal_evidence_graph_types"' in chat_client

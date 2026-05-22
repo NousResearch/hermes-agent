@@ -190,6 +190,20 @@ class NativeToolCallingChatClient(
             )
         }
 
+        extractImplicitSignalEvidenceArguments(userText)?.let { arguments ->
+            val toolResult = executeAndroidDeviceDiagnosticsTool(
+                ToolCall(
+                    id = "direct_${UUID.randomUUID()}",
+                    name = "android_device_diagnostics_tool",
+                    arguments = arguments,
+                )
+            )
+            return Result(
+                content = toolCompletionReply(toolResult),
+                executedToolCalls = 1,
+            )
+        }
+
         val command = extractExactTerminalCommand(userText) ?: return null
         val toolResult = executeTerminalTool(
             ToolCall(
@@ -1533,6 +1547,15 @@ class NativeToolCallingChatClient(
                     "wifi security",
                     "wi-fi security",
                     "interference",
+                    "signal evidence",
+                    "signal evidence bundle",
+                    "current signal evidence",
+                    "current signal context",
+                    "evidence bundle",
+                    "what can you see nearby",
+                    "what can hermes see",
+                    "what can gemma see",
+                    "what are nearby signals",
                     "signal awareness",
                     "nearby signal report",
                     "rf sensor fusion",
@@ -3086,7 +3109,8 @@ class NativeToolCallingChatClient(
                     "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata, motion history, fused pose/orientation estimates, and local backend runtime health, camera capability checks, Wi-Fi analysis/channel graph envelopes/channel ratings/channel utilization/signal history, Bluetooth Analyzer readiness/scan-policy reports plus nearby scans/service labels/manufacturer names, radio analyzer checks for AM/FM band-plan boundaries, AM/FM signal graph rows, vendor broadcast-radio hints, receiver profile schemas, Wi-Fi/Bluetooth radio routes, external SDR constraints, resource summaries, secret-free app settings backup/restore, Kai-style custom agent persona/system prompt, Kai-compatible schedule_task/list_tasks/cancel_task native Android task aliases, or Tasker-style automation. " +
                     "When writing multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
                     "For HTML/browser work: write the file with file_write_tool, then call android_automation_tool action=open_uri with data_uri set to the workspace filename. " +
-                    "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel graph envelopes/channel ratings/channel utilization/signal history, filterable Wi-Fi Analyzer readiness/scan-policy reports, Bluetooth Analyzer readiness/scan-policy reports and nearby devices with service UUID labels/manufacturer names, camera/sensor status plus accelerometer/gyroscope hardware metadata, motion trend history, fused pose/heading/acceleration estimates, active overlays, tool catalog, Gemma-visible agent observation dashboards, Kai-style agent environment reports, cross-signal awareness reports, local runtime backend health, thermal/memory/power runtime stability guardrails, SOC compatibility/backend reports for MediaTek/Mali/PowerVR and non-Snapdragon devices, AM/FM signal graph rows, broader radio signal route reports, receiver profile schemas, RF capability limits, or phone preflight checks before TikTok/Instagram/Gmail work. " +
+                    "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel graph envelopes/channel ratings/channel utilization/signal history, filterable Wi-Fi Analyzer readiness/scan-policy reports, Bluetooth Analyzer readiness/scan-policy reports and nearby devices with service UUID labels/manufacturer names, camera/sensor status plus accelerometer/gyroscope hardware metadata, motion trend history, fused pose/heading/acceleration estimates, active overlays, tool catalog, Gemma-visible signal evidence bundles, agent observation dashboards, Kai-style agent environment reports, cross-signal awareness reports, local runtime backend health, thermal/memory/power runtime stability guardrails, SOC compatibility/backend reports for MediaTek/Mali/PowerVR and non-Snapdragon devices, AM/FM signal graph rows, broader radio signal route reports, receiver profile schemas, RF capability limits, or phone preflight checks before TikTok/Instagram/Gmail work. " +
+                    "For broad questions about what Hermes/Gemma can see from nearby signals, first call android_device_diagnostics_tool action=agent_signal_evidence_report; then drill into Wi-Fi, Bluetooth, sensor, radio, backend-risk, or card-manifest actions only when the evidence rows say a source card or live refresh is needed. " +
                     "Use schedule_task/list_tasks/cancel_task for Kai-style scheduled reminders; these create, list, and cancel native Android automation notification records, not unrestricted background AI prompt execution. " +
                     "Use hindsight_memory_tool to retain, recall, reflect, and inspect promoted durable local memories before or after complex work. " +
                     "Report missing Android permissions honestly. Keep replies brief."
@@ -3165,6 +3189,52 @@ class NativeToolCallingChatClient(
                         ?.takeIf { it.isNotBlank() }
                         ?.let { put(key, it) }
                 }
+            }
+        }
+
+        internal fun extractImplicitSignalEvidenceArguments(userText: String): JSONObject? {
+            val lower = userText.lowercase()
+            val explicitEvidencePhrase = listOf(
+                "signal evidence",
+                "evidence bundle",
+                "current signal evidence",
+                "current signal context",
+                "gemma signal evidence",
+                "agent signal evidence",
+            ).any { it in lower }
+            val asksWhatCanBeSeen = listOf(
+                "what can you see",
+                "what do you see",
+                "what are you seeing",
+                "what can hermes see",
+                "what can gemma see",
+                "what can the agent see",
+                "what is the agent viewing",
+                "what are nearby signals",
+                "what signals are nearby",
+            ).any { it in lower }
+            val hasSignalDomain = listOf(
+                "signal",
+                "signals",
+                "nearby",
+                "wifi",
+                "wi-fi",
+                "bluetooth",
+                "ble",
+                "radio",
+                "rf",
+                "sensor",
+                "sensors",
+                "accelerometer",
+                "gyroscope",
+                "motion",
+                "multimodal",
+                "gemma",
+            ).any { it in lower }
+            return if (explicitEvidencePhrase || (asksWhatCanBeSeen && hasSignalDomain)) {
+                JSONObject().put("action", "agent_signal_evidence_report")
+            } else {
+                null
             }
         }
 

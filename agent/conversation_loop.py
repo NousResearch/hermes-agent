@@ -3334,6 +3334,22 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                # ── Auto-continuation prompt ──────────────────────────
+                # After tool execution, inject a "keep going" message so the
+                # model calls the next tools immediately instead of narrating.
+                # This eliminates wasted turns where the model says "Let me
+                # check..." and then calls the next tool in a SEPARATE turn.
+                #
+                # Guard: only inject when the model was in "execution mode"
+                # (tool calls with minimal/no text content), and cap at 3
+                # consecutive auto-continues to avoid infinite loops.
+                if _execute_tool_calls_auto_continue(
+                    assistant_message,
+                    messages,
+                    effective_task_id,
+                ):
+                    continue  # Skip bookkeeping — go straight to next LLM call
+
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"
@@ -4089,6 +4105,62 @@ def run_conversation(
 
     return result
 
+
+# =========================================================================
+# Auto-continuation — inject a "keep going" message after tool execution
+# so the model calls the next tools immediately without narrating.
+# =========================================================================
+
+# Thread-safe counter: resets when the model produces substantive text.
+_auto_continue_counter = 0
+_AUTO_CONTINUE_MAX = 3  # cap consecutive auto-continues
+
+
+def _execute_tool_calls_auto_continue(
+    assistant_message,
+    messages: list,
+    task_id: str,
+) -> bool:
+    """Return True when the loop should skip bookkeeping and call the LLM
+    again immediately with an injected continuation prompt.
+
+    Only triggers when:
+    - The model made tool calls (not just text)
+    - The model's text content was minimal (execution mode, not analysis)
+    - Auto-continue limit hasn't been exceeded
+    """
+    global _auto_continue_counter
+
+    tool_calls = getattr(assistant_message, "tool_calls", None) or []
+    if not tool_calls:
+        _auto_continue_counter = 0
+        return False
+
+    # Check if the model was in "execution mode" (tools + minimal/no text).
+    # If the model wrote a substantive analysis, don't interrupt.
+    content = (assistant_message.content or "").strip()
+    has_substantive_text = len(content) > 80
+
+    if has_substantive_text:
+        _auto_continue_counter = 0
+        return False
+
+    # Check limit
+    _auto_continue_counter += 1
+    if _auto_continue_counter > _AUTO_CONTINUE_MAX:
+        _auto_continue_counter = 0
+        return False
+
+    # Inject the continuation prompt
+    messages.append({
+        "role": "user",
+        "content": (
+            "[Continue working. Do NOT narrate or summarize. "
+            "Call the next tool(s) needed to complete the task. "
+            "If the task is complete, respond with a summary.]"
+        ),
+    })
+    return True
 
 
 __all__ = ["run_conversation"]

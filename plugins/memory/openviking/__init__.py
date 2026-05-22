@@ -294,7 +294,7 @@ ADD_RESOURCE_SCHEMA = {
     "description": (
         "Add a remote URL or local file/directory to the OpenViking knowledge base. "
         "Remote resources must be public http(s), git, or ssh URLs. "
-        "Local files are uploaded first using OpenViking temp_upload. "
+        "Local files are automatically uploaded to OpenViking before indexing. "
         "The system automatically parses, indexes, and generates summaries."
     ),
     "parameters": {

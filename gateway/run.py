@@ -5930,6 +5930,12 @@ class GatewayRunner:
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+            if (
+                _cmd_def_inner
+                and getattr(_cmd_def_inner, "cli_only", False)
+                and not getattr(_cmd_def_inner, "gateway_config_gate", None)
+            ):
+                return f"Command `/{getattr(_cmd_def_inner, 'name', _evt_cmd)}` is only available in the local CLI."
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
@@ -6236,6 +6242,13 @@ class GatewayRunner:
         # don't depend on the exact alias the user typed.
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
+        if (
+            command
+            and _cmd_def
+            and getattr(_cmd_def, "cli_only", False)
+            and not getattr(_cmd_def, "gateway_config_gate", None)
+        ):
+            return f"Command `/{canonical}` is only available in the local CLI."
 
         # Expand alias quick commands before built-in dispatch so targets like
         # /model openai/gpt-5.5 --provider openrouter reach the /model handler.
@@ -6324,6 +6337,14 @@ class GatewayRunner:
                     _cmd_def = _resolve_cmd(command) if command else None
                     canonical = _cmd_def.name if _cmd_def else command
                     break
+
+        if (
+            command
+            and _cmd_def
+            and getattr(_cmd_def, "cli_only", False)
+            and not getattr(_cmd_def, "gateway_config_gate", None)
+        ):
+            return f"Command `/{canonical}` is only available in the local CLI."
 
         if canonical == "new":
             if self._is_telegram_topic_root_lobby(source):

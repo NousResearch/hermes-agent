@@ -100,6 +100,7 @@ from gateway.platforms.qqbot.constants import (
     CONNECT_TIMEOUT_SECONDS,
     RECONNECT_BACKOFF,
     MAX_RECONNECT_ATTEMPTS,
+    RECONNECT_ATTEMPT_TIMEOUT,
     RATE_LIMIT_DELAY,
     QUICK_DISCONNECT_THRESHOLD,
     MAX_QUICK_DISCONNECT_COUNT,
@@ -399,7 +400,13 @@ class QQAdapter(BasePlatformAdapter):
                 resp.raise_for_status()
                 data = resp.json()
             except Exception as exc:
-                raise RuntimeError(f"Failed to get QQ Bot access token: {exc}") from exc
+                # Include exception type — many httpx/network exceptions have
+                # an empty str() representation, which previously surfaced as
+                # bare "Failed to ..." with nothing after the colon and made
+                # the underlying failure mode impossible to diagnose from logs.
+                raise RuntimeError(
+                    f"Failed to get QQ Bot access token: {type(exc).__name__}: {exc}"
+                ) from exc
 
             token = data.get("access_token")
             if not token:
@@ -430,7 +437,9 @@ class QQAdapter(BasePlatformAdapter):
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            raise RuntimeError(f"Failed to get QQ Bot gateway URL: {exc}") from exc
+            raise RuntimeError(
+                f"Failed to get QQ Bot gateway URL: {type(exc).__name__}: {exc}"
+            ) from exc
 
         url = data.get("url")
         if not url:
@@ -629,7 +638,17 @@ class QQAdapter(BasePlatformAdapter):
                     backoff_idx += 1
 
     async def _reconnect(self, backoff_idx: int) -> bool:
-        """Attempt to reconnect the WebSocket. Returns True on success."""
+        """Attempt to reconnect the WebSocket. Returns True on success.
+
+        Wrapped in a wall-clock budget (RECONNECT_ATTEMPT_TIMEOUT) so a stuck
+        token-refresh or gateway-URL fetch — e.g. after the host wakes from
+        sleep with stale sockets, or when httpx's per-stage timeout fails to
+        fire (asyncio timers can be frozen during macOS App Nap / suspend) —
+        can't wedge the listen loop for tens of minutes. On any failure we
+        also tear down the half-open WS/HTTP session state so the next
+        attempt starts from a clean slate instead of inheriting a leaked
+        socket from the previous try.
+        """
         delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
         logger.info(
             "[%s] Reconnecting in %ds (attempt %d)...",
@@ -641,15 +660,52 @@ class QQAdapter(BasePlatformAdapter):
 
         self._heartbeat_interval = 30.0  # reset until Hello
         try:
-            await self._ensure_token()
-            gateway_url = await self._get_gateway_url()
-            await self._open_ws(gateway_url)
+            async def _do_reconnect() -> None:
+                await self._ensure_token()
+                gateway_url = await self._get_gateway_url()
+                await self._open_ws(gateway_url)
+
+            await asyncio.wait_for(_do_reconnect(), timeout=RECONNECT_ATTEMPT_TIMEOUT)
             self._mark_connected()
             logger.info("[%s] Reconnected", self._log_tag)
             return True
-        except Exception as exc:
-            logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] Reconnect timed out after %ds — forcing transport reset",
+                self._log_tag,
+                RECONNECT_ATTEMPT_TIMEOUT,
+            )
+            await self._reset_transport_state()
             return False
+        except Exception as exc:
+            logger.warning(
+                "[%s] Reconnect failed: %s: %s",
+                self._log_tag,
+                type(exc).__name__,
+                exc,
+            )
+            await self._reset_transport_state()
+            return False
+
+    async def _reset_transport_state(self) -> None:
+        """Force-close WS and aiohttp session so the next reconnect starts clean.
+
+        Called when a reconnect attempt fails or times out. Keeps the HTTPX
+        REST client alive (it's used for token + gateway-URL fetches and is
+        not the source of the WS-layer hang).
+        """
+        try:
+            if self._ws and not self._ws.closed:
+                await self._ws.close()
+        except Exception as exc:
+            logger.debug("[%s] WS close during reset: %s", self._log_tag, exc)
+        self._ws = None
+        try:
+            if self._session and not self._session.closed:
+                await self._session.close()
+        except Exception as exc:
+            logger.debug("[%s] Session close during reset: %s", self._log_tag, exc)
+        self._session = None
 
     async def _read_events(self) -> None:
         """Read WebSocket frames until connection closes."""

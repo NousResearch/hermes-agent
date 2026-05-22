@@ -1810,3 +1810,100 @@ class TestSendUpdatePrompt:
 
         adapter.send_with_keyboard = fake_swk  # type: ignore[assignment]
         await adapter.send_update_prompt(chat_id="u", prompt="ok?")
+
+
+# ---------------------------------------------------------------------------
+# Reconnect resilience (regression: gateway wedged for 11h after a single
+# reconnect hung on token refresh / gateway-URL fetch)
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectResilience:
+    """Regressions around the QQ WebSocket reconnect loop.
+
+    These cover three bugs observed in production:
+      1. Bare-`{exc}` formatting silently dropped empty-message exceptions
+         (httpx.TimeoutException etc.), so logs read 'Reconnect failed: '
+         with nothing after the colon — impossible to triage.
+      2. A reconnect attempt could hang past every per-stage timeout (host
+         suspend, frozen asyncio timers, leaked CLOSE_WAIT sockets),
+         wedging the listen loop for tens of minutes with no progress.
+      3. After a failure the half-open WS / aiohttp session was left in
+         place, so the next attempt inherited a poisoned socket.
+    """
+
+    def _make(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @pytest.mark.asyncio
+    async def test_reconnect_logs_exception_type_when_str_is_empty(self, caplog):
+        """Empty-message exceptions must still surface a class name in logs."""
+        import logging
+        adapter = self._make()
+
+        class _Silent(Exception):
+            """Exception whose str() is empty (matches httpx.TimeoutException default)."""
+            def __str__(self):
+                return ""
+
+        async def _boom():
+            raise _Silent()
+
+        with mock.patch.object(adapter, "_ensure_token", side_effect=_boom), \
+             mock.patch("gateway.platforms.qqbot.adapter.RECONNECT_BACKOFF", [0]):
+            caplog.set_level(logging.WARNING, logger="gateway.platforms.qqbot.adapter")
+            result = await adapter._reconnect(backoff_idx=0)
+
+        assert result is False
+        joined = "\n".join(r.message for r in caplog.records)
+        assert "_Silent" in joined, f"missing exception type in log: {joined!r}"
+
+    @pytest.mark.asyncio
+    async def test_reconnect_times_out_when_token_fetch_hangs(self):
+        """A wedged token fetch must not wedge the listen loop forever."""
+        adapter = self._make()
+
+        async def _hang():
+            await asyncio.sleep(3600)
+
+        with mock.patch.object(adapter, "_ensure_token", side_effect=_hang), \
+             mock.patch("gateway.platforms.qqbot.adapter.RECONNECT_BACKOFF", [0]), \
+             mock.patch("gateway.platforms.qqbot.adapter.RECONNECT_ATTEMPT_TIMEOUT", 0.05):
+            result = await asyncio.wait_for(
+                adapter._reconnect(backoff_idx=0), timeout=2.0
+            )
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_reconnect_failure_resets_transport_state(self):
+        """After a failed attempt, _ws and _session must be cleared.
+
+        Otherwise the next _reconnect inherits a half-open socket that can
+        deadlock the next op-1 heartbeat send.
+        """
+        import aiohttp
+        adapter = self._make()
+
+        fake_ws = mock.MagicMock()
+        fake_ws.closed = False
+        fake_ws.close = mock.AsyncMock()
+        fake_session = mock.MagicMock(spec=aiohttp.ClientSession)
+        fake_session.closed = False
+        fake_session.close = mock.AsyncMock()
+        adapter._ws = fake_ws
+        adapter._session = fake_session
+
+        async def _boom():
+            raise RuntimeError("nope")
+
+        with mock.patch.object(adapter, "_ensure_token", side_effect=_boom), \
+             mock.patch("gateway.platforms.qqbot.adapter.RECONNECT_BACKOFF", [0]):
+            result = await adapter._reconnect(backoff_idx=0)
+
+        assert result is False
+        fake_ws.close.assert_awaited()
+        fake_session.close.assert_awaited()
+        assert adapter._ws is None
+        assert adapter._session is None

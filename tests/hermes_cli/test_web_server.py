@@ -1861,28 +1861,47 @@ class TestPluginAPIAuth:
         external dependencies. With a valid token the handler should run
         (200); without one the middleware should 401 before the handler.
         """
+        from fastapi.routing import APIRoute
+        from starlette.testclient import TestClient
+
+        from hermes_cli.web_server import (
+            _SESSION_HEADER_NAME,
+            _SESSION_TOKEN,
+            app,
+        )
+
         # Without auth: middleware blocks before reaching the handler.
         resp = self.client.get("/api/plugins/hermes-achievements/scan-status")
         assert resp.status_code == 401
 
-        # Check if the route is actually mounted, since isolation disables plugin discovery.
-        # If it's missing, add a dummy one directly to test the auth middleware.
-        from hermes_cli.web_server import app
-        route_exists = any(getattr(r, "path", "") == "/api/plugins/hermes-achievements/scan-status" for r in app.routes)
-        if not route_exists:
-            from fastapi.routing import APIRoute
-            # Insert at the beginning so it's matched before the SPA catch-all
-            app.routes.insert(0, APIRoute("/api/plugins/hermes-achievements/scan-status", lambda: {"ok": True}, methods=["GET"]))
+        # Snapshot routes before any mutation so they can always be restored.
+        original_routes = list(app.routes)
+        try:
+            route_exists = any(
+                getattr(r, "path", "") == "/api/plugins/hermes-achievements/scan-status"
+                for r in app.routes
+            )
+            if not route_exists:
+                # Insert at the beginning so it's matched before the SPA catch-all.
+                app.routes.insert(
+                    0,
+                    APIRoute(
+                        "/api/plugins/hermes-achievements/scan-status",
+                        lambda: {"ok": True},
+                        methods=["GET"],
+                    ),
+                )
+                auth_client = TestClient(app)
+                auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+            else:
+                auth_client = self.auth_client
 
-            # Recreate test clients to pick up new routes since TestClient creates a local copy of the app sometimes or router state changes
-            from starlette.testclient import TestClient
-            from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
-            self.auth_client = TestClient(app)
-            self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
-
-        # With auth: handler runs.
-        resp = self.auth_client.get("/api/plugins/hermes-achievements/scan-status")
-        assert resp.status_code == 200
+            # With auth: handler runs.
+            resp = auth_client.get("/api/plugins/hermes-achievements/scan-status")
+            assert resp.status_code == 200
+        finally:
+            # Restore the original routes to avoid polluting other tests.
+            app.routes[:] = original_routes
 
     def test_plugin_post_requires_auth(self):
         """Plugin POST routes should return 401 without a valid session token."""

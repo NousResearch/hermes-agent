@@ -564,6 +564,51 @@ class MarketingFactoryPipeline:
                 approvals.append(self.store.set_approval(draft["id"], "approved", reviewer=reviewer, reason="approved for dry-run scheduling"))
         return approvals
 
+    def regenerate_draft(self, draft_id: str) -> Dict[str, Any]:
+        """Re-run CopyAgent on the same plan item using the latest steering.
+
+        Creates a NEW draft (keeps the old one — its status is preserved so
+        you can compare). New draft carries `regenerated_from=<old_id>` for
+        lineage. Token-tracked. Re-runs safety review on the new body.
+        """
+        old_draft = self.store.get_draft(draft_id)
+        app = self.store.require_app(old_draft["app_slug"])
+        # Rebuild a plan item from the stored draft so CopyAgent has the right shape.
+        channels = app.get("channels") or [old_draft["channel"]]
+        pillar_guess = (app.get("content_pillars") or ["brand story"])[0]
+        item = {
+            "channel": old_draft["channel"],
+            "pillar": pillar_guess,
+            "angle": _angle_for(app["slug"], pillar_guess),
+            "scheduled_for": old_draft.get("scheduled_for"),
+        }
+        token_ledger: List[Dict[str, Any]] = []
+        steering = self.brand_memory.get_steering(self.store, app["slug"], token_ledger=token_ledger)
+        raw_draft = self.copy.draft_for_item(
+            app,
+            old_draft["campaign_id"],
+            item,
+            token_ledger=token_ledger,
+            steering=steering,
+        )
+        if old_draft.get("scheduled_for"):
+            raw_draft["scheduled_for"] = old_draft["scheduled_for"]
+        enriched = self.creative.add_concepts(app, raw_draft)
+        safety = self.review.review(app, enriched)
+        enriched["safety"] = safety
+        enriched["status"] = "needs_review" if safety["passed"] else "rejected"
+        enriched["regenerated_from"] = old_draft["id"]
+        new_draft = self.store.create_draft(app["slug"], enriched)
+        if token_ledger:
+            self.store.record_token_usage(app["slug"], old_draft.get("campaign_id"), token_ledger)
+        self.store.audit("draft.regenerated", app["slug"], {
+            "from_draft_id": old_draft["id"],
+            "to_draft_id": new_draft["id"],
+            "channel": old_draft["channel"],
+            "steering_applied": bool(steering),
+        })
+        return {"old_draft_id": old_draft["id"], "new_draft": new_draft, "steering_applied": bool(steering)}
+
     def advise(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         """Run a set of health checks and return actionable items.
 

@@ -414,6 +414,57 @@ def test_publish_scheduled_uses_registered_live_connector_when_present(isolate_h
     assert final_draft["status"] == "posted"
 
 
+def test_regenerate_draft_creates_new_draft_preserves_old(isolate_home):
+    """Phase 8: regenerate produces a new draft with regenerated_from lineage, leaving the old draft intact."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    old = gen["drafts"][0]
+    old_status = old["status"]
+
+    result = pipe.regenerate_draft(old["id"])
+    new_draft = result["new_draft"]
+
+    assert new_draft["id"] != old["id"]
+    assert new_draft["regenerated_from"] == old["id"]
+    assert new_draft["channel"] == old["channel"]
+    assert new_draft["app_slug"] == old["app_slug"]
+
+    # Old draft preserved unchanged
+    preserved = store.get_draft(old["id"])
+    assert preserved["status"] == old_status
+
+    # Audit trail records the regeneration
+    actions = [event["action"] for event in store.list_audit(app_slug="pupular", limit=200)]
+    assert "draft.regenerated" in actions
+
+
+def test_regenerate_draft_via_api_endpoint(isolate_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+    client.post("/api/plugins/marketing_factory/init")
+    gen = client.post("/api/plugins/marketing_factory/campaigns/generate", json={"app_slug": "pupular", "days": 1}).json()
+    draft_id = gen["result"]["drafts"][0]["id"]
+
+    response = client.post(f"/api/plugins/marketing_factory/drafts/{draft_id}/regenerate")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["result"]["new_draft"]["regenerated_from"] == draft_id
+    # Both drafts now visible in the queue (old preserved)
+    overview_drafts = {d["id"] for d in payload["overview"]["drafts"]}
+    assert draft_id in overview_drafts
+    assert payload["result"]["new_draft"]["id"] in overview_drafts
+
+
 def test_advise_returns_empty_for_fresh_factory(isolate_home):
     """Phase 7: fresh init triggers only `info` items for never-generated apps; healthy=False but no warnings."""
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline

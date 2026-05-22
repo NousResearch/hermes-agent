@@ -387,6 +387,7 @@
                   if (!reason || !reason.trim()) return;
                   return run(`reject ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/reject`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewer: "dashboard", reason: reason.trim() }) }));
                 }, !!busy || draft.status !== "needs_review", "danger"),
+                smallButton("Regenerate", () => run(`regen ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/regenerate`, { method: "POST" })), !!busy || draft.status === "scheduled" || draft.status === "dry_run_posted" || draft.status === "posted"),
                 smallButton("Schedule", () => run(`schedule ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/schedule`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })), !!busy || draft.status !== "approved"),
                 smallButton("Dry-run", () => run(`dry-run ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/publish-dry-run`, { method: "POST" })), !!busy || draft.status !== "scheduled")
               )

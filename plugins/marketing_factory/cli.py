@@ -68,6 +68,9 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     poll = subs.add_parser("poll", help="One scheduled-poller tick: fire publish on all due drafts across all apps")
     poll.add_argument("--json", action="store_true")
 
+    regen = subs.add_parser("regenerate", help="Re-roll a single draft with the latest steering applied (keeps the old draft)")
+    regen.add_argument("draft_id")
+
     advise = subs.add_parser("advise", help="Run health checks against the factory and print actionable items")
     advise.add_argument("--json", action="store_true")
 
@@ -124,7 +127,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def marketing_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "marketing_command", None)
     if not sub:
-        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,audit,export,generate,full-dry-run}")
+        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,regenerate,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,audit,export,generate,full-dry-run}")
         return 2
     store = MarketingFactoryStore(getattr(args, "store_path", None))
     pipe = MarketingFactoryPipeline(store)
@@ -194,6 +197,17 @@ def marketing_command(args: argparse.Namespace) -> int:
         if sub == "remove-app":
             result = store.remove_app(args.slug, cascade=not args.no_cascade)
             _print_json(result)
+            return 0
+        if sub == "regenerate":
+            result = pipe.regenerate_draft(args.draft_id)
+            _print_json({
+                "old_draft_id": result["old_draft_id"],
+                "new_draft_id": result["new_draft"]["id"],
+                "channel": result["new_draft"]["channel"],
+                "steering_applied": result["steering_applied"],
+                "llm_used": result["new_draft"].get("llm_used"),
+                "safety_passed": (result["new_draft"].get("safety") or {}).get("passed"),
+            })
             return 0
         if sub == "advise":
             result = pipe.advise()

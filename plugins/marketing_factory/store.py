@@ -303,6 +303,7 @@ class MarketingFactoryStore:
             "llm_used": bool(draft.get("llm_used")),
             "llm_model": draft.get("llm_model"),
             "llm_error": draft.get("llm_error"),
+            "regenerated_from": draft.get("regenerated_from"),
             "created_at": utc_now(),
             "updated_at": utc_now(),
         }

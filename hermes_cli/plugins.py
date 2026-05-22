@@ -678,6 +678,50 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- transcription (STT) provider registration ---------------------------
+
+    def register_transcription_provider(self, provider) -> None:
+        """Register a speech-to-text backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.transcription_provider.TranscriptionProvider`.
+        The ``provider.name`` attribute is what ``stt.provider`` in
+        ``config.yaml`` matches against when routing
+        :func:`tools.transcription_tools.transcribe_audio` calls —
+        **but only when**:
+
+        1. ``provider.name`` is NOT a built-in STT provider name
+           (``local``, ``local_command``, ``groq``, ``openai``,
+           ``mistral``, ``xai``). Built-ins always win — the registry
+           rejects shadowing names with a warning.
+        2. There is NO ``stt.providers.<name>: type: command`` entry
+           with the same name. Command-providers win on name
+           collision because config is more local than plugin install
+           — same precedence rule as TTS.
+
+        Coexists with the in-tree dispatcher and the STT
+        command-provider registry rather than replacing them. The 6
+        built-in STT backends keep their native implementations in
+        ``tools/transcription_tools.py``; this hook is for *new* Python
+        engines (OpenRouter, SenseAudio, Gemini-STT, custom proprietary
+        backends).
+        """
+        from agent.transcription_provider import TranscriptionProvider
+        from agent.transcription_registry import register_provider as _register_stt_provider
+
+        if not isinstance(provider, TranscriptionProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a transcription provider that "
+                "does not inherit from TranscriptionProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_stt_provider(provider)
+        logger.info(
+            "Plugin '%s' registered transcription provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(

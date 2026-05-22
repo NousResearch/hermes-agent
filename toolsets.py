@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Bitwarden vault access (gated on bw CLI; default-off in tool config)
+    "bitwarden_status", "bitwarden_search", "bitwarden_get_secret_ref", "bitwarden_upsert_login",
     # Kanban multi-agent coordination — only in schema when the agent is
     # spawned as a kanban worker (HERMES_KANBAN_TASK env set) or the current
     # profile explicitly enables the kanban toolset. Gated via check_fn in
@@ -236,6 +238,15 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "bitwarden": {
+        "description": "Bitwarden vault access via the local bw CLI. Secret-safe by default: search returns metadata only; retrieval writes to a temp env file instead of returning secret values.",
+        "tools": [
+            "bitwarden_status", "bitwarden_search",
+            "bitwarden_get_secret_ref", "bitwarden_upsert_login",
+        ],
         "includes": []
     },
 

@@ -12069,54 +12069,16 @@ Examples:
     plugins_parser.set_defaults(func=cmd_plugins)
 
     # =========================================================================
-    # harness command (fork: Hypura Harness)
+    # harness command
     # =========================================================================
-    harness_parser = subparsers.add_parser(
-        "harness",
-        help="Manage the Hypura Harness actuator (OSC, VOICEVOX, Evolution)",
-        description="Start, stop, restart, or check status of the local harness daemon.",
-    )
-    harness_sub = harness_parser.add_subparsers(dest="harness_action")
-    harness_sub.add_parser("start", help="Start the harness daemon in the background")
-    harness_sub.add_parser("stop", help="Stop the running harness daemon")
-    harness_sub.add_parser("status", help="Check if the harness is reachable")
-    harness_sub.add_parser("restart", help="Restart the harness daemon")
+    from hermes_cli.harness import register_harness_subparser
 
-    def cmd_harness(args):
-        import time
-        from hermes_cli.harness import start_harness_daemon, stop_harness_daemon, is_harness_running, get_harness_url
-        action = getattr(args, "harness_action", None)
-        if action == "start":
-            print(f"Starting Hypura Harness at {get_harness_url()}...")
-            if start_harness_daemon():
-                print("✓ Harness started successfully.")
-            else:
-                print("✗ Failed to start harness. Check logs.")
-        elif action == "stop":
-            print("Stopping Hypura Harness...")
-            if stop_harness_daemon():
-                print("✓ Harness stopped.")
-            else:
-                print("✗ Failed to stop harness (is it running?)")
-        elif action == "status":
-            url = get_harness_url()
-            if is_harness_running():
-                print(f"✓ Hypura Harness is ONLINE at {url}")
-            else:
-                print(f"✗ Hypura Harness is OFFLINE at {url}")
-        elif action == "restart":
-            stop_harness_daemon()
-            time.sleep(1)
-            start_harness_daemon()
-            print("✓ Harness restarted.")
-        else:
-            harness_parser.print_help()
-
-    harness_parser.set_defaults(func=cmd_harness)
+    register_harness_subparser(subparsers)
 
     # =========================================================================
-    # honcho command — Honcho-specific config (peer, mode, tokens, profiles)
-    # Provider selection happens via 'hermes memory setup'.
+    # Plugin CLI commands - dynamically registered by memory/general plugins.
+    # Plugins provide a register_cli(subparser) function that builds their
+    # own argparse tree. No hardcoded plugin commands in main.py.
     # =========================================================================
     if _plugin_cli_discovery_needed():
         try:

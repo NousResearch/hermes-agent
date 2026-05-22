@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -144,6 +145,7 @@ class SlowSyncBot(FakeBot):
     ("allowed_users", "expected_members_intent"),
     [
         ("769524422783664158", False),
+        ("*", False),
         ("abhey-gupta", True),
         ("769524422783664158,abhey-gupta", True),
         ("*", False),
@@ -202,6 +204,27 @@ def test_discord_allowed_users_star_short_circuits_direct_auth_check():
     adapter._allowed_role_ids = {456}
 
     assert adapter._is_allowed_user("999") is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_allowed_usernames_preserves_wildcard(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._allowed_user_ids = {"*"}
+    adapter._client = SimpleNamespace(guilds=[])
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "*")
+
+    await adapter._resolve_allowed_usernames()
+
+    assert adapter._allowed_user_ids == {"*"}
+    assert os.getenv("DISCORD_ALLOWED_USERS") == "*"
+
+
+def test_is_allowed_user_wildcard_allows_any_user():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._allowed_user_ids = {"*"}
+    adapter._allowed_role_ids = set()
+
+    assert adapter._is_allowed_user("123456789") is True
 
 
 @pytest.mark.asyncio
@@ -477,6 +500,134 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
     fake_http.edit_global_command.assert_awaited_once_with(999, 12, desired_updated)
     fake_http.upsert_global_command.assert_awaited_once_with(999, desired_created)
     fake_http.delete_global_command.assert_awaited_once_with(999, 13)
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_slash_commands_deletes_stale_before_creating():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            assert tree is not None
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **self._payload,
+                "name_localizations": {},
+                "description_localizations": {},
+            }
+
+    desired_same = {
+        "name": "status",
+        "description": "Show Hermes session status",
+        "type": 1,
+        "options": [],
+    }
+    desired_created = {
+        "name": "debug",
+        "description": "Generate a debug report",
+        "type": 1,
+        "options": [],
+    }
+    stale_existing = {
+        "name": "old-skill",
+        "description": "Stale skill command",
+        "type": 1,
+        "options": [],
+    }
+    calls: list[tuple[str, str]] = []
+
+    async def upsert_global_command(_app_id, payload):
+        calls.append(("upsert", payload["name"]))
+
+    async def edit_global_command(_app_id, _command_id, payload):
+        calls.append(("edit", payload["name"]))
+
+    async def delete_global_command(_app_id, command_id):
+        calls.append(("delete", str(command_id)))
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [
+            _DesiredCommand(desired_same),
+            _DesiredCommand(desired_created),
+        ],
+        fetch_commands=AsyncMock(return_value=[
+            _ExistingCommand(11, desired_same),
+            _ExistingCommand(12, stale_existing),
+        ]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=upsert_global_command,
+        edit_global_command=edit_global_command,
+        delete_global_command=delete_global_command,
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["deleted"] == 1
+    assert summary["created"] == 1
+    assert calls == [("delete", "12"), ("upsert", "debug")]
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_slash_commands_rejects_desired_count_over_discord_limit():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, name):
+            self._name = name
+
+        def to_dict(self, tree):
+            assert tree is not None
+            return {
+                "name": self._name,
+                "description": "Generated command",
+                "type": 1,
+                "options": [],
+            }
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(f"cmd-{i}") for i in range(101)],
+        fetch_commands=AsyncMock(return_value=[]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    with pytest.raises(RuntimeError, match="101 global command"):
+        await adapter._safe_sync_slash_commands()
+
+    fake_tree.fetch_commands.assert_not_awaited()
+    fake_http.upsert_global_command.assert_not_awaited()
+    fake_http.edit_global_command.assert_not_awaited()
+    fake_http.delete_global_command.assert_not_awaited()
 
 
 @pytest.mark.asyncio

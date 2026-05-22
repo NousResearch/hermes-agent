@@ -1125,6 +1125,41 @@ class TestHubLockFile:
         assert entry["content_hash"] == "abc123"
         assert "installed_at" in entry
 
+    def test_record_install_rejects_absolute_install_path(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        outside = tmp_path / "outside"
+
+        with pytest.raises(ValueError, match="Unsafe install path"):
+            lock.record_install(
+                name="test-skill",
+                source="github",
+                identifier="owner/repo/test-skill",
+                trust_level="trusted",
+                scan_verdict="pass",
+                skill_hash="abc123",
+                install_path=str(outside),
+                files=["SKILL.md"],
+            )
+
+        assert lock.load()["installed"] == {}
+
+    def test_record_install_rejects_name_mismatch(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+
+        with pytest.raises(ValueError, match="Unsafe install path"):
+            lock.record_install(
+                name="test-skill",
+                source="github",
+                identifier="owner/repo/test-skill",
+                trust_level="trusted",
+                scan_verdict="pass",
+                skill_hash="abc123",
+                install_path="other-skill",
+                files=["SKILL.md"],
+            )
+
+        assert lock.load()["installed"] == {}
+
     def test_record_uninstall(self, tmp_path):
         lock = HubLockFile(path=tmp_path / "lock.json")
         lock.record_install(
@@ -1168,6 +1203,139 @@ class TestHubLockFile:
         assert len(installed) == 2
         names = {e["name"] for e in installed}
         assert names == {"s1", "s2"}
+
+
+class TestUninstallSkillPathGuard:
+    def _write_lock(self, lock_file: Path, install_path: str) -> None:
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_file.write_text(json.dumps({
+            "version": 1,
+            "installed": {
+                "test-skill": {
+                    "source": "github",
+                    "identifier": "owner/repo/test-skill",
+                    "trust_level": "community",
+                    "scan_verdict": "pass",
+                    "content_hash": "abc123",
+                    "install_path": install_path,
+                    "files": ["SKILL.md"],
+                }
+            },
+        }))
+
+    def test_uninstall_removes_only_locked_skill_directory(self, tmp_path):
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        lock_file = skills_dir / ".hub" / "lock.json"
+        audit_log = skills_dir / ".hub" / "audit.log"
+        target = skills_dir / "category" / "test-skill"
+        target.mkdir(parents=True)
+        (target / "SKILL.md").write_text("---\nname: test-skill\n---\n")
+        self._write_lock(lock_file, "category/test-skill")
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "AUDIT_LOG", audit_log), \
+             patch.object(hub, "HubLockFile", lambda: HubLockFile(path=lock_file)):
+            ok, message = hub.uninstall_skill("test-skill")
+
+        assert ok is True
+        assert "Uninstalled" in message
+        assert not target.exists()
+        assert HubLockFile(path=lock_file).get_installed("test-skill") is None
+
+    @pytest.mark.parametrize("install_path", ["../outside/test-skill", "", "."])
+    def test_uninstall_refuses_traversal_or_root_paths(self, tmp_path, install_path):
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        lock_file = skills_dir / ".hub" / "lock.json"
+        audit_log = skills_dir / ".hub" / "audit.log"
+        skills_dir.mkdir(parents=True)
+        outside = tmp_path / "outside" / "test-skill"
+        outside.mkdir(parents=True)
+        (outside / "keep.txt").write_text("keep")
+        self._write_lock(lock_file, install_path)
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "AUDIT_LOG", audit_log), \
+             patch.object(hub, "HubLockFile", lambda: HubLockFile(path=lock_file)):
+            ok, message = hub.uninstall_skill("test-skill")
+
+        assert ok is False
+        assert "Refusing to uninstall" in message
+        assert (outside / "keep.txt").exists()
+        assert skills_dir.exists()
+        assert HubLockFile(path=lock_file).get_installed("test-skill") is not None
+
+    def test_uninstall_refuses_absolute_install_path(self, tmp_path):
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        lock_file = skills_dir / ".hub" / "lock.json"
+        audit_log = skills_dir / ".hub" / "audit.log"
+        outside = tmp_path / "outside" / "test-skill"
+        outside.mkdir(parents=True)
+        (outside / "keep.txt").write_text("keep")
+        self._write_lock(lock_file, str(outside))
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "AUDIT_LOG", audit_log), \
+             patch.object(hub, "HubLockFile", lambda: HubLockFile(path=lock_file)):
+            ok, message = hub.uninstall_skill("test-skill")
+
+        assert ok is False
+        assert "Refusing to uninstall" in message
+        assert (outside / "keep.txt").exists()
+        assert HubLockFile(path=lock_file).get_installed("test-skill") is not None
+
+    def test_uninstall_refuses_lock_path_for_different_skill(self, tmp_path):
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        lock_file = skills_dir / ".hub" / "lock.json"
+        audit_log = skills_dir / ".hub" / "audit.log"
+        other = skills_dir / "other-skill"
+        other.mkdir(parents=True)
+        (other / "SKILL.md").write_text("---\nname: other-skill\n---\n")
+        self._write_lock(lock_file, "other-skill")
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "AUDIT_LOG", audit_log), \
+             patch.object(hub, "HubLockFile", lambda: HubLockFile(path=lock_file)):
+            ok, message = hub.uninstall_skill("test-skill")
+
+        assert ok is False
+        assert "Refusing to uninstall" in message
+        assert other.exists()
+        assert HubLockFile(path=lock_file).get_installed("test-skill") is not None
+
+    def test_uninstall_refuses_symlink_parent_escape(self, tmp_path):
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        lock_file = skills_dir / ".hub" / "lock.json"
+        audit_log = skills_dir / ".hub" / "audit.log"
+        outside = tmp_path / "outside"
+        outside.mkdir(parents=True)
+        (outside / "keep.txt").write_text("keep")
+        skills_dir.mkdir(parents=True)
+        try:
+            (skills_dir / "category").symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+        self._write_lock(lock_file, "category/test-skill")
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "AUDIT_LOG", audit_log), \
+             patch.object(hub, "HubLockFile", lambda: HubLockFile(path=lock_file)):
+            ok, message = hub.uninstall_skill("test-skill")
+
+        assert ok is False
+        assert "Refusing to uninstall" in message
+        assert (outside / "keep.txt").exists()
+        assert HubLockFile(path=lock_file).get_installed("test-skill") is not None
 
 
 # ---------------------------------------------------------------------------

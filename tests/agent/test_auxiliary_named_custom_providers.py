@@ -1,5 +1,6 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
+import logging
 import os
 from unittest.mock import patch, MagicMock
 
@@ -150,17 +151,33 @@ class TestResolveProviderClientNamedCustom:
         # Should use _read_main_model() fallback
         assert model == "main-model"
 
-    def test_named_custom_no_api_key_uses_fallback(self, tmp_path):
+    def test_named_custom_no_api_key_uses_fallback(self, tmp_path, caplog):
         _write_config(tmp_path, {
             "model": {"default": "test"},
             "custom_providers": [
                 {"name": "local", "base_url": "http://localhost:8080/v1"},
             ],
         })
+        caplog.set_level(logging.WARNING, logger="agent.auxiliary_client")
         from agent.auxiliary_client import resolve_provider_client
         client, model = resolve_provider_client("local", "test")
         assert client is not None
         # no-key-required should be used
+        assert "auth-required endpoints may reject" not in caplog.text
+
+    def test_named_custom_no_api_key_warns_for_remote_endpoint(self, tmp_path, caplog):
+        _write_config(tmp_path, {
+            "model": {"default": "test"},
+            "custom_providers": [
+                {"name": "remote", "base_url": "https://models.example.com/v1"},
+            ],
+        })
+        caplog.set_level(logging.WARNING, logger="agent.auxiliary_client")
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client("remote", "test")
+        assert client is not None
+        assert "no resolvable" in caplog.text
+        assert "auth-required endpoints may reject" in caplog.text
 
     def test_nonexistent_named_custom_falls_through(self, tmp_path):
         _write_config(tmp_path, {

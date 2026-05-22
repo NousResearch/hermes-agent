@@ -15,6 +15,7 @@ from tools.skills_hub import (
     UrlSource,
     WellKnownSkillSource,
     OptionalSkillSource,
+    HermesIndexSource,
     SkillMeta,
     SkillBundle,
     HubLockFile,
@@ -1425,6 +1426,73 @@ class TestSkillMetaToDict:
         restored = SkillMeta(**d)
         assert restored.name == meta.name
         assert restored.trust_level == meta.trust_level
+
+
+# ---------------------------------------------------------------------------
+# Hermes centralized index source
+# ---------------------------------------------------------------------------
+
+
+class TestHermesIndexSource:
+    def test_official_entry_without_repo_falls_back_to_optional_skills_github_path(self):
+        """Bad docs indexes may omit repo/resolved_github_id for official skills.
+
+        The CLI should still be able to install them by resolving the
+        category-relative path into this repo's optional-skills tree.
+        """
+        bundle = SkillBundle(
+            name="3-statement-model",
+            files={"SKILL.md": "---\nname: 3-statement-model\n---\n"},
+            source="github",
+            identifier="placeholder",
+            trust_level="builtin",
+        )
+        github = MagicMock()
+        github.fetch.return_value = bundle
+        src = HermesIndexSource(auth=MagicMock())
+        src._index = {
+            "skills": [
+                {
+                    "name": "3-statement-model",
+                    "source": "official",
+                    "identifier": "official/finance/3-statement-model",
+                    "repo": "",
+                    "path": "finance/3-statement-model",
+                    "resolved_github_id": "",
+                    "trust_level": "builtin",
+                }
+            ]
+        }
+        src._loaded = True
+        src._github = github
+
+        result = src.fetch("official/finance/3-statement-model")
+
+        assert result is not None
+        assert result is bundle
+        github.fetch.assert_called_once_with(
+            "NousResearch/hermes-agent/optional-skills/finance/3-statement-model"
+        )
+        assert result.source == "official"
+        assert result.identifier == "official/finance/3-statement-model"
+
+    def test_github_id_for_entry_preserves_explicit_repo_path(self):
+        assert (
+            HermesIndexSource._github_id_for_entry({
+                "repo": "owner/repo",
+                "path": "skills/foo",
+                "source": "official",
+            })
+            == "owner/repo/skills/foo"
+        )
+
+    @pytest.mark.parametrize("path", ["..", "../secret", ""])
+    def test_github_id_for_entry_rejects_bad_official_paths(self, path):
+        assert HermesIndexSource._github_id_for_entry({
+            "source": "official",
+            "repo": "",
+            "path": path,
+        }) is None
 
 
 # ---------------------------------------------------------------------------

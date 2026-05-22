@@ -3235,11 +3235,12 @@ class HermesIndexSource(SkillSource):
                 bundle.identifier = identifier
                 return bundle
 
-        # Fall back to identifier-based fetch via repo/path
-        repo = entry.get("repo", "")
-        path = entry.get("path", "")
-        if repo and path:
-            github_id = f"{repo}/{path}"
+        # Fall back to identifier-based fetch via repo/path.  Official skills
+        # are shipped from this repository's optional-skills/ tree; tolerate
+        # older/bad index entries that omitted repo/resolved_github_id and only
+        # stored the category-relative path (e.g. "finance/foo").
+        github_id = self._github_id_for_entry(entry)
+        if github_id:
             bundle = self._get_github().fetch(github_id)
             if bundle:
                 bundle.source = entry.get("source", "hermes-index")
@@ -3247,6 +3248,25 @@ class HermesIndexSource(SkillSource):
                 return bundle
 
         return None
+
+    @staticmethod
+    def _github_id_for_entry(entry: dict) -> Optional[str]:
+        """Return a GitHubSource identifier for an index entry if possible."""
+        repo = entry.get("repo", "")
+        path = entry.get("path", "")
+        if repo and path:
+            return f"{repo}/{path}"
+
+        source = entry.get("source", "")
+        if source != "official" or not path:
+            return None
+
+        rel = str(PurePosixPath(str(path)))
+        if rel in {"", "."} or rel.startswith("../") or rel == "..":
+            return None
+        if not rel.startswith("optional-skills/"):
+            rel = f"optional-skills/{rel}"
+        return f"NousResearch/hermes-agent/{rel}"
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Return metadata from the index.  Zero API calls."""

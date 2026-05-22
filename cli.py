@@ -100,6 +100,71 @@ from hermes_cli.banner import _format_context_length, format_banner_version_labe
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
+# =============================================================================
+# Terminal Tab Title
+# =============================================================================
+
+_original_terminal_title: str | None = None  # Saved on first _set_terminal_title call
+_last_written_title: str = ""  # Cache last written title to skip redundant writes
+
+
+def _set_terminal_title(title: str) -> None:
+    """Set the terminal tab/window title using OSC 0 escape sequence.
+
+    Saves the original title on first call so it can be restored on exit.
+    Only writes to real TTYs — redirected output would leak escape codes.
+    Skips writes when the title hasn't changed (deduplication).
+
+    Writes to sys.__stdout__ (not sys.stdout) to bypass prompt_toolkit's
+    patch_stdout StdoutProxy, which mangles raw escape sequences.
+    """
+    global _original_terminal_title, _last_written_title
+    # Use __stdout__ to bypass patch_stdout's StdoutProxy (#terminal-title)
+    _out = sys.__stdout__
+    if not _out.isatty():
+        return
+    # Skip if title hasn't changed
+    if title == _last_written_title:
+        return
+    try:
+        if _original_terminal_title is None:
+            _original_terminal_title = os.environ.get("TERM_TITLE", "")
+
+        # OSC 0 ; <title> BEL — sets icon name and window title
+        _out.write(f"\033]0;{title}\007")
+        _out.flush()
+        _last_written_title = title
+    except Exception:
+        pass
+
+
+def _restore_terminal_title() -> None:
+    """Restore the original terminal title (if we saved one)."""
+    global _original_terminal_title, _last_written_title
+    _out = sys.__stdout__
+    if not _out.isatty():
+        return
+    try:
+        if _original_terminal_title is not None:
+            _out.write(f"\033]0;{_original_terminal_title}\007")
+            _out.flush()
+            _last_written_title = ""  # Invalidate cache so next _set_terminal_title writes
+    except Exception:
+        pass
+
+
+def _terminal_title_cwd() -> str:
+    """Return a short cwd label for terminal title use."""
+    try:
+        cwd = os.getcwd()
+    except (FileNotFoundError, PermissionError, OSError):
+        return "?"
+    home = os.path.expanduser("~")
+    if cwd.startswith(home):
+        cwd = "~" + cwd[len(home):]
+    return cwd
+
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_constants import get_hermes_home, display_hermes_home
@@ -750,6 +815,10 @@ def _run_cleanup():
         return
     _cleanup_done = True
 
+    try:
+        _restore_terminal_title()
+    except Exception:
+        pass
     try:
         _cleanup_all_terminals()
     except Exception:
@@ -2666,6 +2735,9 @@ class HermesCLI:
         else:
             self.busy_input_mode = "interrupt"
 
+        # terminal_title: update terminal tab/window title with agent state
+        self._terminal_title_enabled = CLI_CONFIG["display"].get("terminal_title", True)
+
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
@@ -2986,6 +3058,11 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+
+    def _set_title(self, title: str) -> None:
+        """Update terminal tab title if enabled."""
+        if self._terminal_title_enabled:
+            _set_terminal_title(f"Hermes: {title}")
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -3703,11 +3780,21 @@ class HermesCLI:
         return changed
 
     def _on_thinking(self, text: str) -> None:
-        """Called by agent when thinking starts/stops. Updates TUI spinner."""
+        """Called by agent when thinking starts/stops. Updates TUI spinner + terminal title."""
         if not text:
             self._flush_reasoning_preview(force=True)
-        self._spinner_text = text or ""
+            self._spinner_text = ""
+            self._tool_start_time = 0.0
+            if getattr(self, "_agent_running", False):
+                self._set_title("Thinking...")
+            self._invalidate()
+            return
+        self._spinner_text = text
         self._tool_start_time = 0.0  # clear tool timer when switching to thinking
+        # Update terminal title with the thinking verb (strip kawaii face prefix)
+        # text is like "(◕‿◕) brainstorming..." — extract just the verb
+        verb = text.split(" ", 1)[-1].strip()  # drop face token
+        self._set_title(verb.capitalize() if verb else "Thinking...")
         self._invalidate()
 
     # ── Streaming display ────────────────────────────────────────────────
@@ -9994,6 +10081,9 @@ class HermesCLI:
         """
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            # Title: agent is still running, will think next
+            if getattr(self, "_agent_running", False):
+                self._set_title("Thinking...")
             # Print stacked scrollback line for "all" / "new" modes
             if function_name and self.tool_progress_mode in {"all", "new"}:
                 duration = kwargs.get("duration", 0.0)
@@ -10055,6 +10145,7 @@ class HermesCLI:
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{emoji} {label}"
             self._tool_start_time = time.monotonic()
+            self._set_title(f"Running {function_name}")
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {}
@@ -11954,6 +12045,9 @@ class HermesCLI:
             )
             self._startup_skills_line_shown = True
         self._console_print()
+        
+        # Set initial terminal tab title
+        self._set_title(_terminal_title_cwd())
         
         # State for async operation
         self._agent_running = False
@@ -13856,12 +13950,14 @@ class HermesCLI:
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._set_title("Thinking...")
                     app.invalidate()  # Refresh status line
 
                     try:
                         self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
+                        self._set_title(_terminal_title_cwd())
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
                         self._pending_tool_info.clear()

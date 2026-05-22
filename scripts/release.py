@@ -656,6 +656,7 @@ AUTHOR_MAP = {
     "aptx4561@gmail.com": "cokemine",
     "arilotter@gmail.com": "ethernet8023",
     "ben@nousresearch.com": "benbarclay",
+    "vincent.brunet.us@gmail.com": "crypto-vincent",
     "birdiegyal@gmail.com": "yyovil",
     "boschi1997@gmail.com": "nicoloboschi",
     "chef.ya@gmail.com": "cherifya",

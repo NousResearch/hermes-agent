@@ -858,6 +858,61 @@ class HermesACPAgent(acp.Agent):
             or ""
         ).strip()
 
+    async def _replay_text_message(
+        self,
+        message: dict[str, Any],
+        role: str,
+        _send: Any,
+    ) -> bool:
+        text = self._history_message_text(message)
+        if text:
+            update = self._history_message_update(role=role, text=text)
+            if update is not None and not await _send(update):
+                return False
+        return True
+
+    async def _replay_tool_calls(
+        self,
+        message: dict[str, Any],
+        active_tool_calls: dict[str, tuple[str, dict[str, Any]]],
+        _send: Any,
+    ) -> bool:
+        for tool_call in message.get("tool_calls", []):
+            if not isinstance(tool_call, dict):
+                continue
+            tool_call_id = self._history_tool_call_id(tool_call)
+            if not tool_call_id:
+                continue
+            tool_name, args = self._history_tool_call_name_args(tool_call)
+            active_tool_calls[tool_call_id] = (tool_name, args)
+            if not await _send(build_tool_start(tool_call_id, tool_name, args)):
+                return False
+        return True
+
+    async def _replay_tool_response(
+        self,
+        message: dict[str, Any],
+        active_tool_calls: dict[str, tuple[str, dict[str, Any]]],
+        _send: Any,
+    ) -> bool:
+        tool_call_id = str(message.get("tool_call_id") or "").strip()
+        tool_name = str(message.get("tool_name") or "").strip()
+        function_args: dict[str, Any] | None = None
+        if tool_call_id in active_tool_calls:
+            tool_name, function_args = active_tool_calls.pop(tool_call_id)
+        if not tool_call_id or not tool_name:
+            return True
+        result = message.get("content")
+        return await _send(
+            build_tool_complete(
+                tool_call_id,
+                tool_name,
+                result=result if isinstance(result, str) else None,
+                function_args=function_args,
+            )
+        )
+
+
     async def _replay_session_history(self, state: SessionState) -> None:
         """Send persisted user/assistant history to clients during session/load.
 
@@ -888,42 +943,16 @@ class HermesACPAgent(acp.Agent):
             role = str(message.get("role") or "")
 
             if role in {"user", "assistant"}:
-                text = self._history_message_text(message)
-                if text:
-                    update = self._history_message_update(role=role, text=text)
-                    if update is not None and not await _send(update):
-                        return
+                if not await self._replay_text_message(message, role, _send):
+                    return
 
             if role == "assistant" and isinstance(message.get("tool_calls"), list):
-                for tool_call in message["tool_calls"]:
-                    if not isinstance(tool_call, dict):
-                        continue
-                    tool_call_id = self._history_tool_call_id(tool_call)
-                    if not tool_call_id:
-                        continue
-                    tool_name, args = self._history_tool_call_name_args(tool_call)
-                    active_tool_calls[tool_call_id] = (tool_name, args)
-                    if not await _send(build_tool_start(tool_call_id, tool_name, args)):
-                        return
+                if not await self._replay_tool_calls(message, active_tool_calls, _send):
+                    return
                 continue
 
             if role == "tool":
-                tool_call_id = str(message.get("tool_call_id") or "").strip()
-                tool_name = str(message.get("tool_name") or "").strip()
-                function_args: dict[str, Any] | None = None
-                if tool_call_id in active_tool_calls:
-                    tool_name, function_args = active_tool_calls.pop(tool_call_id)
-                if not tool_call_id or not tool_name:
-                    continue
-                result = message.get("content")
-                if not await _send(
-                    build_tool_complete(
-                        tool_call_id,
-                        tool_name,
-                        result=result if isinstance(result, str) else None,
-                        function_args=function_args,
-                    )
-                ):
+                if not await self._replay_tool_response(message, active_tool_calls, _send):
                     return
 
     async def new_session(

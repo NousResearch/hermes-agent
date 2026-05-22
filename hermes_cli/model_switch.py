@@ -1244,7 +1244,10 @@ def list_authenticated_providers(
         # has available — not a stale curated+merged snapshot.
         # Falls back to curated+merged list when the live endpoint is down.
         if hermes_id in _MODELS_DEV_PREFERRED:
-            model_ids = provider_model_ids(hermes_id)
+            # Use live provider API, deduplicate to avoid repeated model IDs
+            # from the provider's catalog (e.g. NVIDIA NIM returns duplicates
+            # for some model slugs).
+            model_ids = sorted(set(provider_model_ids(hermes_id)))
         else:
             model_ids = curated.get(hermes_id, [])
         total = len(model_ids)

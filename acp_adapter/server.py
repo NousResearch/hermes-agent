@@ -71,7 +71,11 @@ from acp_adapter.events import (
     make_tool_progress_cb,
 )
 from acp_adapter.permissions import make_approval_callback
-from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.session import (
+    SessionManager,
+    SessionState,
+    _expand_acp_enabled_toolsets,
+)
 from acp_adapter.tools import build_tool_complete, build_tool_start
 
 logger = logging.getLogger(__name__)
@@ -102,7 +106,9 @@ _TEXT_RESOURCE_MIME_TYPES = {
 }
 
 
-def _resource_display_name(uri: str, name: str | None = None, title: str | None = None) -> str:
+def _resource_display_name(
+    uri: str, name: str | None = None, title: str | None = None
+) -> str:
     """Human-readable attachment name for prompt context."""
     raw_name = (name or "").strip()
     raw_title = (title or "").strip()
@@ -121,7 +127,10 @@ def _is_text_resource(mime_type: str | None) -> bool:
     mime = (mime_type or "").split(";", 1)[0].strip().lower()
     if not mime:
         return False
-    return mime.startswith(_TEXT_RESOURCE_MIME_PREFIXES) or mime in _TEXT_RESOURCE_MIME_TYPES
+    return (
+        mime.startswith(_TEXT_RESOURCE_MIME_PREFIXES)
+        or mime in _TEXT_RESOURCE_MIME_TYPES
+    )
 
 
 def _is_image_resource(mime_type: str | None) -> bool:
@@ -169,7 +178,12 @@ def _path_from_file_uri(uri: str) -> Path | None:
         path_text = unquote(raw)
 
     # file:///C:/Users/... or C:\Users\...
-    if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
+    if (
+        len(path_text) >= 3
+        and path_text[0] == "/"
+        and path_text[2] == ":"
+        and path_text[1].isalpha()
+    ):
         drive = path_text[1].lower()
         rest = path_text[3:].lstrip("/\\").replace("\\", "/")
         return Path("/mnt") / drive / rest
@@ -226,49 +240,62 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
     path = _path_from_file_uri(uri)
 
     if path is None:
-        return [{
-            "type": "text",
-            "text": _format_resource_text(
-                uri=uri,
-                name=name,
-                title=title,
-                body="[Resource link only; Hermes cannot read non-file ACP resource URIs directly.]",
-            ),
-        }]
-
-    # Image files: emit a short text header + image_url data URL so vision
-    # models can see the attachment instead of a "binary omitted" note.
-    image_mime = mime_type if _is_image_resource(mime_type) else _guess_image_mime_from_path(path)
-    if image_mime and _is_image_resource(image_mime):
-        try:
-            size = path.stat().st_size
-            if size > _MAX_ACP_RESOURCE_BYTES:
-                return [{
-                    "type": "text",
-                    "text": _format_resource_text(
-                        uri=uri,
-                        name=name,
-                        title=title,
-                        body=f"[Image too large to inline: {size} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
-                    ),
-                }]
-            with path.open("rb") as fh:
-                data = fh.read()
-        except OSError as exc:
-            logger.warning("ACP image resource read failed: %s", uri, exc_info=True)
-            return [{
+        return [
+            {
                 "type": "text",
                 "text": _format_resource_text(
                     uri=uri,
                     name=name,
                     title=title,
-                    body=f"[Could not read attached image: {exc}]",
+                    body="[Resource link only; Hermes cannot read non-file ACP resource URIs directly.]",
                 ),
-            }]
+            }
+        ]
+
+    # Image files: emit a short text header + image_url data URL so vision
+    # models can see the attachment instead of a "binary omitted" note.
+    image_mime = (
+        mime_type
+        if _is_image_resource(mime_type)
+        else _guess_image_mime_from_path(path)
+    )
+    if image_mime and _is_image_resource(image_mime):
+        try:
+            size = path.stat().st_size
+            if size > _MAX_ACP_RESOURCE_BYTES:
+                return [
+                    {
+                        "type": "text",
+                        "text": _format_resource_text(
+                            uri=uri,
+                            name=name,
+                            title=title,
+                            body=f"[Image too large to inline: {size} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
+                        ),
+                    }
+                ]
+            with path.open("rb") as fh:
+                data = fh.read()
+        except OSError as exc:
+            logger.warning("ACP image resource read failed: %s", uri, exc_info=True)
+            return [
+                {
+                    "type": "text",
+                    "text": _format_resource_text(
+                        uri=uri,
+                        name=name,
+                        title=title,
+                        body=f"[Could not read attached image: {exc}]",
+                    ),
+                }
+            ]
         display = _resource_display_name(uri, name=name, title=title)
         return [
             {"type": "text", "text": f"[Attached image: {display}]\nURI: {uri}"},
-            {"type": "image_url", "image_url": {"url": _image_data_url(data, image_mime)}},
+            {
+                "type": "image_url",
+                "image_url": {"url": _image_data_url(data, image_mime)},
+            },
         ]
 
     try:
@@ -278,36 +305,46 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
             data = fh.read(read_size)
         text = _decode_text_bytes(data, mime_type)
         if text is None:
-            return [{
+            return [
+                {
+                    "type": "text",
+                    "text": _format_resource_text(
+                        uri=uri,
+                        name=name,
+                        title=title,
+                        body=f"[Binary file omitted: {size} bytes, mime={mime_type or 'unknown'}]",
+                    ),
+                }
+            ]
+        note = None
+        if size > _MAX_ACP_RESOURCE_BYTES:
+            note = f"truncated to {_MAX_ACP_RESOURCE_BYTES} of {size} bytes"
+        return [
+            {
+                "type": "text",
+                "text": _format_resource_text(
+                    uri=uri, name=name, title=title, body=text, note=note
+                ),
+            }
+        ]
+    except OSError as exc:
+        logger.warning("ACP resource read failed: %s", uri, exc_info=True)
+        return [
+            {
                 "type": "text",
                 "text": _format_resource_text(
                     uri=uri,
                     name=name,
                     title=title,
-                    body=f"[Binary file omitted: {size} bytes, mime={mime_type or 'unknown'}]",
+                    body=f"[Could not read attached file: {exc}]",
                 ),
-            }]
-        note = None
-        if size > _MAX_ACP_RESOURCE_BYTES:
-            note = f"truncated to {_MAX_ACP_RESOURCE_BYTES} of {size} bytes"
-        return [{
-            "type": "text",
-            "text": _format_resource_text(uri=uri, name=name, title=title, body=text, note=note),
-        }]
-    except OSError as exc:
-        logger.warning("ACP resource read failed: %s", uri, exc_info=True)
-        return [{
-            "type": "text",
-            "text": _format_resource_text(
-                uri=uri,
-                name=name,
-                title=title,
-                body=f"[Could not read attached file: {exc}]",
-            ),
-        }]
+            }
+        ]
 
 
-def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dict[str, Any]]:
+def _embedded_resource_to_parts(
+    block: EmbeddedResourceContentBlock,
+) -> list[dict[str, Any]]:
     resource = getattr(block, "resource", None)
     if resource is None:
         return []
@@ -316,7 +353,9 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
     mime_type = str(getattr(resource, "mime_type", "") or "").strip() or None
 
     if isinstance(resource, TextResourceContents):
-        return [{"type": "text", "text": _format_resource_text(uri=uri, body=resource.text)}]
+        return [
+            {"type": "text", "text": _format_resource_text(uri=uri, body=resource.text)}
+        ]
 
     if isinstance(resource, BlobResourceContents):
         blob = resource.blob or ""
@@ -328,17 +367,28 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
         # Image blobs go through as image_url so vision models can see them.
         if _is_image_resource(mime_type):
             if len(data) > _MAX_ACP_RESOURCE_BYTES:
-                return [{
-                    "type": "text",
-                    "text": _format_resource_text(
-                        uri=uri,
-                        body=f"[Embedded image too large to inline: {len(data)} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
-                    ),
-                }]
+                return [
+                    {
+                        "type": "text",
+                        "text": _format_resource_text(
+                            uri=uri,
+                            body=f"[Embedded image too large to inline: {len(data)} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
+                        ),
+                    }
+                ]
             display = _resource_display_name(uri)
             return [
-                {"type": "text", "text": f"[Attached image: {display}]" + (f"\nURI: {uri}" if uri else "")},
-                {"type": "image_url", "image_url": {"url": _image_data_url(data, mime_type or "image/png")}},
+                {
+                    "type": "text",
+                    "text": f"[Attached image: {display}]"
+                    + (f"\nURI: {uri}" if uri else ""),
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": _image_data_url(data, mime_type or "image/png")
+                    },
+                },
             ]
 
         text = _decode_text_bytes(data[:_MAX_ACP_RESOURCE_BYTES], mime_type)
@@ -347,12 +397,16 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
         else:
             body = text
             if len(data) > _MAX_ACP_RESOURCE_BYTES:
-                body += f"\n\n[Truncated to {_MAX_ACP_RESOURCE_BYTES} of {len(data)} bytes]"
+                body += (
+                    f"\n\n[Truncated to {_MAX_ACP_RESOURCE_BYTES} of {len(data)} bytes]"
+                )
         return [{"type": "text", "text": _format_resource_text(uri=uri, body=body)}]
 
     text = getattr(resource, "text", None)
     if text:
-        return [{"type": "text", "text": _format_resource_text(uri=uri, body=str(text))}]
+        return [
+            {"type": "text", "text": _format_resource_text(uri=uri, body=str(text))}
+        ]
     return []
 
 
@@ -379,7 +433,9 @@ def _image_block_to_openai_part(block: ImageContentBlock) -> dict[str, Any] | No
     """Convert an ACP image content block to OpenAI-style multimodal content."""
     data = str(getattr(block, "data", "") or "").strip()
     uri = str(getattr(block, "uri", "") or "").strip()
-    mime_type = str(getattr(block, "mime_type", "") or "image/png").strip() or "image/png"
+    mime_type = (
+        str(getattr(block, "mime_type", "") or "image/png").strip() or "image/png"
+    )
 
     if data:
         url = data if data.startswith("data:") else f"data:{mime_type};base64,{data}"
@@ -390,6 +446,25 @@ def _image_block_to_openai_part(block: ImageContentBlock) -> dict[str, Any] | No
 
     return {"type": "image_url", "image_url": {"url": url}}
 
+
+def _convert_block_to_parts(
+    block: TextContentBlock
+    | ImageContentBlock
+    | AudioContentBlock
+    | ResourceContentBlock
+    | EmbeddedResourceContentBlock,
+) -> list[dict[str, Any]]:
+    """Convert a single ACP content block into one or more OpenAI-style parts."""
+    if isinstance(block, TextContentBlock):
+        return [{"type": "text", "text": block.text}] if getattr(block, "text", None) else []
+    if isinstance(block, ImageContentBlock):
+        part = _image_block_to_openai_part(block)
+        return [part] if part else []
+    if isinstance(block, ResourceContentBlock):
+        return _resource_link_to_parts(block)
+    if isinstance(block, EmbeddedResourceContentBlock):
+        return _embedded_resource_to_parts(block)
+    return []
 
 def _content_blocks_to_openai_user_content(
     prompt: list[
@@ -405,30 +480,10 @@ def _content_blocks_to_openai_user_content(
     text_parts: list[str] = []
 
     for block in prompt:
-        if isinstance(block, TextContentBlock):
-            if block.text:
-                parts.append({"type": "text", "text": block.text})
-                text_parts.append(block.text)
-            continue
-        if isinstance(block, ImageContentBlock):
-            image_part = _image_block_to_openai_part(block)
-            if image_part is not None:
-                parts.append(image_part)
-            continue
-        if isinstance(block, ResourceContentBlock):
-            resource_parts = _resource_link_to_parts(block)
-            for part in resource_parts:
-                parts.append(part)
-                if part.get("type") == "text":
-                    text_parts.append(part["text"])
-            continue
-        if isinstance(block, EmbeddedResourceContentBlock):
-            resource_parts = _embedded_resource_to_parts(block)
-            for part in resource_parts:
-                parts.append(part)
-                if part.get("type") == "text":
-                    text_parts.append(part["text"])
-            continue
+        for part in _convert_block_to_parts(block):
+            parts.append(part)
+            if part.get("type") == "text":
+                text_parts.append(part["text"])
 
     if not parts:
         return _extract_text(prompt)
@@ -525,21 +580,31 @@ class HermesACPAgent(acp.Agent):
     def _build_model_state(self, state: SessionState) -> SessionModelState | None:
         """Return the ACP model selector payload for editors like Zed."""
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
-        provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
+        provider = (
+            getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
+        )
 
         try:
-            from hermes_cli.models import curated_models_for_provider, normalize_provider, provider_label
+            from hermes_cli.models import (
+                curated_models_for_provider,
+                normalize_provider,
+                provider_label,
+            )
 
             normalized_provider = normalize_provider(provider)
             provider_name = provider_label(normalized_provider)
             available_models: list[ModelInfo] = []
             seen_ids: set[str] = set()
 
-            for model_id, description in curated_models_for_provider(normalized_provider):
+            for model_id, description in curated_models_for_provider(
+                normalized_provider
+            ):
                 rendered_model = str(model_id or "").strip()
                 if not rendered_model:
                     continue
-                choice_id = self._encode_model_choice(normalized_provider, rendered_model)
+                choice_id = self._encode_model_choice(
+                    normalized_provider, rendered_model
+                )
                 if choice_id in seen_ids:
                     continue
                 desc_parts = [f"Provider: {provider_name}"]
@@ -585,7 +650,9 @@ class HermesACPAgent(acp.Agent):
         )
 
     @staticmethod
-    def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
+    def _resolve_model_selection(
+        raw_model: str, current_provider: str
+    ) -> tuple[str, str]:
         """Resolve ``provider:model`` input into the provider and normalized model id."""
         target_provider = current_provider
         new_model = raw_model.strip()
@@ -742,7 +809,9 @@ class HermesACPAgent(acp.Agent):
         **kwargs: Any,
     ) -> InitializeResponse:
         resolved_protocol_version = (
-            protocol_version if isinstance(protocol_version, int) else acp.PROTOCOL_VERSION
+            protocol_version
+            if isinstance(protocol_version, int)
+            else acp.PROTOCOL_VERSION
         )
         provider = detect_provider()
         auth_methods = None
@@ -777,7 +846,9 @@ class HermesACPAgent(acp.Agent):
             auth_methods=auth_methods,
         )
 
-    async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
+    async def authenticate(
+        self, method_id: str, **kwargs: Any
+    ) -> AuthenticateResponse | None:
         # Only accept authenticate() calls whose method_id matches the
         # provider we advertised in initialize(). Without this check,
         # authenticate() would acknowledge any method_id as long as the
@@ -806,11 +877,15 @@ class HermesACPAgent(acp.Agent):
                     text = item.get("text")
                     if isinstance(text, str):
                         parts.append(text)
-                    elif item.get("type") == "text" and isinstance(item.get("content"), str):
+                    elif item.get("type") == "text" and isinstance(
+                        item.get("content"), str
+                    ):
                         parts.append(item["content"])
                 elif isinstance(item, str):
                     parts.append(item)
-            return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
+            return "\n".join(
+                part.strip() for part in parts if part and part.strip()
+            ).strip()
         return ""
 
     @staticmethod
@@ -834,11 +909,22 @@ class HermesACPAgent(acp.Agent):
         return None
 
     @staticmethod
-    def _history_tool_call_name_args(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def _history_tool_call_name_args(
+        tool_call: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
         """Extract function name/arguments from an OpenAI-style tool_call."""
-        function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+        function = (
+            tool_call.get("function")
+            if isinstance(tool_call.get("function"), dict)
+            else {}
+        )
         name = str(function.get("name") or tool_call.get("name") or "unknown_tool")
-        raw_args = function.get("arguments") or tool_call.get("arguments") or tool_call.get("args") or {}
+        raw_args = (
+            function.get("arguments")
+            or tool_call.get("arguments")
+            or tool_call.get("args")
+            or {}
+        )
         if isinstance(raw_args, str):
             try:
                 parsed = json.loads(raw_args)
@@ -1018,7 +1104,9 @@ class HermesACPAgent(acp.Agent):
     ) -> ResumeSessionResponse:
         state = self.session_manager.update_cwd(session_id, cwd)
         if state is None:
-            logger.warning("resume_session: session %s not found, creating new", session_id)
+            logger.warning(
+                "resume_session: session %s not found, creating new", session_id
+            )
             state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
@@ -1038,7 +1126,9 @@ class HermesACPAgent(acp.Agent):
                 if getattr(state, "agent", None) and hasattr(state.agent, "interrupt"):
                     state.agent.interrupt()
             except Exception:
-                logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
+                logger.debug(
+                    "Failed to interrupt ACP session %s", session_id, exc_info=True
+                )
             logger.info("Cancelled session %s", session_id)
 
     async def fork_session(
@@ -1076,7 +1166,7 @@ class HermesACPAgent(acp.Agent):
         if cursor:
             for idx, s in enumerate(infos):
                 if s["session_id"] == cursor:
-                    infos = infos[idx + 1:]
+                    infos = infos[idx + 1 :]
                     break
             else:
                 # Unknown cursor -> empty page (do not fall back to full list).
@@ -1103,6 +1193,303 @@ class HermesACPAgent(acp.Agent):
         return ListSessionsResponse(sessions=sessions, next_cursor=next_cursor)
 
     # ---- Prompt (core) ------------------------------------------------------
+
+    def _preprocess_steer(
+        self,
+        text_only_prompt: bool,
+        user_content: Any,
+        user_text: str,
+        state: SessionState,
+    ) -> tuple[str, Any]:
+        # /steer on an idle session has no in-flight tool call to inject into.
+        # Rewrite it so the payload runs as a normal user prompt, matching the
+        # gateway's behavior (gateway/run.py ~L4898). Two sub-cases:
+        #   1. Zed-interrupt salvage — a prior prompt was cancelled by the
+        #      client right before /steer arrived; replay it with the steer
+        #      text attached as explicit correction/guidance so the user's
+        #      in-flight work isn't lost.
+        #   2. Plain idle — no prior work to salvage; just run the steer
+        #      payload as a regular prompt. Without this, _cmd_steer would
+        #      silently append to state.queued_prompts and respond with
+        #      "No active turn — queued for the next turn", which looks like
+        #      /queue even though the user never typed /queue.
+        if (
+            text_only_prompt
+            and isinstance(user_content, str)
+            and user_text.startswith("/steer")
+        ):
+            steer_text = (
+                user_text.split(maxsplit=1)[1].strip()
+                if len(user_text.split(maxsplit=1)) > 1
+                else ""
+            )
+            interrupted_prompt = ""
+            rewrite_idle = False
+            with state.runtime_lock:
+                if not state.is_running and steer_text:
+                    if state.interrupted_prompt_text:
+                        interrupted_prompt = state.interrupted_prompt_text
+                        state.interrupted_prompt_text = ""
+                    else:
+                        rewrite_idle = True
+            if interrupted_prompt:
+                user_text = (
+                    f"{interrupted_prompt}\n\n"
+                    f"User correction/guidance after interrupt: {steer_text}"
+                )
+                user_content = user_text
+            elif rewrite_idle:
+                user_text = steer_text
+                user_content = steer_text
+        return user_text, user_content
+
+    async def _process_slash_command_intercept(
+        self,
+        text_only_prompt: bool,
+        user_content: Any,
+        user_text: str,
+        state: SessionState,
+        session_id: str,
+    ) -> PromptResponse | None:
+        # Intercept slash commands — handle locally without calling the LLM.
+        # Slash commands are text-only; if the client included images/resources,
+        # send the whole multimodal prompt to the agent instead of treating it as
+        # an ACP command.
+        if (
+            text_only_prompt
+            and isinstance(user_content, str)
+            and user_text.startswith("/")
+        ):
+            response_text = self._handle_slash_command(user_text, state)
+            if response_text is not None:
+                if self._conn:
+                    update = acp.update_agent_message_text(response_text)
+                    await self._conn.session_update(session_id, update)
+                    await self._send_usage_update(state)
+                return PromptResponse(stop_reason="end_turn")
+        return None
+
+    async def _handle_queued_prompt(
+        self, state: SessionState, session_id: str, user_text: str
+    ) -> PromptResponse | None:
+        # If Zed sends another regular prompt while the same ACP session is
+        # still running, queue it instead of racing two AIAgent loops against
+        # the same state.history. /steer and /queue are handled above and can
+        # land immediately.
+        with state.runtime_lock:
+            if state.is_running:
+                queued_text = user_text or "[Image attachment]"
+                state.queued_prompts.append(queued_text)
+                depth = len(state.queued_prompts)
+                if self._conn:
+                    update = acp.update_agent_message_text(
+                        f"Queued for the next turn. ({depth} queued)"
+                    )
+                    await self._conn.session_update(session_id, update)
+                return PromptResponse(stop_reason="end_turn")
+            state.is_running = True
+            state.current_prompt_text = user_text or "[Image attachment]"
+        return None
+
+    def _extract_usage(self, result: dict) -> Usage | None:
+        if any(
+            result.get(key) is not None
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        ):
+            return Usage(
+                input_tokens=result.get("prompt_tokens", 0),
+                output_tokens=result.get("completion_tokens", 0),
+                total_tokens=result.get("total_tokens", 0),
+                thought_tokens=result.get("reasoning_tokens"),
+                cached_read_tokens=result.get("cache_read_tokens"),
+            )
+        return None
+
+    def _maybe_generate_title(
+        self, session_id: str, user_text: str, final_response: str, state: SessionState
+    ) -> None:
+        try:
+            from agent.title_generator import maybe_auto_title
+
+            maybe_auto_title(
+                self.session_manager._get_db(),
+                session_id,
+                user_text,
+                final_response,
+                state.history,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to auto-title ACP session %s", session_id, exc_info=True
+            )
+
+    async def _drain_queued_prompts(
+        self, state: SessionState, session_id: str, conn: Any
+    ) -> None:
+        # Mark this turn idle before draining queued work so recursive prompt()
+        # calls can acquire the session. Queued turns are intentionally run as
+        # normal follow-up user prompts, preserving role alternation and history.
+        with state.runtime_lock:
+            state.is_running = False
+            state.current_prompt_text = ""
+
+        while True:
+            with state.runtime_lock:
+                if not state.queued_prompts:
+                    break
+                next_prompt = state.queued_prompts.pop(0)
+            if conn:
+                await conn.session_update(
+                    session_id,
+                    acp.update_user_message_text(next_prompt),
+                )
+            await self.prompt(
+                prompt=[TextContentBlock(type="text", text=next_prompt)],
+                session_id=session_id,
+            )
+
+    def _setup_agent_callbacks(
+        self, conn: Any, session_id: str, loop: asyncio.AbstractEventLoop, agent: Any
+    ) -> tuple[Any, dict[str, bool]]:
+        tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
+        tool_call_meta: dict[str, dict[str, Any]] = {}
+        streamed_message_tracker = {"streamed": False}
+
+        if conn:
+            tool_progress_cb = make_tool_progress_cb(
+                conn, session_id, loop, tool_call_ids, tool_call_meta
+            )
+            reasoning_cb = make_thinking_cb(conn, session_id, loop)
+            step_cb = make_step_cb(
+                conn, session_id, loop, tool_call_ids, tool_call_meta
+            )
+            message_cb = make_message_cb(conn, session_id, loop)
+
+            def stream_delta_cb(text: str) -> None:
+                if text:
+                    streamed_message_tracker["streamed"] = True
+                message_cb(text)
+
+            approval_cb = make_approval_callback(
+                conn.request_permission, loop, session_id
+            )
+        else:
+            tool_progress_cb = None
+            reasoning_cb = None
+            step_cb = None
+            stream_delta_cb = None
+            approval_cb = None
+
+        agent.tool_progress_callback = tool_progress_cb
+        # ACP thought panes should not receive Hermes' local kawaii waiting/status
+        # updates. Route provider/model reasoning deltas instead; if the provider
+        # emits no reasoning, Zed should not get a fake "thinking" accordion.
+        agent.thinking_callback = None
+        agent.reasoning_callback = reasoning_cb
+        agent.step_callback = step_cb
+        agent.stream_delta_callback = stream_delta_cb
+
+        return approval_cb, streamed_message_tracker
+
+    def _run_agent_sync(
+        self,
+        agent: Any,
+        session_id: str,
+        user_content: Any,
+        user_text: str,
+        state: SessionState,
+        approval_cb: Any,
+    ) -> dict:
+        previous_approval_cb = None
+        previous_interactive = None
+        # Bind HERMES_SESSION_KEY for this session so per-session caches
+        # (e.g. the interactive sudo password cache in tools.terminal_tool)
+        # scope to the ACP session rather than leaking across sessions
+        # that land on the same reused executor thread. This call runs
+        # inside a contextvars.copy_context() below, so the ContextVar
+        # write is isolated from other concurrent ACP sessions.
+        try:
+            from gateway.session_context import (
+                clear_session_vars,
+                set_session_vars,
+            )
+
+            session_tokens = set_session_vars(session_key=session_id)
+        except Exception:
+            session_tokens = None
+            clear_session_vars = None  # type: ignore[assignment]
+            logger.debug("Could not set ACP session context", exc_info=True)
+        if approval_cb:
+            try:
+                from tools import terminal_tool as _terminal_tool
+
+                previous_approval_cb = _terminal_tool._get_approval_callback()
+                _terminal_tool.set_approval_callback(approval_cb)
+            except Exception:
+                logger.debug("Could not set ACP approval callback", exc_info=True)
+        # Signal to tools.approval that we have an interactive callback
+        # and the non-interactive auto-approve path must not fire.
+        previous_interactive = os.environ.get("HERMES_INTERACTIVE")
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        try:
+            result = agent.run_conversation(
+                user_message=user_content,
+                conversation_history=state.history,
+                task_id=session_id,
+                persist_user_message=user_text or "[Image attachment]",
+            )
+            return result
+        except Exception as e:
+            logger.exception("Agent error in session %s", session_id)
+            return {"final_response": f"Error: {e}", "messages": state.history}
+        finally:
+            # Restore HERMES_INTERACTIVE.
+            if previous_interactive is None:
+                os.environ.pop("HERMES_INTERACTIVE", None)
+            else:
+                os.environ["HERMES_INTERACTIVE"] = previous_interactive
+            if approval_cb:
+                try:
+                    from tools import terminal_tool as _terminal_tool
+
+                    _terminal_tool.set_approval_callback(previous_approval_cb)
+                except Exception:
+                    logger.debug("Could not restore approval callback", exc_info=True)
+            if session_tokens is not None and clear_session_vars is not None:
+                try:
+                    clear_session_vars(session_tokens)
+                except Exception:
+                    logger.debug("Could not clear ACP session context", exc_info=True)
+
+    async def _execute_run_wrapper(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        session_id: str,
+        agent: Any,
+        user_content: Any,
+        user_text: str,
+        state: SessionState,
+        approval_cb: Any,
+    ) -> dict | None:
+        def _run_wrapper() -> dict:
+            return self._run_agent_sync(
+                agent=agent,
+                session_id=session_id,
+                user_content=user_content,
+                user_text=user_text,
+                state=state,
+                approval_cb=approval_cb,
+            )
+
+        try:
+            ctx = contextvars.copy_context()
+            return await loop.run_in_executor(_executor, ctx.run, _run_wrapper)
+        except Exception:
+            logger.exception("Executor error for session %s", session_id)
+            with state.runtime_lock:
+                state.is_running = False
+                state.current_prompt_text = ""
+            return None
 
     async def prompt(
         self,
@@ -1131,69 +1518,19 @@ class HermesACPAgent(acp.Agent):
         if not has_content:
             return PromptResponse(stop_reason="end_turn")
 
-        # /steer on an idle session has no in-flight tool call to inject into.
-        # Rewrite it so the payload runs as a normal user prompt, matching the
-        # gateway's behavior (gateway/run.py ~L4898). Two sub-cases:
-        #   1. Zed-interrupt salvage — a prior prompt was cancelled by the
-        #      client right before /steer arrived; replay it with the steer
-        #      text attached as explicit correction/guidance so the user's
-        #      in-flight work isn't lost.
-        #   2. Plain idle — no prior work to salvage; just run the steer
-        #      payload as a regular prompt. Without this, _cmd_steer would
-        #      silently append to state.queued_prompts and respond with
-        #      "No active turn — queued for the next turn", which looks like
-        #      /queue even though the user never typed /queue.
-        if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/steer"):
-            steer_text = user_text.split(maxsplit=1)[1].strip() if len(user_text.split(maxsplit=1)) > 1 else ""
-            interrupted_prompt = ""
-            rewrite_idle = False
-            with state.runtime_lock:
-                if not state.is_running and steer_text:
-                    if state.interrupted_prompt_text:
-                        interrupted_prompt = state.interrupted_prompt_text
-                        state.interrupted_prompt_text = ""
-                    else:
-                        rewrite_idle = True
-            if interrupted_prompt:
-                user_text = (
-                    f"{interrupted_prompt}\n\n"
-                    f"User correction/guidance after interrupt: {steer_text}"
-                )
-                user_content = user_text
-            elif rewrite_idle:
-                user_text = steer_text
-                user_content = steer_text
+        user_text, user_content = self._preprocess_steer(
+            text_only_prompt, user_content, user_text, state
+        )
 
-        # Intercept slash commands — handle locally without calling the LLM.
-        # Slash commands are text-only; if the client included images/resources,
-        # send the whole multimodal prompt to the agent instead of treating it as
-        # an ACP command.
-        if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
-            response_text = self._handle_slash_command(user_text, state)
-            if response_text is not None:
-                if self._conn:
-                    update = acp.update_agent_message_text(response_text)
-                    await self._conn.session_update(session_id, update)
-                    await self._send_usage_update(state)
-                return PromptResponse(stop_reason="end_turn")
+        slash_response = await self._process_slash_command_intercept(
+            text_only_prompt, user_content, user_text, state, session_id
+        )
+        if slash_response:
+            return slash_response
 
-        # If Zed sends another regular prompt while the same ACP session is
-        # still running, queue it instead of racing two AIAgent loops against
-        # the same state.history. /steer and /queue are handled above and can
-        # land immediately.
-        with state.runtime_lock:
-            if state.is_running:
-                queued_text = user_text or "[Image attachment]"
-                state.queued_prompts.append(queued_text)
-                depth = len(state.queued_prompts)
-                if self._conn:
-                    update = acp.update_agent_message_text(
-                        f"Queued for the next turn. ({depth} queued)"
-                    )
-                    await self._conn.session_update(session_id, update)
-                return PromptResponse(stop_reason="end_turn")
-            state.is_running = True
-            state.current_prompt_text = user_text or "[Image attachment]"
+        queued_response = await self._handle_queued_prompt(state, session_id, user_text)
+        if queued_response:
+            return queued_response
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
@@ -1203,125 +1540,14 @@ class HermesACPAgent(acp.Agent):
         if state.cancel_event:
             state.cancel_event.clear()
 
-        tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
-        tool_call_meta: dict[str, dict[str, Any]] = {}
-        previous_approval_cb = None
+        approval_cb, _streamed_message_tracker = self._setup_agent_callbacks(
+            conn, session_id, loop, state.agent
+        )
 
-        streamed_message = False
-
-        if conn:
-            tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            reasoning_cb = make_thinking_cb(conn, session_id, loop)
-            step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            message_cb = make_message_cb(conn, session_id, loop)
-
-            def stream_delta_cb(text: str) -> None:
-                nonlocal streamed_message
-                if text:
-                    streamed_message = True
-                message_cb(text)
-
-            approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
-        else:
-            tool_progress_cb = None
-            reasoning_cb = None
-            step_cb = None
-            stream_delta_cb = None
-            approval_cb = None
-
-        agent = state.agent
-        agent.tool_progress_callback = tool_progress_cb
-        # ACP thought panes should not receive Hermes' local kawaii waiting/status
-        # updates. Route provider/model reasoning deltas instead; if the provider
-        # emits no reasoning, Zed should not get a fake "thinking" accordion.
-        agent.thinking_callback = None
-        agent.reasoning_callback = reasoning_cb
-        agent.step_callback = step_cb
-        agent.stream_delta_callback = stream_delta_cb
-
-        # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
-        # Set it INSIDE _run_agent so the TLS write happens in the executor
-        # thread — setting it here would write to the event-loop thread's TLS,
-        # not the executor's. Also set HERMES_INTERACTIVE so approval.py
-        # takes the CLI-interactive path (which calls the registered
-        # callback via prompt_dangerous_approval) instead of the
-        # non-interactive auto-approve branch (GHSA-96vc-wcxf-jjff).
-        # ACP's conn.request_permission maps cleanly to the interactive
-        # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
-        # which requires a notify_cb registered in _gateway_notify_cbs.
-        previous_approval_cb = None
-        previous_interactive = None
-
-        def _run_agent() -> dict:
-            nonlocal previous_approval_cb, previous_interactive
-            # Bind HERMES_SESSION_KEY for this session so per-session caches
-            # (e.g. the interactive sudo password cache in tools.terminal_tool)
-            # scope to the ACP session rather than leaking across sessions
-            # that land on the same reused executor thread. This call runs
-            # inside a contextvars.copy_context() below, so the ContextVar
-            # write is isolated from other concurrent ACP sessions.
-            try:
-                from gateway.session_context import (
-                    clear_session_vars,
-                    set_session_vars,
-                )
-                session_tokens = set_session_vars(session_key=session_id)
-            except Exception:
-                session_tokens = None
-                clear_session_vars = None  # type: ignore[assignment]
-                logger.debug("Could not set ACP session context", exc_info=True)
-            if approval_cb:
-                try:
-                    from tools import terminal_tool as _terminal_tool
-                    previous_approval_cb = _terminal_tool._get_approval_callback()
-                    _terminal_tool.set_approval_callback(approval_cb)
-                except Exception:
-                    logger.debug("Could not set ACP approval callback", exc_info=True)
-            # Signal to tools.approval that we have an interactive callback
-            # and the non-interactive auto-approve path must not fire.
-            previous_interactive = os.environ.get("HERMES_INTERACTIVE")
-            os.environ["HERMES_INTERACTIVE"] = "1"
-            try:
-                result = agent.run_conversation(
-                    user_message=user_content,
-                    conversation_history=state.history,
-                    task_id=session_id,
-                    persist_user_message=user_text or "[Image attachment]",
-                )
-                return result
-            except Exception as e:
-                logger.exception("Agent error in session %s", session_id)
-                return {"final_response": f"Error: {e}", "messages": state.history}
-            finally:
-                # Restore HERMES_INTERACTIVE.
-                if previous_interactive is None:
-                    os.environ.pop("HERMES_INTERACTIVE", None)
-                else:
-                    os.environ["HERMES_INTERACTIVE"] = previous_interactive
-                if approval_cb:
-                    try:
-                        from tools import terminal_tool as _terminal_tool
-                        _terminal_tool.set_approval_callback(previous_approval_cb)
-                    except Exception:
-                        logger.debug("Could not restore approval callback", exc_info=True)
-                if session_tokens is not None and clear_session_vars is not None:
-                    try:
-                        clear_session_vars(session_tokens)
-                    except Exception:
-                        logger.debug("Could not clear ACP session context", exc_info=True)
-
-        try:
-            # Wrap the executor call in a fresh copy of the current context so
-            # concurrent ACP sessions on the shared ThreadPoolExecutor don't
-            # stomp on each other's ContextVar writes (HERMES_SESSION_KEY in
-            # particular — used by the interactive sudo password cache scope).
-            ctx = contextvars.copy_context()
-            result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
-        except Exception:
-            logger.exception("Executor error for session %s", session_id)
-            with state.runtime_lock:
-                state.is_running = False
-                state.current_prompt_text = ""
+        result = await self._execute_run_wrapper(
+            loop, session_id, state.agent, user_content, user_text, state, approval_cb
+        )
+        if result is None:
             return PromptResponse(stop_reason="end_turn")
 
         if result.get("messages"):
@@ -1331,57 +1557,22 @@ class HermesACPAgent(acp.Agent):
 
         final_response = result.get("final_response", "")
         if final_response:
-            try:
-                from agent.title_generator import maybe_auto_title
+            self._maybe_generate_title(session_id, user_text, final_response, state)
+            if conn and not _streamed_message_tracker["streamed"]:
+                update = acp.update_agent_message_text(final_response)
+                await conn.session_update(session_id, update)
 
-                maybe_auto_title(
-                    self.session_manager._get_db(),
-                    session_id,
-                    user_text,
-                    final_response,
-                    state.history,
-                )
-            except Exception:
-                logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
-        if final_response and conn and not streamed_message:
-            update = acp.update_agent_message_text(final_response)
-            await conn.session_update(session_id, update)
+        await self._drain_queued_prompts(state, session_id, conn)
 
-        # Mark this turn idle before draining queued work so recursive prompt()
-        # calls can acquire the session. Queued turns are intentionally run as
-        # normal follow-up user prompts, preserving role alternation and history.
-        with state.runtime_lock:
-            state.is_running = False
-            state.current_prompt_text = ""
-
-        while True:
-            with state.runtime_lock:
-                if not state.queued_prompts:
-                    break
-                next_prompt = state.queued_prompts.pop(0)
-            if conn:
-                await conn.session_update(
-                    session_id,
-                    acp.update_user_message_text(next_prompt),
-                )
-            await self.prompt(
-                prompt=[TextContentBlock(type="text", text=next_prompt)],
-                session_id=session_id,
-            )
-
-        usage = None
-        if any(result.get(key) is not None for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
-            usage = Usage(
-                input_tokens=result.get("prompt_tokens", 0),
-                output_tokens=result.get("completion_tokens", 0),
-                total_tokens=result.get("total_tokens", 0),
-                thought_tokens=result.get("reasoning_tokens"),
-                cached_read_tokens=result.get("cache_read_tokens"),
-            )
+        usage = self._extract_usage(result)
 
         await self._send_usage_update(state)
 
-        stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
+        stop_reason = (
+            "cancelled"
+            if state.cancel_event and state.cancel_event.is_set()
+            else "end_turn"
+        )
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     # ---- Slash commands (headless) -------------------------------------------
@@ -1477,7 +1668,9 @@ class HermesACPAgent(acp.Agent):
             return f"Current model: {model}\nProvider: {provider}"
 
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
-        target_provider, new_model = self._resolve_model_selection(args, current_provider)
+        target_provider, new_model = self._resolve_model_selection(
+            args, current_provider
+        )
 
         state.model = new_model
         state.agent = self.session_manager._make_agent(
@@ -1487,13 +1680,18 @@ class HermesACPAgent(acp.Agent):
             requested_provider=target_provider,
         )
         self.session_manager.save_session(state.session_id)
-        provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
+        provider_label = (
+            getattr(state.agent, "provider", None)
+            or target_provider
+            or current_provider
+        )
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
             from model_tools import get_tool_definitions
+
             toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
             )
@@ -1568,7 +1766,11 @@ class HermesACPAgent(acp.Agent):
 
         if threshold_tokens > 0:
             if approx_tokens > 0:
-                threshold_pct = (threshold_tokens / context_length) * 100 if context_length > 0 else 0
+                threshold_pct = (
+                    (threshold_tokens / context_length) * 100
+                    if context_length > 0
+                    else 0
+                )
                 remaining = max(threshold_tokens - approx_tokens, 0)
                 if approx_tokens >= threshold_tokens:
                     lines.append(
@@ -1637,7 +1839,9 @@ class HermesACPAgent(acp.Agent):
             self.session_manager.save_session(state.session_id)
 
             new_count = len(state.history)
-            _sys_prompt_after = getattr(agent, "_cached_system_prompt", "") or _sys_prompt
+            _sys_prompt_after = (
+                getattr(agent, "_cached_system_prompt", "") or _sys_prompt
+            )
             _tools_after = getattr(agent, "tools", None) or _tools
             new_tokens = estimate_request_tokens_rough(
                 state.history,
@@ -1662,7 +1866,9 @@ class HermesACPAgent(acp.Agent):
                     preview = steer_text[:80] + ("..." if len(steer_text) > 80 else "")
                     return f"⏩ Steer queued for the active turn: {preview}"
             except Exception as exc:
-                logger.warning("ACP steer failed for session %s: %s", state.session_id, exc)
+                logger.warning(
+                    "ACP steer failed for session %s: %s", state.session_id, exc
+                )
                 return f"⚠️ Steer failed: {exc}"
 
         with state.runtime_lock:
@@ -1696,9 +1902,15 @@ class HermesACPAgent(acp.Agent):
                 current_provider or "openrouter",
             )
             state.model = resolved_model
-            provider_changed = bool(current_provider and requested_provider != current_provider)
-            current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
-            current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
+            provider_changed = bool(
+                current_provider and requested_provider != current_provider
+            )
+            current_base_url = (
+                None if provider_changed else getattr(state.agent, "base_url", None)
+            )
+            current_api_mode = (
+                None if provider_changed else getattr(state.agent, "api_mode", None)
+            )
             state.agent = self.session_manager._make_agent(
                 session_id=session_id,
                 cwd=state.cwd,
@@ -1715,7 +1927,9 @@ class HermesACPAgent(acp.Agent):
                 requested_provider,
             )
             return SetSessionModelResponse()
-        logger.warning("Session %s: model switch requested for missing session", session_id)
+        logger.warning(
+            "Session %s: model switch requested for missing session", session_id
+        )
         return None
 
     async def set_session_mode(
@@ -1724,7 +1938,9 @@ class HermesACPAgent(acp.Agent):
         """Persist the editor-requested mode so ACP clients do not fail on mode switches."""
         state = self.session_manager.get_session(session_id)
         if state is None:
-            logger.warning("Session %s: mode switch requested for missing session", session_id)
+            logger.warning(
+                "Session %s: mode switch requested for missing session", session_id
+            )
             return None
         setattr(state, "mode", mode_id)
         self.session_manager.save_session(session_id)
@@ -1737,7 +1953,9 @@ class HermesACPAgent(acp.Agent):
         """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
         state = self.session_manager.get_session(session_id)
         if state is None:
-            logger.warning("Session %s: config update requested for missing session", session_id)
+            logger.warning(
+                "Session %s: config update requested for missing session", session_id
+            )
             return None
 
         options = getattr(state, "config_options", None)

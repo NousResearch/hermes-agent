@@ -2867,12 +2867,20 @@ def _resolve_single_provider(
 
     Uses the existing provider resolution infrastructure where possible.
     """
-    # Reuse resolve_provider_client which handles provider→client mapping
+    # Reuse resolve_provider_client which handles provider→client mapping.
+    #
+    # NOTE on the keyword argument names: ``resolve_provider_client``'s public
+    # signature uses ``explicit_base_url`` and ``explicit_api_key`` (see its
+    # ``def`` ~line 2925). Earlier this call site passed ``base_url=`` and
+    # ``api_key=``, which raised ``TypeError`` at runtime — silently dropping
+    # every configured ``auxiliary.<task>.fallback_chain`` entry that specified
+    # an endpoint. Map the local parameter names to the callee's expected
+    # keyword names explicitly.
     client, resolved_model = resolve_provider_client(
         provider=provider,
         model=model,
-        base_url=base_url,
-        api_key=api_key,
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
     )
     return client
 
@@ -4889,19 +4897,25 @@ def call_llm(
                         task or "call", reason, resolved_provider, first_err)
 
             # Fallback order (#26882, #26803):
-            #   1. User-configured fallback_chain (per-task) if set
-            #   2. Main agent model (last-resort safety net)
-            # For auto users (no explicit aux provider), use the full
-            # auto-detection chain instead — its Step 1 IS the main agent
-            # model, so users on `auto` already get main-model fallback.
+            #   1. User-configured fallback_chain (per-task) — always tried
+            #      first if set, regardless of provider:auto or not.
+            #   2. Auto-detection chain (auto users) OR main agent model
+            #      (explicit-provider users) — last-resort safety net.
+            #
+            # Previously the auto path skipped the configured fallback_chain
+            # entirely and went straight to the built-in payment fallback. That
+            # silently ignored explicit per-task `fallback_chain:` config blocks
+            # when the user left `provider: auto`, defeating the point of
+            # configuring a chain. Now the configured chain is consulted first
+            # in BOTH branches.
             fb_client, fb_model, fb_label = (None, None, "")
-            if is_auto:
-                fb_client, fb_model, fb_label = _try_payment_fallback(
-                    resolved_provider, task, reason=reason)
-            else:
-                fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
-                if fb_client is None:
+            fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+                task, resolved_provider or "auto", reason=reason)
+            if fb_client is None:
+                if is_auto:
+                    fb_client, fb_model, fb_label = _try_payment_fallback(
+                        resolved_provider, task, reason=reason)
+                else:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 
@@ -5241,19 +5255,17 @@ async def async_call_llm(
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
 
-            # Fallback order (#26882, #26803):
-            #   1. User-configured fallback_chain (per-task) if set
-            #   2. Main agent model (last-resort safety net)
-            # Auto users get the full auto-detection chain instead — its
-            # Step 1 IS the main agent model.
+            # Fallback order (#26882, #26803) — mirrors sync path above:
+            # configured fallback_chain first regardless of auto, then auto
+            # chain or main-model.
             fb_client, fb_model, fb_label = (None, None, "")
-            if is_auto:
-                fb_client, fb_model, fb_label = _try_payment_fallback(
-                    resolved_provider, task, reason=reason)
-            else:
-                fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
-                if fb_client is None:
+            fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+                task, resolved_provider or "auto", reason=reason)
+            if fb_client is None:
+                if is_auto:
+                    fb_client, fb_model, fb_label = _try_payment_fallback(
+                        resolved_provider, task, reason=reason)
+                else:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 

@@ -840,12 +840,23 @@ class AIAgent:
         does NOT support the Responses API — gpt-5.x models are served
         on the regular ``/chat/completions`` path — so routing decisions
         must treat Azure separately from direct OpenAI.
+
+        Two domains route here:
+
+        * ``{resource}.openai.azure.com`` — the classic Azure OpenAI domain.
+        * ``{resource}.cognitiveservices.azure.com`` — Azure AI Foundry's
+          domain. Functionally identical endpoint surface (same
+          ``/openai/v1`` path, same OpenAI-compatible client, same
+          ``/chat/completions``-only model serving), just a different
+          DNS suffix. Both must be classified as Azure or the fallback
+          API-mode derivation in ``chat_completion_helpers.py`` routes
+          gpt-5.x to ``/responses`` and 404s.
         """
         if base_url is not None:
             url = str(base_url).lower()
         else:
             url = getattr(self, "_base_url_lower", "") or ""
-        return "openai.azure.com" in url
+        return "openai.azure.com" in url or "cognitiveservices.azure.com" in url
 
     def _is_github_copilot_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""

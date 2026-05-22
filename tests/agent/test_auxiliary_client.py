@@ -3026,3 +3026,144 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestZ2O1579ConfiguredFallbackChainFix:
+    """Regression tests for the two bugs Mercator self-diagnosed on 2026-05-21
+    (Verdigris Z2O-1579): configured auxiliary.<task>.fallback_chain was never
+    actually exercised at runtime because of (1) an argument-name mismatch
+    between _resolve_single_provider and resolve_provider_client and (2) the
+    auto path bypassing the configured chain entirely.
+
+    Both bugs landed silently — the YAML config was correct, the endpoint was
+    real and reachable, but no aux call ever reached the configured fallback
+    because of these two failures."""
+
+    def test_resolve_single_provider_passes_explicit_kwargs_to_resolve_provider_client(
+        self,
+    ):
+        """Bug 1: _resolve_single_provider was passing `base_url=` and
+        `api_key=` keyword arguments to resolve_provider_client, which expects
+        `explicit_base_url=` and `explicit_api_key=`. This raised TypeError
+        and silently dropped every configured fallback entry that specified
+        an endpoint. The fix maps the local parameter names to the callee's
+        expected keyword names."""
+        from agent.auxiliary_client import _resolve_single_provider
+
+        sentinel_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(sentinel_client, "gpt-5.5"),
+        ) as mock_resolve:
+            result = _resolve_single_provider(
+                provider="azure-foundry",
+                model="gpt-5.5",
+                base_url="https://mercator-aux-swc.cognitiveservices.azure.com/openai/v1",
+                api_key="sk-test",
+            )
+        assert result is sentinel_client
+        # The call MUST use explicit_base_url / explicit_api_key keywords —
+        # not base_url / api_key, which would TypeError.
+        mock_resolve.assert_called_once()
+        kwargs = mock_resolve.call_args.kwargs
+        assert kwargs["provider"] == "azure-foundry"
+        assert kwargs["model"] == "gpt-5.5"
+        assert (
+            kwargs["explicit_base_url"]
+            == "https://mercator-aux-swc.cognitiveservices.azure.com/openai/v1"
+        )
+        assert kwargs["explicit_api_key"] == "sk-test"
+        # The buggy keyword names must NOT be present in the call —
+        # resolve_provider_client doesn't accept them.
+        assert "base_url" not in kwargs
+        assert "api_key" not in kwargs
+
+    def test_resolve_single_provider_real_signature_compatibility(self):
+        """Sanity check: confirm resolve_provider_client's signature still
+        uses `explicit_base_url` / `explicit_api_key` and not the names the
+        bug used. If this test starts failing, the signature was renamed
+        upstream and this regression test (and the call site fix) need
+        re-aligning."""
+        import inspect
+        from agent.auxiliary_client import resolve_provider_client
+
+        sig = inspect.signature(resolve_provider_client)
+        params = set(sig.parameters.keys())
+        assert "explicit_base_url" in params, (
+            "resolve_provider_client signature changed — the Z2O-1579 fix in "
+            "_resolve_single_provider may need to be re-aligned."
+        )
+        assert "explicit_api_key" in params, (
+            "resolve_provider_client signature changed — the Z2O-1579 fix in "
+            "_resolve_single_provider may need to be re-aligned."
+        )
+
+    def test_auto_path_tries_configured_fallback_chain_before_built_in(self):
+        """Bug 2: when provider:auto (the default), call_llm went straight to
+        _try_payment_fallback (the built-in openrouter/nous/local/api-key
+        chain) and never consulted the user-configured
+        auxiliary.<task>.fallback_chain. This silently ignored every per-task
+        fallback_chain config block for auto users. The fix tries the
+        configured chain first in BOTH branches.
+
+        We assert _try_configured_fallback_chain is called BEFORE
+        _try_payment_fallback when the primary aux call fails with a
+        connection error and the provider is auto."""
+        from agent.auxiliary_client import call_llm
+
+        primary_client = MagicMock()
+        primary_client.base_url = "https://primary.example.com/v1/"
+        err = ConnectionError("Connection error.")
+        primary_client.chat.completions.create.side_effect = err
+
+        configured_fb_client = MagicMock()
+        configured_resp = MagicMock()
+        configured_resp.choices = [MagicMock(message=MagicMock(content="ok"))]
+        configured_fb_client.chat.completions.create.return_value = configured_resp
+
+        # Track call order so we can assert "configured-first".
+        call_order = []
+
+        def configured_chain_side_effect(*args, **kwargs):
+            call_order.append("configured")
+            return (configured_fb_client, "gpt-5.5", "fallback_chain[0](azure-foundry)")
+
+        def payment_fb_side_effect(*args, **kwargs):
+            call_order.append("payment")
+            return (None, None, "")
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "gpt-5.5"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "gpt-5.5", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            side_effect=configured_chain_side_effect,
+        ) as mock_configured, patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            side_effect=payment_fb_side_effect,
+        ) as mock_payment, patch(
+            "agent.auxiliary_client._build_call_kwargs",
+            return_value={"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]},
+        ), patch(
+            "agent.auxiliary_client._is_connection_error",
+            return_value=True,
+        ):
+            call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        # Configured chain MUST be tried first. Pre-fix behavior would have
+        # called _try_payment_fallback and never touched
+        # _try_configured_fallback_chain in the auto path.
+        assert call_order[0] == "configured", (
+            f"Expected configured chain to be tried first, got order: {call_order}. "
+            "Pre-fix code (Z2O-1579) called _try_payment_fallback in the auto "
+            "branch without consulting the user-configured fallback_chain."
+        )
+        mock_configured.assert_called_once()
+        # Payment fallback should NOT be reached because configured chain
+        # returned a working client.
+        mock_payment.assert_not_called()

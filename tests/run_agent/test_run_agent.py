@@ -4156,6 +4156,36 @@ class TestGpt5ApiModeRouting:
         agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
         assert agent._is_azure_openai_url() is True
 
+    def test_is_azure_openai_url_detects_cognitiveservices_domain(self, agent):
+        """Azure AI Foundry resources use the cognitiveservices.azure.com
+        domain instead of openai.azure.com. The endpoint surface is
+        identical (same /openai/v1 path, same OpenAI-compatible client,
+        same /chat/completions-only model serving for gpt-5.x). Both
+        must be classified as Azure or the fallback api-mode derivation
+        in chat_completion_helpers.py routes gpt-5.x to /responses
+        and 404s.
+
+        Regression test for the case where Mercator (a downstream
+        Hermes consumer) configured a gpt-5.5 fallback at
+        ``mercator-aux-swc.cognitiveservices.azure.com/openai/v1`` and
+        observed the fallback rotation activate but immediately fail
+        on /responses because Azure was not detected."""
+        assert (
+            agent._is_azure_openai_url(
+                "https://mercator-aux-swc.cognitiveservices.azure.com/openai/v1"
+            )
+            is True
+        )
+        assert (
+            agent._is_azure_openai_url(
+                "https://any-resource.cognitiveservices.azure.com/"
+            )
+            is True
+        )
+        # And via the instance attribute, same as the openai.azure.com case.
+        agent.base_url = "https://my-foundry.cognitiveservices.azure.com/openai/v1"
+        assert agent._is_azure_openai_url() is True
+
 
 # ---------------------------------------------------------------------------
 # System prompt stability for prompt caching

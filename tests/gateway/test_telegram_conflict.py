@@ -309,3 +309,98 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     app.stop.assert_not_awaited()
     app.shutdown.assert_awaited_once()
     warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_start_polling_passes_long_timeout(monkeypatch):
+    """start_polling() must pass a `timeout` > 10s to avoid frequent 409 races."""
+    from datetime import timedelta
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    captured_kwargs = {}
+
+    async def fake_start_polling(**kwargs):
+        captured_kwargs.update(kwargs)
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot, updater=updater, add_handler=MagicMock(),
+        initialize=AsyncMock(), start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+    assert ok is True
+    assert "timeout" in captured_kwargs, "start_polling must be called with timeout="
+    t = captured_kwargs["timeout"]
+    seconds = t.total_seconds() if isinstance(t, timedelta) else float(t)
+    assert seconds > 10, f"timeout must exceed PTB default of 10s, got {seconds}"
+
+
+@pytest.mark.asyncio
+async def test_handle_polling_conflict_is_idempotent(monkeypatch):
+    """Concurrent invocations while a recovery is in progress must not spawn duplicates."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    start_calls = {"n": 0}
+
+    # Set the flag manually so a second invocation is rejected as expected.
+    adapter._polling_conflict_recovery_in_progress = True
+
+    async def fake_start_polling(**kwargs):
+        start_calls["n"] += 1
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    adapter._app = SimpleNamespace(bot=SimpleNamespace(), updater=updater)
+    adapter._polling_error_callback_ref = lambda e: None
+
+    async def noop_drain():
+        return None
+    monkeypatch.setattr(adapter, "_drain_polling_connections", noop_drain)
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    conflict = type("Conflict", (Exception,), {})
+
+    # While a recovery is in progress, additional invocations must no-op
+    # and must NOT call start_polling or even enter the retry branch.
+    await adapter._handle_polling_conflict(conflict("c2"))
+    await adapter._handle_polling_conflict(conflict("c3"))
+
+    assert start_calls["n"] == 0, "No restart should be attempted while recovery in progress"
+    assert adapter._polling_conflict_count == 0, "Count must not advance for suppressed calls"
+    # Flag stays set because the (simulated) outer recovery still owns it.
+    assert adapter._polling_conflict_recovery_in_progress is True
+
+    # Once the outer recovery clears the flag, a new invocation proceeds.
+    adapter._polling_conflict_recovery_in_progress = False
+    await adapter._handle_polling_conflict(conflict("c4"))
+    assert start_calls["n"] == 1
+    assert adapter._polling_conflict_recovery_in_progress is False
+

@@ -15,7 +15,7 @@ import os
 import tempfile
 import html as _html
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -429,6 +429,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        self._polling_conflict_recovery_in_progress: bool = False
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # Track forum chats where we've already registered bot commands
@@ -902,6 +903,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=False,
                 error_callback=self._polling_error_callback_ref,
+                timeout=timedelta(seconds=60),
             )
             logger.info(
                 "[%s] Telegram polling resumed after network error (attempt %d)",
@@ -977,6 +979,18 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
+        # Guard against double-fire: PTB's network_retry_loop may keep invoking
+        # our error callback while a recovery is already underway. Only one
+        # recovery cycle runs at a time; concurrent invocations no-op.
+        if self._polling_conflict_recovery_in_progress:
+            return
+        self._polling_conflict_recovery_in_progress = True
+        try:
+            await self._handle_polling_conflict_inner(error)
+        finally:
+            self._polling_conflict_recovery_in_progress = False
+
+    async def _handle_polling_conflict_inner(self, error: Exception) -> None:
         # Transient 409 Conflict errors arise when the previous gateway process
         # has been killed (e.g. during `hermes update` or `--replace` handoffs)
         # but its long-poll connection hasn't yet expired on Telegram's servers.
@@ -1028,6 +1042,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,
+                    timeout=timedelta(seconds=60),
                 )
                 logger.info(
                     "[%s] Telegram polling resumed after conflict retry %d/%d",
@@ -1529,6 +1544,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 loop = asyncio.get_running_loop()
 
                 def _polling_error_callback(error: Exception) -> None:
+                    # Suppress callbacks while a conflict recovery is in
+                    # progress: PTB's network_retry_loop will keep calling
+                    # us between retries while updater.stop() is awaiting,
+                    # and we don't want to queue or race additional handlers.
+                    if self._polling_conflict_recovery_in_progress:
+                        return
                     if self._polling_error_task and not self._polling_error_task.done():
                         return
                     if self._looks_like_polling_conflict(error):
@@ -1546,6 +1567,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
+                    timeout=timedelta(seconds=60),
                 )
             
             # Register bot commands so Telegram shows a hint menu when users type /

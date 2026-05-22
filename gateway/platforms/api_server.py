@@ -831,6 +831,13 @@ class APIServerAdapter(BasePlatformAdapter):
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
+        # Auto-activate the agente-desktop toolset when Electron IPC env vars are present.
+        # This matches the existing plugin activation contract documented in
+        # plugins/agente_desktop/__init__.py.
+        if os.environ.get("AGENTE_TOOL_PORT") and os.environ.get("AGENTE_TOOL_SECRET"):
+            if "agente-desktop" not in enabled_toolsets:
+                enabled_toolsets = sorted(set(enabled_toolsets) | {"agente-desktop"})
+
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
         # Load fallback provider chain so the API server platform has the

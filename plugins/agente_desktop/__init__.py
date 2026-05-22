@@ -51,6 +51,18 @@ _TOOL_EMOJIS: dict[str, str] = {
     "save_triage_instructions": "📝",
     "request_approval": "✋",
     "get_office_context": "🏢",
+    # desktop-202605-161 additions
+    "upsert_client": "👤",
+    "query_client": "🔍",
+    "link_ticket_to_client": "🔗",
+    "link_document_to_client": "📎",
+    "update_office_context": "🏢",
+    "list_tools": "🛠️",
+    "list_workflows": "📂",
+    "inspect_workflow": "🔬",
+    "start_workflow_run": "▶️",
+    "get_run_status": "📊",
+    "resume_paused_run": "⏯️",
 }
 
 
@@ -128,11 +140,13 @@ def _make_handler(tool_name: str):
 
 
 def register(ctx) -> None:
-    """Register the 8 Agente desktop tools.
+    """Register the 18 Agente desktop tools.
 
     Called once by the plugin loader when the plugin is enabled via
     ``plugins.enabled`` in config.yaml AND the ``agente-desktop`` toolset is
-    listed under ``toolsets:``.
+    listed under ``toolsets:``. The toolset is auto-activated at runtime when
+    AGENTE_TOOL_PORT + AGENTE_TOOL_SECRET env vars are present (see
+    gateway/platforms/api_server.py ``_create_agent``).
     """
     for tool_name, schema in TOOL_SCHEMAS.items():
         ctx.register_tool(

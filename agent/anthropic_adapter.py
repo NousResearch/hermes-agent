@@ -643,6 +643,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    api_version: str = None,  # type: ignore[assignment]
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -702,7 +703,7 @@ def build_anthropic_client(
         # malformed paths like /anthropic?api-version=.../v1/messages).
         if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
             kwargs["base_url"] = normalized_base_url.rstrip("/")
-            kwargs["default_query"] = {"api-version": "2025-04-15"}
+            kwargs["default_query"] = {"api-version": api_version or "2025-04-15"}
         else:
             kwargs["base_url"] = normalized_base_url
     common_betas = _common_betas_for_base_url(

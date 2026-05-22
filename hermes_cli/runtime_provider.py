@@ -541,6 +541,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    api_version = str(entry.get("api_version") or "").strip()
+                    if api_version:
+                        result["api_version"] = api_version
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -562,6 +565,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        api_version = str(entry.get("api_version") or "").strip()
+                        if api_version:
+                            result["api_version"] = api_version
                         return result
 
     # Fall back to custom_providers: list (legacy format)

@@ -3049,6 +3049,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body",
+        "api_version", "auth_mode",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -3146,6 +3147,14 @@ def _normalize_custom_provider_entry(
     extra_body = entry.get("extra_body")
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
+
+    api_version = entry.get("api_version")
+    if isinstance(api_version, str) and api_version.strip():
+        normalized["api_version"] = api_version.strip()
+
+    auth_mode = entry.get("auth_mode")
+    if isinstance(auth_mode, str) and auth_mode.strip():
+        normalized["auth_mode"] = auth_mode.strip()
 
     return normalized
 

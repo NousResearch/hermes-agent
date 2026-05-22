@@ -110,6 +110,7 @@ class HonchoSessionManager:
         # one source of truth; see __init__.py _do_session_init for the prewarm.
         self._context_cache: dict[str, dict] = {}
         self._prefetch_cache_lock = threading.Lock()
+        self._last_dialectic_error: str | None = None
         self._dialectic_reasoning_level: str = (
             config.dialectic_reasoning_level if config else "low"
         )
@@ -565,6 +566,7 @@ class HonchoSessionManager:
         else:
             level = self._default_reasoning_level()
 
+        self._last_dialectic_error = None
         try:
             if self._ai_observe_others:
                 # AI peer can observe other peers — use assistant as observer.
@@ -588,6 +590,11 @@ class HonchoSessionManager:
             return result
         except Exception as e:
             logger.warning("Honcho dialectic query failed: %s", e)
+            message = str(e).lower()
+            if "timeout" in message or "timed out" in message:
+                self._last_dialectic_error = "timeout"
+            else:
+                self._last_dialectic_error = "failed"
             return ""
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
@@ -1032,7 +1039,7 @@ class HonchoSessionManager:
         """
         Semantic search over Honcho session context.
 
-        Returns raw excerpts ranked by relevance to the query. No LLM
+        Returns sanitized excerpts ranked by relevance to the query. No LLM
         reasoning — cheaper and faster than dialectic_query. Good for
         factual lookups where the model will do its own synthesis.
 

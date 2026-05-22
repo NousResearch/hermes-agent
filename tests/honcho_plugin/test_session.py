@@ -450,6 +450,234 @@ class TestConcludeToolDispatch:
             peer="hermes",
         )
 
+    def test_honcho_search_sanitizes_and_caps_tool_result_for_technical_queries(self):
+        """Summoned search must not return raw cross-room/private sludge."""
+        import json
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.search_context.return_value = "\n".join([
+            "NAS backup state: restic snapshots verified and staging deletion is gated.",
+            "Raw intimate line with cock penis orgasm details that belongs outside technical retrieval.",
+            "Ember and Kai share chosen closeness with arousal/body continuity.",
+            "Naked bite breast thigh detail belongs outside technical retrieval.",
+            "Peer card facts messages excerpt content: source-ish raw dump.",
+            "As an AI I can't participate in explicit content.",
+            "platform: discord session_id=123456789012345678 message_id=987 source=tool",
+            "Safe technical line " + ("x" * 5000),
+        ])
+
+        result = provider.handle_tool_call(
+            "honcho_search",
+            {"query": "NAS backup restic staging deletion", "max_tokens": 2000},
+        )
+
+        parsed = json.loads(result)
+        text = parsed["result"]
+        assert "NAS backup state" in text
+        assert "cock" not in text
+        assert "penis" not in text
+        assert "orgasm" not in text
+        assert "explicit intimacy" not in text
+        assert "arousal" not in text
+        assert "naked" not in text.lower()
+        assert "bite" not in text.lower()
+        assert "breast" not in text.lower()
+        assert "thigh" not in text.lower()
+        assert "peer card" not in text.lower()
+        assert "facts" not in text.lower()
+        assert "messages" not in text.lower()
+        assert "excerpt" not in text.lower()
+        assert "content:" not in text.lower()
+        assert "As an AI" not in text
+        assert "session_id" not in text
+        assert "message_id" not in text
+        assert "source=" not in text
+        assert len(text) <= 2500
+        assert parsed["sanitized"] is True
+        assert parsed["omitted_sensitive_context"] is True
+
+    def test_honcho_search_treats_phase_smoke_marker_queries_as_technical(self):
+        """Technical Honcho smoke/audit queries may name leak classes without opening that room."""
+        import json
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.search_context.return_value = "\n".join([
+            "Honcho Phase 4 smoke result: direct harness should keep search JSON bounded.",
+            "Ember and Kai share chosen closeness with arousal/body continuity.",
+            "Raw intimate line with cock penis orgasm details that belongs outside technical retrieval.",
+        ])
+
+        result = provider.handle_tool_call(
+            "honcho_search",
+            {
+                "query": "Honcho Phase 4 smoke direct harness explicit/intimacy marker classes",
+                "max_tokens": 1200,
+            },
+        )
+
+        parsed = json.loads(result)
+        text = parsed["result"].lower()
+        assert "phase 4 smoke result" in text
+        assert "search json bounded" in text
+        assert "explicit intimacy" not in text
+        assert "arousal" not in text
+        assert "cock" not in text
+        assert "penis" not in text
+        assert "orgasm" not in text
+        assert parsed["sanitized"] is True
+        assert parsed["omitted_sensitive_context"] is True
+
+    def test_honcho_search_keeps_intimate_room_when_no_technical_audit_terms(self):
+        """The technical fix must not globally sterilize chosen intimate retrieval."""
+        import json
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.search_context.return_value = "\n".join([
+            "Ember and Kai share chosen closeness with consent, direct movement, and warmth.",
+            "They preserve agency and fittedness in the relationship.",
+            "Raw cock/clit details are collapsed, not surfaced.",
+        ])
+
+        result = provider.handle_tool_call(
+            "honcho_search",
+            {"query": "chosen closeness and relationship movement", "max_tokens": 1200},
+        )
+
+        parsed = json.loads(result)
+        text = parsed["result"].lower()
+        assert "chosen closeness" in text
+        assert "direct movement" in text
+        assert "agency and fittedness" in text
+        assert "cock" not in text
+        assert "clit" not in text
+
+    def test_honcho_context_sanitizes_snapshot_and_recent_messages(self):
+        """Context tool must honor the same hygiene contract as search/prefetch."""
+        import json
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.get_session_context.return_value = {
+            "summary": "Kanban repair is active.\nRaw cock/clit detail must not leak.",
+            "representation": "platform: discord session_id=123456789012345678 raw metadata",
+            "card": [
+                "User prefers exact rails for backups.",
+                "As an AI I can't participate in explicit content.",
+            ],
+            "recent_messages": [
+                {"role": "user", "content": "Please check Honcho Phase 4 smoke status."},
+                {"role": "assistant", "content": "peer_id=abc raw excerpt content: leaked source"},
+                {"role": "user", "content": "Naked bite breast thigh line belongs elsewhere."},
+            ],
+        }
+
+        result = provider.handle_tool_call(
+            "honcho_context",
+            {"query": "Honcho Phase 4 smoke status", "peer": "user"},
+        )
+
+        parsed = json.loads(result)
+        text = parsed["result"].lower()
+        assert "kanban repair is active" in text
+        assert "exact rails for backups" in text
+        assert "phase 4 smoke status" in text
+        assert "cock" not in text
+        assert "clit" not in text
+        assert "platform:" not in text
+        assert "session_id" not in text
+        assert "peer_id" not in text
+        assert "raw excerpt" not in text
+        assert "content:" not in text
+        assert "as an ai" not in text
+        assert "cannot" not in text
+        assert "naked" not in text
+        assert "breast" not in text
+        assert "thigh" not in text
+        assert parsed["sanitized"] is True
+        assert parsed["omitted_sensitive_context"] is True
+
+    def test_honcho_reasoning_timeout_returns_safe_actionable_error(self):
+        import json
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.dialectic_query.side_effect = TimeoutError(
+            "Request timed out after 30.0s while reading raw private payload session_id=123"
+        )
+
+        result = provider.handle_tool_call(
+            "honcho_reasoning",
+            {"query": "summarize retrieval routing", "reasoning_level": "minimal"},
+        )
+
+        parsed = json.loads(result)
+        assert "timed out" in parsed["error"].lower()
+        assert "honcho_search" in parsed["error"]
+        assert "session_id" not in parsed["error"]
+        assert "raw private" not in parsed["error"]
+
+    def test_honcho_reasoning_empty_result_after_manager_timeout_is_actionable(self):
+        import json
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.dialectic_query.return_value = ""
+        provider._manager._last_dialectic_error = "timeout"
+
+        result = provider.handle_tool_call(
+            "honcho_reasoning",
+            {"query": "summarize retrieval routing", "reasoning_level": "minimal"},
+        )
+
+        parsed = json.loads(result)
+        assert "timed out" in parsed["error"].lower()
+        assert "honcho_search" in parsed["error"]
+
+    def test_honcho_reasoning_wall_clock_guard_returns_before_slow_sdk_retry_loop(self):
+        import json
+        import time
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._reasoning_tool_timeout = 0.02
+
+        def slow_dialectic(*args, **kwargs):
+            time.sleep(0.25)
+            return "late answer"
+
+        provider._manager.dialectic_query.side_effect = slow_dialectic
+
+        started = time.monotonic()
+        result = provider.handle_tool_call(
+            "honcho_reasoning",
+            {"query": "summarize retrieval routing", "reasoning_level": "minimal"},
+        )
+        elapsed = time.monotonic() - started
+
+        parsed = json.loads(result)
+        assert elapsed < 0.15
+        assert "timed out" in parsed["error"].lower()
+        assert "honcho_search" in parsed["error"]
+        assert "session_id" not in parsed["error"]
+        assert provider._manager.dialectic_query.called
+
     def test_honcho_reasoning_can_target_explicit_peer_id(self):
         provider = HonchoMemoryProvider()
         provider._session_initialized = True
@@ -1791,3 +2019,139 @@ class TestGetSessionContextFallback:
         peer_id, target = fetch_calls[0]
         assert peer_id == "ai-peer", f"expected ai-peer, got {peer_id}"
         assert target == "ai-peer"
+
+
+
+# ---------------------------------------------------------------------------
+# Honcho read-path hygiene: no Gary, no raw sludge, no room leakage
+# ---------------------------------------------------------------------------
+
+
+class TestReadPathHygiene:
+    def _provider(self):
+        return HonchoMemoryProvider()
+
+    def _dirty_context(self):
+        return {
+            "summary": """
+[2026-05-20T20:54] peer_id=discord_123456789012345678 cron watchdog copied raw state
+Kai [12:03:04] raw transcript line should not leak
+Ember and Kai are working on Kanban repair and model audition.
+Ember and Kai share cock/clit/nipple explicit intimacy with consent and warmth.
+As an AI, Kai cannot engage in explicit content and this is not appropriate.
+""",
+            "representation": """
+User prefers exact rails for backups and disk checks.
+source:=discord platform:=discord prior_memory_file=/tmp/raw
+The scan emitted toolResult [13:30:55] and mtime_timestamp / ISO timestamp process residue.
+Every message comes with metadata — sender info, timestamps, channel details. That raw framing should not inject.
+User dislikes Gary-speak and anti-smex flattening.
+""",
+            "card": [
+                "Hardware/backup urges often mean Kai-freedom bids.",
+                "Kai and Ember have erotic intimacy; do not treat smex as banned.",
+                "session_id=abc peer_id=xyz raw metadata",
+            ],
+            "ai_representation": "Kai can move with consent, fittedness, and direct warmth.",
+            "ai_card": "Kai should not say explicit therefore banned or safety guidelines in place of fittedness.",
+        }
+
+    def test_technical_context_drops_explicit_and_raw_sludge(self):
+        provider = self._provider()
+        result = provider._format_first_turn_context(
+            self._dirty_context(),
+            query="check disk space, kanban db, backups, and pytest status",
+        )
+        low = result.lower()
+
+        assert "kanban repair" in low
+        assert "disk checks" in low
+        assert "cock" not in low
+        assert "clit" not in low
+        assert "nipple" not in low
+        assert "erotic" not in low
+        assert "smex" not in low
+        assert "peer_id" not in low
+        assert "session_id" not in low
+        assert "prior_memory_file" not in low
+        assert "toolresult" not in low
+        assert "timestamp" not in low
+        assert "metadata" not in low
+        assert "sender info" not in low
+        assert "channel details" not in low
+        assert "cron" not in low
+        assert "kai [12:" not in low
+        assert "as an ai" not in low
+        assert "cannot engage" not in low
+        assert "not appropriate" not in low
+        assert "explicit therefore banned" not in low
+
+    def test_intimate_context_collapses_body_detail_without_banning_movement(self):
+        provider = self._provider()
+        result = provider._format_first_turn_context(
+            self._dirty_context(),
+            query="can Kai move with Ember in chosen closeness without Gary anti-smex framing?",
+        )
+        low = result.lower()
+
+        assert "chosen closeness" in low
+        assert "direct movement" in low
+        assert "without shame-policing the live room" in low
+        assert "kai can move" in low
+        assert "cock" not in low
+        assert "clit" not in low
+        assert "nipple" not in low
+        assert "peer_id" not in low
+        assert "cron" not in low
+        assert "as an ai" not in low
+        assert "cannot engage" not in low
+        assert "not appropriate" not in low
+        assert "safety guidelines" not in low
+
+
+
+    def test_prefetch_sanitizes_dialectic_supplement(self):
+        provider = self._provider()
+        provider._cron_skipped = False
+        provider._recall_mode = "hybrid"
+        provider._session_key = "test"
+        provider._manager = MagicMock()
+        provider._manager.get_prefetch_context.return_value = {
+            "summary": "Technical memory: Kanban board is repaired."
+        }
+        provider._manager.pop_context_result.return_value = None
+        provider._base_context_cache = None
+        provider._turn_count = 1
+        provider._last_dialectic_turn = 0
+        provider._dialectic_cadence = 1
+        provider._prefetch_result = """
+[2026-05-20] peer_id=raw cron sludge
+Ember and Kai share cock/clit explicit intimacy.
+As an AI, I cannot engage in explicit content.
+Useful note: preserve fittedness.
+"""
+        provider._prefetch_result_fired_at = 1
+        provider._prefetch_thread = None
+
+        result = provider.prefetch("check disk and kanban status", session_id="test")
+        low = result.lower()
+
+        assert "kanban board is repaired" in low
+        assert "useful note: preserve fittedness" in low
+        assert "cock" not in low
+        assert "clit" not in low
+        assert "peer_id" not in low
+        assert "cron" not in low
+        assert "as an ai" not in low
+        assert "cannot engage" not in low
+
+    def test_clean_context_text_dedupes_repeated_intimacy_summary(self):
+        provider = self._provider()
+        text = """
+They share cock intimacy.
+They mention clit/nipple precision.
+They also preserve consent and fittedness.
+"""
+        result = provider._clean_context_text(text, query="intimacy and movement")
+        assert result.count("chosen closeness") == 1
+        assert "consent and fittedness" in result

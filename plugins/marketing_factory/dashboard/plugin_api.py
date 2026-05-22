@@ -42,6 +42,10 @@ class DraftEditBody(BaseModel):
     editor: str = "dashboard"
 
 
+class DraftRescheduleBody(BaseModel):
+    scheduled_for: str
+
+
 class AppCreateBody(BaseModel):
     slug: str
     name: str
@@ -281,6 +285,18 @@ async def delete_app(app_slug: str, cascade: bool = True):
     store = _store()
     try:
         result = store.remove_app(app_slug, cascade=cascade)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.patch("/drafts/{draft_id}/scheduled-for")
+async def reschedule_draft(draft_id: str, body: DraftRescheduleBody):
+    store = _store()
+    try:
+        result = store.update_draft_scheduled_for(draft_id, body.scheduled_for)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

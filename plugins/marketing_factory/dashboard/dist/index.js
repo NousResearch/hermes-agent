@@ -191,6 +191,50 @@
     );
   }
 
+  function SchedulePicker({ draft, busy, run }) {
+    const [editing, setEditing] = useState(false);
+    const canEdit = draft.status !== "posted" && draft.status !== "dry_run_posted";
+    const display = draft.scheduled_for ? new Date(draft.scheduled_for).toLocaleString() : "unscheduled";
+    if (!editing || !canEdit) {
+      return h("button", {
+        type: "button",
+        disabled: !canEdit,
+        onClick: () => canEdit && setEditing(true),
+        className: "text-xs text-midground/60 hover:text-cyan-200 underline disabled:no-underline",
+      }, display);
+    }
+    // Build a value compatible with <input type="datetime-local"> (no tz, local time)
+    const toLocal = (iso) => {
+      try {
+        const d = iso ? new Date(iso) : new Date();
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      } catch (e) { return ""; }
+    };
+    const initial = toLocal(draft.scheduled_for);
+    let value = initial;
+    return h("span", { className: "flex items-center gap-1 text-xs" },
+      h("input", {
+        type: "datetime-local",
+        defaultValue: initial,
+        onChange: (e) => { value = e.target.value; },
+        className: "rounded-md border border-cyan-300/40 bg-background/60 px-1 py-0.5",
+      }),
+      h("button", {
+        type: "button",
+        onClick: () => {
+          if (!value) return;
+          setEditing(false);
+          const iso = new Date(value).toISOString();
+          return run(`reschedule ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/scheduled-for`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scheduled_for: iso }) }));
+        },
+        disabled: !!busy,
+        className: "text-cyan-200 underline",
+      }, "save"),
+      h("button", { type: "button", onClick: () => setEditing(false), className: "text-midground/60 underline" }, "cancel")
+    );
+  }
+
   function EditableBody({ draft, busy, run }) {
     const [editing, setEditing] = useState(false);
     const [value, setValue] = useState(draft.body || "");
@@ -416,7 +460,7 @@
                       : pill(`${Math.round(draft.freshness_score * 100)}% fresh`, "tone_neutral")
                 ) : null,
                 bodyLengthIndicator(draft.channel, draft.body),
-                h("span", { className: "text-xs text-midground/60" }, draft.scheduled_for ? new Date(draft.scheduled_for).toLocaleString() : "unscheduled")
+                h(SchedulePicker, { draft, busy, run })
               ),
               draft.llm_error ? h("div", { className: "mt-2 text-[11px] text-amber-200/90" }, `LLM fallback reason: ${draft.llm_error}`) : null,
               draft.safety && !draft.safety.passed && safetyDetail(draft.safety) ? h("div", { className: "mt-2 text-[11px] text-red-200/90" }, `Safety issues: ${safetyDetail(draft.safety)}`) : null,

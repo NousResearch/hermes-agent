@@ -525,6 +525,77 @@ def test_weekly_digest_via_api_endpoint(isolate_home):
     assert response_404.status_code == 404
 
 
+def test_reschedule_updates_draft_and_schedule_record(isolate_home):
+    """Phase 14: reschedule on an approved draft updates both draft.scheduled_for AND the schedules record."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    draft = gen["drafts"][0]
+    store.set_approval(draft["id"], "approved", reviewer="tester")
+    pipe.scheduler.schedule_approved(store, app_slug="pupular")
+
+    new_time = "2026-06-15T18:00:00+00:00"
+    result = store.update_draft_scheduled_for(draft["id"], new_time)
+    assert result["scheduled_for"] == new_time
+
+    state = store.load()
+    assert state["schedules"][draft["id"]]["scheduled_for"] == new_time
+
+    actions = [event["action"] for event in store.list_audit(app_slug="pupular", limit=200)]
+    assert "draft.rescheduled" in actions
+
+
+def test_reschedule_on_needs_review_updates_advisory_only(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    draft = gen["drafts"][0]
+    assert draft["status"] == "needs_review"
+
+    new_time = "2026-07-01T15:00:00+00:00"
+    result = store.update_draft_scheduled_for(draft["id"], new_time)
+    assert result["scheduled_for"] == new_time
+    # No schedule record yet — that only gets created on schedule_approved
+    state = store.load()
+    assert state["schedules"].get(draft["id"]) is None
+
+
+def test_reschedule_rejects_invalid_iso(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    with pytest.raises(ValueError):
+        store.update_draft_scheduled_for(gen["drafts"][0]["id"], "not-an-iso-string")
+
+
+def test_reschedule_refuses_already_published(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    draft = gen["drafts"][0]
+    store.set_approval(draft["id"], "approved", reviewer="tester")
+    pipe.scheduler.schedule_approved(store, app_slug="pupular")
+    pipe.publisher.dry_run_publish_scheduled(store, app_slug="pupular")
+    with pytest.raises(ValueError):
+        store.update_draft_scheduled_for(draft["id"], "2026-06-15T18:00:00+00:00")
+
+
 def test_freshness_jaccard_identical_scores_zero(isolate_home):
     """Phase 13: identical bodies must score 0 freshness (= 0% novel)."""
     from plugins.marketing_factory.pipeline import _compute_freshness

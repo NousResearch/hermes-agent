@@ -80,6 +80,10 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     edit.add_argument("--body", required=True)
     edit.add_argument("--editor", default="human")
 
+    reschedule = subs.add_parser("reschedule", help="Move a draft's scheduled time (ISO 8601)")
+    reschedule.add_argument("draft_id")
+    reschedule.add_argument("--at", required=True, dest="scheduled_for", help="New scheduled_for, e.g. 2026-05-22T18:00:00-07:00")
+
     variants = subs.add_parser("variants", help="Generate N alternative drafts for the same plan item — pick the best of N")
     variants.add_argument("draft_id")
     variants.add_argument("--count", type=int, default=3)
@@ -140,7 +144,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def marketing_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "marketing_command", None)
     if not sub:
-        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,regenerate,variants,edit,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,audit,export,generate,full-dry-run}")
+        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,regenerate,variants,edit,reschedule,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,audit,export,generate,full-dry-run}")
         return 2
     store = MarketingFactoryStore(getattr(args, "store_path", None))
     pipe = MarketingFactoryPipeline(store)
@@ -213,6 +217,10 @@ def marketing_command(args: argparse.Namespace) -> int:
             return 0
         if sub == "digest":
             print(pipe.weekly_digest(args.app, days=args.days))
+            return 0
+        if sub == "reschedule":
+            result = store.update_draft_scheduled_for(args.draft_id, args.scheduled_for)
+            _print_json({"draft_id": result["id"], "scheduled_for": result["scheduled_for"], "status": result["status"]})
             return 0
         if sub == "edit":
             result = pipe.edit_draft(args.draft_id, args.body, editor=args.editor)

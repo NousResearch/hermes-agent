@@ -423,6 +423,51 @@ class MarketingFactoryStore:
         })
         return draft
 
+    def update_draft_scheduled_for(self, draft_id: str, scheduled_for: str) -> Dict[str, Any]:
+        """Move a draft's scheduled time without re-running the approval flow.
+
+        For drafts still in needs_review/rejected: updates the advisory
+        `draft.scheduled_for` only. For approved/scheduled drafts:
+        additionally updates the matching `schedules[draft_id]` record so the
+        next poll respects the new time. Refuses dry_run_posted / posted.
+
+        Audits `draft.rescheduled` with previous + next ISO.
+        """
+        from datetime import datetime as _dt
+
+        if not scheduled_for or not scheduled_for.strip():
+            raise ValueError("scheduled_for is required")
+        try:
+            _dt.fromisoformat(scheduled_for.replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"scheduled_for must be ISO 8601: {exc}") from exc
+
+        state = self.load()
+        draft = state["drafts"].get(draft_id)
+        if not draft:
+            raise KeyError(f"Unknown draft id: {draft_id}")
+        if draft["status"] in {"dry_run_posted", "posted"}:
+            raise ValueError("Cannot reschedule a draft that has already been published")
+        previous = draft.get("scheduled_for")
+        draft["scheduled_for"] = scheduled_for
+        draft["updated_at"] = utc_now()
+
+        # If the draft already has a real schedule record (approved/scheduled),
+        # update it too so the poller picks up the new time on its next tick.
+        schedule = state["schedules"].get(draft_id)
+        if schedule is not None:
+            schedule["scheduled_for"] = scheduled_for
+            schedule["updated_at"] = utc_now()
+
+        self._write_state(state)
+        self.audit("draft.rescheduled", draft["app_slug"], {
+            "draft_id": draft_id,
+            "previous": previous,
+            "next": scheduled_for,
+            "had_schedule_record": schedule is not None,
+        })
+        return draft
+
     def schedule_draft(self, draft_id: str, scheduled_for: str) -> Dict[str, Any]:
         state = self.load()
         draft = state["drafts"].get(draft_id)

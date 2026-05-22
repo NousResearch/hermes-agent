@@ -115,6 +115,7 @@ def get_available_skills() -> Dict[str, List[str]]:
 
 # Cache update check results for 6 hours to avoid repeated git fetches
 _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
+_UPDATE_CHECK_CACHE_VERSION = 3
 
 # Sentinel returned when we know an update exists but can't count commits
 # (e.g. nix-built hermes — no local git history to count against).
@@ -144,11 +145,61 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _git_head(repo_dir: Path) -> Optional[str]:
+    """Return the current HEAD SHA for cache invalidation, or None on failure."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            head = result.stdout.strip()
+            return head or None
+    except Exception:
+        pass
+    return None
+
+
+def _select_update_remote(repo_dir: Path) -> str:
+    """Return the remote to use for update checks.
+
+    Normal installs track ``origin/main``. Fork installs often use ``origin`` for
+    the user's fork and ``upstream`` for NousResearch/hermes-agent; in that case
+    ``origin/main`` can contain unrelated fork-only commits and produce a false
+    "behind" warning. Prefer any fetch remote that points at the official repo.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "-v"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            origin_seen = False
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) < 3 or parts[2] != "(fetch)":
+                    continue
+                remote, url = parts[0], parts[1]
+                if remote == "origin":
+                    origin_seen = True
+                if "nousresearch/hermes-agent" in url.lower():
+                    return remote
+            if origin_seen:
+                return "origin"
+    except Exception:
+        pass
+    return "origin"
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+    """Count commits behind the best update remote's main branch."""
+    remote = _select_update_remote(repo_dir)
+    ref = f"{remote}/main"
     try:
         subprocess.run(
-            ["git", "fetch", "origin", "--quiet"],
+            ["git", "fetch", remote, "--quiet"],
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
@@ -157,7 +208,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..{ref}"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -215,7 +266,8 @@ def check_for_updates() -> Optional[int]:
 
     Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
     it to upstream main via ``git ls-remote``. Otherwise look for a local
-    git checkout and count commits behind ``origin/main``.
+    git checkout and count commits behind the official update remote's main
+    branch (``upstream/main`` on fork installs, ``origin/main`` otherwise).
 
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
@@ -232,11 +284,11 @@ def check_for_updates() -> Optional[int]:
     # then gets rendered by the CLI banner and the TUI badge as a phantom
     # "1 commit behind" — even though no git repo or commit math is involved,
     # and `hermes update` correctly refuses to run in-place inside the
-    # container anyway. The dashboard's REST `/api/hermes/update/check`
-    # endpoint already short-circuits docker the same way (web_server.py);
-    # mirror that here so the banner/TUI surfaces agree. Returning None makes
-    # both the Rich banner (build_welcome_banner) and the Ink badge
-    # (branding.tsx, guarded on `typeof === 'number' && > 0`) show nothing.
+    # container anyway. The dashboard's REST `/api/hermes/update/check` endpoint
+    # already short-circuits docker the same way (web_server.py); mirror that
+    # here so the banner/TUI surfaces agree. Returning None makes both the
+    # Rich banner (build_welcome_banner) and the Ink badge (branding.tsx,
+    # guarded on `typeof === 'number' && > 0`) show nothing.
     try:
         from hermes_cli.config import detect_install_method
         if detect_install_method() == "docker":
@@ -244,18 +296,36 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check. The version guard matters for pip installs:
-    # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
-    # changes VERSION but leaves rev unchanged (both None), and without this
-    # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
+    repo_dir = None
+    cache_rev = embedded_rev
+    if not embedded_rev:
+        # Prefer the running code's location over the profile-scoped path.
+        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
+        # Path(__file__) always resolves to the actual installed checkout.
+        repo_dir = Path(__file__).parent.parent.resolve()
+        if not (repo_dir / ".git").exists():
+            repo_dir = hermes_home / "hermes-agent"
+        if (repo_dir / ".git").exists():
+            cache_rev = _git_head(repo_dir)
+        else:
+            repo_dir = None
+
+    # Read cache — invalidate if the cache schema, installed version,
+    # embedded/build rev, local git HEAD, or active repo path changed.
+    # The version guard matters for pip installs: `check_via_pypi()` compares
+    # against VERSION, so a `pip install --upgrade` changes VERSION but leaves
+    # rev unchanged (both None), and without this the stale "behind" count
+    # would survive the upgrade for up to 6h. See #34491.
     now = time.time()
+    cache_repo = str(repo_dir) if repo_dir else None
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
             if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
+                cached.get("version") == _UPDATE_CHECK_CACHE_VERSION
+                and now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+                and cached.get("rev") == cache_rev
+                and cached.get("repo") == cache_repo
                 and cached.get("ver") == VERSION
             ):
                 return cached.get("behind")
@@ -264,22 +334,20 @@ def check_for_updates() -> Optional[int]:
 
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
+    elif repo_dir is None:
+        behind = check_via_pypi()
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
-            behind = check_via_pypi()
-        else:
-            behind = _check_via_local_git(repo_dir)
+        behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
-        )
+        cache_file.write_text(json.dumps({
+            "version": _UPDATE_CHECK_CACHE_VERSION,
+            "ts": now,
+            "behind": behind,
+            "rev": cache_rev,
+            "repo": cache_repo,
+            "ver": VERSION,
+        }))
     except Exception:
         pass
 

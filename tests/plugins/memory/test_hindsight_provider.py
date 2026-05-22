@@ -20,6 +20,7 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _ensure_pgvector_compatible,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
@@ -84,6 +85,33 @@ class _FakeSessionDB:
 
     def get_messages_as_conversation(self, session_id):
         return list(self._messages)
+
+
+def test_ensure_pgvector_compatible_restores_local_stash(monkeypatch, tmp_path):
+    """Older-glibc Linux hosts should restore a locally built pgvector stash."""
+    pg_dir = tmp_path / ".pg0" / "installation" / "17.5"
+    lib_dir = pg_dir / "lib"
+    lib_dir.mkdir(parents=True)
+    vector_so = lib_dir / "vector.so"
+    stash = lib_dir / "vector.so.local"
+    vector_so.write_text("bundled-new-glibc", encoding="utf-8")
+    stash.write_text("locally-built", encoding="utf-8")
+
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["ldd", "--version"]:
+            return SimpleNamespace(stdout="ldd (Ubuntu GLIBC 2.35)", stderr="")
+        if cmd == ["ldd", str(vector_so)]:
+            return SimpleNamespace(stdout="", stderr="version `GLIBC_2.38' not found")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    _ensure_pgvector_compatible()
+
+    assert vector_so.read_text(encoding="utf-8") == "locally-built"
 
 
 @pytest.fixture()

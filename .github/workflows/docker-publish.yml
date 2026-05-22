@@ -225,6 +225,7 @@ jobs:
     outputs:
       pushed_release_tag: ${{ steps.mark_release_pushed.outputs.pushed }}
       release_tag: ${{ steps.tag.outputs.tag }}
+      digest: ${{ steps.manifest_digest.outputs.digest }}
     steps:
       - name: Checkout code
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -327,6 +328,7 @@ jobs:
       # Gate the manifest push on the ancestor check for main pushes.
       # For releases there is no gate — the check doesn't even run.
       - name: Create manifest list and push
+        id: push_manifest
         if: github.event_name != 'push' || steps.main_check.outputs.push_main == 'true'
         working-directory: /tmp/digests
         run: |
@@ -338,6 +340,25 @@ jobs:
           docker buildx imagetools create \
             -t "${IMAGE_NAME}:${TAG}" \
             "${args[@]}"
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          TAG: ${{ steps.tag.outputs.tag }}
+
+      # Read the digest of the multi-arch manifest list we just pushed.
+      # Downstream jobs (e.g. cosign signing) need this to reference the
+      # exact manifest, not a mutable tag.
+      - name: Read manifest digest
+        if: steps.push_manifest.outcome == 'success'
+        id: manifest_digest
+        run: |
+          set -euo pipefail
+          digest=$(
+            docker buildx imagetools inspect "${IMAGE_NAME}:${TAG}" \
+              --format '{{json .Manifest}}' \
+              | jq -r '.digest'
+          )
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Multi-arch manifest digest: ${digest}"
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           TAG: ${{ steps.tag.outputs.tag }}
@@ -469,3 +490,47 @@ jobs:
           docker buildx imagetools create \
             --tag "${image}:latest" \
             "${image}:${RELEASE_TAG}"
+
+  # ---------------------------------------------------------------------------
+  # Sign the multi-arch manifest with cosign (keyless, Sigstore OIDC).
+  #
+  # Runs after merge pushes the tagged manifest list.  Uses the digest
+  # output (not the mutable tag) so the signature binds to the exact
+  # manifest, not whatever the tag points at later.
+  # ---------------------------------------------------------------------------
+  sign:
+    if: |
+      github.repository == 'NousResearch/hermes-agent'
+      && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    needs: merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write   # keyless cosign signing via Sigstore OIDC
+      contents: read
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22  # v4.1.0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Sign image with cosign
+        env:
+          DIGEST: ${{ needs.merge.outputs.digest }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::No digest from merge job — cannot sign."
+            exit 1
+          fi
+          image="${IMAGE_NAME}@${DIGEST}"
+          echo "Signing ${image}"
+          cosign sign --yes "${image}"

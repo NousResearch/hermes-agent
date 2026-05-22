@@ -113,12 +113,13 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
         "kanban_unblock",
         "kanban_progress",
         "kanban_acceptance",
+        "kanban_verify",
         "kanban_reviews",
         "kanban_review",
         "kanban_plan_review",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_acceptance', 'kanban_reviews', 'kanban_review', 'kanban_plan_review'}}"
+        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_acceptance', 'kanban_verify', 'kanban_reviews', 'kanban_review', 'kanban_plan_review'}}"
     )
 
 
@@ -142,6 +143,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_list",
         "kanban_progress",
         "kanban_acceptance",
+        "kanban_verify",
         "kanban_reviews",
         "kanban_review",
         "kanban_plan_review",
@@ -655,6 +657,60 @@ def test_plan_review_tool_dispatch_dry_run_scopes_to_followups(
 
     assert spawned_ids == {d["review_task_id"], d["test_task_id"]}
     assert unrelated_task.status == "ready"
+
+
+def test_verify_tool_runs_configured_acceptance_check(
+    monkeypatch,
+    worker_env,
+    tmp_path,
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "ok.txt").write_text("ok\n", encoding="utf-8")
+    (tmp_path / ".hermes" / "config.yaml").write_text(
+        "toolsets:\n"
+        "  - kanban\n"
+        "kanban:\n"
+        "  acceptance_checks:\n"
+        "    exact-file:\n"
+        "      argv: [python3, -c, \"from pathlib import Path; "
+        "assert Path('ok.txt').read_text() == 'ok\\\\n'\"]\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="tool verify",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    payload = json.loads(kt._handle_verify({"task_id": tid, "checks": ["exact-file"]}))
+    acceptance = json.loads(kt._handle_acceptance({"task_id": tid}))
+
+    assert payload["checks"][0]["passed"] is True
+    assert acceptance["acceptance_check_gate"]["ready"] is True
 
 
 def test_complete_happy_path(worker_env):

@@ -707,6 +707,14 @@ class PlanReviewBody(BaseModel):
     dispatch_max: Optional[int] = Field(default=None, ge=1, le=64)
 
 
+class VerifyTaskBody(BaseModel):
+    checks: Optional[list[str]] = Field(
+        default=None,
+        description="Configured acceptance check names; omitted means all checks",
+    )
+    source_run_id: Optional[int] = Field(default=None, ge=1)
+
+
 class WorkerLaneRequestBody(BaseModel):
     worker_lane_request: dict[str, Any] = Field(
         ...,
@@ -785,6 +793,31 @@ def plan_task_review_followups(
             status_code = 404 if msg.startswith("unknown task ") else 400
             raise HTTPException(status_code=status_code, detail=msg)
         return out
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/verify")
+def verify_task_acceptance(
+    task_id: str,
+    payload: VerifyTaskBody,
+    board: Optional[str] = Query(None),
+):
+    """Run configured deterministic acceptance checks for a task."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            return kanban_db.run_acceptance_checks(
+                conn,
+                task_id,
+                check_names=payload.checks,
+                source_run_id=payload.source_run_id,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = 404 if msg.startswith("unknown task ") else 400
+            raise HTTPException(status_code=status_code, detail=msg)
     finally:
         conn.close()
 

@@ -107,6 +107,20 @@ _IS_WINDOWS = sys.platform == "win32"
 # ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` to raise the default claim window for
 # long single-call MCP workflows.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
+ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES = 16 * 1024
+ACCEPTANCE_CHECK_DEFAULT_TIMEOUT_SECONDS = 300
+ACCEPTANCE_CHECK_MAX_TIMEOUT_SECONDS = 3600
+_ACCEPTANCE_CHECK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PROXY_ENV_NAMES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
 
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
@@ -2616,6 +2630,331 @@ def _followup_verdict_accepts_purpose(
     return verdict in {"approve", "approved", "pass", "passed"}
 
 
+def _bounded_text(value: Any, *, max_bytes: int) -> str:
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else str(value)
+    data = text.encode("utf-8", errors="replace")
+    if len(data) <= max_bytes:
+        return text
+    return data[-max_bytes:].decode("utf-8", errors="replace")
+
+
+def _load_acceptance_check_configs() -> dict[str, dict[str, Any]]:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception as exc:
+        _log.debug("Could not load config for acceptance checks: %s", exc)
+        return {}
+    raw = ((cfg or {}).get("kanban") or {}).get("acceptance_checks") or {}
+    if not isinstance(raw, dict):
+        _log.warning(
+            "kanban.acceptance_checks must be a mapping; got %s",
+            type(raw).__name__,
+        )
+        return {}
+    checks: dict[str, dict[str, Any]] = {}
+    for raw_name, raw_cfg in raw.items():
+        try:
+            name = str(raw_name).strip().lower()
+            if not _ACCEPTANCE_CHECK_ID_RE.match(name):
+                raise ValueError(
+                    "name must match [a-z0-9][a-z0-9_-]{0,63}"
+                )
+            if not isinstance(raw_cfg, dict):
+                raise ValueError("config must be a mapping")
+            argv = raw_cfg.get("argv")
+            if not isinstance(argv, list) or not argv:
+                raise ValueError("argv must be a non-empty list")
+            clean_argv = [str(part) for part in argv]
+            if not clean_argv[0].strip():
+                raise ValueError("argv[0] cannot be empty")
+            timeout_raw = raw_cfg.get(
+                "timeout_seconds",
+                ACCEPTANCE_CHECK_DEFAULT_TIMEOUT_SECONDS,
+            )
+            timeout = int(timeout_raw)
+            if timeout < 1 or timeout > ACCEPTANCE_CHECK_MAX_TIMEOUT_SECONDS:
+                raise ValueError(
+                    "timeout_seconds must be between 1 and "
+                    f"{ACCEPTANCE_CHECK_MAX_TIMEOUT_SECONDS}"
+                )
+            description = str(raw_cfg.get("description") or "")
+            checks[name] = {
+                "name": name,
+                "description": description,
+                "argv": clean_argv,
+                "timeout_seconds": timeout,
+            }
+        except Exception as exc:
+            _log.warning("Skipping acceptance check %r: %s", raw_name, exc)
+    return checks
+
+
+def _acceptance_check_workspace(task: Task) -> Optional[Path]:
+    if task.workspace_kind in {"dir", "worktree"} and task.workspace_path:
+        return Path(task.workspace_path).expanduser().resolve()
+    return None
+
+
+def _acceptance_check_event_runs(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int],
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT id, run_id, payload, created_at FROM task_events "
+        "WHERE task_id = ? AND kind = ? "
+        "ORDER BY created_at ASC, id ASC",
+        (task_id, "acceptance_check_completed"),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if source_run_id is not None and row["run_id"] != source_run_id:
+            continue
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else None
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict):
+            continue
+        payload = dict(payload)
+        payload.setdefault("event_id", row["id"])
+        payload.setdefault("created_at", row["created_at"])
+        payload.setdefault("source_run_id", row["run_id"])
+        out.append(payload)
+    return out
+
+
+def acceptance_check_gate_status(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int] = None,
+    required_checks: Optional[list[str]] = None,
+) -> Optional[dict[str, Any]]:
+    """Return deterministic gate state for Hermes-run acceptance checks."""
+    configured = _load_acceptance_check_configs()
+    required = [
+        str(name).strip().lower()
+        for name in (required_checks if required_checks is not None else configured.keys())
+        if str(name).strip()
+    ]
+    deduped_required = list(dict.fromkeys(required))
+    if not deduped_required:
+        return None
+
+    runs_by_name: dict[str, dict[str, Any]] = {}
+    for run in _acceptance_check_event_runs(
+        conn,
+        task_id,
+        source_run_id=source_run_id,
+    ):
+        name = str(run.get("name") or "").strip().lower()
+        if name:
+            runs_by_name[name] = run
+
+    items: list[dict[str, Any]] = []
+    satisfied = 0
+    failed = 0
+    missing = 0
+    for name in deduped_required:
+        cfg = configured.get(name)
+        run = runs_by_name.get(name)
+        item: dict[str, Any] = {
+            "name": name,
+            "configured": cfg is not None,
+        }
+        if cfg is not None:
+            item["description"] = cfg.get("description") or ""
+            item["argv"] = cfg.get("argv")
+            item["timeout_seconds"] = cfg.get("timeout_seconds")
+        if run is not None:
+            item["run"] = run
+            item["state"] = "satisfied" if run.get("passed") else "failed"
+            if run.get("passed"):
+                satisfied += 1
+            else:
+                failed += 1
+        elif cfg is None:
+            item["state"] = "missing"
+            item["failure_reason"] = "acceptance check is not configured"
+            missing += 1
+        else:
+            item["state"] = "missing"
+            missing += 1
+        items.append(item)
+
+    ready = bool(items) and satisfied == len(items)
+    blocking: list[str] = []
+    if missing:
+        blocking.append(f"{missing} missing")
+    if failed:
+        blocking.append(f"{failed} failed")
+    if not blocking and not ready:
+        blocking.append("acceptance checks incomplete")
+    return {
+        "required": len(items),
+        "ready": ready,
+        "satisfied": satisfied,
+        "failed": failed,
+        "missing": missing,
+        "items": items,
+        "blocking_reasons": blocking,
+    }
+
+
+def run_acceptance_check(
+    conn: sqlite3.Connection,
+    task_id: str,
+    check_name: str,
+    *,
+    source_run_id: Optional[int] = None,
+) -> dict[str, Any]:
+    """Run one configured deterministic acceptance check for a task.
+
+    The command argv comes only from trusted local config
+    ``kanban.acceptance_checks``. Callers choose a check name; they do not pass
+    executable shell strings. Output is bounded before being written to the
+    Kanban event log.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    name = str(check_name or "").strip().lower()
+    if not _ACCEPTANCE_CHECK_ID_RE.match(name):
+        raise ValueError("invalid acceptance check name")
+    checks = _load_acceptance_check_configs()
+    cfg = checks.get(name)
+    if cfg is None:
+        raise ValueError(f"acceptance check {name!r} is not configured")
+    workspace = _acceptance_check_workspace(task)
+    if workspace is None:
+        raise ValueError(
+            f"task {task_id} has no dir/worktree workspace for acceptance checks"
+        )
+    if not workspace.exists() or not workspace.is_dir():
+        raise ValueError(f"acceptance check workspace does not exist: {workspace}")
+
+    run_id = source_run_id
+    if run_id is None:
+        run = latest_run(conn, task_id)
+        if run is not None:
+            run_id = run.id
+    argv = [str(part) for part in cfg["argv"]]
+    timeout = int(cfg["timeout_seconds"])
+    env = dict(os.environ)
+    for key in _PROXY_ENV_NAMES:
+        env.pop(key, None)
+
+    started = time.time()
+    timed_out = False
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(workspace),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            shell=False,
+        )
+        exit_code: Optional[int] = int(proc.returncode)
+        stdout_bytes = len((proc.stdout or "").encode("utf-8", errors="replace"))
+        stderr_bytes = len((proc.stderr or "").encode("utf-8", errors="replace"))
+        stdout_tail = _bounded_text(proc.stdout, max_bytes=ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES)
+        stderr_tail = _bounded_text(proc.stderr, max_bytes=ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES)
+        error = None
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        exit_code = None
+        raw_stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout
+        raw_stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr
+        stdout_bytes = len((raw_stdout or "").encode("utf-8", errors="replace"))
+        stderr_bytes = len((raw_stderr or "").encode("utf-8", errors="replace"))
+        stdout_tail = _bounded_text(raw_stdout, max_bytes=ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES)
+        stderr_tail = _bounded_text(raw_stderr, max_bytes=ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES)
+        error = f"timed out after {timeout}s"
+    except FileNotFoundError as exc:
+        exit_code = None
+        stdout_tail = ""
+        stderr_tail = ""
+        stdout_bytes = 0
+        stderr_bytes = 0
+        error = f"binary missing: {exc.filename or argv[0]}"
+    duration_ms = int((time.time() - started) * 1000)
+    payload = {
+        "name": name,
+        "description": cfg.get("description") or "",
+        "argv": argv,
+        "workspace": str(workspace),
+        "source_run_id": run_id,
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "passed": bool(exit_code == 0 and not timed_out and not error),
+        "duration_ms": duration_ms,
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+        "output_truncated": (
+            stdout_bytes > ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES
+            or stderr_bytes > ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES
+        ),
+    }
+    if error:
+        payload["error"] = error
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "acceptance_check_completed",
+            payload,
+            run_id=run_id,
+        )
+    return payload
+
+
+def run_acceptance_checks(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    check_names: Optional[list[str]] = None,
+    source_run_id: Optional[int] = None,
+) -> dict[str, Any]:
+    configured = _load_acceptance_check_configs()
+    names = [
+        str(name).strip().lower()
+        for name in (check_names if check_names is not None else configured.keys())
+        if str(name).strip()
+    ]
+    names = list(dict.fromkeys(names))
+    if not names:
+        raise ValueError("no acceptance checks requested or configured")
+    runs = [
+        run_acceptance_check(
+            conn,
+            task_id,
+            name,
+            source_run_id=source_run_id,
+        )
+        for name in names
+    ]
+    gate = acceptance_check_gate_status(
+        conn,
+        task_id,
+        source_run_id=source_run_id,
+        required_checks=names,
+    )
+    return {
+        "task_id": task_id,
+        "source_run_id": source_run_id,
+        "checks": runs,
+        "acceptance_check_gate": gate,
+    }
+
+
 def review_followup_gate_status(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2785,6 +3124,11 @@ def task_acceptance_snapshot(
         if source_run_id is not None
         else None
     )
+    acceptance_check_gate = acceptance_check_gate_status(
+        conn,
+        task_id,
+        source_run_id=source_run_id,
+    )
     followups: list[dict[str, Any]] = []
     for ref in _review_followup_refs(conn, task_id, source_run_id=source_run_id):
         snap = task_progress_snapshot(
@@ -2818,19 +3162,38 @@ def task_acceptance_snapshot(
     )
     review_required = implementation.review_required
     review_decision = review_meta.get("decision") if isinstance(review_meta, dict) else None
-    approval_allowed = bool(review_required and (gate is None or gate.get("ready")))
+    approval_allowed = bool(
+        review_required
+        and (gate is None or gate.get("ready"))
+        and (
+            acceptance_check_gate is None
+            or acceptance_check_gate.get("ready")
+        )
+    )
     request_changes_allowed = bool(review_required)
     followups_planned = gate is not None
     if review_decision == "approved" or implementation.task.status == "done":
         recommended_action = "done"
     elif review_decision == "changes_requested":
         recommended_action = "wait_for_implementation"
+    elif (
+        review_required
+        and acceptance_check_gate
+        and acceptance_check_gate.get("failed")
+    ):
+        recommended_action = "request_changes_or_rerun_acceptance_checks"
     elif review_required and not followups_planned:
         recommended_action = "plan_review_followups"
     elif review_required and gate and gate.get("failed"):
         recommended_action = "request_changes_or_replan_followups"
     elif review_required and gate and not gate.get("ready"):
         recommended_action = "wait_for_followups"
+    elif (
+        review_required
+        and acceptance_check_gate
+        and not acceptance_check_gate.get("ready")
+    ):
+        recommended_action = "run_acceptance_checks"
     elif approval_allowed:
         recommended_action = "review_followup_evidence"
     elif implementation.task.status == "running":
@@ -2846,6 +3209,7 @@ def task_acceptance_snapshot(
         "implementation": implementation.to_dict(),
         "followups": followups,
         "review_followup_gate": gate,
+        "acceptance_check_gate": acceptance_check_gate,
         "followups_planned": followups_planned,
         "approval_allowed": approval_allowed,
         "request_changes_allowed": request_changes_allowed,
@@ -2857,7 +3221,26 @@ def task_acceptance_snapshot(
                 "verification summaries, and optional log tails"
             ),
         },
-    }
+}
+
+
+def _require_acceptance_check_gate_ready(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    gate = acceptance_check_gate_status(
+        conn,
+        task_id,
+        source_run_id=source_run_id,
+    )
+    if gate is None or gate.get("ready"):
+        return gate
+    reasons = ", ".join(gate.get("blocking_reasons") or ["acceptance checks incomplete"])
+    raise ValueError(
+        f"acceptance check gate is not satisfied for {task_id}: {reasons}"
+    )
 
 
 def _require_review_followup_gate_ready(
@@ -3182,20 +3565,28 @@ def review_worker_evidence(
         comment=review_comment or None,
     )
     lane_meta = metadata.get("worker_lane") if isinstance(metadata, dict) else None
+    event_payload = {
+        "reviewer": reviewer_name,
+        "source_run_id": source_run_id,
+        "worker_lane": lane_meta if isinstance(lane_meta, dict) else None,
+    }
     followup_gate = None
+    acceptance_check_gate = None
     if normalized_decision == "approve":
         followup_gate = _require_review_followup_gate_ready(
             conn,
             task_id,
             source_run_id=source_run_id,
         )
-    event_payload = {
-        "reviewer": reviewer_name,
-        "source_run_id": source_run_id,
-        "worker_lane": lane_meta if isinstance(lane_meta, dict) else None,
-    }
+        acceptance_check_gate = _require_acceptance_check_gate_ready(
+            conn,
+            task_id,
+            source_run_id=source_run_id,
+        )
     if followup_gate is not None:
         event_payload["review_followup_gate"] = followup_gate
+    if acceptance_check_gate is not None:
+        event_payload["acceptance_check_gate"] = acceptance_check_gate
     if review_comment:
         event_payload["comment"] = review_comment
 
@@ -3275,8 +3666,15 @@ def review_worker_evidence(
             task_id,
             source_run_id=source_run_id,
         )
+        acceptance_check_gate = _require_acceptance_check_gate_ready(
+            conn,
+            task_id,
+            source_run_id=source_run_id,
+        )
         if followup_gate is not None:
             event_payload["review_followup_gate"] = followup_gate
+        if acceptance_check_gate is not None:
+            event_payload["acceptance_check_gate"] = acceptance_check_gate
         conn.execute(
             "UPDATE task_runs SET metadata = ? WHERE id = ?",
             (json.dumps(metadata, ensure_ascii=False), source_run_id),

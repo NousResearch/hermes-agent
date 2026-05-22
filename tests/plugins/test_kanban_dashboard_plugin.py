@@ -1756,6 +1756,61 @@ def test_plan_review_endpoint_dispatch_dry_run_scopes_to_followups(
     assert unrelated_task.status == "ready"
 
 
+def test_verify_endpoint_runs_configured_acceptance_check(
+    client,
+    tmp_path,
+    kanban_home,
+):
+    from hermes_cli import kanban_db as kb
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "ok.txt").write_text("ok\n", encoding="utf-8")
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  acceptance_checks:\n"
+        "    exact-file:\n"
+        "      argv: [python3, -c, \"from pathlib import Path; "
+        "assert Path('ok.txt').read_text() == 'ok\\\\n'\"]\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="verify via api",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{tid}/verify",
+        json={"checks": ["exact-file"]},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["checks"][0]["passed"] is True
+    acceptance = client.get(f"/api/plugins/kanban/tasks/{tid}/acceptance")
+    assert acceptance.status_code == 200, acceptance.text
+    assert acceptance.json()["acceptance_check_gate"]["ready"] is True
+
+
 def test_worker_lane_request_endpoint_validates_without_enabling(client):
     from hermes_cli.worker_lanes import clear_worker_lanes, get_worker_lane
 

@@ -506,6 +506,47 @@ def _handle_acceptance(args: dict, **kw) -> str:
         return tool_error(f"kanban_acceptance: {e}")
 
 
+def _handle_verify(args: dict, **kw) -> str:
+    """Run configured deterministic acceptance checks."""
+    guard = _require_orchestrator_tool("kanban_verify")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    check_names = args.get("checks")
+    if check_names is not None:
+        if not isinstance(check_names, list):
+            return tool_error("checks must be a list of configured check names")
+        check_names = [str(name) for name in check_names]
+    source_run_id, source_error = _parse_positive_int_arg(
+        args,
+        "source_run_id",
+        default=None,
+        maximum=10**12,
+    )
+    if source_error:
+        return tool_error(source_error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            payload = kb.run_acceptance_checks(
+                conn,
+                str(tid),
+                check_names=check_names,
+                source_run_id=source_run_id,
+            )
+            return json.dumps(payload)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_verify: {e}")
+    except Exception as e:
+        logger.exception("kanban_verify failed")
+        return tool_error(f"kanban_verify: {e}")
+
+
 def _handle_reviews(args: dict, **kw) -> str:
     """List review-required external-worker evidence snapshots."""
     guard = _require_orchestrator_tool("kanban_reviews")
@@ -1217,6 +1258,44 @@ KANBAN_ACCEPTANCE_SCHEMA = {
     },
 }
 
+KANBAN_VERIFY_SCHEMA = {
+    "name": "kanban_verify",
+    "description": (
+        "Run configured deterministic Hermes-side acceptance checks for a "
+        "Kanban task and write bounded results into task_events. The caller "
+        "may choose configured check names, but cannot pass shell command "
+        "strings. Use this after implementation/review/test worker evidence "
+        "and before kanban_review approve when kanban.acceptance_checks is "
+        "configured. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Implementation task id to verify.",
+            },
+            "checks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional configured acceptance check names. Omit to run "
+                    "all checks under kanban.acceptance_checks."
+                ),
+            },
+            "source_run_id": {
+                "type": "integer",
+                "description": (
+                    "Optional implementation run id to scope the evidence. "
+                    "Defaults to the latest run."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
 KANBAN_REVIEWS_SCHEMA = {
     "name": "kanban_reviews",
     "description": (
@@ -1742,6 +1821,15 @@ registry.register(
     handler=_handle_acceptance,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="🧾",
+)
+
+registry.register(
+    name="kanban_verify",
+    toolset="kanban",
+    schema=KANBAN_VERIFY_SCHEMA,
+    handler=_handle_verify,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🧪",
 )
 
 registry.register(

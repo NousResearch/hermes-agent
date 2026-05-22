@@ -507,6 +507,25 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Include the last N bytes of each follow-up worker log",
     )
 
+    # --- verify ---
+    p_verify = sub.add_parser(
+        "verify",
+        help="Run configured deterministic acceptance checks for a task",
+    )
+    p_verify.add_argument("task_id")
+    p_verify.add_argument(
+        "checks",
+        nargs="*",
+        help="Configured check names; omitted means all configured checks",
+    )
+    p_verify.add_argument(
+        "--source-run-id",
+        type=int,
+        default=None,
+        help="Implementation run id this verification belongs to",
+    )
+    p_verify.add_argument("--json", action="store_true")
+
     # --- reviews ---
     p_reviews = sub.add_parser(
         "reviews",
@@ -1103,6 +1122,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "show":     _cmd_show,
         "progress": _cmd_progress,
         "acceptance": _cmd_acceptance,
+        "verify": _cmd_verify,
         "reviews":  _cmd_reviews,
         "review":   _cmd_review,
         "plan-review": _cmd_plan_review,
@@ -2120,6 +2140,45 @@ def _cmd_acceptance(args: argparse.Namespace) -> int:
                 f"    - {item.get('purpose')}: {item.get('task_id')} "
                 f"{ftask.get('status', '-')} state={gate_item.get('state', '-')}"
             )
+    return 0
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    try:
+        with kb.connect() as conn:
+            payload = kb.run_acceptance_checks(
+                conn,
+                args.task_id,
+                check_names=list(getattr(args, "checks", None) or []) or None,
+                source_run_id=getattr(args, "source_run_id", None),
+            )
+    except ValueError as exc:
+        print(f"kanban verify: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    gate = payload.get("acceptance_check_gate") or {}
+    print(f"Acceptance checks for {args.task_id}:")
+    for item in payload.get("checks") or []:
+        state = "passed" if item.get("passed") else "failed"
+        extra = ""
+        if item.get("timed_out"):
+            extra = " timed_out"
+        elif item.get("error"):
+            extra = f" {item.get('error')}"
+        print(
+            f"  - {item.get('name')}: {state} "
+            f"exit={item.get('exit_code')} duration_ms={item.get('duration_ms')}{extra}"
+        )
+    if gate:
+        print(
+            "  gate: "
+            f"ready={gate.get('ready')} "
+            f"satisfied={gate.get('satisfied', 0)}/{gate.get('required', 0)}"
+        )
+        for reason in gate.get("blocking_reasons") or []:
+            print(f"    - {reason}")
     return 0
 
 

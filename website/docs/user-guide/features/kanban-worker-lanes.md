@@ -222,6 +222,19 @@ does not pick unrelated ready cards from the board.
 
 Approval is gated once follow-ups are planned. `hermes kanban review <task_id> approve` refuses to mark the implementation task done until every planned follow-up for the current implementation run has successful worker evidence. For the built-in Codex adapter, a follow-up must exit 0, block with `review.required: true`, and, when it emits a structured `Verdict: ...`, satisfy the purpose-specific verdict: review follow-ups must be `approve`, and test follow-ups must be `pass`. Pending, running, missing, timed out, binary-missing, nonzero-exit, `request_changes`, `fail`, or `blocked` follow-ups block approval with an explicit gate error. Hermes still reviews the bounded receipt, not the full Codex session. `request-changes` remains available at any time and unblocks the implementation task for another worker run.
 
+Hermes can also run deterministic local acceptance checks before approval. Configure named checks under `kanban.acceptance_checks`; each check is a fixed argv list, not a shell string produced by a model:
+
+```yaml
+kanban:
+  acceptance_checks:
+    unit-tests:
+      argv: ["python3", "-m", "pytest", "-q"]
+      timeout_seconds: 300
+      description: "project unit tests"
+```
+
+Run them with `hermes kanban verify <implementation_task_id> unit-tests --json`, the `kanban_verify` tool, or `POST /api/plugins/kanban/tasks/<task_id>/verify`. The check runs in the task workspace, strips proxy environment variables, records bounded stdout/stderr, exit code, duration, and an `acceptance_check_completed` event, then `acceptance` exposes an `acceptance_check_gate`. If checks are configured, approval requires them to pass as well as any review/test follow-up gate.
+
 Before deciding, controllers can read a single acceptance snapshot:
 
 ```bash
@@ -234,7 +247,7 @@ The Python tool equivalent is `kanban_acceptance`, and the dashboard/API route i
 GET /api/plugins/kanban/tasks/<task_id>/acceptance
 ```
 
-This snapshot combines implementation evidence, planned review/test follow-up evidence, the follow-up gate, `approval_allowed`, `request_changes_allowed`, and a deterministic `recommended_action`. It is still bounded evidence; it does not replay full external-worker sessions.
+This snapshot combines implementation evidence, planned review/test follow-up evidence, the follow-up gate, Hermes-run acceptance check results, `approval_allowed`, `request_changes_allowed`, and a deterministic `recommended_action`. It is still bounded evidence; it does not replay full external-worker sessions.
 
 ## Skill lane intent
 
@@ -341,6 +354,7 @@ assigned lane.
 Configured orchestrator/main-agent profiles can use the equivalent tools:
 `kanban_reviews` for the queue, `kanban_progress` for one task's bounded
 snapshot, `kanban_acceptance` for implementation plus review/test evidence,
+`kanban_verify` to run configured deterministic Hermes-side checks,
 `kanban_plan_review` to create and optionally dispatch independent review/test
 follow-ups, and `kanban_review` to approve or request changes. These tools are
 orchestrator-only; dispatcher-spawned Codex workers do not see them.
@@ -392,7 +406,7 @@ So lane authors don't have to reimplement these:
 
 - No full Codex event stream integration yet; progress is parsed from wrapper stdout/stderr.
 - No approval bridge; configure Codex lanes with controlled approval policy.
-- Follow-up gating understands simple structured verdicts (`approve` for review, `pass` for test), but it does not yet perform automatic semantic acceptance of large diffs beyond that bounded evidence.
+- Follow-up gating understands simple structured verdicts (`approve` for review, `pass` for test), and Hermes can run configured deterministic acceptance commands, but it does not yet perform automatic semantic acceptance of large diffs beyond that bounded evidence.
 - External lane command shapes are adapter-defined, not model-defined.
 - Review reads Codex artifacts and bounded metadata, not the full Codex session.
 

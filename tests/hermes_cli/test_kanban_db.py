@@ -697,6 +697,143 @@ def test_review_followup_verdict_ignores_recommended_action(
     assert test_item["state"] == "satisfied"
 
 
+def test_acceptance_check_gate_requires_configured_check_success(
+    kanban_home, tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "ok.txt").write_text("ok\n", encoding="utf-8")
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  acceptance_checks:\n"
+        "    exact-file:\n"
+        "      argv:\n"
+        "        - python3\n"
+        "        - -c\n"
+        "        - \"from pathlib import Path; "
+        "assert Path('ok.txt').read_text() == 'ok\\\\n'\"\n"
+        "      timeout_seconds: 10\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["python3 exact-file"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="implementation needing hermes verification",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        before = kb.task_acceptance_snapshot(conn, tid)
+        with pytest.raises(ValueError, match="acceptance check gate"):
+            kb.review_worker_evidence(
+                conn,
+                tid,
+                decision="approve",
+                reviewer="reviewer",
+                summary="too early",
+            )
+        result = kb.run_acceptance_checks(
+            conn,
+            tid,
+            source_run_id=task.current_run_id,
+        )
+        after = kb.task_acceptance_snapshot(conn, tid)
+        approved = kb.review_worker_evidence(
+            conn,
+            tid,
+            decision="approve",
+            reviewer="reviewer",
+            summary="accepted after hermes verification",
+        )
+        events = kb.list_events(conn, tid)
+
+    assert before["recommended_action"] == "plan_review_followups"
+    assert before["approval_allowed"] is False
+    assert before["acceptance_check_gate"]["missing"] == 1
+    assert result["acceptance_check_gate"]["ready"] is True
+    assert result["checks"][0]["passed"] is True
+    assert result["checks"][0]["argv"][:2] == ["python3", "-c"]
+    assert after["acceptance_check_gate"]["ready"] is True
+    assert after["approval_allowed"] is True
+    assert approved.task.status == "done"
+    assert any(event.kind == "acceptance_check_completed" for event in events)
+    assert any(
+        event.kind == "worker_review_approved"
+        and event.payload.get("acceptance_check_gate", {}).get("ready") is True
+        for event in events
+    )
+
+
+def test_acceptance_check_failure_blocks_approval(kanban_home, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  acceptance_checks:\n"
+        "    failing-check:\n"
+        "      argv: [python3, -c, \"import sys; print('nope'); sys.exit(7)\"]\n"
+        "      timeout_seconds: 10\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="implementation with failed hermes verification",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        result = kb.run_acceptance_checks(
+            conn,
+            tid,
+            source_run_id=task.current_run_id,
+        )
+        acceptance = kb.task_acceptance_snapshot(conn, tid)
+        with pytest.raises(ValueError, match="1 failed"):
+            kb.review_worker_evidence(
+                conn,
+                tid,
+                decision="approve",
+                reviewer="reviewer",
+                summary="should not approve",
+            )
+
+    assert result["checks"][0]["exit_code"] == 7
+    assert result["checks"][0]["passed"] is False
+    assert result["checks"][0]["stdout_tail"].strip() == "nope"
+    assert acceptance["acceptance_check_gate"]["ready"] is False
+    assert acceptance["acceptance_check_gate"]["failed"] == 1
+    assert acceptance["recommended_action"] == "request_changes_or_rerun_acceptance_checks"
+    assert acceptance["approval_allowed"] is False
+
+
 def test_task_acceptance_snapshot_summarizes_followup_evidence(
     kanban_home, tmp_path,
 ):

@@ -763,6 +763,51 @@ def test_run_slash_plan_review_dispatch_dry_run_scopes_to_followups(
     assert test_task.status == "ready"
 
 
+def test_run_slash_verify_runs_configured_acceptance_check(
+    kanban_home,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "ok.txt").write_text("ok\n", encoding="utf-8")
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  acceptance_checks:\n"
+        "    exact-file:\n"
+        "      argv: [python3, -c, \"from pathlib import Path; "
+        "assert Path('ok.txt').read_text() == 'ok\\\\n'\"]\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="verify via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash(f"verify {tid} exact-file --json"))
+    acceptance = json.loads(kc.run_slash(f"acceptance {tid} --json"))
+
+    assert payload["checks"][0]["name"] == "exact-file"
+    assert payload["checks"][0]["passed"] is True
+    assert acceptance["acceptance_check_gate"]["ready"] is True
+
+
 def test_run_slash_worker_lane_request_validates_without_enabling(
     kanban_home, tmp_path,
 ):

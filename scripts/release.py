@@ -64,6 +64,7 @@ AUTHOR_MAP = {
     "nat@nthrow.io": "nthrow",
     "m@mobrienv.dev": "mikeyobrien",
     "saeed919@pm.me": "falasi",
+    "chrisdlc119@outlook.com": "chdlc",
     "omar@techdeveloper.site": "nycomar",
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "mr.aashiz@gmail.com": "aashizpoudel",

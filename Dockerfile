@@ -75,10 +75,14 @@ RUN npm install --prefer-offline --no-audit && \
 # git), `[yc-bench]` (another git dep), and `[termux-all]` (Android
 # redundancy), none of which belong in the published container.
 #
+# Provider packages (anthropic, bedrock, azure-identity) are included
+# so Docker users can use these providers without requiring runtime
+# lazy-install access to PyPI (often blocked in containerized envs).
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.

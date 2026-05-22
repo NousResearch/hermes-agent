@@ -1,0 +1,11 @@
+name: qdrant_local
+version: 0.1.0
+description: "Local hybrid Hermes memory provider: SQLite ledger/FTS with Qdrant projection roadmap."
+hooks:
+  - sync_turn
+  - queue_prefetch
+  - prefetch
+  - on_memory_write
+  - on_session_switch
+  - on_pre_compress
+  - on_session_end

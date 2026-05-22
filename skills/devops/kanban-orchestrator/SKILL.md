@@ -51,12 +51,15 @@ main/default profile should route instead of implementing directly:
 2. The implementation task must require a branch, commit, push, and PR, and must
    explicitly forbid merge and auto-merge.
 3. Do not create the reviewer task until the implementation worker has opened
-   the PR. Once the PR URL/number exists, create a separate reviewer task
-   assigned to the reviewer profile, with `parents=[implementation_task_id]` or
-   an explicit reference to the implementation handoff.
+   the PR. Once the PR URL/number exists, the implementation worker creates a
+   separate reviewer task assigned to the reviewer profile with
+   `parents=[implementation_task_id]`, then completes the implementation task
+   with structured PR handoff metadata. It must not block itself with
+   `review-required`, because a blocked parent keeps the reviewer task in
+   `todo`.
 4. Reviewer output is a verdict or a block with required changes; required
-   changes become a new implementation task. The final merge decision belongs
-   to the user.
+   changes become a new implementation task linked from the reviewer task. The
+   final merge decision belongs to the user.
 
 ## The anti-temptation rules
 

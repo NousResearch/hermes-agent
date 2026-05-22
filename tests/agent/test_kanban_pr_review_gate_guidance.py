@@ -20,6 +20,9 @@ def test_kanban_guidance_requires_pr_review_gate_without_merge():
     assert "separate reviewer Kanban task" in guidance
     assert "do not merge or enable auto-merge" in guidance
     assert "final merge decision belongs to the user" in guidance
+    assert "complete the implementation task with structured PR handoff" in guidance
+    assert "Do NOT block the" in guidance
+    assert "blocked parent deadlocks" in guidance
 
 
 def test_bundled_skills_document_pr_review_gate():
@@ -32,7 +35,9 @@ def test_bundled_skills_document_pr_review_gate():
         assert "reviewer" in text
         assert "merge decision" in text
 
-    assert "review-required" in worker
+    assert "blocked parent keeps the reviewer task in `todo`" in worker
+    assert "completes the implementation task" in orchestrator
+    assert "structured PR handoff metadata" in orchestrator
     assert "main/default profile should route" in orchestrator
     assert "explicit\ninstruction" in pr_workflow
 
@@ -45,3 +50,4 @@ def test_repo_docs_and_pr_template_carry_gate():
     assert "Kanban/PR/review gate" in agents
     assert "user decides whether and when to merge" in contributing
     assert "Reviewer Kanban task created after this PR exists" in template
+    assert "do not block it with review-required" in template

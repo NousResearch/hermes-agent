@@ -56,15 +56,16 @@ Every claim must end in exactly one of:
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
 
-## Outputs and the review-required convention
+## Outputs and the PR review gate
 
-For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
+For repository code changes that open a PR, the implementation-to-review handoff must not deadlock:
 
-- **Block instead of complete**, with `reason` prefixed `review-required: ` so the dashboard / `hermes kanban show` surfaces the row as awaiting review.
-- **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
-- **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
+- Create the reviewer Kanban task after the PR exists and set `parents=[implementation_task_id]` so review starts only after the implementation handoff is done.
+- Complete the implementation task with structured PR metadata (`pr_url`, `pr_number`, `changed_files`, `verification`, `merge_performed: false`).
+- Do **not** block the implementation task with `review-required` after creating a parent-gated reviewer task. Kanban dependencies promote children only when parents are `done`; a blocked parent leaves the reviewer stuck in `todo`.
+- The reviewer completes with a verdict or blocks with required changes. Required changes become a new implementation task linked from the reviewer task.
 
-The [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill has worked examples for both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+Use `kanban_block` for genuine ambiguity or unavailable external input, not as the implementation-to-review handoff for parent-gated PR review. The [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill has worked examples.
 
 ## Logs and audit trail
 

@@ -45,7 +45,8 @@ Fixes #
 <!-- Required for agent-driven work. Mark N/A only for human-authored drive-by PRs. -->
 
 - [ ] Implementation Kanban task: <!-- t_xxxxxxxx or N/A -->
-- [ ] Reviewer Kanban task created after this PR exists: <!-- t_xxxxxxxx or pending reviewer creation -->
+- [ ] Reviewer Kanban task created after this PR exists with parent dependency: <!-- t_xxxxxxxx or pending reviewer creation -->
+- [ ] Implementation task completed with PR handoff; do not block it with review-required if reviewer uses `parents=[implementation_task_id]`
 - [ ] This PR has not been merged and auto-merge has not been enabled by the implementation worker
 - [ ] Final merge decision is left to the user/maintainer
 

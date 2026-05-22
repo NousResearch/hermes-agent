@@ -95,6 +95,16 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsExplicitMediatekReadinessDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=mediatek_readiness_report",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("mediatek_readiness_report", parsed.getString("action"))
+    }
+
+    @Test
     fun extractsExplicitGpuBackendRiskDiagnosticQuickActionArguments() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=gpu_backend_risk_report",
@@ -158,6 +168,10 @@ class NativeToolCallingChatClientTest {
         assertEquals(
             "radio_signal_graph",
             NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("Show the AM/FM radio graph.")?.getString("action"),
+        )
+        assertEquals(
+            "mediatek_readiness_report",
+            NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("Show MediaTek Dimensity readiness for Mali GPU fallback.")?.getString("action"),
         )
         assertEquals(
             "soc_compatibility_report",

@@ -111,6 +111,9 @@ object HermesDeviceDiagnosticsBridge {
                 signalCapabilityStatusJson(appContext).toString()
             "local_backend_runtime_report", "runtime_backend_report", "backend_runtime_report", "litert_runtime_report", "model_backend_report" ->
                 localBackendRuntimeReportJson(appContext).toString()
+            "mediatek_readiness_report", "mediatek_device_readiness_report", "mediatek_soc_readiness_report", "non_adreno_readiness_report",
+            "dimensity_readiness_report", "helio_readiness_report" ->
+                mediatekReadinessReportJson(appContext).toString()
             "soc_compatibility_report", "soc_backend_report", "mediatek_compatibility_report", "litert_backend_report", "gpu_backend_report" ->
                 socCompatibilityReportJson(appContext).toString()
             "gpu_backend_risk_report", "backend_risk_report", "accelerator_risk_report", "mediatek_backend_risk_report", "non_adreno_backend_risk_report" ->
@@ -1825,6 +1828,133 @@ object HermesDeviceDiagnosticsBridge {
             )
     }
 
+    fun mediatekReadinessReportJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val socProfile = socProfileJson()
+        val performanceProfile = devicePerformanceProfileJson(appContext)
+        val preferredModel = preferredLocalModelJson(appContext)
+        val settings = AppSettingsStore(appContext).load()
+        val selectedBackend = BackendKind.fromPersistedValue(settings.onDeviceBackend)
+        val currentBackend = OnDeviceBackendManager.currentStatus()
+        val runtimeHealth = liteRtRuntimeHealthJson()
+        val deviceIdentity = deviceIdentityJson()
+        val riskRows = gpuBackendRiskMatrixRows(
+            socProfile = socProfile,
+            performanceProfile = performanceProfile,
+            runtimeHealth = runtimeHealth,
+            currentBackend = currentBackend,
+            preferredModel = preferredModel,
+            selectedBackend = selectedBackend,
+            offlineAirplaneMode = settings.offlineAirplaneMode,
+            deviceIdentity = deviceIdentity,
+        )
+        val runtimeRows = runtimeBackendMatrixRows(
+            selectedBackend = selectedBackend,
+            currentBackend = currentBackend,
+            runtimeHealth = runtimeHealth,
+            socProfile = socProfile,
+            preferredModel = preferredModel,
+            offlineAirplaneMode = settings.offlineAirplaneMode,
+        )
+        val stabilityRows = devicePerformanceMatrixRows(performanceProfile, socProfile)
+        val compatibilityRows = localInferenceCompatibilityRows(
+            socProfile = socProfile,
+            performanceProfile = performanceProfile,
+            runtimeHealth = runtimeHealth,
+            currentBackend = currentBackend,
+            preferredModel = preferredModel,
+            selectedBackend = selectedBackend,
+            offlineAirplaneMode = settings.offlineAirplaneMode,
+            deviceIdentity = deviceIdentity,
+            riskRows = riskRows,
+        )
+        val readinessRows = mediatekReadinessRows(
+            socProfile = socProfile,
+            performanceProfile = performanceProfile,
+            runtimeHealth = runtimeHealth,
+            currentBackend = currentBackend,
+            preferredModel = preferredModel,
+            selectedBackend = selectedBackend,
+            offlineAirplaneMode = settings.offlineAirplaneMode,
+            deviceIdentity = deviceIdentity,
+            riskRows = riskRows,
+            compatibilityRows = compatibilityRows,
+        )
+        val readinessScore = averageCapabilityValue(readinessRows)
+        val maxRiskScore = maxRiskScore(riskRows)
+        return JSONObject()
+            .put("success", true)
+            .put("action", "mediatek_readiness_report")
+            .put("report_scope", "Dedicated MediaTek, Dimensity, Helio, Mali, Immortalis, PowerVR/IMG, and generic non-Adreno local inference readiness profile.")
+            .put("source_report_actions", JSONArray().put("soc_compatibility_report").put("gpu_backend_risk_report").put("local_backend_runtime_report").put("device_performance_report").put("local_inference_compatibility_report"))
+            .put("android_device_identity", deviceIdentity)
+            .put("soc_profile", socProfile)
+            .put("device_performance_profile", performanceProfile)
+            .put("preferred_local_model", preferredModel)
+            .put("selected_on_device_backend", selectedBackend.persistedValue)
+            .put("offline_airplane_mode", settings.offlineAirplaneMode)
+            .put("current_local_backend", localBackendStatusJson(currentBackend))
+            .put("litert_runtime_health", runtimeHealth)
+            .put("likely_mediatek", socProfile.optBoolean("likely_mediatek", false))
+            .put("likely_mali_gpu", socProfile.optBoolean("likely_mali_gpu", false))
+            .put("likely_powervr_img_gpu", socProfile.optBoolean("likely_powervr_img_gpu", false))
+            .put("likely_adreno_gpu", socProfile.optBoolean("likely_adreno_gpu", false))
+            .put("gpu_backend_risk_level", riskLevelForScore(maxRiskScore))
+            .put("gpu_backend_risk_score", maxRiskScore)
+            .put("mediatek_readiness_score", readinessScore)
+            .put("mediatek_readiness_level", compatibilityLevelForScore(readinessScore))
+            .put("mediatek_readiness_matrix", readinessRows)
+            .put("mediatek_readiness_count", readinessRows.length())
+            .put("ready_mediatek_readiness_count", countReadyRows(readinessRows))
+            .put("gpu_backend_risk_matrix", riskRows)
+            .put("runtime_backend_matrix", runtimeRows)
+            .put("runtime_stability_matrix", stabilityRows)
+            .put("local_inference_compatibility_matrix", compatibilityRows)
+            .put(
+                "gemma_observation_directives",
+                JSONArray()
+                    .put("Use mediatek_readiness_matrix before answering whether a Dimensity, Helio, Mali, Immortalis, PowerVR/IMG, or generic non-Adreno phone is ready.")
+                    .put("Treat GPU acceleration as provisional until /health reports gpu without CPU fallback; CPU fallback is valid but must be named.")
+                    .put("Drill into source_report_actions when the readiness card shows weak artifact, runtime, thermal, memory, or physical-phone validation rows."),
+            )
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "MediaTek Readiness",
+                            body = "${readinessRows.length()} Dimensity/Helio, Mali/Immortalis, PowerVR/IMG, artifact-selection, runtime, thermal, validation, and fallback row(s).",
+                            graphType = "mediatek_readiness_matrix",
+                            rows = readinessRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Runtime Backend Health",
+                            body = "${runtimeRows.length()} passive backend row(s) backing the MediaTek readiness profile.",
+                            graphType = "runtime_backend_matrix",
+                            rows = runtimeRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Thermal & Memory Guardrails",
+                            body = "${stabilityRows.length()} stability row(s) for local inference cadence on MediaTek and non-Adreno phones.",
+                            graphType = "runtime_stability_matrix",
+                            rows = stabilityRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "GPU Backend Risk",
+                            body = "${riskRows.length()} accelerator and fallback risk row(s) behind the MediaTek readiness score.",
+                            graphType = "gpu_backend_risk_matrix",
+                            rows = riskRows,
+                        ),
+                    ),
+            )
+    }
+
     fun devicePerformanceReportJson(context: Context): JSONObject {
         val appContext = context.applicationContext
         val socProfile = socProfileJson()
@@ -2383,6 +2513,7 @@ object HermesDeviceDiagnosticsBridge {
         val radioReport = radioSignalStatusJson(appContext)
         val signalReport = signalAwarenessReportJson(appContext)
         val backendRiskReport = gpuBackendRiskReportJson(appContext)
+        val mediatekReport = mediatekReadinessReportJson(appContext)
         val environmentReport = agentEnvironmentReportJson(appContext)
         val signalContextRows = agentSignalContextFusionRows(
             wifiReport = wifiReport,
@@ -2398,6 +2529,7 @@ object HermesDeviceDiagnosticsBridge {
             sensorReport = sensorReport,
             radioReport = radioReport,
             backendRiskReport = backendRiskReport,
+            mediatekReport = mediatekReport,
             signalReport = signalReport,
             environmentReport = environmentReport,
         )
@@ -2424,6 +2556,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("sensor_observation_summary", observationSummaryJson(sensorReport, "sensor_analyzer_report"))
             .put("radio_observation_summary", observationSummaryJson(radioReport, "radio_signal_status"))
             .put("backend_risk_observation_summary", observationSummaryJson(backendRiskReport, "gpu_backend_risk_report"))
+            .put("mediatek_readiness_observation_summary", observationSummaryJson(mediatekReport, "mediatek_readiness_report"))
             .put("signal_observation_summary", observationSummaryJson(signalReport, "signal_awareness_report"))
             .put("agent_environment_observation_summary", observationSummaryJson(environmentReport, "agent_environment_report"))
             .put("agent_signal_context_matrix", signalContextRows)
@@ -2579,6 +2712,7 @@ object HermesDeviceDiagnosticsBridge {
         val sensorReport = sensorAnalyzerReportJson(appContext, JSONObject().put("include_snapshot", false))
         val radioReport = radioSignalStatusJson(appContext)
         val backendRiskReport = gpuBackendRiskReportJson(appContext)
+        val mediatekReport = mediatekReadinessReportJson(appContext)
         val signalReport = signalAwarenessReportJson(appContext)
         val environmentReport = agentEnvironmentReportJson(appContext)
         val cardManifestSources = agentCardManifestSources(
@@ -2587,6 +2721,7 @@ object HermesDeviceDiagnosticsBridge {
             sensorReport = sensorReport,
             radioReport = radioReport,
             backendRiskReport = backendRiskReport,
+            mediatekReport = mediatekReport,
             signalReport = signalReport,
             environmentReport = environmentReport,
         )
@@ -3266,8 +3401,8 @@ object HermesDeviceDiagnosticsBridge {
                     fraction = if (backendRiskReady) ((100 - backendRiskScore).coerceIn(5, 100) / 100f) else 0.25f,
                     extra = JSONObject()
                         .put("fusion_key", "backend_risk_fallback_context")
-                        .put("source_actions", JSONArray().put("gpu_backend_risk_report").put("local_backend_runtime_report").put("soc_compatibility_report").put("device_performance_report"))
-                        .put("card_graph_types", JSONArray().put("gpu_backend_risk_matrix").put("gpu_backend_risk_routes").put("runtime_backend_matrix").put("soc_backend_matrix").put("runtime_stability_matrix"))
+                        .put("source_actions", JSONArray().put("gpu_backend_risk_report").put("mediatek_readiness_report").put("local_backend_runtime_report").put("soc_compatibility_report").put("device_performance_report"))
+                        .put("card_graph_types", JSONArray().put("gpu_backend_risk_matrix").put("mediatek_readiness_matrix").put("gpu_backend_risk_routes").put("runtime_backend_matrix").put("soc_backend_matrix").put("runtime_stability_matrix"))
                         .put("gpu_backend_risk_level", backendRiskLevel)
                         .put("gpu_backend_risk_score", backendRiskScore)
                         .put("gpu_backend_risk_count", backendRiskCount)
@@ -3458,8 +3593,8 @@ object HermesDeviceDiagnosticsBridge {
                         .put("evidence_key", "local_inference_readiness")
                         .put("tool_action", "local_inference_compatibility_report")
                         .put("graph_type", "local_inference_compatibility_matrix")
-                        .put("source_actions", JSONArray().put("local_inference_compatibility_report").put("gpu_backend_risk_report").put("soc_compatibility_report").put("local_backend_runtime_report").put("device_performance_report"))
-                        .put("card_graph_types", JSONArray().put("local_inference_compatibility_matrix").put("gpu_backend_risk_matrix").put("runtime_backend_matrix").put("soc_backend_matrix").put("runtime_stability_matrix"))
+                        .put("source_actions", JSONArray().put("local_inference_compatibility_report").put("mediatek_readiness_report").put("gpu_backend_risk_report").put("soc_compatibility_report").put("local_backend_runtime_report").put("device_performance_report"))
+                        .put("card_graph_types", JSONArray().put("local_inference_compatibility_matrix").put("mediatek_readiness_matrix").put("gpu_backend_risk_matrix").put("runtime_backend_matrix").put("soc_backend_matrix").put("runtime_stability_matrix"))
                         .put("local_inference_compatibility_score", compatibilityScore)
                         .put("local_inference_compatibility_level", compatibilityLevel)
                         .put("gpu_backend_risk_level", backendRiskLevel),
@@ -3602,6 +3737,7 @@ object HermesDeviceDiagnosticsBridge {
         .put("radio_signal_graph")
         .put("signal_awareness_report")
         .put("gpu_backend_risk_report")
+        .put("mediatek_readiness_report")
         .put("local_inference_compatibility_report")
         .put("agent_card_manifest_report")
 
@@ -3619,6 +3755,7 @@ object HermesDeviceDiagnosticsBridge {
         .put("signal_awareness_matrix")
         .put("signal_constraint_matrix")
         .put("gpu_backend_risk_matrix")
+        .put("mediatek_readiness_matrix")
         .put("local_inference_compatibility_matrix")
 
     private fun agentObservationRouteRows(): JSONArray {
@@ -3734,6 +3871,7 @@ object HermesDeviceDiagnosticsBridge {
         sensorReport: JSONObject,
         radioReport: JSONObject,
         backendRiskReport: JSONObject,
+        mediatekReport: JSONObject,
         signalReport: JSONObject,
         environmentReport: JSONObject,
     ): List<CardManifestSource> = listOf(
@@ -3742,6 +3880,7 @@ object HermesDeviceDiagnosticsBridge {
         CardManifestSource("sensor_analyzer_report", sensorReport, "passive_metadata_live_snapshot_optional", "sensor_hardware_availability"),
         CardManifestSource("radio_signal_status", radioReport, "passive_capability_boundary", "vendor_radio_bridge_or_external_sdr_for_am_fm"),
         CardManifestSource("gpu_backend_risk_report", backendRiskReport, "passive_backend_triage", "phone_validation_required_for_acceleration_claims"),
+        CardManifestSource("mediatek_readiness_report", mediatekReport, "passive_mediatek_readiness_profile", "physical_phone_validation_required_for_acceleration_claims"),
         CardManifestSource("signal_awareness_report", signalReport, "passive_fused_context", "source_report_permissions"),
         CardManifestSource("agent_environment_report", environmentReport, "passive_agent_readiness", "settings_and_local_state"),
     )
@@ -6931,6 +7070,210 @@ object HermesDeviceDiagnosticsBridge {
             if (level == "high" || level == "critical") count += 1
         }
         return count
+    }
+
+    private fun mediatekReadinessRows(
+        socProfile: JSONObject,
+        performanceProfile: JSONObject,
+        runtimeHealth: JSONObject,
+        currentBackend: LocalBackendStatus,
+        preferredModel: JSONObject,
+        selectedBackend: BackendKind,
+        offlineAirplaneMode: Boolean,
+        deviceIdentity: JSONObject,
+        riskRows: JSONArray,
+        compatibilityRows: JSONArray,
+    ): JSONArray {
+        val artifactPolicy = socProfile.optJSONObject("litert_lm_artifact_selection_policy") ?: JSONObject()
+        val supportsArm = socProfile.optBoolean("supports_arm64", false) || socProfile.optBoolean("supports_arm", false)
+        val supportsX86 = socProfile.optBoolean("supports_x86_64", false) || socProfile.optBoolean("supports_x86", false)
+        val likelyMediaTek = socProfile.optBoolean("likely_mediatek", false) || socProfile.optString("soc_family") == "mediatek"
+        val likelyMali = socProfile.optBoolean("likely_mali_gpu", false)
+        val likelyPowerVr = socProfile.optBoolean("likely_powervr_img_gpu", false)
+        val likelyAdreno = socProfile.optBoolean("likely_adreno_gpu", false)
+        val healthAvailable = runtimeHealth.optString("status") == "ok" || runtimeHealth.optBoolean("available", false)
+        val accelerator = runtimeHealth.optString("accelerator").takeIf { it.isNotBlank() && it != "null" } ?: "not running"
+        val fallbackToCpu = runtimeHealth.optBoolean("gpu_fallback_to_cpu", false)
+        val selectedLocalBackend = selectedBackend != BackendKind.NONE
+        val thermalStatus = performanceProfile.optInt("thermal_status", THERMAL_STATUS_UNSUPPORTED)
+        val thermalBlocked = thermalStatus >= PowerManager.THERMAL_STATUS_SEVERE
+        val lowRam = performanceProfile.optBoolean("low_ram_device", false)
+        val memoryPressureLow = performanceProfile.optBoolean("memory_pressure_low", false)
+        val powerSaveMode = performanceProfile.optBoolean("power_save_mode", false)
+        val likelyEmulator = deviceIdentity.optBoolean("likely_emulator", false)
+        val maxRiskScore = maxRiskScore(riskRows)
+        val compatibilityScore = averageCapabilityValue(compatibilityRows)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "mediatek_readiness",
+                    label = "MediaTek family detection",
+                    ready = likelyMediaTek || supportsArm,
+                    valueLabel = when {
+                        likelyMediaTek -> socProfile.optString("soc_family_label").ifBlank { "MediaTek/Dimensity/Helio" }
+                        supportsArm -> "generic ARM non-Adreno path"
+                        supportsX86 -> "x86 CPU-only path"
+                        else -> "unknown Android SOC"
+                    },
+                    detail = listOf(
+                        socProfile.optString("soc_manufacturer").ifBlank { "manufacturer unknown" },
+                        socProfile.optString("soc_model").ifBlank { "model unknown" },
+                        socProfile.optString("hardware").ifBlank { "hardware unknown" },
+                        socProfile.optString("board").ifBlank { "board unknown" },
+                        "primary_abi=${socProfile.optString("primary_abi").ifBlank { "unknown" }}",
+                    ).joinToString(" | "),
+                    recommendation = "Treat Dimensity, Helio, MTK, and unknown ARM devices as first-class Android targets; keep CPU fallback visible when SOC identity is incomplete.",
+                    fraction = when {
+                        likelyMediaTek -> 0.98f
+                        supportsArm -> 0.78f
+                        supportsX86 -> 0.52f
+                        else -> 0.35f
+                    },
+                    extra = JSONObject()
+                        .put("tool_action", "soc_compatibility_report")
+                        .put("graph_type", "soc_backend_matrix")
+                        .put("mediatek_family_detected", likelyMediaTek),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "mediatek_readiness",
+                    label = "Mali and Immortalis GPU path",
+                    ready = likelyMali || supportsArm,
+                    valueLabel = if (likelyMali) socProfile.optString("gpu_family_label").ifBlank { "Mali/Immortalis" } else "GPU probe pending",
+                    detail = "mali=$likelyMali | gpu=${socProfile.optString("gpu_family_hint").ifBlank { "unknown" }} | arm=$supportsArm | backend_order=${socProfile.optJSONArray("litert_lm_backend_order")?.toString() ?: "unknown"}",
+                    recommendation = "Probe LiteRT-LM GPU on Mali or Immortalis, then fall back to CPU when the runtime does not accept the accelerator.",
+                    fraction = when {
+                        likelyMali -> 0.94f
+                        supportsArm -> 0.7f
+                        else -> 0.38f
+                    },
+                    extra = JSONObject()
+                        .put("tool_action", "soc_compatibility_report")
+                        .put("graph_type", "soc_backend_matrix"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "mediatek_readiness",
+                    label = "PowerVR/IMG fallback path",
+                    ready = likelyPowerVr || supportsArm,
+                    valueLabel = if (likelyPowerVr) "PowerVR/IMG policy active" else "PowerVR policy available",
+                    detail = "powervr_img=$likelyPowerVr | adreno=$likelyAdreno | gpu=${socProfile.optString("gpu_family_label").ifBlank { "unknown GPU" }}",
+                    recommendation = "Do not reject PowerVR/IMG or other non-Adreno devices; use SOC-aware artifacts and disclose CPU fallback until live GPU acceptance is proven.",
+                    fraction = when {
+                        likelyPowerVr -> 0.9f
+                        supportsArm && !likelyAdreno -> 0.78f
+                        supportsArm -> 0.66f
+                        else -> 0.38f
+                    },
+                    extra = JSONObject()
+                        .put("tool_action", "gpu_backend_risk_report")
+                        .put("graph_type", "gpu_backend_risk_matrix"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "mediatek_readiness",
+                    label = "SOC-aware artifact selection",
+                    ready = artifactPolicy.optBoolean("soc_aware_selection_enabled", false),
+                    valueLabel = artifactPolicy.optString("preferred_device_family_label").ifBlank { "generic Android" },
+                    detail = listOf(
+                        artifactPolicy.optString("selection_order").ifBlank { "Prefer generic .litertlm artifacts, then matching SOC/GPU-specific artifacts before mismatched vendor bundles." },
+                        "preferred_model=${preferredModel.optString("title").ifBlank { "model import needed" }}",
+                        "runtime=${preferredModel.optString("runtime_flavor").ifBlank { "unknown runtime" }}",
+                    ).joinToString(" | "),
+                    recommendation = artifactPolicy.optString("recommendation").ifBlank { "Prefer generic or MediaTek-tagged LiteRT-LM artifacts before Qualcomm/Adreno-specific artifacts on MediaTek phones." },
+                    fraction = if (artifactPolicy.optBoolean("soc_aware_selection_enabled", false)) 0.92f else 0.55f,
+                    extra = JSONObject(artifactPolicy.toString())
+                        .put("tool_action", "soc_compatibility_report")
+                        .put("source_surface", "model_download_artifact_selection"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "mediatek_readiness",
+                    label = "Runtime accelerator proof",
+                    ready = !selectedLocalBackend || healthAvailable,
+                    valueLabel = when {
+                        healthAvailable && accelerator == "gpu" && !fallbackToCpu -> "gpu accepted"
+                        healthAvailable && (accelerator == "cpu" || fallbackToCpu) -> "cpu fallback"
+                        currentBackend.started -> "runtime health pending"
+                        selectedLocalBackend -> "runtime not started"
+                        else -> "remote/provider mode"
+                    },
+                    detail = "selected=${selectedBackend.persistedValue} | started=${currentBackend.started} | accelerator=$accelerator | fallback_to_cpu=$fallbackToCpu | gpu_policy=${runtimeHealth.optString("gpu_policy").ifBlank { "unavailable" }}",
+                    recommendation = "Only call MediaTek GPU acceleration proven when /health reports gpu without CPU fallback; CPU fallback remains valid but should be named.",
+                    fraction = when {
+                        healthAvailable && accelerator == "gpu" && !fallbackToCpu -> 1f
+                        healthAvailable && (accelerator == "cpu" || fallbackToCpu) -> 0.74f
+                        currentBackend.started -> 0.48f
+                        selectedLocalBackend -> 0.55f
+                        else -> 0.64f
+                    },
+                    extra = JSONObject()
+                        .put("tool_action", "local_backend_runtime_report")
+                        .put("graph_type", "runtime_backend_matrix"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "mediatek_readiness",
+                    label = "Thermal memory runway",
+                    ready = !thermalBlocked && !memoryPressureLow,
+                    valueLabel = performanceProfile.optString("thermal_throttling_risk").ifBlank { "unknown thermal" },
+                    detail = "thermal=${performanceProfile.optString("thermal_status_label").ifBlank { "unknown" }} | memory=${performanceProfile.optString("available_memory_label").ifBlank { "unknown" }} | low_ram=$lowRam | power_saver=$powerSaveMode",
+                    recommendation = "Reduce model size, scan cadence, and response length when thermal, low-RAM, memory-pressure, or power-saver signals are weak.",
+                    fraction = when {
+                        thermalBlocked || memoryPressureLow -> 0.28f
+                        lowRam || powerSaveMode -> 0.62f
+                        else -> 0.88f
+                    },
+                    extra = JSONObject()
+                        .put("tool_action", "device_performance_report")
+                        .put("graph_type", "runtime_stability_matrix"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "mediatek_readiness",
+                    label = "Physical ARM validation",
+                    ready = !likelyEmulator && supportsArm,
+                    valueLabel = when {
+                        likelyEmulator -> "emulator evidence"
+                        supportsArm -> "phone ARM evidence"
+                        supportsX86 -> "x86 CPU-only evidence"
+                        else -> "unknown validation target"
+                    },
+                    detail = "likely_emulator=$likelyEmulator | arm=$supportsArm | x86=$supportsX86 | offline_airplane_mode=$offlineAirplaneMode",
+                    recommendation = "Treat emulator success as UI and CPU-path coverage; validate on a physical ARM phone before calling MediaTek or non-Adreno acceleration fully green.",
+                    fraction = when {
+                        !likelyEmulator && supportsArm -> 0.92f
+                        likelyEmulator -> 0.42f
+                        supportsX86 -> 0.45f
+                        else -> 0.35f
+                    },
+                    extra = JSONObject()
+                        .put("validation_scope", if (likelyEmulator) "emulator" else "physical_or_host_device")
+                        .put("tool_action", "social_gmail_goal_preflight"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "mediatek_readiness",
+                    label = "Safe fallback policy",
+                    ready = true,
+                    valueLabel = "GPU probe + CPU fallback",
+                    detail = "risk=${riskLevelForScore(maxRiskScore)} score=$maxRiskScore | compatibility=${compatibilityLevelForScore(compatibilityScore)} score=$compatibilityScore | selected=${selectedBackend.persistedValue}",
+                    recommendation = "Keep MediaTek/Mali/Immortalis/PowerVR/IMG and generic non-Adreno phones in the normal local-inference path, with the weakest row routed to its source report.",
+                    fraction = if (maxRiskScore <= 45) 0.92f else 0.72f,
+                    extra = JSONObject()
+                        .put("tool_action", "mediatek_readiness_report")
+                        .put("source_actions", JSONArray().put("soc_compatibility_report").put("gpu_backend_risk_report").put("local_backend_runtime_report").put("device_performance_report").put("local_inference_compatibility_report"))
+                        .put("gpu_backend_risk_level", riskLevelForScore(maxRiskScore))
+                        .put("gpu_backend_risk_score", maxRiskScore),
+                ),
+            )
     }
 
     private fun devicePerformanceMatrixRows(profile: JSONObject, socProfile: JSONObject): JSONArray {
@@ -11740,6 +12083,7 @@ object HermesDeviceDiagnosticsBridge {
         "radio_analyzer_report",
         "signal_capability_status",
         "local_backend_runtime_report",
+        "mediatek_readiness_report",
         "soc_compatibility_report",
         "gpu_backend_risk_report",
         "local_inference_compatibility_report",

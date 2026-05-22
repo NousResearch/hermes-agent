@@ -54,6 +54,13 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
         iconRes = R.drawable.ic_nav_device,
     ),
     SignalIntelligenceQuickAction(
+        id = "mediatek_readiness",
+        label = "MediaTek Readiness",
+        diagnosticAction = "mediatek_readiness_report",
+        prompt = "Run android_device_diagnostics_tool action=mediatek_readiness_report",
+        iconRes = R.drawable.ic_nav_device,
+    ),
+    SignalIntelligenceQuickAction(
         id = "backend_risk",
         label = "Backend Risk",
         diagnosticAction = "gpu_backend_risk_report",

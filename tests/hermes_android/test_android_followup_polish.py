@@ -408,6 +408,15 @@ def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy
     assert '"local_inference_compatibility_matrix"' in diagnostics_bridge
     assert '"local_inference_compatibility_score"' in diagnostics_bridge
     assert 'MediaTek and non-Adreno fallback policy' in diagnostics_bridge
+    assert '"mediatek_readiness_report"' in diagnostics_bridge
+    assert 'mediatekReadinessReportJson(appContext)' in diagnostics_bridge
+    assert 'fun mediatekReadinessReportJson(context: Context): JSONObject' in diagnostics_bridge
+    assert 'mediatekReadinessRows(' in diagnostics_bridge
+    assert '"mediatek_readiness_matrix"' in diagnostics_bridge
+    assert '"mediatek_readiness_score"' in diagnostics_bridge
+    assert 'MediaTek family detection' in diagnostics_bridge
+    assert 'Mali and Immortalis GPU path' in diagnostics_bridge
+    assert 'PowerVR/IMG fallback path' in diagnostics_bridge
     assert 'gpuBackendRiskMatrixRows(' in diagnostics_bridge
     assert 'gpuBackendRiskRouteRows(' in diagnostics_bridge
     assert '"gpu_backend_risk_matrix"' in diagnostics_bridge
@@ -437,6 +446,8 @@ def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy
     assert 'soc_compatibility_report' in chat_client
     assert 'gpu_backend_risk_report' in chat_client
     assert 'local_inference_compatibility_report' in chat_client
+    assert 'mediatek_readiness_report' in chat_client
+    assert '"mediatek_readiness_matrix"' in chat_client
     assert 'device_performance_report' in chat_client
     assert '"runtime_backend_matrix"' in chat_client
     assert '"runtime_stability_matrix"' in chat_client
@@ -447,11 +458,13 @@ def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy
     assert '"gpu_backend_risk_routes"' in chat_client
     assert '"local_inference_compatibility_matrix"' in chat_client
     assert '"gpu_backend_risk_matrix", "gpu_backend_risk_routes",' in diagnostic_cards
+    assert '"mediatek_readiness_matrix",' in diagnostic_cards
     assert '"local_inference_compatibility_matrix",' in diagnostic_cards
     assert '"runtime_backend_matrix", "runtime_stability_matrix" -> capabilityMatrixRow(row)' in diagnostic_cards
     assert 'id = "runtime_backend"' in quick_actions
     assert 'id = "runtime_stability"' in quick_actions
     assert 'id = "soc_compatibility"' in quick_actions
+    assert 'id = "mediatek_readiness"' in quick_actions
     assert 'id = "backend_risk"' in quick_actions
     assert 'id = "inference_compatibility"' in quick_actions
     assert 'action=local_inference_compatibility_report' in quick_actions

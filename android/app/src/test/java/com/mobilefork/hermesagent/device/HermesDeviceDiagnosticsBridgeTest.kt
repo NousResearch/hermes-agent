@@ -1233,6 +1233,51 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun mediatekReadinessReportExposesDedicatedNonAdrenoReadinessProfile() {
+        val result = HermesDeviceDiagnosticsBridge.mediatekReadinessReportJson(context)
+        val rows = result.getJSONArray("mediatek_readiness_matrix")
+        val labels = buildSet {
+            for (index in 0 until rows.length()) add(rows.getJSONObject(index).getString("label"))
+        }
+        val sourceActions = result.getJSONArray("source_report_actions").toString()
+        val cards = result.getJSONArray("cards").toString()
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("mediatek_readiness_report", result.getString("action"))
+        assertTrue(sourceActions.contains("soc_compatibility_report"))
+        assertTrue(sourceActions.contains("gpu_backend_risk_report"))
+        assertTrue(sourceActions.contains("local_backend_runtime_report"))
+        assertTrue(sourceActions.contains("device_performance_report"))
+        assertTrue(sourceActions.contains("local_inference_compatibility_report"))
+        assertTrue(result.has("android_device_identity"))
+        assertTrue(result.has("soc_profile"))
+        assertTrue(result.has("device_performance_profile"))
+        assertTrue(result.has("preferred_local_model"))
+        assertTrue(result.has("current_local_backend"))
+        assertTrue(result.has("litert_runtime_health"))
+        assertTrue(result.has("gpu_backend_risk_matrix"))
+        assertTrue(result.has("runtime_backend_matrix"))
+        assertTrue(result.has("runtime_stability_matrix"))
+        assertTrue(result.has("local_inference_compatibility_matrix"))
+        assertTrue(result.has("mediatek_readiness_score"))
+        assertTrue(result.has("mediatek_readiness_level"))
+        assertTrue(result.has("ready_mediatek_readiness_count"))
+        assertTrue(labels.contains("MediaTek family detection"))
+        assertTrue(labels.contains("Mali and Immortalis GPU path"))
+        assertTrue(labels.contains("PowerVR/IMG fallback path"))
+        assertTrue(labels.contains("SOC-aware artifact selection"))
+        assertTrue(labels.contains("Runtime accelerator proof"))
+        assertTrue(labels.contains("Thermal memory runway"))
+        assertTrue(labels.contains("Physical ARM validation"))
+        assertTrue(labels.contains("Safe fallback policy"))
+        assertTrue(cards.contains("MediaTek Readiness"))
+        assertTrue(cards.contains("mediatek_readiness_matrix"))
+        assertTrue(result.getJSONArray("gemma_observation_directives").toString().contains("Dimensity"))
+        assertTrue(result.getInt("mediatek_readiness_count") >= 8)
+        assertTrue(result.getInt("ready_mediatek_readiness_count") >= 3)
+    }
+
+    @Test
     fun devicePerformanceReportExposesThermalMemoryPowerGuardrailsForRuntimeStability() {
         val result = HermesDeviceDiagnosticsBridge.devicePerformanceReportJson(context)
         val rows = result.getJSONArray("runtime_stability_matrix")

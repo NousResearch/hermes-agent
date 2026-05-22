@@ -73,6 +73,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
         "agent_observation_report",
         "agent_environment_report",
         "soc_compatibility_report",
+        "mediatek_readiness_report",
         "gpu_backend_risk_report",
         "local_inference_compatibility_report",
         "wifi_analyzer_report",
@@ -95,6 +96,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
     assert 'id = "signal_evidence"' in actions
     assert 'id = "agent_observation"' in actions
     assert 'id = "soc_compatibility"' in actions
+    assert 'id = "mediatek_readiness"' in actions
     assert 'id = "backend_risk"' in actions
     assert 'id = "inference_compatibility"' in actions
     assert 'id = "wifi_occupancy"' in actions

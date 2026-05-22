@@ -1282,9 +1282,9 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, camera capability, overlay status, passive local backend runtime health, GPU/backend risk matrices, local inference compatibility scorecards, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible signal evidence bundles, agent observation dashboards with fused signal-context matrices, direct diagnostic card manifests, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, radio analyzer AM/FM band-plan rows, AM/FM signal graph rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, camera capability, overlay status, passive local backend runtime health, dedicated MediaTek/Dimensity/Helio/Mali/PowerVR/non-Adreno readiness profiles, GPU/backend risk matrices, local inference compatibility scorecards, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible signal evidence bundles, agent observation dashboards with fused signal-context matrices, direct diagnostic card manifests, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, radio analyzer AM/FM band-plan rows, AM/FM signal graph rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_signal_graph, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, soc_compatibility_report, gpu_backend_risk_report, local_inference_compatibility_report, device_performance_report, signal_awareness_report, agent_signal_evidence_report, signal_evidence_bundle, agent_observation_report, agent_card_manifest_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
+                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_signal_graph, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, mediatek_readiness_report, soc_compatibility_report, gpu_backend_risk_report, local_inference_compatibility_report, device_performance_report, signal_awareness_report, agent_signal_evidence_report, signal_evidence_bundle, agent_observation_report, agent_card_manifest_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point detail/export rows. Defaults to limit, or the Wi-Fi max for wifi_ap_details/wifi_export."))
                         .put("export_format", stringProp("Wi-Fi export format for wifi_export: json, csv, or both."))
@@ -3303,6 +3303,8 @@ class NativeToolCallingChatClient(
                     diagnosticArguments("radio_signal_graph")
                 lower.containsAny("fm radio", "am radio", "am/fm radio", "am fm radio", "radio signals", "rf signals", "radio scanner", "radio scan", "broadcast radio") ->
                     diagnosticArguments("radio_signal_status")
+                lower.containsAny("mediatek readiness", "mediatek device readiness", "mediatek soc readiness", "dimensity readiness", "helio readiness", "mali readiness", "immortalis readiness", "powervr readiness", "img readiness", "non adreno readiness", "non-adreno readiness") ->
+                    diagnosticArguments("mediatek_readiness_report")
                 lower.containsAny("gpu backend risk", "backend risk", "accelerator risk", "non adreno backend", "mali backend", "powervr backend", "xclipse backend") ->
                     diagnosticArguments("gpu_backend_risk_report")
                 lower.containsAny("local inference compatibility", "inference compatibility", "model compatibility", "inference fit", "litert compatibility", "gemma compatibility", "will gemma run", "can gemma run") ->
@@ -3481,6 +3483,12 @@ class NativeToolCallingChatClient(
             "radio_analyzer_report",
             "signal_capability_status",
             "local_backend_runtime_report",
+            "mediatek_readiness_report",
+            "mediatek_device_readiness_report",
+            "mediatek_soc_readiness_report",
+            "non_adreno_readiness_report",
+            "dimensity_readiness_report",
+            "helio_readiness_report",
             "soc_compatibility_report",
             "gpu_backend_risk_report",
             "local_inference_compatibility_report",
@@ -3929,6 +3937,10 @@ internal object NativeToolContextCompressor {
                 "ready_runtime_backend_feature_count",
                 "runtime_stability_feature_count",
                 "ready_runtime_stability_feature_count",
+                "mediatek_readiness_score",
+                "mediatek_readiness_level",
+                "mediatek_readiness_count",
+                "ready_mediatek_readiness_count",
                 "soc_backend_feature_count",
                 "ready_soc_backend_feature_count",
                 "soc_backend_route_count",
@@ -4069,6 +4081,7 @@ internal object NativeToolContextCompressor {
         "signal_constraint_matrix",
         "runtime_backend_matrix",
         "runtime_stability_matrix",
+        "mediatek_readiness_matrix",
         "soc_backend_matrix",
         "soc_backend_policy_routes",
         "soc_backend_constraint_matrix",

@@ -4,10 +4,25 @@ import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
-import type { Theme } from '../theme.js'
+import { type Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
 const LOADER_TICK_MS = 120
+const DEFAULT_BANNER_TITLE = 'NOUS HERMES'
+const DEFAULT_SESSION_LABEL = 'Nous Research'
+const DEFAULT_TAGLINE = 'Nous Research · Messenger of the Digital Gods'
+
+function bannerTitle(t: Theme) {
+  return t.brand.builtinBranding ? DEFAULT_BANNER_TITLE : t.brand.name
+}
+
+function bannerSubtitle(t: Theme) {
+  return t.brand.builtinBranding ? DEFAULT_TAGLINE : `${t.brand.name} · AI Agent`
+}
+
+function sessionBrandLabel(t: Theme) {
+  return t.brand.builtinBranding ? DEFAULT_SESSION_LABEL : t.brand.name
+}
 
 function InlineLoader({ label, t }: { label: string; t: Theme }) {
   const [tick, setTick] = useState(0)
@@ -42,18 +57,21 @@ export function ArtLines({ lines }: { lines: [string, string][] }) {
 export function Banner({ t }: { t: Theme }) {
   const cols = useStdout().stdout?.columns ?? 80
   const logoLines = logo(t.color, t.bannerLogo || undefined)
+  const canShowArt = Boolean(t.bannerLogo) || t.brand.builtinBranding
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      {cols >= (t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH) ? (
+      {canShowArt && cols >= (t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH) ? (
         <ArtLines lines={logoLines} />
       ) : (
         <Text bold color={t.color.primary}>
-          {t.brand.icon} NOUS HERMES
+          {t.brand.icon} {bannerTitle(t)}
         </Text>
       )}
 
-      <Text color={t.color.muted}>{t.brand.icon} Nous Research · Messenger of the Digital Gods</Text>
+      <Text color={t.color.muted}>
+        {t.brand.icon} {bannerSubtitle(t)}
+      </Text>
     </Box>
   )
 }
@@ -99,6 +117,7 @@ const TOOLSETS_MAX = 8
 export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   const cols = useStdout().stdout?.columns ?? 100
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
+  const canShowHeroArt = Boolean(t.bannerHero) || t.brand.builtinBranding
   const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
   const wide = cols >= 90 && leftW + 40 < cols
   const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
@@ -219,12 +238,18 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
     <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
       {wide && (
         <Box flexDirection="column" marginRight={2} width={leftW}>
-          <ArtLines lines={heroLines} />
+          {canShowHeroArt ? (
+            <ArtLines lines={heroLines} />
+          ) : (
+            <Text bold color={t.color.primary}>
+              {t.brand.icon} {t.brand.name}
+            </Text>
+          )}
           <Text />
 
           <Text color={t.color.accent}>
             {info.model.split('/').pop()}
-            <Text color={t.color.muted}> · Nous Research</Text>
+            <Text color={t.color.muted}> · {sessionBrandLabel(t)}</Text>
           </Text>
 
           <Text color={t.color.muted} wrap="truncate-end">

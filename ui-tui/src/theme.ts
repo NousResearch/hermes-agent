@@ -42,6 +42,7 @@ export interface ThemeBrand {
   goodbye: string
   tool: string
   helpHeader: string
+  builtinBranding: boolean
 }
 
 export interface Theme {
@@ -236,14 +237,17 @@ function normalizeAnsiForeground(color: string): string {
 
 // ── Defaults ─────────────────────────────────────────────────────────
 
+export const DEFAULT_BRAND_NAME = 'Hermes Agent'
+
 const BRAND: ThemeBrand = {
-  name: 'Hermes Agent',
+  name: DEFAULT_BRAND_NAME,
   icon: '⚕',
   prompt: '❯',
   welcome: 'Type your message or /help for commands.',
   goodbye: 'Goodbye! ⚕',
   tool: '┊',
-  helpHeader: '(^_^)? Commands'
+  helpHeader: '(^_^)? Commands',
+  builtinBranding: true
 }
 
 const cleanPromptSymbol = (s: string | undefined, fallback: string) => {
@@ -580,7 +584,8 @@ export function fromSkin(
       welcome: branding.welcome ?? d.brand.welcome,
       goodbye: branding.goodbye ?? d.brand.goodbye,
       tool: toolPrefix || d.brand.tool,
-      helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
+      helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader),
+      builtinBranding: !branding.agent_name || branding.agent_name === d.brand.name
     },
 
     bannerLogo,

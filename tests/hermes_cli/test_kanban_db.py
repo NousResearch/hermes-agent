@@ -4086,3 +4086,210 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+# Model escalation (retry_model_escalation)
+# ---------------------------------------------------------------------------
+
+def test_dispatch_escalates_model_on_consecutive_failure(
+    kanban_home, all_assignees_spawnable
+):
+    """On a task with consecutive_failures > 0, dispatch_once should upgrade
+    model_override according to the model_escalation map before spawning."""
+    spawned_tasks = []
+
+    def fake_spawn(task, workspace):
+        spawned_tasks.append(task)
+
+    escalation = {"low-model": "high-model"}
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="flaky", assignee="alice")
+        # Simulate one prior failure so consecutive_failures = 1
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 1, model_override = 'low-model' WHERE id = ?",
+            (t,),
+        )
+        conn.commit()
+
+        kb.dispatch_once(
+            conn, spawn_fn=fake_spawn, model_escalation=escalation,
+        )
+
+    assert len(spawned_tasks) == 1
+    assert spawned_tasks[0].model_override == "high-model"
+    with kb.connect() as conn:
+        task = kb.get_task(conn, t)
+        assert task.model_override == "high-model"
+
+
+def test_dispatch_escalates_from_empty_override(
+    kanban_home, all_assignees_spawnable
+):
+    """Empty string key in the escalation map applies when model_override is None."""
+    spawned_tasks = []
+
+    def fake_spawn(task, workspace):
+        spawned_tasks.append(task)
+
+    # Empty-string key = 'no current override' -> upgrade
+    escalation = {"": "upgraded-model"}
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="no-override", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 1 WHERE id = ?", (t,),
+        )
+        conn.commit()
+
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, model_escalation=escalation)
+
+    assert len(spawned_tasks) == 1
+    assert spawned_tasks[0].model_override == "upgraded-model"
+
+
+def test_dispatch_no_escalation_on_first_spawn(
+    kanban_home, all_assignees_spawnable
+):
+    """Model escalation should NOT apply on first spawn (consecutive_failures == 0)."""
+    spawned_tasks = []
+
+    def fake_spawn(task, workspace):
+        spawned_tasks.append(task)
+
+    escalation = {"": "should-not-use"}
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh", assignee="alice")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, model_escalation=escalation)
+
+    assert len(spawned_tasks) == 1
+    assert spawned_tasks[0].model_override is None
+
+
+def test_dispatch_no_escalation_when_map_empty(
+    kanban_home, all_assignees_spawnable
+):
+    """Empty escalation dict means no escalation regardless of failure count."""
+    spawned_tasks = []
+
+    def fake_spawn(task, workspace):
+        spawned_tasks.append(task)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="no-map", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 3, model_override = 'x' WHERE id = ?",
+            (t,),
+        )
+        conn.commit()
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, model_escalation={})
+
+    assert spawned_tasks[0].model_override == "x"  # unchanged
+
+
+def test_dispatch_no_escalation_at_top_of_chain(
+    kanban_home, all_assignees_spawnable
+):
+    """A task already at the top of the chain (no further escalation target)
+    stays with its current model_override unchanged."""
+    spawned_tasks = []
+
+    def fake_spawn(task, workspace):
+        spawned_tasks.append(task)
+
+    escalation = {"low": "high"}  # "high" has no further escalation
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="top-of-chain", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 2, model_override = 'high' WHERE id = ?",
+            (t,),
+        )
+        conn.commit()
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, model_escalation=escalation)
+
+    assert spawned_tasks[0].model_override == "high"
+
+
+# ---------------------------------------------------------------------------
+# Crash loop stickiness fix (#30417)
+# ---------------------------------------------------------------------------
+
+def test_gave_up_blocked_task_does_not_auto_promote(kanban_home):
+    """A parentless task blocked by the circuit breaker (gave_up event) must
+    NOT be re-promoted to ready by recompute_ready every tick -- that causes
+    the blocked-promoted-spawned-crashed infinite cycle. (#30417)"""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="crasher", assignee="alice")
+        # Simulate the circuit breaker trip: status=blocked + gave_up event
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', consecutive_failures = 3 WHERE id = ?",
+            (t,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', '{}', ?)",
+            (t, int(__import__("time").time())),
+        )
+        conn.commit()
+
+        # recompute_ready must NOT promote this task
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        task = kb.get_task(conn, t)
+        assert task.status == "blocked"
+
+
+def test_gave_up_blocked_task_promotes_after_explicit_unblock(kanban_home):
+    """After an operator calls unblock_task (which emits an 'unblocked' event),
+    a previously gave_up-blocked task can be promoted by recompute_ready."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="crasher", assignee="alice")
+        now = int(__import__("time").time())
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', consecutive_failures = 3 WHERE id = ?",
+            (t,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', '{}', ?)",
+            (t, now),
+        )
+        conn.commit()
+
+        # Simulate operator unblock: emits 'unblocked' event and flips to ready
+        # (we call the real unblock_task here)
+        kb.unblock_task(conn, t)
+
+        # Status is now ready; recompute_ready is a no-op for non-todo/blocked tasks
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+
+
+def test_recompute_ready_still_promotes_blocked_with_done_parents_after_gave_up(
+    kanban_home,
+):
+    """A task blocked by gave_up event SHOULD still be promoted when it has
+    parents and all parents are done -- dependency unblock should override
+    the circuit-breaker sticky. This tests that the fix doesn't break
+    the original parent-dependency auto-recovery path."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(conn, title="child", assignee="a", parents=[parent])
+        # Complete the parent
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent)
+        # Simulate circuit-breaker block on child
+        now = int(__import__("time").time())
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', consecutive_failures = 2 WHERE id = ?",
+            (child,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', '{}', ?)",
+            (child, now),
+        )
+        conn.commit()
+
+        # Parent is done -> child should be promoted despite gave_up
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 1
+        task = kb.get_task(conn, child)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0

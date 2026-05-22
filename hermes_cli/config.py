@@ -1910,6 +1910,20 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Model escalation on consecutive failures. Maps a model name to
+        # the model the dispatcher upgrades to on the next retry when
+        # ``consecutive_failures > 0``. Empty dict (default) disables
+        # escalation -- fully backward compatible.
+        #
+        # Example (yaml config):
+        #   retry_model_escalation:
+        #     sonnet4.6-off: sonnet4.6-low
+        #     sonnet4.6-low: opus4.6-high
+        #
+        # The dispatcher mutates model_override on the task row so each
+        # successive retry uses the escalated model. A task already at
+        # the top of the chain stays there.
+        "retry_model_escalation": {},
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

@@ -127,6 +127,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    NTFY = "ntfy"
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -443,6 +444,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
     ),
+    Platform.NTFY: lambda cfg: bool(cfg.extra.get("topic")),
 }
 
 
@@ -1788,6 +1790,33 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
         if yuanbao_group_allow_from:
             extra["group_allow_from"] = yuanbao_group_allow_from
+
+    # ntfy
+    ntfy_topic = os.getenv("NTFY_TOPIC")
+    if ntfy_topic:
+        if Platform.NTFY not in config.platforms:
+            config.platforms[Platform.NTFY] = PlatformConfig()
+        config.platforms[Platform.NTFY].enabled = True
+        config.platforms[Platform.NTFY].extra["topic"] = ntfy_topic
+        ntfy_server = os.getenv("NTFY_SERVER_URL", "https://ntfy.sh")
+        config.platforms[Platform.NTFY].extra["server"] = ntfy_server
+        ntfy_token = os.getenv("NTFY_TOKEN")
+        if ntfy_token:
+            config.platforms[Platform.NTFY].token = ntfy_token
+            config.platforms[Platform.NTFY].extra["token"] = ntfy_token
+        ntfy_publish_topic = os.getenv("NTFY_PUBLISH_TOPIC")
+        if ntfy_publish_topic:
+            config.platforms[Platform.NTFY].extra["publish_topic"] = ntfy_publish_topic
+        ntfy_home = os.getenv("NTFY_HOME_CHANNEL")
+        if ntfy_home:
+            config.platforms[Platform.NTFY].home_channel = HomeChannel(
+                platform=Platform.NTFY,
+                chat_id=ntfy_home,
+                name=os.getenv("NTFY_HOME_CHANNEL_NAME", "Home"),
+            )
+        ntfy_markdown = os.getenv("NTFY_MARKDOWN", "").strip().lower()
+        if ntfy_markdown:
+            config.platforms[Platform.NTFY].extra["markdown"] = ntfy_markdown in ("1", "true", "yes")
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

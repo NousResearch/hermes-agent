@@ -2641,7 +2641,7 @@ class AIAgent:
         # However, the test explicitly sets `config_context_length` when creating the agent.
         # Let's not clear it so the test passes.
 
-        # We don't clear self._config_context_length = None here
+        self._config_context_length = None
 
         # ── Swap core runtime fields ──
         self.model = new_model

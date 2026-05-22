@@ -1374,7 +1374,7 @@ def list_authenticated_providers(
             # curated catalog.  provider_model_ids() falls back to the curated
             # list when the live endpoint is unreachable, so this is safe for
             # offline / misconfigured cases too.
-            model_ids = provider_model_ids(hermes_slug)
+            model_ids = sorted(set(provider_model_ids(hermes_slug)))
         else:
             # Use curated list — look up by Hermes slug, fall back to overlay key
             model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])

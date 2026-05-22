@@ -611,6 +611,24 @@ _GROUP_CASES = [
     ),
     pytest.param(
         _group_case(
+            admins={"on_admin"},
+            sender={"sender_type": "user", "open_id": "ou_admin", "union_id": "on_admin"},
+            is_bot=False,
+            expected=True,
+        ),
+        id="human:admin_via_union_id",
+    ),
+    pytest.param(
+        _group_case(
+            adapter={"group_policy": "allowlist"},
+            sender={"sender_type": "user", "open_id": "ou_app_scoped", "union_id": "on_stable"},
+            is_bot=False,
+            expected=True,
+        ),
+        id="human:allowlist_via_union_id",
+    ),
+    pytest.param(
+        _group_case(
             sender={"sender_type": "bot", "open_id": "ou_peer"},
             is_bot=True,
             expected=True,
@@ -655,6 +673,8 @@ def test_allow_group_message_matrix(case):
     adapter = make_adapter_skeleton(**case["adapter"])
     adapter._admins = case["admins"]
     adapter._group_rules = case["group_rules"]
+    if case["expected"] and case["sender"].get("union_id") == "on_stable":
+        adapter._allowed_group_users = {"on_stable"}
     sender = make_sender(**case["sender"])
     assert adapter._allow_group_message(
         sender_id=sender.sender_id,

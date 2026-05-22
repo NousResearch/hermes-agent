@@ -1476,8 +1476,10 @@ def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
     set_toggle = server.handle_request(
         {"id": "2", "method": "config.set", "params": {"key": "mouse"}}
     )
-    assert set_toggle["result"] == {"key": "mouse", "value": "on"}
-    assert writes == [("display.mouse_tracking", True)]
+    # /mouse (no arg) toggles between 'all' and 'off'. Starting from
+    # tui_mouse: False (→ 'off'), the toggle flips to 'all'.
+    assert set_toggle["result"] == {"key": "mouse", "value": "all"}
+    assert writes == [("display.mouse_tracking", "all")]
 
     cfg["display"] = {"mouse_tracking": 0, "tui_mouse": True}
     get_canonical = server.handle_request(
@@ -1489,7 +1491,51 @@ def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
     get_null = server.handle_request(
         {"id": "4", "method": "config.get", "params": {"key": "mouse"}}
     )
-    assert get_null["result"]["value"] == "on"
+    # mouse_tracking present-but-None defers neither to tui_mouse nor to
+    # the legacy off bucket: it falls through to the 'all' default.
+    assert get_null["result"]["value"] == "all"
+
+
+def test_config_mouse_accepts_preset_strings_and_aliases(monkeypatch):
+    cfg = {"display": {"mouse_tracking": "all"}}
+    writes = []
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    # Direct preset.
+    set_wheel = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "mouse", "value": "wheel"},
+        }
+    )
+    assert set_wheel["result"] == {"key": "mouse", "value": "wheel"}
+    assert writes[-1] == ("display.mouse_tracking", "wheel")
+
+    # Alias for buttons.
+    set_click = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "mouse", "value": "click"},
+        }
+    )
+    assert set_click["result"] == {"key": "mouse", "value": "buttons"}
+    assert writes[-1] == ("display.mouse_tracking", "buttons")
+
+    # Unknown value → 4002.
+    bad = server.handle_request(
+        {
+            "id": "3",
+            "method": "config.set",
+            "params": {"key": "mouse", "value": "rainbows"},
+        }
+    )
+    assert bad["error"]["code"] == 4002
 
 
 def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):

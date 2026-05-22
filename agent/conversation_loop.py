@@ -46,6 +46,7 @@ from agent.message_sanitization import (
     _strip_non_ascii,
 )
 from agent.model_metadata import (
+    MINIMUM_CONTEXT_LENGTH,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_next_probe_tier,
@@ -71,6 +72,50 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+
+def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
+    """Return a user-facing error when Ollama is loaded with too little context."""
+    if not getattr(agent, "tools", None):
+        return None
+
+    runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
+    if not isinstance(runtime_ctx, int) or runtime_ctx <= 0:
+        return None
+    if runtime_ctx >= MINIMUM_CONTEXT_LENGTH:
+        return None
+
+    model = getattr(agent, "model", "") or "the selected model"
+    base_url = getattr(agent, "base_url", "") or "unknown base URL"
+    provider = getattr(agent, "provider", "") or "unknown"
+    tool_count = len(getattr(agent, "tools", None) or [])
+
+    logger.warning(
+        "Ollama runtime context too small for Hermes tool use: "
+        "model=%s provider=%s base_url=%s runtime_context=%d "
+        "minimum_context=%d estimated_request_tokens=%d tool_count=%d "
+        "session=%s",
+        model,
+        provider,
+        base_url,
+        runtime_ctx,
+        MINIMUM_CONTEXT_LENGTH,
+        request_tokens,
+        tool_count,
+        getattr(agent, "session_id", None) or "none",
+    )
+
+    return (
+        f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime "
+        f"context, but Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
+        "for reliable tool use.\n\n"
+        "Increase the Ollama context for this model and restart/reload the "
+        "model before trying again. A known-good starting point is 65,536 "
+        "tokens. In Hermes config, set `model.ollama_num_ctx: 65536` "
+        "(and `model.context_length: 65536` if you also override the displayed "
+        "model context). If you manage the model through an Ollama Modelfile, "
+        "set `PARAMETER num_ctx 65536` there instead."
+    )
 
 
 def _ra():
@@ -527,6 +572,7 @@ def run_conversation(
     api_call_count = 0
     final_response = None
     interrupted = False
+    failed = False
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
@@ -883,6 +929,26 @@ def run_conversation(
         # Calculate approximate request size for logging
         total_chars = sum(len(str(msg)) for msg in api_messages)
         approx_tokens = estimate_messages_tokens_rough(api_messages)
+        approx_request_tokens = estimate_request_tokens_rough(
+            api_messages, tools=agent.tools or None
+        )
+
+        _runtime_context_error = _ollama_context_limit_error(
+            agent, approx_request_tokens
+        )
+        if _runtime_context_error:
+            final_response = _runtime_context_error
+            failed = True
+            _turn_exit_reason = "ollama_runtime_context_too_small"
+            messages.append({"role": "assistant", "content": final_response})
+            agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
+            api_call_count -= 1
+            agent._api_call_count = api_call_count
+            try:
+                agent.iteration_budget.refund()
+            except Exception:
+                pass
+            break
         
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None
@@ -923,6 +989,7 @@ def run_conversation(
         copilot_auth_retry_attempted=False
         thinking_sig_retry_attempted = False
         image_shrink_retry_attempted = False
+        multimodal_tool_content_retry_attempted = False
         oauth_1m_beta_retry_attempted = False
         llama_cpp_grammar_retry_attempted = False
         has_retried_429 = False
@@ -1454,7 +1521,6 @@ def run_conversation(
                                 }
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
-                                agent._save_session_log(messages)
                                 restart_with_length_continuation = True
                                 break
 
@@ -1993,6 +2059,31 @@ def run_conversation(
                         logger.info(
                             "image-shrink recovery: no data-URL image parts found "
                             "or shrink didn't reduce size; surfacing original error."
+                        )
+
+                # Multimodal-tool-content recovery: providers that follow
+                # the OpenAI spec strictly (tool message content must be a
+                # string) reject our list-type content with a 400.  Strip
+                # image parts from any list-type tool messages, mark the
+                # (provider, model) as no-list-tool-content for the rest
+                # of this session so future tool results preemptively
+                # downgrade, and retry once.  See issue #27344.
+                if (
+                    classified.reason == FailoverReason.multimodal_tool_content_unsupported
+                    and not multimodal_tool_content_retry_attempted
+                ):
+                    multimodal_tool_content_retry_attempted = True
+                    if agent._try_strip_image_parts_from_tool_messages(api_messages):
+                        agent._vprint(
+                            f"{agent.log_prefix}📐 Provider rejected list-type tool content — "
+                            f"downgraded screenshots to text and retrying...",
+                            force=True,
+                        )
+                        continue
+                    else:
+                        logger.info(
+                            "multimodal-tool-content recovery: no list-type tool "
+                            "messages with image parts found; surfacing original error."
                         )
 
                 # Anthropic OAuth subscription rejected the 1M-context beta
@@ -3086,7 +3177,6 @@ def run_conversation(
                     if not agent.quiet_mode:
                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
                     agent._session_messages = messages
-                    agent._save_session_log(messages)
                     continue
 
                 agent._codex_incomplete_retries = 0
@@ -3411,7 +3501,6 @@ def run_conversation(
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
-                agent._save_session_log(messages)
                 
                 # Continue loop for next response
                 continue
@@ -3578,7 +3667,6 @@ def run_conversation(
                         interim_msg["_thinking_prefill"] = True
                         messages.append(interim_msg)
                         agent._session_messages = messages
-                        agent._save_session_log(messages)
                         continue
 
                     # ── Empty response retry ──────────────────────
@@ -3712,7 +3800,6 @@ def run_conversation(
                     }
                     messages.append(continue_msg)
                     agent._session_messages = messages
-                    agent._save_session_log(messages)
                     continue
 
                 codex_ack_continuations = 0
@@ -3853,7 +3940,11 @@ def run_conversation(
                 )
 
     # Determine if conversation completed successfully
-    completed = final_response is not None and api_call_count < agent.max_iterations
+    completed = (
+        final_response is not None
+        and api_call_count < agent.max_iterations
+        and not failed
+    )
 
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
@@ -4003,6 +4094,7 @@ def run_conversation(
         "api_calls": api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
+        "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
         "response_previewed": getattr(agent, "_response_was_previewed", False),

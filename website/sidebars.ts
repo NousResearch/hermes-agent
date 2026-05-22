@@ -27,6 +27,15 @@ const sidebars: SidebarsConfig = {
         'user-guide/windows-wsl-quickstart',
         'user-guide/configuration',
         'user-guide/configuring-models',
+        {
+          type: 'category',
+          label: 'Secrets',
+          collapsed: true,
+          items: [
+            'user-guide/secrets/index',
+            'user-guide/secrets/bitwarden',
+          ],
+        },
         'user-guide/sessions',
         'user-guide/profiles',
         'user-guide/profile-distributions',

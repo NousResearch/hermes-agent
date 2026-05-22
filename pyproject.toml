@@ -41,7 +41,11 @@ dependencies = [
   "ruamel.yaml==0.18.17",
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",
-  "pydantic==2.12.5",
+  # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
+  # pydantic-core 2.41.5 (pulled by 2.12.5) segfaults when the OpenAI SDK's
+  # Responses API resource is exercised from a non-main thread, which is the
+  # codex_responses dispatch in agent/chat_completion_helpers.py:_call.
+  "pydantic==2.13.4",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
@@ -80,7 +84,7 @@ modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.5.7"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "pytest-xdist==3.8.0", "pytest-split==0.11.0", "pytest-timeout==2.4.0", "mcp==1.26.0", "ty==0.0.21", "ruff==0.15.10"]
+dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "pytest-timeout==2.4.0", "mcp==1.26.0", "ty==0.0.21", "ruff==0.15.10"]
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.3", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.3"]
@@ -228,16 +232,12 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
 ]
-# pytest-timeout: per-test 60s hard cap with thread method.
-# Discovered May 2026: the suite reliably hangs at ~96% on full runs even
-# though every individual test completes in <30s. Root cause is leaked
-# threads / atexit handlers accumulating across thousands of tests until
-# something deadlocks at session teardown. Adding pytest-timeout (with
-# thread method, which forces an interrupt into the test thread) breaks
-# the deadlock — the suite then completes cleanly. The 60s cap is large
-# enough that no legitimate test trips it; if a test exceeds it that's a
-# real bug worth surfacing as a Timeout failure.
-addopts = "-m 'not integration' -n auto --timeout=30 --timeout-method=signal"
+# pytest-timeout: per-test 30s hard cap with signal method.
+# This is the fallback inside each per-file pytest subprocess (see
+# scripts/run_tests_parallel.py). Per-file isolation gives every test
+# file a fresh Python interpreter; pytest-timeout catches Python-level
+# hangs within a file.
+addopts = "-m 'not integration' --timeout=30 --timeout-method=signal"
 
 [tool.ty.environment]
 python-version = "3.13"

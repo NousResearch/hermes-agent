@@ -3498,8 +3498,10 @@ def _chromium_search_roots() -> List[str]:
     1. ``PLAYWRIGHT_BROWSERS_PATH`` when set (Docker image sets this to
        ``/opt/hermes/.playwright``).
     2. ``~/.cache/ms-playwright`` — Playwright's default on Linux/macOS.
-    3. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
-    4. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
+    3. ``~/.agent-browser/browsers`` — agent-browser's Chrome-for-Testing
+       install location (`agent-browser install --with-deps`).
+    4. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
+    5. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
        on Windows.
     """
     roots: List[str] = []
@@ -3508,6 +3510,7 @@ def _chromium_search_roots() -> List[str]:
         roots.append(env_path)
     home = os.path.expanduser("~")
     roots.append(os.path.join(home, ".cache", "ms-playwright"))
+    roots.append(os.path.join(home, ".agent-browser", "browsers"))
     if sys.platform == "darwin":
         roots.append(os.path.join(home, "Library", "Caches", "ms-playwright"))
     if sys.platform == "win32":
@@ -3568,13 +3571,28 @@ def _chromium_installed() -> bool:
         except OSError:
             continue
         # Playwright names them ``chromium-<build>`` and
-        # ``chromium_headless_shell-<build>``; agent-browser accepts either.
+        # ``chromium_headless_shell-<build>``. agent-browser's installer names
+        # Chrome-for-Testing bundles ``chrome-<version>`` and stores the actual
+        # executable under ``chrome-linux64/chrome`` (or platform equivalent).
         for entry in entries:
             if entry.startswith("chromium-") or entry.startswith(
                 "chromium_headless_shell-"
             ):
                 _cached_chromium_installed = True
                 return True
+            if entry.startswith("chrome-"):
+                chrome_dir = os.path.join(root, entry)
+                executable_candidates = [
+                    os.path.join(chrome_dir, "chrome"),
+                    os.path.join(chrome_dir, "chrome-linux64", "chrome"),
+                    os.path.join(chrome_dir, "chrome-mac-arm64", "Google Chrome for Testing.app"),
+                    os.path.join(chrome_dir, "chrome-mac-x64", "Google Chrome for Testing.app"),
+                    os.path.join(chrome_dir, "chrome-win64", "chrome.exe"),
+                    os.path.join(chrome_dir, "chrome-win32", "chrome.exe"),
+                ]
+                if any(os.path.exists(candidate) for candidate in executable_candidates):
+                    _cached_chromium_installed = True
+                    return True
 
     _cached_chromium_installed = False
     return False

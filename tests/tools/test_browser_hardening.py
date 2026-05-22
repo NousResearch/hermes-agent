@@ -18,6 +18,7 @@ def _reset_caches():
     bt._agent_browser_resolved = False
     bt._cached_command_timeout = None
     bt._command_timeout_resolved = False
+    bt._cached_chromium_installed = None
     # lru_cache for _discover_homebrew_node_dirs
     if hasattr(bt._discover_homebrew_node_dirs, "cache_clear"):
         bt._discover_homebrew_node_dirs.cache_clear()
@@ -88,6 +89,27 @@ class TestFindAgentBrowserCache:
         # Second call should also raise (from cache)
         with pytest.raises(FileNotFoundError, match="cached"):
             bt._find_agent_browser()
+
+
+class TestChromiumDiscovery:
+
+    def test_detects_agent_browser_installed_chrome_cache(self, tmp_path, monkeypatch):
+        """agent-browser installs Chrome under ~/.agent-browser/browsers; accept it."""
+        import tools.browser_tool as bt
+
+        home = tmp_path / "home"
+        chrome = home / ".agent-browser" / "browsers" / "chrome-149.0.7827.22" / "chrome-linux64" / "chrome"
+        chrome.parent.mkdir(parents=True)
+        chrome.write_text("#!/bin/sh\n", encoding="utf-8")
+        chrome.chmod(0o755)
+
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt.shutil, "which", lambda name: None)
+        monkeypatch.setattr(bt, "_chromium_search_roots", lambda: [str(home / ".agent-browser" / "browsers")])
+        bt._cached_chromium_installed = None
+
+        assert bt._chromium_installed() is True
 
 
 # ---------------------------------------------------------------------------

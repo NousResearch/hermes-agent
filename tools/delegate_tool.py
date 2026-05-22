@@ -2457,21 +2457,14 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from persistent config, hot-reloading on file change.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Always reads through ``hermes_cli.config.load_config()`` which uses mtime-based
+    cache invalidation — changes to ``config.yaml`` take effect on the next call
+    without needing a /reset. The old CLI_CONFIG short-circuit was an optimisation
+    that blocked mid-session config changes; ``load_config()`` is already fast
+    (mtime-cached, ~0.2ms when unchanged) so there's no meaningful penalty.
     """
-    try:
-        from cli import CLI_CONFIG
-
-        cfg = CLI_CONFIG.get("delegation") or {}
-        if cfg:
-            return cfg
-    except Exception:
-        pass
     try:
         from hermes_cli.config import load_config
 

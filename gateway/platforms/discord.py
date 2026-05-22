@@ -1344,29 +1344,91 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("[%s] remove_reaction failed (%s): %s", self.name, emoji, e)
             return False
 
+    def _reaction_config(self) -> Optional[Dict[str, Optional[str]]]:
+        """Return configured lifecycle reaction emojis, or None when disabled.
+
+        ``DISCORD_REACTIONS`` remains backwards-compatible with boolean-ish
+        values, and also accepts a JSON object from ``discord.reactions``:
+
+            {"processing": "👀", "success": "✅", "failure": null}
+
+        Missing keys use defaults. Null/empty/false-ish mapping values disable
+        only that individual lifecycle reaction.
+        """
+        raw = os.getenv("DISCORD_REACTIONS", "true").strip()
+        if raw.lower() in {"false", "0", "no", "off"}:
+            return None
+
+        config: Dict[str, Optional[str]] = {
+            "processing": "👀",
+            "success": "✅",
+            "failure": "❌",
+        }
+        if not raw or raw.lower() in {"true", "1", "yes", "on"}:
+            return config
+
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            logger.debug("[%s] invalid DISCORD_REACTIONS mapping; using defaults", self.name)
+            return config
+
+        if isinstance(parsed, bool):
+            return config if parsed else None
+        if not isinstance(parsed, dict):
+            return config
+
+        if parsed.get("enabled") is False:
+            return None
+
+        for key in ("processing", "success", "failure"):
+            if key not in parsed:
+                continue
+            value = parsed[key]
+            if value is None or value is False:
+                config[key] = None
+            else:
+                emoji = str(value).strip()
+                config[key] = None if emoji.lower() in {"", "null", "none", "false", "0", "no", "off"} else emoji
+        return config
+
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        return self._reaction_config() is not None
+
+    def _reaction_emoji(self, name: str) -> Optional[str]:
+        config = self._reaction_config()
+        if config is None:
+            return None
+        return config.get(name)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction for normal Discord message events."""
-        if not self._reactions_enabled():
+        emoji = self._reaction_emoji("processing")
+        if not emoji:
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
-            await self._add_reaction(message, "👀")
+            await self._add_reaction(message, emoji)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
-        if not self._reactions_enabled():
+        reaction_config = self._reaction_config()
+        if reaction_config is None:
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
+            processing_emoji = reaction_config.get("processing")
+            if processing_emoji:
+                await self._remove_reaction(message, processing_emoji)
             if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, "✅")
+                emoji = reaction_config.get("success")
+                if emoji:
+                    await self._add_reaction(message, emoji)
             elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
+                emoji = reaction_config.get("failure")
+                if emoji:
+                    await self._add_reaction(message, emoji)
 
     async def send(
         self,

@@ -56,7 +56,8 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -246,3 +247,66 @@ async def test_on_processing_complete_cancelled_removes_eyes_without_terminal_re
 
     raw_message.remove_reaction.assert_awaited_once_with("👀", adapter._client.user)
     raw_message.add_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reactions_can_be_customized_via_json_env(adapter, monkeypatch):
+    """DISCORD_REACTIONS as a mapping customizes lifecycle emojis."""
+    monkeypatch.setenv(
+        "DISCORD_REACTIONS",
+        '{"processing": "⏳", "success": "🎉", "failure": "💥"}',
+    )
+
+    raw_message = SimpleNamespace(
+        add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
+    )
+
+    event = _make_event("8", raw_message)
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    raw_message.add_reaction.assert_any_await("⏳")
+    raw_message.remove_reaction.assert_awaited_once_with("⏳", adapter._client.user)
+    raw_message.add_reaction.assert_any_await("🎉")
+
+
+@pytest.mark.asyncio
+async def test_null_reaction_entry_disables_only_that_outcome(adapter, monkeypatch):
+    """A null reaction mapping value suppresses only that lifecycle reaction."""
+    monkeypatch.setenv(
+        "DISCORD_REACTIONS",
+        '{"processing": null, "success": "🎉", "failure": "💥"}',
+    )
+
+    raw_message = SimpleNamespace(
+        add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
+    )
+
+    event = _make_event("9", raw_message)
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    raw_message.remove_reaction.assert_not_awaited()
+    raw_message.add_reaction.assert_awaited_once_with("🎉")
+
+
+@pytest.mark.asyncio
+async def test_null_terminal_reaction_still_removes_processing(adapter, monkeypatch):
+    monkeypatch.setenv(
+        "DISCORD_REACTIONS",
+        '{"processing": "⏳", "success": null, "failure": "💥"}',
+    )
+
+    raw_message = SimpleNamespace(
+        add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
+    )
+
+    event = _make_event("10", raw_message)
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    raw_message.add_reaction.assert_awaited_once_with("⏳")
+    raw_message.remove_reaction.assert_awaited_once_with("⏳", adapter._client.user)

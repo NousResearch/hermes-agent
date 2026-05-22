@@ -941,7 +941,15 @@ def load_gateway_config() -> GatewayConfig:
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
-                    os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+                    reactions_cfg = discord_cfg["reactions"]
+                    if isinstance(reactions_cfg, dict):
+                        os.environ["DISCORD_REACTIONS"] = json.dumps(
+                            reactions_cfg,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    else:
+                        os.environ["DISCORD_REACTIONS"] = str(reactions_cfg).lower()
                 # ignored_channels: channels where bot never responds (even when mentioned)
                 ic = discord_cfg.get("ignored_channels")
                 if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):

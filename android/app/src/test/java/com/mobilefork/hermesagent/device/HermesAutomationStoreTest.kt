@@ -3,6 +3,8 @@ package com.mobilefork.hermesagent.device
 import android.content.ClipboardManager
 import android.content.Context
 import android.media.AudioManager
+import com.mobilefork.hermesagent.data.AppSettings
+import com.mobilefork.hermesagent.data.AppSettingsStore
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
@@ -2162,6 +2164,56 @@ class HermesAutomationStoreTest {
         )
         assertFalse(rejected.toString(), rejected.getBoolean("success"))
         assertTrue(rejected.getString("error").contains("unsupported action_type"))
+    }
+
+    @Test
+    fun bridgeExportsAndImportsSecretFreeAppSettingsBundles() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = AppSettingsStore(context)
+        store.save(
+            AppSettings(
+                provider = "openai",
+                baseUrl = "https://api.openai.example/v1",
+                model = "gpt-test",
+                dataSaverMode = true,
+                offlineAirplaneMode = true,
+                portalEnabled = false,
+                onDeviceBackend = "litert_lm",
+                languageTag = "pt",
+                themePrimaryHex = "#123456",
+                themeCardShape = "square",
+            ),
+        )
+
+        val exported = org.json.JSONObject(HermesAutomationBridge.performActionJson(context, "export_app_settings"))
+        assertTrue(exported.toString(), exported.getBoolean("success"))
+        assertEquals(AppSettings.EXPORT_KIND, exported.getString("kind"))
+        assertFalse(exported.getBoolean("secrets_included"))
+        assertTrue(exported.getJSONArray("redacted_secret_fields").toString().contains("access_token"))
+        assertEquals("openai", exported.getJSONObject("settings").getString("provider"))
+
+        store.save(AppSettings())
+        val imported = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "import_app_settings",
+                org.json.JSONObject().put("bundle", exported.getJSONObject("bundle")),
+            ),
+        )
+
+        assertTrue(imported.toString(), imported.getBoolean("success"))
+        assertEquals("import_app_settings", imported.getString("action"))
+        val reloaded = store.load()
+        assertEquals("openai", reloaded.provider)
+        assertEquals("https://api.openai.example/v1", reloaded.baseUrl)
+        assertEquals("gpt-test", reloaded.model)
+        assertTrue(reloaded.dataSaverMode)
+        assertTrue(reloaded.offlineAirplaneMode)
+        assertFalse(reloaded.portalEnabled)
+        assertEquals("litert_lm", reloaded.onDeviceBackend)
+        assertEquals("pt", reloaded.languageTag)
+        assertEquals("#123456", reloaded.themePrimaryHex)
+        assertEquals("square", reloaded.themeCardShape)
     }
 
     @Test

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import com.mobilefork.hermesagent.data.AppSettings
 import com.mobilefork.hermesagent.data.AppSettingsStore
 import com.mobilefork.hermesagent.data.LocalModelDownloadRecord
 import com.mobilefork.hermesagent.data.LocalModelDownloadStore
@@ -83,6 +84,8 @@ object HermesAutomationBridge {
             "clear_home_screen_widget_automation", "clear_widget_automation" -> HermesAutomationWidgetBridge.clearWidgetAutomationJson(context, arguments)
             "run_home_screen_widget", "run_widget" -> HermesAutomationWidgetBridge.runConfiguredAutomationJson(context, arguments)
             "calculate_sunrise_sunset", "sunrise_sunset", "sun_times", "solar_times" -> calculateSunriseSunsetJson(context, arguments)
+            "export_app_settings", "export_settings", "settings_export", "backup_app_settings", "backup_settings" -> exportAppSettingsJson(context)
+            "import_app_settings", "import_settings", "settings_import", "restore_app_settings", "restore_settings" -> importAppSettingsJson(context, arguments)
             "export_automations", "export", "backup_automations", "backup" -> exportAutomationsJson(context)
             "import_automations", "import", "restore_automations", "restore" -> importAutomationsJson(context, arguments)
             "import_tasker_xml", "import_tasker_data_uri", "import_tasker_project", "import_tasker_task" -> importTaskerXmlJson(context, arguments)
@@ -789,6 +792,48 @@ object HermesAutomationBridge {
             .put("variables", variables)
             .put("automation_count", records.size)
             .put("variable_count", variables.length())
+            .toString()
+    }
+
+    fun exportAppSettingsJson(context: Context): String {
+        val bundle = AppSettingsStore(context).exportBundleJson()
+        return JSONObject()
+            .put("success", true)
+            .put("action", "export_app_settings")
+            .put("kind", bundle.getString("kind"))
+            .put("schema_version", bundle.getInt("schema_version"))
+            .put("secrets_included", false)
+            .put("portable_field_count", bundle.getInt("portable_field_count"))
+            .put("redacted_secret_fields", bundle.getJSONArray("redacted_secret_fields"))
+            .put("bundle", bundle)
+            .put("settings", bundle.getJSONObject("settings"))
+            .put(
+                "recommendation",
+                "Save this bundle for Kai-style settings portability; provider credentials are intentionally excluded and should be imported through the secure credential flow.",
+            )
+            .toString()
+    }
+
+    fun importAppSettingsJson(context: Context, arguments: JSONObject): String {
+        val bundle = runCatching { settingsBundleArgument(arguments) }.getOrElse { error ->
+            return errorJson("import_app_settings bundle_json must be valid JSON: ${error.message}")
+        }
+            ?: return errorJson("import_app_settings requires bundle, settings, bundle_json, settings_json, or json")
+        val imported = AppSettingsStore(context).importBundleJson(bundle)
+        val exported = AppSettings.exportBundle(imported)
+        return JSONObject()
+            .put("success", true)
+            .put("action", "import_app_settings")
+            .put("kind", exported.getString("kind"))
+            .put("schema_version", exported.getInt("schema_version"))
+            .put("secrets_included", false)
+            .put("portable_field_count", exported.getInt("portable_field_count"))
+            .put("redacted_secret_fields", exported.getJSONArray("redacted_secret_fields"))
+            .put("settings", imported.toJson())
+            .put(
+                "recommendation",
+                "App settings were imported without provider secrets; import provider credentials separately through secure storage before remote-provider calls.",
+            )
             .toString()
     }
 
@@ -4379,6 +4424,35 @@ object HermesAutomationBridge {
         return null
     }
 
+    private fun settingsBundleArgument(arguments: JSONObject): JSONObject? {
+        jsonObjectArgument(arguments, "bundle")?.let { return it }
+        jsonObjectArgument(arguments, "settings")?.let { return JSONObject().put("settings", it) }
+        jsonObjectArgument(arguments, "bundle_json")?.let { return it }
+        jsonObjectArgument(arguments, "settings_json")?.let { return it }
+        jsonObjectArgument(arguments, "json")?.let { return it }
+        val hasPortableSettingsField = listOf(
+            "provider",
+            "base_url",
+            "model",
+            "corr3xt_base_url",
+            "data_saver_mode",
+            "offline_airplane_mode",
+            "portal_enabled",
+            "on_device_backend",
+            "litert_lm_speculative_decoding_mode",
+            "language_tag",
+            "chat_display_mode",
+            "keyword_highlighting_enabled",
+            "theme_primary_hex",
+            "theme_secondary_hex",
+            "theme_background_hex",
+            "theme_surface_hex",
+            "theme_surface_variant_hex",
+            "theme_card_shape",
+        ).any { key -> arguments.has(key) && !arguments.isNull(key) }
+        return if (hasPortableSettingsField) JSONObject(arguments.toString()) else null
+    }
+
     private fun jsonObjectArgument(arguments: JSONObject, key: String): JSONObject? {
         if (!arguments.has(key) || arguments.isNull(key)) {
             return null
@@ -5626,6 +5700,8 @@ object HermesAutomationBridge {
         "clear_home_screen_widget_automation",
         "run_home_screen_widget",
         "calculate_sunrise_sunset",
+        "export_app_settings",
+        "import_app_settings",
         "export_automations",
         "import_automations",
         "import_tasker_xml",

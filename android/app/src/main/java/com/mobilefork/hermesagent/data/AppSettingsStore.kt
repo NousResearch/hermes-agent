@@ -1,6 +1,8 @@
 package com.mobilefork.hermesagent.data
 
 import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class AppSettings(
     val provider: String = "openrouter",
@@ -21,7 +23,92 @@ data class AppSettings(
     val themeSurfaceHex: String = "#11141C",
     val themeSurfaceVariantHex: String = "#1B202B",
     val themeCardShape: String = "rounded",
-)
+) {
+    fun toJson(): JSONObject {
+        return JSONObject()
+            .put("provider", provider)
+            .put("base_url", baseUrl)
+            .put("model", model)
+            .put("corr3xt_base_url", corr3xtBaseUrl)
+            .put("data_saver_mode", dataSaverMode)
+            .put("offline_airplane_mode", offlineAirplaneMode)
+            .put("portal_enabled", portalEnabled)
+            .put("on_device_backend", onDeviceBackend)
+            .put("litert_lm_speculative_decoding_mode", liteRtLmSpeculativeDecodingMode)
+            .put("language_tag", languageTag)
+            .put("chat_display_mode", chatDisplayMode)
+            .put("keyword_highlighting_enabled", keywordHighlightingEnabled)
+            .put("theme_primary_hex", themePrimaryHex)
+            .put("theme_secondary_hex", themeSecondaryHex)
+            .put("theme_background_hex", themeBackgroundHex)
+            .put("theme_surface_hex", themeSurfaceHex)
+            .put("theme_surface_variant_hex", themeSurfaceVariantHex)
+            .put("theme_card_shape", themeCardShape)
+    }
+
+    companion object {
+        const val EXPORT_KIND = "hermes_android_app_settings_bundle"
+        const val EXPORT_SCHEMA_VERSION = 1
+
+        val REDACTED_SECRET_FIELDS: JSONArray
+            get() = JSONArray()
+                .put("api_key")
+                .put("access_token")
+                .put("refresh_token")
+                .put("provider_credentials")
+                .put("cookie")
+                .put("authorization")
+
+        fun fromJson(json: JSONObject, fallback: AppSettings = AppSettings()): AppSettings {
+            return fallback.copy(
+                provider = json.optString("provider", fallback.provider).ifBlank { fallback.provider },
+                baseUrl = json.optString("base_url", fallback.baseUrl),
+                model = json.optString("model", fallback.model),
+                corr3xtBaseUrl = json.optString("corr3xt_base_url", fallback.corr3xtBaseUrl),
+                dataSaverMode = optBoolean(json, "data_saver_mode", fallback.dataSaverMode),
+                offlineAirplaneMode = optBoolean(json, "offline_airplane_mode", fallback.offlineAirplaneMode),
+                portalEnabled = optBoolean(json, "portal_enabled", fallback.portalEnabled),
+                onDeviceBackend = json.optString("on_device_backend", fallback.onDeviceBackend).ifBlank { fallback.onDeviceBackend },
+                liteRtLmSpeculativeDecodingMode = json.optString(
+                    "litert_lm_speculative_decoding_mode",
+                    fallback.liteRtLmSpeculativeDecodingMode,
+                ).ifBlank { fallback.liteRtLmSpeculativeDecodingMode },
+                languageTag = json.optString("language_tag", fallback.languageTag).ifBlank { fallback.languageTag },
+                chatDisplayMode = json.optString("chat_display_mode", fallback.chatDisplayMode).ifBlank { fallback.chatDisplayMode },
+                keywordHighlightingEnabled = optBoolean(
+                    json,
+                    "keyword_highlighting_enabled",
+                    fallback.keywordHighlightingEnabled,
+                ),
+                themePrimaryHex = json.optString("theme_primary_hex", fallback.themePrimaryHex).ifBlank { fallback.themePrimaryHex },
+                themeSecondaryHex = json.optString("theme_secondary_hex", fallback.themeSecondaryHex).ifBlank { fallback.themeSecondaryHex },
+                themeBackgroundHex = json.optString("theme_background_hex", fallback.themeBackgroundHex).ifBlank { fallback.themeBackgroundHex },
+                themeSurfaceHex = json.optString("theme_surface_hex", fallback.themeSurfaceHex).ifBlank { fallback.themeSurfaceHex },
+                themeSurfaceVariantHex = json.optString(
+                    "theme_surface_variant_hex",
+                    fallback.themeSurfaceVariantHex,
+                ).ifBlank { fallback.themeSurfaceVariantHex },
+                themeCardShape = json.optString("theme_card_shape", fallback.themeCardShape).ifBlank { fallback.themeCardShape },
+            )
+        }
+
+        fun exportBundle(settings: AppSettings, exportedAtEpochMs: Long = System.currentTimeMillis()): JSONObject {
+            val settingsJson = settings.toJson()
+            return JSONObject()
+                .put("kind", EXPORT_KIND)
+                .put("schema_version", EXPORT_SCHEMA_VERSION)
+                .put("exported_at_epoch_ms", exportedAtEpochMs)
+                .put("secrets_included", false)
+                .put("portable_field_count", settingsJson.length())
+                .put("redacted_secret_fields", REDACTED_SECRET_FIELDS)
+                .put("settings", settingsJson)
+        }
+
+        private fun optBoolean(json: JSONObject, key: String, fallback: Boolean): Boolean {
+            return if (json.has(key) && !json.isNull(key)) json.optBoolean(key, fallback) else fallback
+        }
+    }
+}
 
 class AppSettingsStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -73,6 +160,15 @@ class AppSettingsStore(context: Context) {
             .putString(KEY_THEME_SURFACE_VARIANT_HEX, settings.themeSurfaceVariantHex)
             .putString(KEY_THEME_CARD_SHAPE, settings.themeCardShape)
             .apply()
+    }
+
+    fun exportBundleJson(): JSONObject = AppSettings.exportBundle(load())
+
+    fun importBundleJson(bundle: JSONObject): AppSettings {
+        val settingsJson = bundle.optJSONObject("settings") ?: bundle
+        val imported = AppSettings.fromJson(settingsJson, load())
+        save(imported)
+        return imported
     }
 
     companion object {

@@ -1759,7 +1759,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put("Use radio_signal_status/signal_capability_status to explain AM/FM/RF limits honestly and route broad RF work to external SDR/vendor hardware.")
                     .put("Use SOC and LiteRT backend policy fields to avoid Snapdragon-only assumptions and keep MediaTek/Mali/PowerVR devices on GPU-first with CPU fallback when available.")
                     .put("Use hindsight_memory_tool and operator heartbeat/status rows to retain durable context and expose autonomous task readiness.")
-                    .put("Use kai_operations_matrix to route Kai-style provider fallback, tool bridge, encrypted storage, backup, TTS, image, and shell-boundary work through native Hermes surfaces."),
+                    .put("Use kai_operations_matrix to route Kai-style provider fallback, tool bridge, encrypted storage, secret-free settings backup, automation backup, TTS, image, and shell-boundary work through native Hermes surfaces."),
             )
             .put(
                 "cards",
@@ -1775,7 +1775,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(
                         graphCard(
                             title = "Kai Parity",
-                            body = "${kaiParityRows.length()} Kai-inspired parity row(s) for memory, on-device inference, tools, heartbeat, backup/restore, and multimodal UX.",
+                            body = "${kaiParityRows.length()} Kai-inspired parity row(s) for memory, on-device inference, tools, heartbeat, app settings backup/restore, and multimodal UX.",
                             graphType = "kai_parity_matrix",
                             rows = kaiParityRows,
                         ),
@@ -1783,7 +1783,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(
                         graphCard(
                             title = "Kai Operations",
-                            body = "${kaiOperationsRows.length()} operation row(s) mapping Kai-style provider fallback, tool bridge, secure storage, backup, TTS, and shell capabilities onto Hermes Android routes.",
+                            body = "${kaiOperationsRows.length()} operation row(s) mapping Kai-style provider fallback, tool bridge, secure storage, settings/automation backup, TTS, and shell capabilities onto Hermes Android routes.",
                             graphType = "kai_operations_matrix",
                             rows = kaiOperationsRows,
                         ),
@@ -2224,11 +2224,11 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 capabilityRow(
                     category = "kai_parity",
-                    label = "Settings and automation backup",
+                    label = "App settings and automation backup",
                     ready = true,
-                    valueLabel = "export/import supported",
-                    detail = "Hermes automation bundles can be exported/imported, including records and variables.",
-                    recommendation = "Use android_automation_tool export_automations/import_automations for backup and migration workflows.",
+                    valueLabel = "settings + automation export",
+                    detail = "Hermes can export/import a secret-free app settings bundle plus automation bundles with records and variables.",
+                    recommendation = "Use android_automation_tool export_app_settings/import_app_settings for app preferences and export_automations/import_automations for workflow migration.",
                     fraction = 0.9f,
                     extra = JSONObject().put("parity_source", "Kai settings export/import"),
                 ),
@@ -2317,12 +2317,12 @@ object HermesDeviceDiagnosticsBridge {
                     category = "kai_operations",
                     label = "Encrypted credentials and backup route",
                     ready = true,
-                    valueLabel = "secure store + JSON export",
-                    detail = "Provider secrets use AndroidX encrypted preferences, while automations and variables can be exported/imported as JSON for migration.",
-                    recommendation = "Use secure auth/session stores for credentials and android_automation_tool export_automations/import_automations for backup.",
+                    valueLabel = "secure store + settings JSON",
+                    detail = "Provider secrets use AndroidX encrypted preferences; app settings export/import is secret-free, and automations/variables have separate JSON migration bundles.",
+                    recommendation = "Use secure auth/session stores for credentials, export_app_settings/import_app_settings for preferences, and export_automations/import_automations for workflows.",
                     fraction = 0.9f,
                     extra = JSONObject()
-                        .put("tool_action", "android_automation_tool:export_automations")
+                        .put("tool_action", "android_automation_tool:export_app_settings")
                         .put("source_surface", "secure_secrets_store"),
                 ),
             )
@@ -5687,7 +5687,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(toolJson("file_write_tool", "Write UTF-8 text files inside the Hermes workspace.", "path, content, append"))
                     .put(toolJson("android_system_tool", "Read phone state and open settings or user-granted Shizuku/Sui actions.", "action, package_name, permission"))
                     .put(toolJson("android_ui_tool", "Inspect and control visible Android UI through accessibility and screenshots.", "action, selectors, coordinates"))
-                    .put(toolJson("android_automation_tool", "Run/open/create saved automations, watcher tasks, overlays, notifications, widgets, and Tasker-style triggers.", "action, trigger, data_uri"))
+                    .put(toolJson("android_automation_tool", "Run/open/create saved automations, watcher tasks, overlays, notifications, widgets, Tasker-style triggers, and secret-free app settings export/import.", "action, trigger, data_uri, bundle_json, settings_json"))
                     .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel ratings/AP detail and export rows/vendor OUI/filter facets plus active Wi-Fi band/security/signal/SSID/RSSI filters, Bluetooth nearby devices/service UUID labels/manufacturer names/proximity/history, camera, sensors, SOC compatibility, overlay, Gemma-visible agent observation dashboards, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, scan_mode, refresh, filter_band, filter_security, filter_signal, filter_ssid, min_rssi_dbm, max_rssi_dbm, sensor_types, timeout_ms"))
                     .put(toolJson("hindsight_memory_tool", "Retain, recall, reflect, and promote local Hindsight-style memories with tags, entities, keywords, recency, reinforcement, and reusable prompt context.", "action, content, query, tags, category")),
             )

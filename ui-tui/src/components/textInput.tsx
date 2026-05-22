@@ -834,9 +834,9 @@ export function TextInput({
 
   if (mouseApiRef) {
     mouseApiRef.current = {
+      startAt: (row, col) => startMouseSelection(offsetFromPosition(display, row, col, columns)),
       dragAt: (row, col) => dragMouseSelection(offsetFromPosition(display, row, col, columns)),
       end: endMouseSelection,
-      startAtBeginning: () => startMouseSelection(0)
     }
   }
 
@@ -1244,7 +1244,7 @@ export const shouldPassThroughToGlobalHandler = (
   isVoiceToggleKey(key, input, voiceRecordKey)
 
 export interface TextInputMouseApi {
+  startAt: (row: number, col: number) => void
   dragAt: (row: number, col: number) => void
   end: () => void
-  startAtBeginning: () => void
 }

@@ -79,6 +79,135 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
 
 @pytest.mark.asyncio
+async def test_task_watcher_bridge_enqueues_done_event_and_advances_session_event_sub(kanban_home):
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="watched done", assignee="worker1")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            delivery_mode="session_event",
+            session_key="agent:main:discord:thread:watch:done",
+        )
+        kb.complete_task(conn, tid, result="done")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat1")
+    runner.session_store = SimpleNamespace(
+        get_entry=lambda key: SimpleNamespace(origin=source)
+        if key == "agent:main:discord:thread:watch:done" else None
+    )
+    fake_adapter = MagicMock()
+    fake_adapter._active_sessions = {}
+    fake_adapter._pending_messages = {}
+    fake_adapter._heal_stale_session_lock = MagicMock()
+    fake_adapter._start_session_processing = MagicMock(side_effect=lambda event, session_key: setattr(runner, "_running", False) or True)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    queued_event = fake_adapter._start_session_processing.call_args[0][0]
+    assert "[KANBAN_WATCHER_EVENT] board=default" in queued_event.text
+    assert f"task_id={tid}" in queued_event.text
+    assert "status=Done" in queued_event.text
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert subs == []
+
+
+@pytest.mark.asyncio
+async def test_task_watcher_bridge_enqueues_blocked_event(kanban_home):
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="watched blocked", assignee="worker1")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            delivery_mode="session_event",
+            session_key="agent:main:discord:thread:watch:blocked",
+        )
+        kb.block_task(conn, tid, reason="need input")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat1")
+    runner.session_store = SimpleNamespace(
+        get_entry=lambda key: SimpleNamespace(origin=source)
+        if key == "agent:main:discord:thread:watch:blocked" else None
+    )
+    fake_adapter = MagicMock()
+    fake_adapter._active_sessions = {}
+    fake_adapter._pending_messages = {}
+    fake_adapter._heal_stale_session_lock = MagicMock()
+    fake_adapter._start_session_processing = MagicMock(side_effect=lambda event, session_key: setattr(runner, "_running", False) or True)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    queued_event = fake_adapter._start_session_processing.call_args[0][0]
+    assert f"task_id={tid}" in queued_event.text
+    assert "status=Blocked" in queued_event.text
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+        assert len(subs) == 1
+        assert subs[0]["session_key"] == "agent:main:discord:thread:watch:blocked"
+        assert int(subs[0]["last_event_id"] or 0) > 0
+        kb.complete_task(conn, tid, result="done after unblock")
+        _, _, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="",
+            delivery_mode="session_event",
+            session_key="agent:main:discord:thread:watch:blocked",
+            kinds=("blocked", "completed"),
+        )
+    finally:
+        conn.close()
+    assert [evt.kind for evt in events] == ["completed"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ["gave_up", "crashed", "timed_out"])
 async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     """

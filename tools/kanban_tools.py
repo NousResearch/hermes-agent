@@ -34,6 +34,7 @@ import os
 from typing import Any, Optional
 
 from tools.registry import registry, tool_error
+from hermes_cli.kanban_watch_subscriptions import resolve_create_task_watch_subscriptions
 
 logger = logging.getLogger(__name__)
 
@@ -667,6 +668,9 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    watch, bool_error = _parse_bool_arg(args, "watch")
+    if bool_error:
+        return tool_error(bool_error)
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -685,6 +689,14 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            watch_subscriptions = []
+            if watch:
+                watch_subscriptions = resolve_create_task_watch_subscriptions(kb, conn)
+                if not watch_subscriptions:
+                    logger.warning(
+                        "kanban_create watch=true requested for %r but no session-event subscription binding could be resolved; creating without watch subscription",
+                        title,
+                    )
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -705,6 +717,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                watch_subscriptions=watch_subscriptions or None,
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
@@ -1151,6 +1164,15 @@ KANBAN_CREATE_SCHEMA = {
                     "require immediate human ops (R3 gate) to skip the "
                     "brief running-to-blocked transition. Defaults to "
                     "'running', which preserves the usual dispatch path."
+                ),
+            },
+            "watch": {
+                "type": "boolean",
+                "description": (
+                    "If true, bind the new task to the current watcher/session "
+                    "lane when one can be resolved. Resolution order: current "
+                    "task's watcher row first, then HERMES_SESSION_KEY. When no "
+                    "key is available the task is still created without a watcher."
                 ),
             },
             "skills": {

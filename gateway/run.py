@@ -2636,6 +2636,73 @@ class GatewayRunner:
             depth += 1
         return depth
 
+    def _enqueue_session_event(
+        self,
+        *,
+        session_key: str,
+        source: Any,
+        text: str,
+        adapter: Any,
+    ) -> bool:
+        """Queue or immediately start a synthetic event in one gateway lane."""
+        if not session_key or adapter is None or source is None:
+            return False
+        try:
+            adapter._heal_stale_session_lock(session_key)
+        except Exception:
+            logger.debug("watcher enqueue: stale-lock heal failed for %s", session_key, exc_info=True)
+        queued_event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        if session_key in getattr(adapter, "_active_sessions", {}):
+            self._enqueue_fifo(session_key, queued_event, adapter)
+            return True
+        started = False
+        try:
+            started = bool(adapter._start_session_processing(queued_event, session_key))
+        except Exception:
+            logger.debug("watcher enqueue: immediate start failed for %s", session_key, exc_info=True)
+            started = False
+        if started:
+            return True
+        self._enqueue_fifo(session_key, queued_event, adapter)
+        return True
+
+    def _enqueue_kanban_session_event(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        status: str,
+        session_key: str,
+    ) -> bool:
+        """Enqueue one kanban session-event handback into the bound session lane."""
+        entry = self.session_store.get_entry(session_key)
+        if entry is None or entry.origin is None:
+            logger.debug(
+                "watcher enqueue: no live session entry/origin for %s (%s on %s)",
+                session_key, task_id, board,
+            )
+            return False
+        platform = getattr(entry.origin, "platform", None)
+        adapter = self.adapters.get(platform) if platform is not None else None
+        if adapter is None:
+            logger.debug(
+                "watcher enqueue: adapter unavailable for %s (%s on %s)",
+                session_key, task_id, board,
+            )
+            return False
+        text = f"[KANBAN_WATCHER_EVENT] board={board} task_id={task_id} status={status}"
+        return self._enqueue_session_event(
+            session_key=session_key,
+            source=entry.origin,
+            text=text,
+            adapter=adapter,
+        )
+
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
@@ -4935,6 +5002,8 @@ class GatewayRunner:
                                     platform=sub["platform"],
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
+                                    delivery_mode=sub.get("delivery_mode") or "message",
+                                    session_key=sub.get("session_key") or None,
                                     kinds=TERMINAL_KINDS,
                                 )
                                 if not events:
@@ -4986,6 +5055,68 @@ class GatewayRunner:
                         )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
+                    delivery_mode = sub.get("delivery_mode") or "message"
+                    sub_key = (
+                        sub["task_id"], sub["platform"],
+                        sub["chat_id"], sub.get("thread_id") or "",
+                        delivery_mode, sub.get("session_key") or "",
+                    )
+                    if delivery_mode == "session_event":
+                        for ev in d["events"]:
+                            kind = ev.kind
+                            try:
+                                status = "Done" if kind == "completed" else "Blocked"
+                                delivered = self._enqueue_kanban_session_event(
+                                    board=board_slug,
+                                    task_id=sub["task_id"],
+                                    status=status,
+                                    session_key=str(sub.get("session_key") or ""),
+                                )
+                                if not delivered:
+                                    raise RuntimeError(
+                                        "session lane unavailable for kanban session_event delivery"
+                                    )
+                                logger.debug(
+                                    "kanban notifier: enqueued %s session_event for %s into %s on board %s",
+                                    kind, sub["task_id"], sub.get("session_key"), board_slug,
+                                )
+                                sub_fail_counts.pop(sub_key, None)
+                            except Exception as exc:
+                                fails = sub_fail_counts.get(sub_key, 0) + 1
+                                sub_fail_counts[sub_key] = fails
+                                logger.warning(
+                                    "kanban notifier: session_event delivery failed for %s on %s "
+                                    "(attempt %d/%d): %s",
+                                    sub["task_id"], platform_str, fails,
+                                    MAX_SEND_FAILURES, exc,
+                                )
+                                if fails >= MAX_SEND_FAILURES:
+                                    logger.warning(
+                                        "kanban notifier: dropping subscription %s on %s after %d consecutive session_event failures",
+                                        sub["task_id"], platform_str, fails,
+                                    )
+                                    await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                    sub_fail_counts.pop(sub_key, None)
+                                else:
+                                    await asyncio.to_thread(
+                                        self._kanban_rewind,
+                                        sub,
+                                        d["cursor"],
+                                        d.get("old_cursor", 0),
+                                        board_slug,
+                                    )
+                                break
+                        else:
+                            await asyncio.to_thread(
+                                self._kanban_advance, sub, d["cursor"], board_slug,
+                            )
+                            task_terminal = task and task.status in {"done", "archived"}
+                            if task_terminal:
+                                await asyncio.to_thread(
+                                    self._kanban_unsub, sub, board_slug,
+                                )
+                        continue
+
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -5044,10 +5175,6 @@ class GatewayRunner:
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
-                        sub_key = (
-                            sub["task_id"], sub["platform"],
-                            sub["chat_id"], sub.get("thread_id") or "",
-                        )
                         try:
                             await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
@@ -5154,6 +5281,8 @@ class GatewayRunner:
                 platform=sub["platform"],
                 chat_id=sub["chat_id"],
                 thread_id=sub.get("thread_id") or "",
+                delivery_mode=sub.get("delivery_mode") or "message",
+                session_key=sub.get("session_key") or None,
                 new_cursor=cursor,
             )
         finally:
@@ -5169,6 +5298,8 @@ class GatewayRunner:
                 platform=sub["platform"],
                 chat_id=sub["chat_id"],
                 thread_id=sub.get("thread_id") or "",
+                delivery_mode=sub.get("delivery_mode") or "message",
+                session_key=sub.get("session_key") or None,
             )
         finally:
             conn.close()
@@ -5190,6 +5321,8 @@ class GatewayRunner:
                 platform=sub["platform"],
                 chat_id=sub["chat_id"],
                 thread_id=sub.get("thread_id") or "",
+                delivery_mode=sub.get("delivery_mode") or "message",
+                session_key=sub.get("session_key") or None,
                 claimed_cursor=claimed_cursor,
                 old_cursor=old_cursor,
             )

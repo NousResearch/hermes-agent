@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shlex
 import sys
@@ -24,8 +25,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_watch_subscriptions import resolve_create_task_watch_subscriptions
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +351,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Initial card status. Use 'blocked' for cards "
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
+    p_create.add_argument("--watch", action="store_true",
+                          help="Bind the new task to the current watcher/session lane when possible")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
@@ -1320,7 +1326,15 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    watch_subscriptions = []
     with kb.connect_closing() as conn:
+        if getattr(args, "watch", False):
+            watch_subscriptions = resolve_create_task_watch_subscriptions(kb, conn)
+            if not watch_subscriptions:
+                logger.warning(
+                    "kanban create --watch requested for %r but no session-event subscription binding could be resolved; creating without watch subscription",
+                    args.title,
+                )
         task_id = kb.create_task(
             conn,
             title=args.title,
@@ -1339,6 +1353,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
             initial_status=getattr(args, "initial_status", "running"),
+            watch_subscriptions=watch_subscriptions or None,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

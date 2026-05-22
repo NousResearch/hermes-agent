@@ -837,6 +837,81 @@ def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
         conn.close()
 
 
+def test_create_watch_inherits_current_task_watcher(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        kb.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="discord",
+            chat_id="chat-parent",
+            thread_id="thread-parent",
+            delivery_mode="session_event",
+            session_key="agent:main:discord:thread:parent:1",
+        )
+    finally:
+        conn.close()
+    out = kt._handle_create({
+        "title": "watched child",
+        "assignee": "peer",
+        "parents": [worker_env],
+        "watch": True,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert "watcher_session_key" not in d
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, d["task_id"])
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["session_key"] == "agent:main:discord:thread:parent:1"
+
+
+def test_create_watch_falls_back_to_session_key(monkeypatch, worker_env):
+    monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:discord:thread:fallback:1")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-fallback")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-fallback")
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "watched child fallback",
+        "assignee": "peer",
+        "watch": True,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert "watcher_session_key" not in d
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, d["task_id"])
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["session_key"] == "agent:main:discord:thread:fallback:1"
+
+
+def test_create_watch_without_any_key_still_succeeds(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "watched child no key",
+        "assignee": "peer",
+        "watch": True,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert "watcher_session_key" not in d
+
+
 def test_create_rejects_no_title(worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"assignee": "x"})).get("error")

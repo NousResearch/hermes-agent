@@ -166,6 +166,47 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_create_watch_json_uses_session_key(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:discord:thread:watch:1")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-watch")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-1")
+    out = kc.run_slash("create 'watched cli' --assignee alice --watch --json")
+    payload = json.loads(out)
+    assert "watcher_session_key" not in payload
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, payload["id"])
+    assert len(subs) == 1
+    assert subs[0]["session_key"] == "agent:main:discord:thread:watch:1"
+
+
+def test_run_slash_create_watch_without_session_key_still_succeeds(kanban_home, monkeypatch):
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    out = kc.run_slash("create 'watched cli no key' --assignee alice --watch --json")
+    payload = json.loads(out)
+    assert payload["title"] == "watched cli no key"
+    assert "watcher_session_key" not in payload
+
+
+def test_run_slash_show_json_omits_watcher_session_key(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="watched show",
+            assignee="alice",
+            watch_subscriptions=[{
+                "delivery_mode": "session_event",
+                "session_key": "agent:main:discord:thread:show:1",
+                "platform": "discord",
+                "chat_id": "chat-show",
+                "thread_id": "thread-show",
+            }],
+        )
+    raw = kc.run_slash(f"show {tid} --json")
+    payload = json.loads(raw)
+    assert "watcher_session_key" not in payload["task"]
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

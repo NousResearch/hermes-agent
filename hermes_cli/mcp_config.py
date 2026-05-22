@@ -391,6 +391,7 @@ def cmd_mcp_add(args):
             f"Select tools for '{name}'",
             labels,
             pre_selected,
+            searchable=True,
         )
 
         if not chosen:
@@ -711,6 +712,7 @@ def cmd_mcp_configure(args):
         f"Select tools for '{name}'",
         labels,
         pre_selected,
+        searchable=True,
     )
 
     if chosen == pre_selected:

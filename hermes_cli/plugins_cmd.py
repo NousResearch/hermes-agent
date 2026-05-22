@@ -941,6 +941,7 @@ def _configure_memory_provider() -> bool:
         title="Memory Provider (select one)",
         items=items,
         selected=selected,
+        searchable=True,
     )
 
     new_provider = names[choice]
@@ -979,6 +980,7 @@ def _configure_context_engine() -> bool:
         title="Context Engine (select one)",
         items=items,
         selected=selected,
+        searchable=True,
     )
 
     new_engine = names[choice]

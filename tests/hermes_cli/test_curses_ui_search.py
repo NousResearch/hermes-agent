@@ -4,6 +4,7 @@ from hermes_cli.curses_ui import (
     _handle_active_search_key,
     _move_filtered_cursor,
     _reconcile_cursor,
+    curses_checklist,
 )
 
 
@@ -66,3 +67,46 @@ def test_active_search_consumes_query_editing_and_confirm_keys():
         True,
         False,
     )
+
+
+def test_searchable_checklist_toggles_original_item_index(monkeypatch):
+    import curses
+
+    class FakeStdin:
+        def isatty(self):
+            return True
+
+    class FakeScreen:
+        def __init__(self, keys):
+            self._keys = list(keys)
+
+        def clear(self):
+            pass
+
+        def getmaxyx(self):
+            return (24, 100)
+
+        def addnstr(self, *args):
+            pass
+
+        def refresh(self):
+            pass
+
+        def getch(self):
+            return self._keys.pop(0)
+
+    screen = FakeScreen([ord("/"), ord("g"), ord("a"), 27, ord(" "), 10])
+
+    monkeypatch.setattr("sys.stdin", FakeStdin())
+    monkeypatch.setattr(curses, "curs_set", lambda _value: None)
+    monkeypatch.setattr(curses, "has_colors", lambda: False)
+    monkeypatch.setattr(curses, "wrapper", lambda draw: draw(screen))
+
+    result = curses_checklist(
+        "Pick",
+        ["Alpha", "Gamma", "Beta"],
+        {0},
+        searchable=True,
+    )
+
+    assert result == {0, 1}

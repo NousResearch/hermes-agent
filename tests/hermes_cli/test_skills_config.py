@@ -77,6 +77,55 @@ class TestSaveDisabledSkills:
 
 
 # ---------------------------------------------------------------------------
+# Interactive checklist wiring
+# ---------------------------------------------------------------------------
+
+
+class TestInteractiveSearch:
+    def test_toggle_by_category_uses_searchable_checklist(self, monkeypatch):
+        from hermes_cli.skills_config import _toggle_by_category
+
+        skills = [
+            {"name": "alpha", "category": "coding"},
+            {"name": "beta", "category": "writing"},
+        ]
+        captured = {}
+
+        def fake_checklist(title, labels, pre_selected, **kwargs):
+            captured["searchable"] = kwargs.get("searchable")
+            return set(pre_selected)
+
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", fake_checklist)
+
+        _toggle_by_category(skills, disabled=set())
+
+        assert captured["searchable"] is True
+
+    def test_individual_skill_menu_uses_searchable_checklist(self, monkeypatch):
+        import hermes_cli.skills_config as sc
+
+        skills = [
+            {"name": "alpha", "category": "coding", "description": "Alpha skill"},
+            {"name": "beta", "category": "writing", "description": "Beta skill"},
+        ]
+        captured = {}
+
+        def fake_checklist(title, labels, pre_selected, **kwargs):
+            captured["searchable"] = kwargs.get("searchable")
+            return set(pre_selected)
+
+        monkeypatch.setattr(sc, "load_config", lambda: {"skills": {}})
+        monkeypatch.setattr(sc, "_list_all_skills", lambda: skills)
+        monkeypatch.setattr(sc, "_select_platform", lambda: None)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "1")
+        monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", fake_checklist)
+
+        sc.skills_command()
+
+        assert captured["searchable"] is True
+
+
+# ---------------------------------------------------------------------------
 # _is_skill_disabled
 # ---------------------------------------------------------------------------
 

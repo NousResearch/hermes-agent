@@ -604,7 +604,7 @@ def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypa
         lambda ts_key, config=None: False,
     )
 
-    def fake_prompt_choice(question, choices, default=0):
+    def fake_prompt_choice(question, choices, default=0, **kwargs):
         seen["choices"] = choices
         return 0
 

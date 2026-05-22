@@ -32,7 +32,13 @@ def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -
         f"{label}  {desc}" if desc else label
         for label, desc in items
     ]
-    return curses_radiolist(title, display_items, selected=default, cancel_returns=default)
+    return curses_radiolist(
+        title,
+        display_items,
+        selected=default,
+        cancel_returns=default,
+        searchable=True,
+    )
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:

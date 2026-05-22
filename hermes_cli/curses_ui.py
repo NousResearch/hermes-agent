@@ -142,6 +142,7 @@ def curses_checklist(
     *,
     cancel_returns: Set[int] | None = None,
     status_fn: Optional[Callable[[Set[int]], str]] = None,
+    searchable: bool = False,
 ) -> Set[int]:
     """Curses multi-select checklist. Returns set of selected indices.
 
@@ -153,6 +154,8 @@ def curses_checklist(
         status_fn: Optional callback ``f(chosen_indices) -> str`` whose return
             value is rendered on the bottom row of the terminal.  Use this for
             live aggregate info (e.g. estimated token counts).
+        searchable: When true, "/" opens a filter prompt. Selection and return
+            values always use original item indices, not filtered row positions.
     """
     if cancel_returns is None:
         cancel_returns = set(selected)
@@ -177,10 +180,13 @@ def curses_checklist(
                 curses.init_pair(3, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)  # dim gray
             cursor = 0
             scroll_offset = 0
+            search = _SearchState()
 
             while True:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
+                filtered = _filter_indices(items, search.query) if searchable else list(range(len(items)))
+                cursor, cursor_pos = _reconcile_cursor(filtered, cursor)
 
                 # Reserve bottom row for status bar when status_fn provided
                 footer_rows = 1 if status_fn else 0
@@ -191,24 +197,35 @@ def curses_checklist(
                     if curses.has_colors():
                         hattr |= curses.color_pair(2)
                     stdscr.addnstr(0, 0, title, max_x - 1, hattr)
-                    stdscr.addnstr(
-                        1, 0,
-                        "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel",
-                        max_x - 1, curses.A_DIM,
-                    )
+                    if searchable and search.active:
+                        help_text = f"  Search: {search.query}\u258e  BACKSPACE edit  Ctrl+U clear  ESC stop search"
+                    elif searchable and search.query:
+                        help_text = (
+                            f"  Filter: {search.query} ({len(filtered)}/{len(items)})  "
+                            "↑↓ navigate  SPACE toggle  ENTER confirm  / edit  ESC/q cancel"
+                        )
+                    elif searchable:
+                        help_text = "  ↑↓ navigate  SPACE toggle  ENTER confirm  / search  ESC/q cancel"
+                    else:
+                        help_text = "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel"
+                    stdscr.addnstr(1, 0, help_text, max_x - 1, curses.A_DIM)
                 except curses.error:
                     pass
 
                 # Scrollable item list
-                visible_rows = max_y - 3 - footer_rows
-                if cursor < scroll_offset:
-                    scroll_offset = cursor
-                elif cursor >= scroll_offset + visible_rows:
-                    scroll_offset = cursor - visible_rows + 1
+                visible_rows = max(1, max_y - 3 - footer_rows)
+                scroll_offset = _scroll_for_cursor(scroll_offset, cursor_pos, visible_rows, len(filtered))
 
-                for draw_i, i in enumerate(
-                    range(scroll_offset, min(len(items), scroll_offset + visible_rows))
+                if searchable and search.query and not filtered:
+                    try:
+                        stdscr.addnstr(3, 0, "  No matches", max_x - 1, curses.A_DIM)
+                    except curses.error:
+                        pass
+
+                for draw_i, filtered_pos in enumerate(
+                    range(scroll_offset, min(len(filtered), scroll_offset + visible_rows))
                 ):
+                    i = filtered[filtered_pos]
                     y = draw_i + 3
                     if y >= max_y - 1 - footer_rows:
                         break
@@ -242,15 +259,28 @@ def curses_checklist(
                 stdscr.refresh()
                 key = stdscr.getch()
 
+                if searchable:
+                    handled, confirm, changed = _handle_active_search_key(curses, key, search)
+                    if handled:
+                        if changed:
+                            scroll_offset = 0
+                        if confirm:
+                            result_holder[0] = set(chosen)
+                            return
+                        continue
+
                 if key in {curses.KEY_UP, ord("k")}:
-                    cursor = (cursor - 1) % len(items)
+                    cursor = _move_filtered_cursor(filtered, cursor, cursor_pos, -1)
                 elif key in {curses.KEY_DOWN, ord("j")}:
-                    cursor = (cursor + 1) % len(items)
+                    cursor = _move_filtered_cursor(filtered, cursor, cursor_pos, 1)
                 elif key == ord(" "):
-                    chosen.symmetric_difference_update({cursor})
+                    if filtered:
+                        chosen.symmetric_difference_update({cursor})
                 elif key in {curses.KEY_ENTER, 10, 13}:
                     result_holder[0] = set(chosen)
                     return
+                elif searchable and key == ord("/"):
+                    search.active = True
                 elif key in {27, ord("q")}:
                     result_holder[0] = cancel_returns
                     return
@@ -337,6 +367,11 @@ def curses_radiolist(
 
                     if searchable and search.active:
                         help_text = f"  Search: {search.query}\u258e  BACKSPACE edit  Ctrl+U clear  ESC stop search"
+                    elif searchable and search.query:
+                        help_text = (
+                            f"  Filter: {search.query} ({len(filtered)}/{len(items)})  "
+                            "↑↓ navigate  ENTER/SPACE select  / edit  ESC cancel"
+                        )
                     elif searchable:
                         help_text = "  \u2191\u2193 navigate  ENTER/SPACE select  / search  ESC cancel"
                     else:
@@ -487,6 +522,11 @@ def curses_single_select(
                     stdscr.addnstr(0, 0, title, max_x - 1, hattr)
                     if searchable and search.active:
                         help_text = f"  Search: {search.query}\u258e  BACKSPACE edit  Ctrl+U clear  ESC stop search"
+                    elif searchable and search.query:
+                        help_text = (
+                            f"  Filter: {search.query} ({len(filtered)}/{len(all_items)})  "
+                            "↑↓ navigate  ENTER confirm  / edit  ESC/q cancel"
+                        )
                     elif searchable:
                         help_text = "  ↑↓ navigate  ENTER confirm  / search  ESC/q cancel"
                     else:

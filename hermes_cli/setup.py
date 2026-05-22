@@ -245,13 +245,26 @@ def _curses_prompt_choice(
 
 
 
-def prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
+def prompt_choice(
+    question: str,
+    choices: list,
+    default: int = 0,
+    description: str | None = None,
+    *,
+    searchable: bool = False,
+) -> int:
     """Prompt for a choice from a list with arrow key navigation.
 
     Escape keeps the current default (skips the question).
     Ctrl+C exits the wizard.
     """
-    idx = _curses_prompt_choice(question, choices, default, description=description)
+    idx = _curses_prompt_choice(
+        question,
+        choices,
+        default,
+        description=description,
+        searchable=searchable,
+    )
     if idx >= 0:
         if idx == default:
             print_info("  Skipped (keeping current)")
@@ -312,7 +325,13 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
         print_error("Please enter 'y' or 'n'")
 
 
-def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
+def prompt_checklist(
+    title: str,
+    items: list,
+    pre_selected: list = None,
+    *,
+    searchable: bool = True,
+) -> list:
     """
     Display a multi-select checklist and return the indices of selected items.
 
@@ -337,6 +356,7 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         items,
         set(pre_selected),
         cancel_returns=set(pre_selected),
+        searchable=searchable,
     )
     return sorted(chosen)
 

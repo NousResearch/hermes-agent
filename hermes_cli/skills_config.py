@@ -107,7 +107,7 @@ def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
 
     chosen = curses_checklist(
         "Categories — toggle entire categories",
-        cat_labels, pre_selected, cancel_returns=pre_selected,
+        cat_labels, pre_selected, cancel_returns=pre_selected, searchable=True,
     )
 
     new_disabled = set(disabled)
@@ -163,7 +163,7 @@ def skills_command(args=None):
         pre_selected = {i for i, s in enumerate(skills) if s["name"] not in disabled}
         chosen = curses_checklist(
             f"Skills for {platform_label}",
-            labels, pre_selected, cancel_returns=pre_selected,
+            labels, pre_selected, cancel_returns=pre_selected, searchable=True,
         )
         # Anything NOT chosen is disabled
         new_disabled = {skills[i]["name"] for i in range(len(skills)) if i not in chosen}

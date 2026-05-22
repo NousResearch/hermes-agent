@@ -24,7 +24,11 @@ def test_password_prompt_strips_bracketed_paste_markers(monkeypatch):
 
 
 def test_prompt_choice_uses_curses_helper(monkeypatch):
-    monkeypatch.setattr(setup_mod, "_curses_prompt_choice", lambda question, choices, default=0, description=None: 1)
+    monkeypatch.setattr(
+        setup_mod,
+        "_curses_prompt_choice",
+        lambda question, choices, default=0, description=None, searchable=False: 1,
+    )
 
     idx = setup_mod.prompt_choice("Pick one", ["a", "b", "c"], default=0)
 
@@ -32,7 +36,11 @@ def test_prompt_choice_uses_curses_helper(monkeypatch):
 
 
 def test_prompt_choice_falls_back_to_numbered_input(monkeypatch):
-    monkeypatch.setattr(setup_mod, "_curses_prompt_choice", lambda question, choices, default=0, description=None: -1)
+    monkeypatch.setattr(
+        setup_mod,
+        "_curses_prompt_choice",
+        lambda question, choices, default=0, description=None, searchable=False: -1,
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt="": "2")
 
     idx = setup_mod.prompt_choice("Pick one", ["a", "b", "c"], default=0)
@@ -41,11 +49,18 @@ def test_prompt_choice_falls_back_to_numbered_input(monkeypatch):
 
 
 def test_prompt_checklist_uses_shared_curses_checklist(monkeypatch):
+    captured = {}
+
+    def fake_checklist(title, items, selected, cancel_returns=None, searchable=False):
+        captured["searchable"] = searchable
+        return {0, 2}
+
     monkeypatch.setattr(
         "hermes_cli.curses_ui.curses_checklist",
-        lambda title, items, selected, cancel_returns=None: {0, 2},
+        fake_checklist,
     )
 
     selected = setup_mod.prompt_checklist("Pick tools", ["one", "two", "three"], pre_selected=[1])
 
     assert selected == [0, 2]
+    assert captured["searchable"] is True

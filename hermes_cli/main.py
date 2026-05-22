@@ -3938,7 +3938,9 @@ def _model_flow_azure_foundry(config, current_model=""):
     if current_auth_mode == "entra_id":
         print(f"  Current auth mode: Microsoft Entra ID (keyless)")
     elif current_api_key:
-        print(f"  Current auth mode: API key ({current_api_key[:8]}...)")
+        from hermes_cli.env_loader import format_secret_source_suffix
+        _bw = format_secret_source_suffix("AZURE_FOUNDRY_API_KEY")
+        print(f"  Current auth mode: API key ({current_api_key[:8]}...){_bw}")
     print()
 
     # ── Step 1: endpoint URL ─────────────────────────────────────────

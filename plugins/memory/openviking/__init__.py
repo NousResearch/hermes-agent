@@ -47,6 +47,25 @@ _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _TIMEOUT = 30.0
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 
+# Maps the viking_remember `category` enum to a viking:// subdirectory.
+# Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
+_CATEGORY_SUBDIR_MAP = {
+    "preference": "preferences",
+    "entity": "entities",
+    "event": "events",
+    "case": "cases",
+    "pattern": "patterns",
+}
+_DEFAULT_MEMORY_SUBDIR = "preferences"
+
+# Maps the built-in memory tool's `target` ("user" vs "memory") to a subdir
+# for on_memory_write mirroring. User profile facts → preferences; agent
+# notes / observations → patterns. Anything unknown falls back to the default.
+_MEMORY_WRITE_TARGET_SUBDIR_MAP = {
+    "user": "preferences",
+    "memory": "patterns",
+}
+
 
 # ---------------------------------------------------------------------------
 # Process-level atexit safety net — ensures pending sessions are committed
@@ -607,10 +626,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.warning("OpenViking session commit failed: %s", e)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
+    def _build_memory_uri(self, subdir: str) -> str:
+        """Build a viking:// memory URI under the configured user/subdir."""
+        slug = uuid.uuid4().hex[:12]
+        return f"viking://user/{self._user}/memories/{subdir}/mem_{slug}.md"
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Mirror built-in memory writes to OpenViking via content/write."""
         if not self._client or action != "add" or not content:
             return
+
+        subdir = _MEMORY_WRITE_TARGET_SUBDIR_MAP.get(target, _DEFAULT_MEMORY_SUBDIR)
+        uri = self._build_memory_uri(subdir)
 
         def _write():
             try:
@@ -618,8 +651,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     self._endpoint, self._api_key,
                     account=self._account, user=self._user, agent=self._agent,
                 )
-                slug = uuid.uuid4().hex[:12]
-                uri = f"viking://user/{client._user}/memories/preferences/mem_{slug}.md"
                 client.post("/api/v1/content/write", {
                     "uri": uri,
                     "content": content,
@@ -858,21 +889,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return tool_error("content is required")
 
         category = args.get("category", "")
-
-        # Map category to a viking:// subdirectory for organized storage
-        subdir_map = {
-            "preference": "preferences",
-            "entity": "entities",
-            "event": "events",
-            "case": "cases",
-            "pattern": "patterns",
-        }
-        subdir = subdir_map.get(category, "preferences")
-
-        # Build a deterministic URI with UUID to avoid collisions
-        usr = self._user
-        slug = uuid.uuid4().hex[:12]
-        uri = f"viking://user/{usr}/memories/{subdir}/mem_{slug}.md"
+        subdir = _CATEGORY_SUBDIR_MAP.get(category, _DEFAULT_MEMORY_SUBDIR)
+        uri = self._build_memory_uri(subdir)
 
         # Write directly via content/write API.
         # This creates the file, stores the content, and queues vector indexing

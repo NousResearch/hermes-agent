@@ -486,7 +486,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # main models tripped HTTP 404 / 400 at the provider boundary even
         # when auxiliary.vision was explicitly configured to handle this.
         if _should_route_through_aux_vision():
-            routed = _route_capture_through_aux_vision(cap, summary)
+            routed = _route_capture_through_aux_vision(cap, summary, visible_elements)
             if routed is not None:
                 return routed
             # Aux routing was requested but failed (no vision client, aux
@@ -575,6 +575,7 @@ def _should_route_through_aux_vision() -> bool:
 def _route_capture_through_aux_vision(
     cap: CaptureResult,
     summary: str,
+    visible_elements: Optional[list] = None,
 ) -> Optional[str]:
     """Pre-analyse the captured PNG via ``vision_analyze`` and return a text result.
 
@@ -657,17 +658,24 @@ def _route_capture_through_aux_vision(
     if not analysis_text:
         return None
 
-    return json.dumps({
+    _effective_elements = visible_elements if visible_elements is not None else cap.elements
+    _total = len(cap.elements)
+    _truncated = max(0, _total - len(_effective_elements))
+    _payload: Dict[str, Any] = {
         "mode": cap.mode,
         "width": cap.width,
         "height": cap.height,
         "app": cap.app,
         "window_title": cap.window_title,
-        "elements": [_element_to_dict(e) for e in cap.elements],
+        "elements": [_element_to_dict(e) for e in _effective_elements],
+        "total_elements": _total,
         "summary": summary,
         "vision_analysis": analysis_text,
         "vision_analysis_routed_via": "auxiliary.vision",
-    })
+    }
+    if _truncated:
+        _payload["truncated_elements"] = _truncated
+    return json.dumps(_payload)
 
 
 def _maybe_follow_capture(

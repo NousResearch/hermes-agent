@@ -41,6 +41,9 @@ def _make_agent_stub(agent_cls):
     # Non-None so the test catches a missing-kwarg regression.
     agent.enabled_toolsets = ["memory", "skills", "terminal"]
     agent.disabled_toolsets = ["spotify", "feishu_doc"]
+    # Non-None so the test catches reasoning_config NOT being inherited —
+    # which would put the fork into a different Anthropic cache namespace.
+    agent.reasoning_config = {"enabled": True, "effort": "medium"}
     return agent
 
 
@@ -236,4 +239,50 @@ def test_review_fork_inherits_parent_toolset_config():
     assert captured.get("disabled_toolsets") == agent.disabled_toolsets, (
         f"disabled_toolsets mismatch: {captured.get('disabled_toolsets')!r} "
         f"vs expected {agent.disabled_toolsets!r}"
+    )
+
+
+def test_review_fork_inherits_parent_reasoning_config():
+    """``reasoning_config`` parity: fork must inherit parent's value so the request body's ``thinking`` / ``output_config`` match (Anthropic cache is namespaced by ``thinking`` presence)."""
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    captured = {}
+
+    class _Recorder:
+        def __init__(self, *args, **kwargs):
+            captured["reasoning_config"] = kwargs.get("reasoning_config")
+            self._cached_system_prompt = None
+            self._memory_write_origin = None
+            self._memory_write_context = None
+            self._memory_store = None
+            self._memory_enabled = None
+            self._user_profile_enabled = None
+            self._memory_nudge_interval = None
+            self._skill_nudge_interval = None
+            self.suppress_status_output = None
+            self.session_start = None
+            self.session_id = None
+
+        def run_conversation(self, *args, **kwargs):
+            raise RuntimeError("stop after recording — don't actually call the API")
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert captured.get("reasoning_config") == agent.reasoning_config, (
+        f"reasoning_config mismatch: {captured.get('reasoning_config')!r} "
+        f"vs expected {agent.reasoning_config!r}"
     )

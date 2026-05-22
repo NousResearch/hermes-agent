@@ -33,6 +33,12 @@ STATIC = WEBSITE / "static"
 
 SITE_BASE = "https://hermes-agent.nousresearch.com/docs"
 
+
+def canonical_url(slug: str) -> str:
+    """Return the public docs URL for a docs-relative slug."""
+    return f"{SITE_BASE}/{slug}"
+
+
 # Curated sections for llms.txt — mirrors the product story, not the filesystem.
 # Each entry: (docs-relative path without .md, display title, optional short desc).
 # `None` desc → pulled from frontmatter `description:` field.
@@ -223,7 +229,7 @@ def emit_llms_index() -> str:
         lines.append("")
         for slug, title, desc_override in items:
             desc = resolve_desc(slug, desc_override)
-            url = f"{SITE_BASE}/{slug}"
+            url = canonical_url(slug)
             if desc:
                 lines.append(f"- [{title}]({url}): {desc}")
             else:
@@ -263,6 +269,7 @@ def emit_llms_full() -> str:
         meta, body = read_frontmatter(path)
         title = meta.get("title") or rel
         chunks.append(f"<!-- source: website/docs/{path.relative_to(DOCS)} -->\n")
+        chunks.append(f"Canonical URL: {canonical_url(rel)}\n\n")
         chunks.append(f"# {title}\n\n")
         chunks.append(body.rstrip() + "\n\n---\n\n")
 
@@ -285,7 +292,11 @@ def emit_llms_full() -> str:
         seen.add(path)
         meta, body = read_frontmatter(path)
         title = meta.get("title") or str(rel)
+        slug = str(rel.with_suffix(""))
+        if slug.endswith("/index"):
+            slug = slug[:-len("/index")]
         chunks.append(f"<!-- source: website/docs/{rel} -->\n")
+        chunks.append(f"Canonical URL: {canonical_url(slug)}\n\n")
         chunks.append(f"# {title}\n\n")
         chunks.append(body.rstrip() + "\n\n---\n\n")
 

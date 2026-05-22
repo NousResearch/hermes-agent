@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /docs/
+
+# Keep generated/private implementation surfaces out of crawler indexes.
+Disallow: /docs/api/
+Disallow: /docs/internal/
+Disallow: /docs/admin/
+Disallow: /docs/search/
+
+Sitemap: https://hermes-agent.nousresearch.com/docs/sitemap.xml

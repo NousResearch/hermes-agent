@@ -226,12 +226,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
 # ---------------------------------------------------------------------------
 
 def _build_command_lookup() -> dict[str, CommandDef]:
-    """Map every name and alias to its CommandDef."""
+    """Map every name and alias (lowercased) to its CommandDef."""
     lookup: dict[str, CommandDef] = {}
     for cmd in COMMAND_REGISTRY:
-        lookup[cmd.name] = cmd
+        lookup[cmd.name.lower()] = cmd
         for alias in cmd.aliases:
-            lookup[alias] = cmd
+            lookup[alias.lower()] = cmd
     return lookup
 
 
@@ -299,7 +299,7 @@ for _cmd in COMMAND_REGISTRY:
 # Includes config-gated commands so the gateway can dispatch them
 # (the handler checks the config gate at runtime).
 GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
-    name
+    name.lower()
     for cmd in COMMAND_REGISTRY
     if not cmd.cli_only or cmd.gateway_config_gate
     for name in (cmd.name, *cmd.aliases)
@@ -318,7 +318,7 @@ def is_gateway_known_command(name: str | None) -> bool:
     """
     if not name:
         return False
-    if name in GATEWAY_KNOWN_COMMANDS:
+    if name.lower() in GATEWAY_KNOWN_COMMANDS:
         return True
     for plugin_name, _description, _args_hint in _iter_plugin_command_entries():
         if plugin_name == name:

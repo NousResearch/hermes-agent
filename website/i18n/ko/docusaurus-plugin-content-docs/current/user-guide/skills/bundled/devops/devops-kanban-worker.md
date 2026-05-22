@@ -79,14 +79,23 @@ kanban_complete(
 **리뷰 task:**
 ```python
 kanban_complete(
-    summary="reviewed PR #123; 2 blocking issues found (SQL injection in /search, missing CSRF on /settings)",
+    summary="reviewed PR #123; CHANGES_REQUIRED — 2 fixable blockers found (SQL injection in /search, missing CSRF on /settings)",
     metadata={
-        "pr_number": 123,
-        "findings": [
-            {"severity": "critical", "file": "api/search.py", "line": 42, "issue": "raw SQL concat"},
-            {"severity": "high", "file": "api/settings.py", "issue": "missing CSRF middleware"},
-        ],
-        "approved": False,
+        "review_outcome": {
+            "schema_version": "cato_review_outcome.v1",
+            "status": "CHANGES_REQUIRED",
+            "reviewer_profile": "cato",
+            "review_task_id": "t_review123",
+            "reviewed_task_id": "t_impl456",
+            "decision_summary": "CHANGES_REQUIRED: two fixable blockers remain; no human decision is needed.",
+            "findings": [
+                {"id": "F1", "severity": "CRITICAL", "category": "security", "location": "api/search.py:42", "issue": "raw SQL concat", "impact": "SQL injection risk", "required_fix": "Use parameterized queries", "owner_hint": "vitruvius", "safety_gate": False, "human_decision_reason": None},
+                {"id": "F2", "severity": "MAJOR", "category": "security", "location": "api/settings.py", "issue": "missing CSRF middleware", "impact": "settings changes can be forged", "required_fix": "Add CSRF protection", "owner_hint": "vitruvius", "safety_gate": False, "human_decision_reason": None},
+            ],
+            "evidence_refs": [],
+            "validation_performed": ["inspected diff"],
+            "residual_risks": [],
+        }
     },
 )
 ```

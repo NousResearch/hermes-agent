@@ -90,15 +90,15 @@ kanban_complete(
     summary="reviewed PR #123; CHANGES_REQUIRED — 2 fixable blockers found (SQL injection in /search, missing CSRF on /settings)",
     metadata={
         "review_outcome": {
-            "schema": "cato_review_outcome.v1",
-            "outcome": "CHANGES_REQUIRED",
+            "schema_version": "cato_review_outcome.v1",
+            "status": "CHANGES_REQUIRED",
             "reviewer_profile": "cato",
             "review_task_id": "t_review123",
             "reviewed_task_id": "t_impl456",
             "decision_summary": "CHANGES_REQUIRED: two fixable blockers remain; no human decision is needed.",
             "findings": [
-                {"id": "F1", "severity": "CRITICAL", "category": "security", "location": "api/search.py:42", "issue": "raw SQL concat", "impact": "SQL injection risk", "detail": "Use parameterized queries", "owner": "vitruvius", "safety_gate": False, "human_decision_reason": None},
-                {"id": "F2", "severity": "MAJOR", "category": "security", "location": "api/settings.py", "issue": "missing CSRF middleware", "impact": "settings changes can be forged", "detail": "Add CSRF protection", "owner": "vitruvius", "safety_gate": False, "human_decision_reason": None},
+                {"id": "F1", "severity": "CRITICAL", "category": "security", "location": "api/search.py:42", "issue": "raw SQL concat", "impact": "SQL injection risk", "required_fix": "Use parameterized queries", "owner_hint": "vitruvius", "safety_gate": False, "human_decision_reason": None},
+                {"id": "F2", "severity": "MAJOR", "category": "security", "location": "api/settings.py", "issue": "missing CSRF middleware", "impact": "settings changes can be forged", "required_fix": "Add CSRF protection", "owner_hint": "vitruvius", "safety_gate": False, "human_decision_reason": None},
             ],
             "evidence_refs": [],
             "validation_performed": ["inspected diff"],
@@ -121,7 +121,17 @@ c2 = kanban_create(title="fix CSRF middleware", assignee="web-worker")
 
 kanban_complete(
     summary="Review done; spawned remediations for both findings.",
-    metadata={"pr_number": 123, "approved": False},
+    metadata={
+        "review_outcome": {
+            "schema_version": "cato_review_outcome.v1",
+            "status": "CHANGES_REQUIRED",
+            "decision_summary": "Created remediation tasks for both findings.",
+            "findings": [
+                {"id": "F1", "required_fix": "Use parameterized queries", "owner_hint": "security-worker"},
+                {"id": "F2", "required_fix": "Add CSRF protection", "owner_hint": "web-worker"},
+            ],
+        }
+    },
     created_cards=[c1["task_id"], c2["task_id"]],
 )
 ```

@@ -1,0 +1,4 @@
+name: lifecycle-notify
+description: Send startup notification to home channel
+events:
+  - gateway:startup

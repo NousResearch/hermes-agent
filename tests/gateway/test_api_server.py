@@ -314,6 +314,22 @@ class TestAuth:
         assert result is not None
         assert result.status == 401
 
+    def test_non_ascii_key_mismatch_returns_401(self):
+        config = PlatformConfig(enabled=True, extra={"key": "séc-ret"})
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {"Authorization": "Bearer wrong-key"}
+        result = adapter._check_auth(mock_request)
+        assert result is not None
+        assert result.status == 401
+
+    def test_non_ascii_key_match_passes(self):
+        config = PlatformConfig(enabled=True, extra={"key": "séc-ret"})
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {"Authorization": "Bearer séc-ret"}
+        assert adapter._check_auth(mock_request) is None
+
     def test_missing_auth_header_returns_401(self):
         config = PlatformConfig(enabled=True, extra={"key": "sk-test123"})
         adapter = APIServerAdapter(config)

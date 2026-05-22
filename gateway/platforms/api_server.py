@@ -63,6 +63,11 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
 
+def _constant_time_equal(left: str, right: str) -> bool:
+    """Compare text secrets without rejecting non-ASCII values."""
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
     """Parse a listen port without letting malformed env/config values crash startup."""
     try:
@@ -706,7 +711,7 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
+            if _constant_time_equal(token, self._api_key):
                 return None  # Auth OK
 
         return web.json_response(

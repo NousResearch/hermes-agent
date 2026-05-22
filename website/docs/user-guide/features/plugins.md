@@ -91,6 +91,8 @@ Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the m
 
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
+Private plugin repositories can also be discovered without copying them into `~/.hermes/plugins/`. Add either a directory that contains multiple plugin folders or a direct single-plugin checkout with a root `plugin.yaml` to `plugins.extra_paths` in `~/.hermes/config.yaml`, or set `HERMES_PLUGIN_PATHS` to a platform path-list (`:` on macOS/Linux, `;` on Windows). External plugins are discovered for visibility, but they still require `plugins.enabled` before their code runs.
+
 ## What plugins can do
 
 Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
@@ -122,6 +124,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Bundled | `<repo>/plugins/` | Ships with Hermes — see [Built-in Plugins](/user-guide/features/built-in-plugins) |
 | User | `~/.hermes/plugins/` | Personal plugins |
 | Project | `.hermes/plugins/` | Project-specific plugins (requires `HERMES_ENABLE_PROJECT_PLUGINS=true`) |
+| External | `plugins.extra_paths` / `HERMES_PLUGIN_PATHS` | Private plugin repo checkouts or plugin collections |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
 | Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS declarative installs — see [Nix Setup](/getting-started/nix-setup#plugins) |
 
@@ -148,6 +151,9 @@ User plugins at `~/.hermes/plugins/model-providers/<name>/` and `~/.hermes/plugi
 
 ```yaml
 plugins:
+  extra_paths:
+    - ~/src/hermes-private-plugin   # direct checkout with plugin.yaml
+    - ~/src/hermes-private-plugins  # collection containing <name>/plugin.yaml
   enabled:
     - my-tool-plugin
     - disk-cleanup

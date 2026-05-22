@@ -380,7 +380,7 @@ class TestDispatchersTriggerPluginDiscovery:
         return _restore
 
     def test_web_extract_tool_runs_discovery_before_registry_lookup(self, monkeypatch):
-        """``web_extract_tool`` must call ``_ensure_plugins_discovered()``
+        """``web_extract_tool`` must invoke ``_ensure_web_plugins_loaded()``
         before looking up the configured backend so the registry is
         populated even from cold-start subprocess contexts.
 
@@ -392,9 +392,9 @@ class TestDispatchersTriggerPluginDiscovery:
         """
         import asyncio
         import json
+        from unittest.mock import MagicMock
         from agent.web_search_provider import WebSearchProvider
         from agent import web_search_registry
-        from hermes_cli import plugins as plugins_mod
         from tools import web_tools
 
         restore = self._clear_registry()
@@ -421,18 +421,24 @@ class TestDispatchersTriggerPluginDiscovery:
                         for u in urls
                     ]
 
-            # Simulate "plugin discovery loads the firecrawl plugin": every
-            # call to the discovery hook registers the provider, mirroring
-            # what ``plugins/web/firecrawl/__init__.py:register`` does at
-            # real-process startup. Discovery must be idempotent, so the
-            # registration is too.
-            def fake_discover(force=False):
+            # Simulate "plugin discovery loads the firecrawl plugin": the
+            # wrapped helper registers the provider, mirroring what
+            # ``plugins/web/firecrawl/__init__.py:register`` does at
+            # real-process startup. Wrapping with ``MagicMock`` lets us
+            # also assert the dispatcher actually invoked the hook — if
+            # a future refactor accidentally drops the call the regression
+            # would otherwise hide behind a still-populated registry.
+            def _register_fake() -> None:
                 if web_search_registry.get_provider("firecrawl") is None:
                     web_search_registry.register_provider(FakeFirecrawl())
-                return plugins_mod.get_plugin_manager()
 
+            mock_hook = MagicMock(wraps=_register_fake)
+            # Patch the helper on ``tools.web_tools`` directly rather than the
+            # underlying ``hermes_cli.plugins._ensure_plugins_discovered`` so
+            # the test stays valid even if the import inside the helper is
+            # later moved to module scope or renamed.
             monkeypatch.setattr(
-                plugins_mod, "_ensure_plugins_discovered", fake_discover
+                web_tools, "_ensure_web_plugins_loaded", mock_hook
             )
             monkeypatch.setattr(
                 web_tools, "_load_web_config",
@@ -448,24 +454,28 @@ class TestDispatchersTriggerPluginDiscovery:
                 )
             ))
 
-            # The dispatcher must NOT have returned the "no provider" error
-            # — that would mean discovery never ran. Firecrawl is now
-            # registered (discovery side-effect) and the extract result
-            # shape is success.
+            # The hook must have been called BEFORE the registry lookup —
+            # that is the invariant under regression test. Without the
+            # explicit ``.called`` assertion the test could pass if the
+            # registry were populated by some unrelated side effect.
+            assert mock_hook.called, (
+                "web_extract_tool must call _ensure_web_plugins_loaded() "
+                "before resolving the registry"
+            )
             assert "No web extract provider configured" not in json.dumps(result)
             assert web_search_registry.get_provider("firecrawl") is not None
         finally:
             restore()
 
     def test_web_search_tool_runs_discovery_before_registry_lookup(self, monkeypatch):
-        """``web_search_tool`` must call ``_ensure_plugins_discovered()``
+        """``web_search_tool`` must invoke ``_ensure_web_plugins_loaded()``
         before the registry lookup for the same reason as the extract
         path (issue #27580 root cause applies to all three dispatchers).
         """
         import json
+        from unittest.mock import MagicMock
         from agent.web_search_provider import WebSearchProvider
         from agent import web_search_registry
-        from hermes_cli import plugins as plugins_mod
         from tools import web_tools
 
         restore = self._clear_registry()
@@ -491,13 +501,13 @@ class TestDispatchersTriggerPluginDiscovery:
                          "position": 0}
                     ]}}
 
-            def fake_discover(force=False):
+            def _register_fake() -> None:
                 if web_search_registry.get_provider("brave-free") is None:
                     web_search_registry.register_provider(FakeBrave())
-                return plugins_mod.get_plugin_manager()
 
+            mock_hook = MagicMock(wraps=_register_fake)
             monkeypatch.setattr(
-                plugins_mod, "_ensure_plugins_discovered", fake_discover
+                web_tools, "_ensure_web_plugins_loaded", mock_hook
             )
             monkeypatch.setattr(
                 web_tools, "_load_web_config",
@@ -506,7 +516,80 @@ class TestDispatchersTriggerPluginDiscovery:
             assert web_search_registry.get_provider("brave-free") is None
 
             result = json.loads(web_tools.web_search_tool("hello", limit=1))
+            assert mock_hook.called, (
+                "web_search_tool must call _ensure_web_plugins_loaded() "
+                "before resolving the registry"
+            )
             assert "No web search provider configured" not in json.dumps(result)
             assert web_search_registry.get_provider("brave-free") is not None
+        finally:
+            restore()
+
+    def test_web_crawl_tool_runs_discovery_before_registry_lookup(self, monkeypatch):
+        """``web_crawl_tool`` must invoke ``_ensure_web_plugins_loaded()``
+        before the registry lookup for the same reason as the extract /
+        search paths — the issue #27580 root cause applies to all three
+        dispatchers, and ``web_crawl_tool`` is the third.
+        """
+        import asyncio
+        import json
+        from unittest.mock import MagicMock
+        from agent.web_search_provider import WebSearchProvider
+        from agent import web_search_registry
+        from tools import web_tools
+
+        restore = self._clear_registry()
+        try:
+            class FakeTavily(WebSearchProvider):
+                @property
+                def name(self) -> str:
+                    return "tavily"
+
+                @property
+                def display_name(self) -> str:
+                    return "Fake Tavily"
+
+                def is_available(self) -> bool:
+                    return True
+
+                def supports_crawl(self) -> bool:
+                    return True
+
+                def crawl(self, url, **kwargs):
+                    return {"results": [
+                        {"url": url, "title": "ok", "content": "ok"}
+                    ]}
+
+            def _register_fake() -> None:
+                if web_search_registry.get_provider("tavily") is None:
+                    web_search_registry.register_provider(FakeTavily())
+
+            mock_hook = MagicMock(wraps=_register_fake)
+            monkeypatch.setattr(
+                web_tools, "_ensure_web_plugins_loaded", mock_hook
+            )
+            monkeypatch.setattr(
+                web_tools, "_load_web_config",
+                lambda: {"crawl_backend": "tavily"},
+            )
+            assert web_search_registry.get_provider("tavily") is None
+
+            result = json.loads(asyncio.run(
+                web_tools.web_crawl_tool(
+                    "https://example.com",
+                    use_llm_processing=False,
+                )
+            ))
+
+            assert mock_hook.called, (
+                "web_crawl_tool must call _ensure_web_plugins_loaded() "
+                "before resolving the registry"
+            )
+            # Either the crawl dispatch path succeeded with the fake
+            # provider, or the test surfaced a different (post-lookup)
+            # error — what we are guarding against is the "no provider"
+            # short-circuit BEFORE discovery ran.
+            assert "No web crawl provider configured" not in json.dumps(result)
+            assert web_search_registry.get_provider("tavily") is not None
         finally:
             restore()

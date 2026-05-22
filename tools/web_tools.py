@@ -765,7 +765,11 @@ def _ensure_web_plugins_loaded() -> None:
 
         _ensure_plugins_discovered()
     except Exception as exc:  # noqa: BLE001
-        logger.debug("Web plugin discovery failed (non-fatal): %s", exc)
+        # Warning, not debug: if a plugin import is genuinely broken the
+        # user otherwise hits the misleading "No web extract provider
+        # configured" error this helper is meant to eliminate, with no
+        # clue in normal logs about the real cause.
+        logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
 def web_search_tool(query: str, limit: int = 5) -> str:

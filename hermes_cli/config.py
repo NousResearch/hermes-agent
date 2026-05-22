@@ -506,6 +506,13 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "gateway": {
+        # Optional absolute path to a wrapper executable used by supervised
+        # gateway services (systemd/launchd).  The wrapper receives the normal
+        # gateway command as argv and can run preflight work such as runtime
+        # credential injection before ending with `exec "$@"`.
+        "service_wrapper": "",
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

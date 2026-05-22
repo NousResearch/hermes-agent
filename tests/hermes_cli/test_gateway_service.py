@@ -395,6 +395,37 @@ class TestGeneratedSystemdUnits:
         assert "WantedBy=multi-user.target" in unit
 
 
+    def test_user_unit_uses_configured_service_wrapper(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": "/opt/hermes/bin/preflight"}},
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "ExecStart=/opt/hermes/bin/preflight " in unit
+        assert " -m hermes_cli.main gateway run --replace" in unit
+
+    def test_system_unit_remaps_service_wrapper_for_target_user(self, monkeypatch):
+        local_wrapper = str(Path.home() / ".local/bin/preflight")
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": local_wrapper}},
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("hermes", "hermes", "/home/hermes"),
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert "ExecStart=/home/hermes/.local/bin/preflight " in unit
+        assert " -m hermes_cli.main gateway run --replace" in unit
+
+
 class TestGatewayStopCleanup:
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call
@@ -474,6 +505,45 @@ class TestLaunchdServiceRecovery:
             gateway_cli._get_restart_drain_timeout()
             == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
         )
+
+    def test_launchd_plist_uses_configured_service_wrapper(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": "/opt/hermes/bin/preflight"}},
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<string>/opt/hermes/bin/preflight</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+        assert plist.index("<string>/opt/hermes/bin/preflight</string>") < plist.index(
+            "<string>hermes_cli.main</string>"
+        )
+
+    def test_launchd_plist_ignores_relative_service_wrapper(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": "scripts/preflight"}},
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "scripts/preflight" not in plist
+        assert "<string>hermes_cli.main</string>" in plist
+
+    def test_launchd_plist_ignores_unsafe_service_wrapper(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": "/opt/hermes/bin/preflight\nBAD=1"}},
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "BAD=1" not in plist
+        assert "<string>hermes_cli.main</string>" in plist
 
     def test_launchd_install_repairs_outdated_plist_without_force(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"

@@ -26,6 +26,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Tuple
 
 import websockets
@@ -710,11 +711,8 @@ class CDPSupervisor:
 
     def _is_local_cdp(self) -> bool:
         """Return True if CDP URL targets localhost or a loopback address."""
-        return (
-            "localhost" in self.cdp_url
-            or "127.0.0.1" in self.cdp_url
-            or "::1" in self.cdp_url
-        )
+        host = urlparse(self.cdp_url).hostname or ""
+        return host in ("localhost", "127.0.0.1", "::1")
 
     async def _install_dialog_bridge(self, session_id: str) -> None:
         """Install the dialog-bridge init script + Fetch interceptor on a session.

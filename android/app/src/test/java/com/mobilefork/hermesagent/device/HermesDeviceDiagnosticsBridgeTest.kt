@@ -1031,6 +1031,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("signal_awareness_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("soc_compatibility_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("agent_environment_report"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("agent_card_manifest_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_scan"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("bluetooth_analyzer_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("sensor_analyzer_report"))
@@ -1548,6 +1549,33 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getInt("ready_agent_signal_context_count") >= 4)
         assertTrue(result.getInt("agent_observation_count") >= 11)
         assertTrue(result.getInt("agent_observation_route_count") >= 8)
+    }
+
+    @Test
+    fun agentCardManifestReportExposesDirectGraphCardManifest() {
+        val result = HermesDeviceDiagnosticsBridge.agentCardManifestReportJson(context)
+        val cardManifest = result.getJSONArray("agent_card_manifest")
+        val cardManifestText = cardManifest.toString()
+        val graphTypes = result.getJSONArray("agent_card_graph_types").toString()
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("agent_card_manifest_report", result.getString("action"))
+        assertTrue(result.getJSONArray("source_report_actions").toString().contains("wifi_analyzer_report"))
+        assertTrue(result.getJSONArray("source_report_actions").toString().contains("gpu_backend_risk_report"))
+        assertTrue(cardManifestText.contains("wifi_channel_graph"))
+        assertTrue(cardManifestText.contains("wifi_channel_rating"))
+        assertTrue(cardManifestText.contains("bluetooth_signal_history"))
+        assertTrue(cardManifestText.contains("radio_signal_graph"))
+        assertTrue(cardManifestText.contains("gpu_backend_risk_report"))
+        assertTrue(cardManifestText.contains("refresh_policy"))
+        assertTrue(cardManifestText.contains("permission_gate"))
+        assertTrue(graphTypes.contains("wifi_channel_graph"))
+        assertTrue(graphTypes.contains("radio_signal_graph"))
+        assertTrue(graphTypes.contains("gpu_backend_risk_matrix"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Agent Card Manifest"))
+        assertTrue(result.getJSONArray("gemma_observation_directives").toString().contains("graph_type"))
+        assertTrue(result.getInt("agent_card_manifest_count") >= 18)
+        assertTrue(result.getInt("ready_agent_card_manifest_count") >= 8)
     }
 
     @Test

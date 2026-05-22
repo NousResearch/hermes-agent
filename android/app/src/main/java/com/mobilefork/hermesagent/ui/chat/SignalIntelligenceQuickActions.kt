@@ -33,6 +33,13 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
         iconRes = R.drawable.ic_nav_hermes,
     ),
     SignalIntelligenceQuickAction(
+        id = "card_manifest",
+        label = "Card Manifest",
+        diagnosticAction = "agent_card_manifest_report",
+        prompt = "Run android_device_diagnostics_tool action=agent_card_manifest_report",
+        iconRes = R.drawable.ic_nav_hermes,
+    ),
+    SignalIntelligenceQuickAction(
         id = "soc_compatibility",
         label = "SOC Compatibility",
         diagnosticAction = "soc_compatibility_report",

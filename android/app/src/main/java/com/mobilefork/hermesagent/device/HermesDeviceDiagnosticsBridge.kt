@@ -121,6 +121,8 @@ object HermesDeviceDiagnosticsBridge {
                 signalAwarenessReportJson(appContext).toString()
             "agent_observation_report", "agent_signal_dashboard", "gemma_observation_report", "multimodal_signal_dashboard" ->
                 agentObservationReportJson(appContext).toString()
+            "agent_card_manifest_report", "card_manifest_report", "diagnostic_card_manifest", "graph_card_manifest" ->
+                agentCardManifestReportJson(appContext).toString()
             "agent_environment_report", "environment_report", "capability_matrix", "system_capability_report", "kai_parity_report" ->
                 agentEnvironmentReportJson(appContext).toString()
             "social_gmail_goal_preflight", "social_gmail_preflight", "phone_goal_preflight", "end_to_end_goal_preflight" ->
@@ -2260,17 +2262,16 @@ object HermesDeviceDiagnosticsBridge {
             signalReport = signalReport,
             backendRiskReport = backendRiskReport,
         )
-        val cardManifestRows = agentCardManifestRows(
-            listOf(
-                CardManifestSource("wifi_analyzer_report", wifiReport, "passive_by_default_refresh_when_needed", "nearby_wifi_or_location_permission"),
-                CardManifestSource("bluetooth_analyzer_report", bluetoothReport, "passive_by_default_refresh_when_needed", "bluetooth_scan_or_connect_permission"),
-                CardManifestSource("sensor_analyzer_report", sensorReport, "passive_metadata_live_snapshot_optional", "sensor_hardware_availability"),
-                CardManifestSource("radio_signal_status", radioReport, "passive_capability_boundary", "vendor_radio_bridge_or_external_sdr_for_am_fm"),
-                CardManifestSource("gpu_backend_risk_report", backendRiskReport, "passive_backend_triage", "phone_validation_required_for_acceleration_claims"),
-                CardManifestSource("signal_awareness_report", signalReport, "passive_fused_context", "source_report_permissions"),
-                CardManifestSource("agent_environment_report", environmentReport, "passive_agent_readiness", "settings_and_local_state"),
-            ),
+        val cardManifestSources = agentCardManifestSources(
+            wifiReport = wifiReport,
+            bluetoothReport = bluetoothReport,
+            sensorReport = sensorReport,
+            radioReport = radioReport,
+            backendRiskReport = backendRiskReport,
+            signalReport = signalReport,
+            environmentReport = environmentReport,
         )
+        val cardManifestRows = agentCardManifestRows(cardManifestSources)
         val observationRows = agentObservationMatrixRows(
             wifiReport = wifiReport,
             bluetoothReport = bluetoothReport,
@@ -2287,7 +2288,7 @@ object HermesDeviceDiagnosticsBridge {
             .put("success", true)
             .put("action", "agent_observation_report")
             .put("report_scope", "Gemma-visible dashboard for Wi-Fi, Bluetooth, sensor, radio, SOC/backend risk, local model, Kai operations, and expandable top-card routes.")
-            .put("source_report_actions", JSONArray().put("wifi_analyzer_report").put("bluetooth_analyzer_report").put("sensor_analyzer_report").put("radio_signal_status").put("gpu_backend_risk_report").put("signal_awareness_report").put("agent_environment_report"))
+            .put("source_report_actions", agentCardManifestSourceActions(cardManifestSources))
             .put("wifi_observation_summary", observationSummaryJson(wifiReport, "wifi_analyzer_report"))
             .put("bluetooth_observation_summary", observationSummaryJson(bluetoothReport, "bluetooth_analyzer_report"))
             .put("sensor_observation_summary", observationSummaryJson(sensorReport, "sensor_analyzer_report"))
@@ -2353,6 +2354,54 @@ object HermesDeviceDiagnosticsBridge {
                             rows = routeRows,
                         ),
                     ),
+            )
+    }
+
+    fun agentCardManifestReportJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val wifiReport = wifiAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
+        val bluetoothReport = bluetoothAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
+        val sensorReport = sensorAnalyzerReportJson(appContext, JSONObject().put("include_snapshot", false))
+        val radioReport = radioSignalStatusJson(appContext)
+        val backendRiskReport = gpuBackendRiskReportJson(appContext)
+        val signalReport = signalAwarenessReportJson(appContext)
+        val environmentReport = agentEnvironmentReportJson(appContext)
+        val cardManifestSources = agentCardManifestSources(
+            wifiReport = wifiReport,
+            bluetoothReport = bluetoothReport,
+            sensorReport = sensorReport,
+            radioReport = radioReport,
+            backendRiskReport = backendRiskReport,
+            signalReport = signalReport,
+            environmentReport = environmentReport,
+        )
+        val cardManifestRows = agentCardManifestRows(cardManifestSources)
+        return JSONObject()
+            .put("success", true)
+            .put("action", "agent_card_manifest_report")
+            .put("report_scope", "Direct Gemma-readable manifest that maps expandable diagnostic cards to graph types, source actions, refresh policies, and permission gates.")
+            .put("source_report_actions", agentCardManifestSourceActions(cardManifestSources))
+            .put("agent_card_manifest", cardManifestRows)
+            .put("agent_card_manifest_count", cardManifestRows.length())
+            .put("ready_agent_card_manifest_count", countReadyRows(cardManifestRows))
+            .put("agent_card_graph_types", cardGraphTypeList(cardManifestRows))
+            .put(
+                "gemma_observation_directives",
+                JSONArray()
+                    .put("Read agent_card_manifest before opening Wi-Fi, Bluetooth, sensor, radio, backend, or Kai environment graph cards.")
+                    .put("Use each row's graph_type, source_action, refresh_policy, and permission_gate fields to choose the next android_device_diagnostics_tool action.")
+                    .put("Prefer passive analyzer reports first; request active Wi-Fi, Bluetooth, motion, or radio refresh only when the user needs live data."),
+            )
+            .put(
+                "cards",
+                JSONArray().put(
+                    graphCard(
+                        title = "Agent Card Manifest",
+                        body = "${cardManifestRows.length()} source card row(s) mapping graph types to tool actions, refresh policy, and permission gates for Gemma.",
+                        graphType = "agent_card_manifest",
+                        rows = cardManifestRows,
+                    ),
+                ),
             )
     }
 
@@ -3135,6 +3184,30 @@ object HermesDeviceDiagnosticsBridge {
         val refreshPolicy: String,
         val permissionGate: String,
     )
+
+    private fun agentCardManifestSources(
+        wifiReport: JSONObject,
+        bluetoothReport: JSONObject,
+        sensorReport: JSONObject,
+        radioReport: JSONObject,
+        backendRiskReport: JSONObject,
+        signalReport: JSONObject,
+        environmentReport: JSONObject,
+    ): List<CardManifestSource> = listOf(
+        CardManifestSource("wifi_analyzer_report", wifiReport, "passive_by_default_refresh_when_needed", "nearby_wifi_or_location_permission"),
+        CardManifestSource("bluetooth_analyzer_report", bluetoothReport, "passive_by_default_refresh_when_needed", "bluetooth_scan_or_connect_permission"),
+        CardManifestSource("sensor_analyzer_report", sensorReport, "passive_metadata_live_snapshot_optional", "sensor_hardware_availability"),
+        CardManifestSource("radio_signal_status", radioReport, "passive_capability_boundary", "vendor_radio_bridge_or_external_sdr_for_am_fm"),
+        CardManifestSource("gpu_backend_risk_report", backendRiskReport, "passive_backend_triage", "phone_validation_required_for_acceleration_claims"),
+        CardManifestSource("signal_awareness_report", signalReport, "passive_fused_context", "source_report_permissions"),
+        CardManifestSource("agent_environment_report", environmentReport, "passive_agent_readiness", "settings_and_local_state"),
+    )
+
+    private fun agentCardManifestSourceActions(sources: List<CardManifestSource>): JSONArray {
+        return JSONArray().also { actions ->
+            sources.forEach { source -> actions.put(source.action) }
+        }
+    }
 
     private fun agentCardManifestRows(sources: List<CardManifestSource>): JSONArray {
         val rows = JSONArray()
@@ -10684,6 +10757,7 @@ object HermesDeviceDiagnosticsBridge {
         "device_performance_report",
         "signal_awareness_report",
         "agent_observation_report",
+        "agent_card_manifest_report",
         "agent_environment_report",
         "social_gmail_goal_preflight",
         "show_active_overlay",

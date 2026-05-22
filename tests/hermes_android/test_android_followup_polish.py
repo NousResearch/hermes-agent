@@ -263,10 +263,14 @@ def test_android_diagnostics_exposes_agent_observation_dashboard_for_gemma_signa
 
     assert '"agent_observation_report"' in diagnostics_bridge
     assert 'agentObservationReportJson(appContext)' in diagnostics_bridge
+    assert '"agent_card_manifest_report"' in diagnostics_bridge
+    assert 'agentCardManifestReportJson(appContext)' in diagnostics_bridge
     assert 'fun agentObservationReportJson(context: Context): JSONObject' in diagnostics_bridge
+    assert 'fun agentCardManifestReportJson(context: Context): JSONObject' in diagnostics_bridge
     assert 'agentObservationMatrixRows(' in diagnostics_bridge
     assert 'agentObservationRouteRows()' in diagnostics_bridge
     assert 'agentCardManifestRows(' in diagnostics_bridge
+    assert 'agentCardManifestSources(' in diagnostics_bridge
     assert '"agent_observation_matrix"' in diagnostics_bridge
     assert '"agent_observation_routes"' in diagnostics_bridge
     assert '"agent_card_manifest"' in diagnostics_bridge
@@ -278,6 +282,7 @@ def test_android_diagnostics_exposes_agent_observation_dashboard_for_gemma_signa
     assert 'Radio and RF boundaries' in diagnostics_bridge
     assert 'Kai operations and interactive routes' in diagnostics_bridge
     assert 'agent_observation_report' in chat_client
+    assert 'agent_card_manifest_report' in chat_client
     assert '"agent_observation_matrix"' in chat_client
     assert '"agent_observation_routes"' in chat_client
     assert '"agent_card_manifest"' in chat_client
@@ -287,6 +292,8 @@ def test_android_diagnostics_exposes_agent_observation_dashboard_for_gemma_signa
     assert '"agent_card_manifest",' in diagnostic_cards
     assert 'id = "agent_observation"' in quick_actions
     assert 'action=agent_observation_report' in quick_actions
+    assert 'id = "card_manifest"' in quick_actions
+    assert 'action=agent_card_manifest_report' in quick_actions
 
 
 def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_cards():

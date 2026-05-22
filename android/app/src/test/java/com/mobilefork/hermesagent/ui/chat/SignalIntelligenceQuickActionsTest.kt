@@ -13,6 +13,7 @@ class SignalIntelligenceQuickActionsTest {
         assertEquals("signal_awareness_report", actionsById.getValue("signal_overview").diagnosticAction)
         assertEquals("agent_environment_report", actionsById.getValue("agent_environment").diagnosticAction)
         assertEquals("agent_observation_report", actionsById.getValue("agent_observation").diagnosticAction)
+        assertEquals("agent_card_manifest_report", actionsById.getValue("card_manifest").diagnosticAction)
         assertEquals("soc_compatibility_report", actionsById.getValue("soc_compatibility").diagnosticAction)
         assertEquals("gpu_backend_risk_report", actionsById.getValue("backend_risk").diagnosticAction)
         assertEquals("local_backend_runtime_report", actionsById.getValue("runtime_backend").diagnosticAction)
@@ -27,6 +28,7 @@ class SignalIntelligenceQuickActionsTest {
         assertEquals("Runtime Backend", actionsById.getValue("runtime_backend").label)
         assertEquals("Backend Risk", actionsById.getValue("backend_risk").label)
         assertEquals("Agent Observation", actionsById.getValue("agent_observation").label)
+        assertEquals("Card Manifest", actionsById.getValue("card_manifest").label)
         assertEquals("Radio Signals", actionsById.getValue("radio_limits").label)
         SIGNAL_INTELLIGENCE_QUICK_ACTIONS.forEach { action ->
             assertTrue(action.prompt.contains("android_device_diagnostics_tool action=${action.diagnosticAction}"))

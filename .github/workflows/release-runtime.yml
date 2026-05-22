@@ -14,10 +14,9 @@
 #
 # Caveats (track in follow-up issues, not blockers for first run):
 #   - PyInstaller's autodetection misses lazy-imported provider SDKs
-#     (anthropic, firecrawl-py, etc.). Add them to hidden-imports as the
-#     ecosystem grows. The agent's `tools/lazy_deps.py` install flow won't
-#     work inside a frozen binary anyway — only the providers we pre-bake
-#     are usable. That's acceptable for v1; revisit when users complain.
+#     (firecrawl-py, etc.). Add them to hidden-imports as the ecosystem
+#     grows. The agent's `tools/lazy_deps.py` install flow won't work inside
+#     a frozen binary anyway — only the providers we pre-bake are usable.
 #   - Antivirus on Windows occasionally flags PyInstaller output. Sign
 #     the .exe (Authenticode) once you've registered a code-signing cert.
 #     Until then, document the false-positive in the release notes.
@@ -115,7 +114,10 @@ jobs:
           # Install the package plus dashboard extras into the build env so the
           # frozen runtime never tries to lazy-install fastapi/uvicorn on a
           # user's machine.
-          pip install -e ".[web]"
+          # MiniMax-CN is wired through the Anthropic Messages transport.
+          # The SDK is intentionally lazy-imported in normal pip installs, so
+          # the frozen runtime must install and collect it explicitly.
+          pip install -e ".[web,anthropic]"
           # Build tooling
           pip install pyinstaller==6.* cryptography
 
@@ -137,6 +139,7 @@ jobs:
             --collect-submodules starlette \
             --collect-submodules uvicorn \
             --collect-submodules pydantic \
+            --collect-submodules anthropic \
             --collect-data hermes_cli \
             --collect-data gateway \
             --collect-data plugins \
@@ -149,10 +152,22 @@ jobs:
             --copy-metadata starlette \
             --copy-metadata uvicorn \
             --copy-metadata pydantic \
+            --copy-metadata anthropic \
             --paths . \
             -p . \
             hermes_cli/main.py
           ls -la "dist/$NAME"
+
+      - name: Verify frozen provider SDKs
+        shell: bash
+        run: |
+          NAME="hermes-agent-cn-runtime-${{ matrix.platform }}-${{ matrix.arch }}"
+          metadata_dir="$(find "dist/$NAME/_internal" -maxdepth 1 -type d -name 'anthropic-*.dist-info' -print -quit)"
+          if [[ -z "$metadata_dir" ]]; then
+            echo "Frozen runtime is missing anthropic package metadata" >&2
+            find "dist/$NAME" -maxdepth 3 -type d -name 'anthropic*' -print >&2
+            exit 1
+          fi
 
       - name: Smoke-test the binary
         shell: bash

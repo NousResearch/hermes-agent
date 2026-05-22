@@ -556,7 +556,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             filters out disabled skills.
 
     Returns:
-        List of skill metadata dicts (name, description, category).
+        List of skill metadata dicts (name, description, category, source).
+        ``source`` is ``"local"`` for skills under ``~/.hermes/skills/`` and
+        ``"external"`` for skills discovered via ``skills.external_dirs`` —
+        consumed by the TUI Gateway sidebar (#30119) and other surfaces
+        that need to distinguish operator-managed external skills from
+        bundled ones.
     """
     from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
@@ -566,13 +571,20 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
-    dirs_to_scan = []
+    # Scan local dir first, then external dirs (local takes precedence).
+    # Track per-dir origin so each emitted skill carries a ``source``
+    # field — without it, downstream surfaces (banner sidebar, web UI)
+    # cannot tell external_dirs entries from bundled ones, which is the
+    # symptom in #30119 ("external_dirs skills not shown in left
+    # sidebar"): they ARE in ``info.skills`` but get crowded out of the
+    # SKILLS_MAX=8 display slot by the 25+ built-in categories.
+    dirs_to_scan: list[tuple[Path, str]] = []
     if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
+        dirs_to_scan.append((SKILLS_DIR, "local"))
+    for ext_dir in get_external_skills_dirs():
+        dirs_to_scan.append((ext_dir, "external"))
 
-    for scan_dir in dirs_to_scan:
+    for scan_dir, source in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
@@ -610,6 +622,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     "name": name,
                     "description": description,
                     "category": category,
+                    "source": source,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:

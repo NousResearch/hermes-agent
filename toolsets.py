@@ -168,6 +168,18 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "browser_only": {
+        "description": "Browser automation only, without web_search or web_extract fallbacks",
+        "tools": [
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_get_images",
+            "browser_vision", "browser_console", "browser_cdp",
+            "browser_dialog"
+        ],
+        "includes": []
+    },
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",

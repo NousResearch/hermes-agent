@@ -184,7 +184,13 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
 
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
-    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
+    # bash must also be resolved to an absolute path so the spawn survives
+    # parent-shutdown PATH trimming inside containers (#30342).
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd: {"setsid": "/usr/bin/setsid", "bash": "/usr/bin/bash"}.get(cmd),
+    )
 
     def fake_popen(cmd, **kwargs):
         popen_calls.append((cmd, kwargs))
@@ -196,7 +202,7 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
 
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
-    assert cmd[:2] == ["/usr/bin/setsid", "bash"]
+    assert cmd[:2] == ["/usr/bin/setsid", "/usr/bin/bash"]
     assert "gateway restart" in cmd[-1]
     assert "kill -0 321" in cmd[-1]
     assert kwargs["start_new_session"] is True

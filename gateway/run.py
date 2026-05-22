@@ -3793,17 +3793,25 @@ class GatewayRunner:
             f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
             f"{cmd} gateway restart"
         )
+        # Resolve bash to an absolute path before spawning.  Bare "bash" can
+        # fail inside minimal containers when the parent's shutdown sequence
+        # trims PATH before subprocess.Popen runs execvp; the absolute path
+        # is immune.  Mirrors the existing setsid resolution below.
+        bash_bin = shutil.which("bash")
+        if not bash_bin:
+            logger.error("Could not locate bash for detached /restart")
+            return
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
             subprocess.Popen(
-                [setsid_bin, "bash", "-lc", shell_cmd],
+                [setsid_bin, bash_bin, "-lc", shell_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
         else:
             subprocess.Popen(
-                ["bash", "-lc", shell_cmd],
+                [bash_bin, "-lc", shell_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,

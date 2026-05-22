@@ -15,6 +15,7 @@ from gateway.channel_directory import (
     load_directory,
     _build_from_sessions,
     _build_slack,
+    _configured_aliases,
     DIRECTORY_PATH,
 )
 
@@ -69,6 +70,51 @@ class TestBuildChannelDirectoryWrites:
             result = load_directory()
 
         assert result == previous
+
+
+class TestConfiguredAliases:
+    def _write_config(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_wecom_aliases_load_from_top_level_platform_section(self, tmp_path):
+        self._write_config(tmp_path, 'wecom:\n  channel_aliases:\n    XXX群: wr7TcDcQAA9GylAWFpUDz0tAwLMN8g6Q\n')
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _configured_aliases("wecom")
+
+        assert entries == [{
+            "id": "wr7TcDcQAA9GylAWFpUDz0tAwLMN8g6Q",
+            "name": "XXX群",
+            "type": "group",
+            "thread_id": None,
+            "source": "alias",
+        }]
+
+    def test_wecom_alias_resolves_without_cached_directory_entry(self, tmp_path):
+        self._write_config(tmp_path, 'wecom:\n  channel_aliases:\n    XXX群: wr7TcDcQAA9GylAWFpUDz0tAwLMN8g6Q\n')
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), \
+             patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "missing.json"):
+            assert resolve_channel_name("wecom", "XXX群") == "wr7TcDcQAA9GylAWFpUDz0tAwLMN8g6Q"
+            assert resolve_channel_name("wecom", "XXX群 (group)") == "wr7TcDcQAA9GylAWFpUDz0tAwLMN8g6Q"
+
+    def test_format_directory_does_not_duplicate_configured_alias(self, tmp_path):
+        self._write_config(tmp_path, 'wecom:\n  channel_aliases:\n    XXX群: wr7TcDcQAA9GylAWFpUDz0tAwLMN8g6Q\n')
+        cache_file = _write_directory(tmp_path, {
+            "wecom": [{
+                "id": "wr7TcDcQAA9GylAWFpUDz0tAwLMN8g6Q",
+                "name": "XXX群",
+                "type": "group",
+                "thread_id": None,
+                "source": "alias",
+            }]
+        })
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), \
+             patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            result = format_directory_for_display()
+
+        assert result.count("wecom:XXX群") == 1
 
 
 class TestResolveChannelName:

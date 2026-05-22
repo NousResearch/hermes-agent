@@ -290,6 +290,44 @@ class TestLoadGatewayConfig:
 
         assert config.thread_sessions_per_user is True
 
+    def test_bridges_wecom_aliases_and_standalone_flag_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "wecom:\n"
+            "  channel_aliases:\n"
+            "    XXX群: wr7TcDcQAA9GylAWFpUDz0tAwLMN8g6Q\n"
+            "  allow_standalone_send: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.WECOM].extra
+        assert extra["channel_aliases"] == {"XXX群": "wr7TcDcQAA9GylAWFpUDz0tAwLMN8g6Q"}
+        assert extra["allow_standalone_send"] is True
+
+    def test_bridges_wecom_aliases_from_platforms_shortcut(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  wecom:\n"
+            "    channel_aliases:\n"
+            "      Ops Group: group-1\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WECOM].extra["channel_aliases"] == {"Ops Group": "group-1"}
+
     def test_thread_sessions_per_user_defaults_to_false(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

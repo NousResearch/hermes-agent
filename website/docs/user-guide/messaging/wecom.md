@@ -107,6 +107,8 @@ Set these in `config.yaml` under `platforms.wecom.extra`:
 | `allow_from` | `[]` | User IDs allowed for DMs (when dm_policy=allowlist) |
 | `group_allow_from` | `[]` | Group IDs allowed (when group_policy=allowlist) |
 | `groups` | `{}` | Per-group configuration (see below) |
+| `channel_aliases` | `{}` | Friendly names for opaque WeCom chat IDs used by `send_message` |
+| `allow_standalone_send` | `false` | Allow legacy out-of-process `send_message` delivery by opening a temporary WeCom WebSocket |
 
 ## Access Policies
 
@@ -177,6 +179,19 @@ platforms:
 
 If no `allow_from` is configured for a group, all users in that group are allowed (assuming the group itself passes the top-level policy check).
 
+### Channel Aliases for `send_message`
+
+WeCom group chat IDs are opaque. If you want the agent to understand requests like "send this to Ops Group", add aliases in `config.yaml`:
+
+```yaml
+wecom:
+  channel_aliases:
+    Ops Group: wr7TcDcQAA9GylAWFpUDz0tAwLMN8g6Q
+    Test Group: wr7TcDcQAAkEDOfbIDtDbTMQvW9FhWcQ
+```
+
+Aliases are added to the channel directory used by `send_message(action="list")` and name resolution. The advanced `platforms.wecom.extra.channel_aliases` form is also supported.
+
 ## Media Support
 
 ### Inbound (receiving)
@@ -231,6 +246,8 @@ When the bot receives a message via the WeCom callback, the adapter remembers th
 If the inbound request context has expired or is unavailable, the adapter falls back to proactive message sending via `aibot_send_msg`.
 
 Reply-mode also works for media: uploaded media can be sent as a reply to the originating message.
+
+For the `send_message` tool, Hermes reuses the live WeCom gateway adapter by default. This avoids opening a second AI Bot WebSocket for the same bot credentials, and lets proactive sends reuse any recent chat request IDs cached by the running gateway. If you explicitly need legacy out-of-process delivery, set `wecom.allow_standalone_send: true`, but this may create a temporary WebSocket and should be used carefully.
 
 ## Connection and Reconnection
 

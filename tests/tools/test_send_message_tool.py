@@ -2091,6 +2091,115 @@ class TestSendSignalChunking:
         assert len(params["attachments"]) == 1
 
 
+# ── WeCom live adapter delivery ───────────────────────────────────────────
+
+
+class TestWeComSendMessageDelivery:
+    @pytest.mark.asyncio
+    async def test_wecom_send_uses_live_gateway_adapter(self, monkeypatch):
+        from tools.send_message_tool import _send_wecom
+
+        adapter = SimpleNamespace(
+            send=AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg-1"))
+        )
+        runner = SimpleNamespace(adapters={Platform.WECOM: adapter})
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        result = await _send_wecom(SimpleNamespace(extra={}), "group-1", "hello")
+
+        assert result == {
+            "success": True,
+            "platform": "wecom",
+            "chat_id": "group-1",
+            "message_id": "msg-1",
+        }
+        adapter.send.assert_awaited_once_with(chat_id="group-1", content="hello")
+
+    @pytest.mark.asyncio
+    async def test_wecom_send_marshals_to_gateway_loop(self, monkeypatch):
+        import threading
+        from tools.send_message_tool import _send_wecom
+
+        gateway_loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=gateway_loop.run_forever)
+        thread.start()
+        observed = {}
+
+        async def fake_send(*, chat_id, content):
+            observed["loop"] = asyncio.get_running_loop()
+            observed["chat_id"] = chat_id
+            observed["content"] = content
+            return SimpleNamespace(success=True, message_id="msg-loop")
+
+        runner = SimpleNamespace(
+            adapters={Platform.WECOM: SimpleNamespace(send=fake_send)},
+            _gateway_loop=gateway_loop,
+        )
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        try:
+            result = await _send_wecom(SimpleNamespace(extra={}), "group-1", "hello")
+        finally:
+            gateway_loop.call_soon_threadsafe(gateway_loop.stop)
+            thread.join(timeout=2)
+            gateway_loop.close()
+
+        assert result["success"] is True
+        assert result["message_id"] == "msg-loop"
+        assert observed == {
+            "loop": gateway_loop,
+            "chat_id": "group-1",
+            "content": "hello",
+        }
+
+    @pytest.mark.asyncio
+    async def test_wecom_send_reports_stale_gateway_loop(self, monkeypatch):
+        from tools.send_message_tool import _send_wecom
+
+        gateway_loop = asyncio.new_event_loop()
+        runner = SimpleNamespace(
+            adapters={Platform.WECOM: SimpleNamespace(send=AsyncMock())},
+            _gateway_loop=gateway_loop,
+        )
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        try:
+            result = await _send_wecom(SimpleNamespace(extra={}), "group-1", "hello")
+        finally:
+            gateway_loop.close()
+
+        assert result == {"error": "WeCom live adapter gateway event loop is not running"}
+        runner.adapters[Platform.WECOM].send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_wecom_send_without_live_adapter_blocks_standalone_by_default(self, monkeypatch):
+        from tools.send_message_tool import _send_wecom
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        standalone = AsyncMock(return_value={"success": True})
+        monkeypatch.setattr("tools.send_message_tool._send_wecom_standalone", standalone)
+
+        result = await _send_wecom(SimpleNamespace(extra={}), "group-1", "hello")
+
+        assert "error" in result
+        assert "live gateway adapter" in result["error"]
+        standalone.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_wecom_send_can_opt_into_standalone_fallback(self, monkeypatch):
+        from tools.send_message_tool import _send_wecom
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        standalone = AsyncMock(return_value={"success": True, "message_id": "legacy-1"})
+        monkeypatch.setattr("tools.send_message_tool._send_wecom_standalone", standalone)
+        pconfig = SimpleNamespace(extra={"allow_standalone_send": "true", "bot_id": "bot"})
+
+        result = await _send_wecom(pconfig, "group-1", "hello")
+
+        assert result == {"success": True, "message_id": "legacy-1"}
+        standalone.assert_awaited_once_with(pconfig.extra, "group-1", "hello")
+
+
 # ── _send_via_adapter standalone fallback ────────────────────────────────
 
 

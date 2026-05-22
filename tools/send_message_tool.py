@@ -725,7 +725,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.FEISHU:
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
-            result = await _send_wecom(pconfig.extra, chat_id, chunk)
+            result = await _send_wecom(pconfig, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
@@ -1630,8 +1630,77 @@ async def _send_dingtalk(extra, chat_id, message):
         return _error(f"DingTalk send failed: {e}")
 
 
-async def _send_wecom(extra, chat_id, message):
-    """Send via WeCom using the adapter's WebSocket send pipeline."""
+def _wecom_extra_from_config(pconfig) -> dict:
+    extra = getattr(pconfig, "extra", None)
+    return extra if isinstance(extra, dict) else {}
+
+
+def _wecom_allow_standalone_send(pconfig) -> bool:
+    value = _wecom_extra_from_config(pconfig).get("allow_standalone_send", False)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def _send_wecom(pconfig, chat_id, message):
+    """Send via the running WeCom gateway adapter.
+
+    A standalone WeComAdapter opens a second AI Bot WebSocket for the same
+    bot credentials, which can invalidate the main gateway subscription. Keep
+    send_message on the live adapter by default so it reuses cached reply
+    req_ids and the existing subscribed connection.
+    """
+    try:
+        from gateway.config import Platform
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+        adapter = runner.adapters.get(Platform.WECOM) if runner is not None else None
+    except Exception:
+        adapter = None
+
+    if adapter is not None:
+        try:
+            gateway_loop = getattr(runner, "_gateway_loop", None)
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+
+            if gateway_loop is not None and gateway_loop is not current_loop:
+                if gateway_loop.is_closed() or not gateway_loop.is_running():
+                    return _error("WeCom live adapter gateway event loop is not running")
+                future = asyncio.run_coroutine_threadsafe(
+                    adapter.send(chat_id=chat_id, content=message),
+                    gateway_loop,
+                )
+                result = await asyncio.wrap_future(future)
+            else:
+                result = await adapter.send(chat_id=chat_id, content=message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            return _error(f"WeCom live adapter send failed: {e}")
+        if result.success:
+            return {
+                "success": True,
+                "platform": "wecom",
+                "chat_id": chat_id,
+                "message_id": result.message_id,
+            }
+        return _error(f"WeCom live adapter send failed: {result.error}")
+
+    if not _wecom_allow_standalone_send(pconfig):
+        return _error(
+            "WeCom send_message requires the live gateway adapter. Start the "
+            "gateway with WeCom enabled, or set wecom.allow_standalone_send: "
+            "true to permit the legacy standalone WebSocket fallback."
+        )
+
+    return await _send_wecom_standalone(_wecom_extra_from_config(pconfig), chat_id, message)
+
+
+async def _send_wecom_standalone(extra, chat_id, message):
+    """Legacy standalone WeCom sender, gated by allow_standalone_send."""
     try:
         from gateway.platforms.wecom import WeComAdapter, check_wecom_requirements
         if not check_wecom_requirements():

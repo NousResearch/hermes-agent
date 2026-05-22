@@ -748,6 +748,10 @@ def load_gateway_config() -> GatewayConfig:
                         existing = {}
                     # Deep-merge extra dicts so gateway.json defaults survive
                     merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+                    if plat_name == Platform.WECOM.value:
+                        for _wecom_extra_key in ("channel_aliases", "allow_standalone_send"):
+                            if _wecom_extra_key in plat_block:
+                                merged_extra[_wecom_extra_key] = plat_block[_wecom_extra_key]
                     if plat_name == Platform.SLACK.value and "enabled" in plat_block:
                         merged_extra["_enabled_explicit"] = True
                     merged = {**existing, **plat_block}
@@ -799,6 +803,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
+                if plat == Platform.WECOM:
+                    for _wecom_extra_key in ("channel_aliases", "allow_standalone_send"):
+                        if _wecom_extra_key in platform_cfg:
+                            bridged[_wecom_extra_key] = platform_cfg[_wecom_extra_key]
                 if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:

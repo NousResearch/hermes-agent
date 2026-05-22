@@ -53,6 +53,76 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
     return f"{base_name} / {topic_label}"
 
 
+def _configured_aliases(platform_name: str) -> List[Dict[str, Any]]:
+    """Return user-configured channel aliases for a platform.
+
+    ``channel_aliases`` accepts either ``alias: chat_id`` or
+    ``alias: {chat_id/id, thread_id, type}`` entries under a platform's extra
+    config.  Aliases are additive, so they can provide friendly names for
+    session-discovered opaque IDs without hiding the raw session entry.
+    """
+    try:
+        from gateway.config import Platform, load_gateway_config
+        platform = Platform(platform_name)
+        config = load_gateway_config()
+        pconfig = config.platforms.get(platform)
+    except Exception:
+        return []
+
+    extra = getattr(pconfig, "extra", {}) if pconfig is not None else {}
+    aliases = extra.get("channel_aliases") if isinstance(extra, dict) else None
+    if not isinstance(aliases, dict):
+        return []
+
+    entries: List[Dict[str, Any]] = []
+    for alias, target in aliases.items():
+        alias_name = str(alias).strip()
+        if not alias_name:
+            continue
+
+        thread_id = None
+        chat_type = "group"
+        if isinstance(target, dict):
+            chat_id = target.get("chat_id") or target.get("id")
+            thread_id = target.get("thread_id")
+            chat_type = str(target.get("type") or chat_type)
+        else:
+            chat_id = target
+
+        chat_id = str(chat_id or "").strip()
+        if not chat_id:
+            continue
+
+        entry_id = f"{chat_id}:{thread_id}" if thread_id else chat_id
+        entries.append({
+            "id": entry_id,
+            "name": alias_name,
+            "type": chat_type,
+            "thread_id": thread_id,
+            "source": "alias",
+        })
+
+    return entries
+
+
+def _with_configured_aliases(platform_name: str, channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    aliases = _configured_aliases(platform_name)
+    if not aliases:
+        return channels
+
+    seen = {
+        (str(ch.get("id")), str(ch.get("name")), str(ch.get("thread_id") or ""))
+        for ch in channels
+    }
+    missing_aliases = []
+    for alias in aliases:
+        key = (str(alias.get("id")), str(alias.get("name")), str(alias.get("thread_id") or ""))
+        if key not in seen:
+            missing_aliases.append(alias)
+            seen.add(key)
+    return missing_aliases + channels
+
+
 # ---------------------------------------------------------------------------
 # Build / refresh
 # ---------------------------------------------------------------------------
@@ -84,7 +154,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         plat_name = plat.value
         if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
             continue
-        platforms[plat_name] = _build_from_sessions(plat_name)
+        platforms[plat_name] = _configured_aliases(plat_name) + _build_from_sessions(plat_name)
 
     # Include plugin-registered platforms (dynamic enum members aren't in
     # Platform.__members__, so the loop above misses them).
@@ -92,7 +162,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             if entry.name not in _SKIP_SESSION_DISCOVERY and entry.name not in platforms:
-                platforms[entry.name] = _build_from_sessions(entry.name)
+                platforms[entry.name] = _configured_aliases(entry.name) + _build_from_sessions(entry.name)
     except Exception:
         pass
 
@@ -274,7 +344,10 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     - Slack: "engineering", "#engineering"
     """
     directory = load_directory()
-    channels = directory.get("platforms", {}).get(platform_name, [])
+    channels = _with_configured_aliases(
+        platform_name,
+        list(directory.get("platforms", {}).get(platform_name, [])),
+    )
     if not channels:
         return None
 
@@ -315,6 +388,11 @@ def format_directory_for_display() -> str:
     """Format the channel directory as a human-readable list for the model."""
     directory = load_directory()
     platforms = directory.get("platforms", {})
+    for plat_name in set(platforms.keys()) | {"wecom"}:
+        platforms[plat_name] = _with_configured_aliases(
+            plat_name,
+            list(platforms.get(plat_name, [])),
+        )
 
     if not any(platforms.values()):
         return "No messaging platforms connected or no channels discovered yet."

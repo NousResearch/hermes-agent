@@ -70,6 +70,7 @@ from tools.tool_backend_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+_plugin_dispatch_state = threading.local()
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +567,22 @@ def image_generate_tool(
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "error": str, "error_type": str}``.
     """
+    # Route direct Python callers through the same explicit plugin-provider
+    # dispatch path as the registered tool handler. An unset provider still
+    # falls through to the legacy in-tree FAL backend for compatibility.
+    if not getattr(_plugin_dispatch_state, "active", False):
+        dispatched = _dispatch_to_plugin_provider(
+            prompt,
+            aspect_ratio,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            num_images=num_images,
+            output_format=output_format,
+            seed=seed,
+        )
+        if dispatched is not None:
+            return dispatched
+
     model_id, meta = _resolve_fal_model()
 
     debug_call_data = {
@@ -887,7 +904,11 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(
+    prompt: str,
+    aspect_ratio: str,
+    **provider_kwargs: Any,
+):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -941,10 +962,19 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         })
 
     try:
-        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        kwargs = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            **{k: v for k, v in provider_kwargs.items() if v is not None},
+        }
         if configured_model:
             kwargs["model"] = configured_model
-        result = provider.generate(**kwargs)
+        previous_active = getattr(_plugin_dispatch_state, "active", False)
+        _plugin_dispatch_state.active = True
+        try:
+            result = provider.generate(**kwargs)
+        finally:
+            _plugin_dispatch_state.active = previous_active
     except Exception as exc:
         logger.warning(
             "Image gen provider '%s' raised: %s",

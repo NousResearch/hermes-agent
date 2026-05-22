@@ -23,11 +23,30 @@ class _FakeCodexProvider(ImageGenProvider):
         return {
             "success": True,
             "image": "/tmp/codex-test.png",
-            "model": "gpt-5.2-codex",
+            "model": kwargs.get("model", "gpt-5.2-codex"),
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
             "provider": "codex",
+            "kwargs": kwargs,
         }
+
+
+class _DelegatingFalProvider(ImageGenProvider):
+    @property
+    def name(self) -> str:
+        return "fal"
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        from tools import image_generation_tool
+
+        return json.loads(
+            image_generation_tool.image_generate_tool(
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                num_images=kwargs.get("num_images"),
+                seed=kwargs.get("seed"),
+            )
+        )
 
 
 class TestPluginDispatch:
@@ -97,3 +116,62 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+    def test_direct_image_generate_tool_uses_explicit_plugin_provider(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "image_gen:\n  provider: codex\n  model: gpt-image-test\n"
+        )
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "gpt-image-test")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: _FakeCodexProvider() if name == "codex" else None)
+
+        result = image_generation_tool.image_generate_tool(
+            prompt="draw direct cat",
+            aspect_ratio="square",
+            num_images=2,
+            seed=123,
+        )
+        payload = json.loads(result)
+
+        assert payload["success"] is True
+        assert payload["provider"] == "codex"
+        assert payload["model"] == "gpt-image-test"
+        assert payload["prompt"] == "draw direct cat"
+        assert payload["aspect_ratio"] == "square"
+        assert payload["kwargs"]["num_images"] == 2
+        assert payload["kwargs"]["seed"] == 123
+
+    def test_direct_image_generate_tool_does_not_recurse_for_fal_plugin(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: fal\n")
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "fal")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: _DelegatingFalProvider() if name == "fal" else None)
+        monkeypatch.setattr(image_generation_tool, "fal_key_is_configured", lambda: False)
+        monkeypatch.setattr(image_generation_tool, "_resolve_managed_fal_gateway", lambda: None)
+
+        result = image_generation_tool.image_generate_tool(
+            prompt="draw direct fal cat",
+            aspect_ratio="square",
+            num_images=2,
+            seed=123,
+        )
+        payload = json.loads(result)
+
+        assert payload["success"] is False
+        assert payload["error_type"] == "ValueError"
+        assert "Image generation is unavailable" in payload["error"]
+        assert "maximum recursion depth" not in payload["error"]

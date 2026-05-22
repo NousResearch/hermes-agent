@@ -138,6 +138,91 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Operational Runbook
+
+Use this runbook when validating a new Telegram bot, deploying a config change, or recovering from an incident.
+
+### Local validation
+
+1. Install the Telegram dependency set and run the focused gateway tests:
+
+```bash
+python -m pytest tests/gateway/test_telegram_*.py -q
+```
+
+2. Start the gateway in the foreground so logs stay visible:
+
+```bash
+hermes gateway run
+```
+
+3. In Telegram, send the bot a direct text message. Expected result: the gateway logs an inbound Telegram update, routes it into a Hermes session, and sends one formatted reply back to the same chat.
+4. Validate key edge cases before handing the bot to users:
+   - Send `/help` or another slash command and confirm it routes as a command.
+   - Reply to a bot message and confirm Hermes receives the reply context.
+   - Send an unsupported payload such as a contact card and confirm the bot replies with a clear "can't process" message instead of crashing.
+   - Re-send or replay a captured update in tests and confirm duplicate `update_id` values are ignored.
+
+### Deployment configuration
+
+Required values:
+
+```bash
+TELEGRAM_BOT_TOKEN=<bot-token-from-botfather>
+TELEGRAM_ALLOWED_USERS=<comma-separated-telegram-user-ids>
+```
+
+Optional values:
+
+```bash
+TELEGRAM_WEBHOOK_URL=https://<public-host>/<telegram-path>
+TELEGRAM_WEBHOOK_SECRET=<random-webhook-secret>
+TELEGRAM_WEBHOOK_PORT=8443
+TELEGRAM_PROXY=socks5://127.0.0.1:1080
+```
+
+Store secrets in `~/.hermes/.env` for local installs or in the platform secret manager for cloud deploys. Do not put bot tokens in `config.yaml`, docs, issue comments, or logs.
+
+### Startup mode
+
+- Polling mode is the default. Use it for local machines and always-on hosts: leave `TELEGRAM_WEBHOOK_URL` unset, then run `hermes gateway run` or manage the service with `hermes gateway start` / `hermes gateway restart`.
+- Webhook mode is for public HTTPS deployments. Set `TELEGRAM_WEBHOOK_URL` and `TELEGRAM_WEBHOOK_SECRET`, expose `TELEGRAM_WEBHOOK_PORT`, then restart the gateway. The gateway log should report that Telegram connected in webhook mode.
+- Use only one active receiver per bot token. If another gateway, old OpenClaw process, or staging deployment is polling the same bot token, Telegram updates will conflict or disappear from the expected environment.
+
+### Verification after deploy
+
+1. Check service health:
+
+```bash
+hermes gateway status
+```
+
+2. Inspect recent gateway errors:
+
+```bash
+grep -i "telegram\|error\|conflict\|failed" ~/.hermes/logs/gateway.log | tail -50
+```
+
+3. Send a direct message from an allowed Telegram user and confirm a reply.
+4. If the bot is used in a group, mention the bot or reply to it. If the bot should see all group messages, verify BotFather privacy mode is off or the bot is a group admin, then remove and re-add the bot to the group after changing privacy settings.
+
+### Troubleshooting
+
+- No reply in DMs: confirm `TELEGRAM_ALLOWED_USERS` contains the numeric Telegram user ID, not the username; then restart the gateway.
+- Bot silent in groups: check BotFather privacy mode, group admin status, and whether `require_mention` is enabled.
+- `Conflict` or duplicate receiver errors: stop every other process using the same bot token, including old local gateways and cloud replicas, then start one gateway instance.
+- Webhook requests fail: verify the public URL is HTTPS, the route path matches `TELEGRAM_WEBHOOK_URL`, the port is exposed, and `TELEGRAM_WEBHOOK_SECRET` is set on both Telegram registration and the gateway.
+- Markdown send failures: the adapter should fall back to plain text. If users see missing replies, check the gateway log for `MarkdownV2 parse failed` followed by `Failed to send Telegram message`.
+- Duplicate agent turns: inspect the gateway log for repeated update IDs; replay protection should log `Ignoring duplicate update_id=...` when Telegram redelivers an update.
+
+### Rollback
+
+1. Stop the new gateway process or deployment.
+2. Restore the previous environment variables or redeploy the previous release.
+3. If webhook mode caused the incident, unset `TELEGRAM_WEBHOOK_URL` and restart in polling mode, or point Telegram back to the previous stable webhook URL.
+4. Verify with a DM from an allowed user and inspect `~/.hermes/logs/gateway.log` for new Telegram errors.
+5. If a bot token leaked during the incident, revoke it in BotFather, issue a new token, update `TELEGRAM_BOT_TOKEN`, and restart the gateway.
+
 ## Sending Generated Files from Docker-backed Terminals
 
 If your terminal backend is `docker`, keep in mind that Telegram attachments are

@@ -67,6 +67,89 @@ class TestChatCompletionsBasic:
         assert msgs[2]["tool_name"] == "execute_code"
 
 
+    def test_convert_messages_strips_reasoning_content_field(self, transport):
+        """``reasoning_content`` (DeepSeek/Moonshot/o1-via-OpenRouter) on assistant
+        messages is rejected by non-reasoning providers (Groq, Ollama) with HTTP 400.
+        """
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "ok", "reasoning_content": "thinking..."},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "reasoning_content" not in result[1]
+        assert result[1]["content"] == "ok"
+        # Original untouched
+        assert msgs[1]["reasoning_content"] == "thinking..."
+
+    def test_convert_messages_strips_reasoning_field(self, transport):
+        """``reasoning`` (unified format used by some adapters) is also stripped."""
+        msgs = [
+            {"role": "assistant", "content": "ok", "reasoning": "step-by-step..."},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "reasoning" not in result[0]
+        assert result[0]["content"] == "ok"
+
+    def test_convert_messages_strips_reasoning_details_field(self, transport):
+        msgs = [
+            {"role": "assistant", "content": "ok",
+             "reasoning_details": [{"type": "thinking", "text": "..."}]},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "reasoning_details" not in result[0]
+
+    def test_convert_messages_strips_inline_think_block(self, transport):
+        """DeepSeek-R1 via Ollama emits chain-of-thought as <think>...</think>
+        inside ``message.content``. Strip it before replaying history.
+        """
+        msgs = [
+            {"role": "assistant",
+             "content": "<think>The user said hi, I should greet back.</think>Hello!"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "<think>" not in result[0]["content"]
+        assert result[0]["content"] == "Hello!"
+
+    def test_convert_messages_strips_inline_think_block_multiline(self, transport):
+        msgs = [
+            {"role": "assistant",
+             "content": "<think>\nLine one of thinking.\nLine two.\n</think>\n\nFinal answer."},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "<think>" not in result[0]["content"]
+        assert "Line one" not in result[0]["content"]
+        assert result[0]["content"] == "Final answer."
+
+    def test_convert_messages_strips_inline_reasoning_block(self, transport):
+        """Some adapters use <reasoning>...</reasoning> instead of <think>."""
+        msgs = [
+            {"role": "assistant",
+             "content": "<reasoning>internal CoT</reasoning>Done."},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "<reasoning>" not in result[0]["content"]
+        assert result[0]["content"] == "Done."
+
+    def test_convert_messages_strips_think_in_content_parts(self, transport):
+        """Content can be a list of typed parts (vision/multimodal); strip <think>
+        from each text part too.
+        """
+        msgs = [
+            {"role": "assistant",
+             "content": [{"type": "text",
+                          "text": "<think>thinking</think>Visible response."}]},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "<think>" not in result[0]["content"][0]["text"]
+        assert result[0]["content"][0]["text"] == "Visible response."
+
+    def test_convert_messages_no_strip_when_no_reasoning(self, transport):
+        """A normal assistant message without reasoning fields is identity-returned
+        (no deepcopy)."""
+        msgs = [{"role": "assistant", "content": "plain reply"}]
+        result = transport.convert_messages(msgs)
+        assert result is msgs  # no copy needed
+
 class TestChatCompletionsBuildKwargs:
 
     def test_basic_kwargs(self, transport):

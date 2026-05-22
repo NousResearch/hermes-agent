@@ -82,6 +82,42 @@ def _ra():
     return run_agent
 
 
+def _pool_may_recover_from_rate_limit(pool, *, provider: str = "", base_url: Optional[str] = None) -> bool:
+    """Return True when credential-pool rotation may recover from a rate-limit/billing hit.
+
+    This is intentionally conservative: only suppress eager fallback when there is
+    at least one *other* credential in the pool that is not currently exhausted.
+    Single-credential pools cannot recover by rotation, so callers should continue
+    to the normal fallback path.
+    """
+    if pool is None or not getattr(pool, "has_credentials", lambda: False)():
+        return False
+
+    try:
+        from agent.credential_pool import STATUS_EXHAUSTED, _exhausted_until
+    except Exception:
+        return False
+
+    entries = list(getattr(pool, "entries", lambda: [])() or [])
+    if len(entries) <= 1:
+        return False
+
+    current = getattr(pool, "current", lambda: None)()
+    current_id = getattr(current, "id", None)
+    now = time.time()
+
+    for entry in entries:
+        if getattr(entry, "id", None) == current_id:
+            continue
+        if getattr(entry, "last_status", None) != STATUS_EXHAUSTED:
+            return True
+        exhausted_until = _exhausted_until(entry)
+        if exhausted_until is None or exhausted_until <= now:
+            return True
+
+    return False
+
+
 def run_conversation(
     agent,
     user_message: str,

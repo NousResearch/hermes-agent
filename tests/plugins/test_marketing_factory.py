@@ -155,6 +155,63 @@ def test_tool_handler_runs_full_dry_run(isolate_home):
     assert len(result["result"]["publish_events"]) == 1
 
 
+def test_tool_handler_covers_extended_agent_surface(isolate_home):
+    """Phase 18: every new action surfaced on the agent tool must dispatch successfully
+    so an agentic caller can drive the factory end-to-end without CLI/dashboard."""
+    from plugins.marketing_factory.tools import handle_marketing_factory
+
+    json.loads(handle_marketing_factory({"action": "init"}))
+
+    # generate + read drafts
+    gen = json.loads(handle_marketing_factory({"action": "generate", "app_slug": "pupular", "days": 2}))
+    assert gen["success"] is True
+    draft_id = gen["result"]["drafts"][0]["id"]
+
+    # advise
+    advise = json.loads(handle_marketing_factory({"action": "advise"}))
+    assert advise["success"] is True
+
+    # regenerate one draft
+    regen = json.loads(handle_marketing_factory({"action": "regenerate", "draft_id": draft_id}))
+    assert regen["success"] is True
+    new_draft_id = regen["result"]["new_draft"]["id"]
+
+    # variants (count=2)
+    variants = json.loads(handle_marketing_factory({"action": "variants", "draft_id": new_draft_id, "count": 2}))
+    assert variants["success"] is True
+    assert variants["result"]["count_generated"] == 2
+
+    # edit body
+    edit = json.loads(handle_marketing_factory({"action": "edit", "draft_id": new_draft_id, "body": "Edited via agent surface. https://pupular.example"}))
+    assert edit["success"] is True
+
+    # reschedule
+    resched = json.loads(handle_marketing_factory({"action": "reschedule", "draft_id": new_draft_id, "scheduled_for": "2026-06-15T18:00:00+00:00"}))
+    assert resched["success"] is True
+
+    # set_channel_mode + set_auto_generate
+    mode = json.loads(handle_marketing_factory({"action": "set_channel_mode", "app_slug": "pupular", "channel": "x", "mode": "live"}))
+    assert mode["success"] is True
+    auto = json.loads(handle_marketing_factory({"action": "set_auto_generate", "app_slug": "pupular", "enabled": True, "threshold": 5}))
+    assert auto["success"] is True
+
+    # add_app
+    add = json.loads(handle_marketing_factory({"action": "add_app", "profile": {"slug": "agent-test-brand", "name": "Agent Test Brand", "channels": ["x"], "positioning": "test brand", "icp": "tests", "tone": "neutral", "cta": "Test CTA"}}))
+    assert add["success"] is True
+    assert add["result"]["slug"] == "agent-test-brand"
+
+    # remove_app
+    rem = json.loads(handle_marketing_factory({"action": "remove_app", "app_slug": "agent-test-brand"}))
+    assert rem["success"] is True
+
+    # poll + digest
+    poll = json.loads(handle_marketing_factory({"action": "poll"}))
+    assert poll["success"] is True
+    digest = json.loads(handle_marketing_factory({"action": "digest", "app_slug": "pupular", "days": 7}))
+    assert digest["success"] is True
+    assert "# Pupular" in digest["result"]["markdown"]
+
+
 def test_cli_smoke_path_outputs_status(tmp_path, capsys):
     from plugins.marketing_factory.cli import marketing_command
 

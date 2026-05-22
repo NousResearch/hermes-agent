@@ -71,39 +71,40 @@ class TestForceFullRedraw:
             "invalidate",
         ]
 
-    def test_resize_preserves_scrollback_and_resets_renderer(self, bare_cli, monkeypatch):
-        """Resize recovery must NOT erase screen or scrollback.
+    def test_resize_recovery_clears_visible_screen_before_prompt_toolkit_redraw(self, bare_cli, monkeypatch):
+        """Resize recovery must blank the visible screen before PTK redraws.
 
-        The startup banner lives in normal terminal scrollback (printed
-        before prompt_toolkit owns the chrome).  Clearing scrollback on
-        SIGWINCH removes it and ``_replay_output_history`` cannot
-        reconstruct it.  The fix is to only reset the renderer cache and
-        let ``original_on_resize`` recalculate layout.
+        On column shrink the terminal can reflow previously rendered footer rows
+        into extra wrapped lines before prompt_toolkit handles SIGWINCH. If PTK
+        redraws first, those stale rows remain visible as duplicated ghost lines.
 
-        Additionally, ``_status_bar_suppressed_after_resize`` must be set
-        so the input rules and status bar hide until the next user input,
-        preventing duplicated-bar artifacts on column shrink (#19280).
+        We still avoid scrollback-specific escape sequences (write_raw) and keep
+        status bar suppression until the next user input.
         """
         app = MagicMock()
         events = []
         app.renderer.reset.side_effect = lambda **_: events.append("renderer_reset")
+        app.output.erase_screen.side_effect = lambda: events.append("erase")
+        app.output.cursor_goto.side_effect = lambda *_: events.append("home")
+        app.output.flush.side_effect = lambda: events.append("flush")
         app.invalidate.side_effect = lambda: events.append("invalidate")
         original_on_resize = lambda: events.append("original_resize")
 
-        # bare_cli skips __init__, so seed the attribute the way __init__ would.
         bare_cli._status_bar_suppressed_after_resize = False
         bare_cli._recover_after_resize(app, original_on_resize)
 
         assert events == [
             "renderer_reset",
-            "invalidate",
+            "erase",
+            "home",
+            "flush",
             "original_resize",
+            "invalidate",
         ]
-        # Must NOT clear the screen or scrollback — those destroy the banner.
-        app.renderer.output.erase_screen.assert_not_called()
+        app.output.erase_screen.assert_called_once()
+        app.output.cursor_goto.assert_called_once_with(0, 0)
+        app.output.flush.assert_called_once()
         app.renderer.output.write_raw.assert_not_called()
-        app.renderer.output.cursor_goto.assert_not_called()
-        # Status bar / input rules must be suppressed until the next prompt.
         assert bare_cli._status_bar_suppressed_after_resize is True
 
     def test_force_redraw_uses_full_screen_clear_without_scrollback_clear(self, bare_cli):

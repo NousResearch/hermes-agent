@@ -3043,26 +3043,19 @@ class HermesCLI:
             pass
 
     def _recover_after_resize(self, app, original_on_resize) -> None:
-        """Recover a resized classic CLI without desynchronizing cursor state.
+        """Recover a resized classic CLI without redrawing over reflow ghosts.
 
-        Unlike _force_full_redraw, we do NOT clear the physical screen or
-        scrollback here.  The startup banner and tool summary are printed
-        before prompt_toolkit owns the live chrome, so they live in normal
-        terminal scrollback.  Erasing the screen on SIGWINCH removes that
-        startup UI and ``_replay_output_history`` cannot reconstruct it
-        (the banner was never added to ``_OUTPUT_HISTORY``).
+        When the terminal shrinks, the emulator can reflow previously rendered
+        full-width chrome rows into multiple narrower rows before
+        prompt_toolkit's normal resize logic runs. If we let prompt_toolkit
+        redraw first, it can paint on top of those stale rows and leave wrapped
+        duplicate lines behind.
 
-        Instead we just reset prompt_toolkit's renderer cache so the next
-        incremental redraw starts from a clean slate, then let
-        ``original_on_resize`` recalculate layout for the new size.
-
-        We also flag ``_status_bar_suppressed_after_resize`` so the dynamic
-        status bar and input separator rules stay hidden until the next user
-        input.  On column shrink the terminal reflows already-rendered status
-        bar rows into scrollback before prompt_toolkit can erase them; drawing
-        a fresh full-width bar immediately makes the old and new versions
-        look duplicated (#19280, #22976).  Clearing the suppression on the
-        next prompt restores the bar cleanly.
+        Fix: reset the renderer cache, then explicitly blank the visible screen
+        before prompt_toolkit recalculates layout for the new size. We still
+        suppress the status bar/input rules until the next real user input so a
+        freshly drawn footer does not immediately collide with recently reflowed
+        chrome during the resize burst.
         """
         self._status_bar_suppressed_after_resize = True
         try:
@@ -3070,10 +3063,16 @@ class HermesCLI:
         except Exception:
             pass
         try:
-            app.invalidate()
+            app.output.erase_screen()
+            app.output.cursor_goto(0, 0)
+            app.output.flush()
         except Exception:
             pass
         original_on_resize()
+        try:
+            app.invalidate()
+        except Exception:
+            pass
 
     def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
         """Debounce resize redraws so footer chrome is not stamped into scrollback."""

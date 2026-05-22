@@ -3475,9 +3475,41 @@ class GatewayRunner:
                 start_new_session=True,
             )
 
+    def _save_restart_context_checkpoint(self, reason: str = "gateway restart requested") -> None:
+        """Best-effort handoff checkpoint before a gateway restart.
+
+        The script writes a compact, redacted summary of the latest session to
+        ~/.hermes/state/restart_context_checkpoint.* and to Joplin when the
+        desktop clipper is available. This must never block or prevent restart.
+        """
+        script = _hermes_home / "scripts" / "save_restart_context.py"
+        if not script.exists():
+            return
+        try:
+            import subprocess
+
+            result = subprocess.run(
+                [str(script), "--reason", reason, "--tail", "18"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                logger.info("Saved restart context checkpoint: %s", result.stdout.strip())
+            else:
+                logger.warning(
+                    "Restart context checkpoint failed rc=%s stderr=%s",
+                    result.returncode,
+                    result.stderr.strip()[:500],
+                )
+        except Exception as e:
+            logger.warning("Restart context checkpoint failed: %s", e)
+
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:
             return False
+        self._save_restart_context_checkpoint()
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service

@@ -8780,6 +8780,24 @@ class GatewayRunner:
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
+                # Streaming already delivered the main response.  If reasoning
+                # display is enabled, send it as a separate preceding message
+                # since the stream consumer only handles text deltas.
+                if getattr(self, "_show_reasoning", False):
+                    _streamed_reasoning = agent_result.get("last_reasoning")
+                    if _streamed_reasoning:
+                        _reason_adapter = self.adapters.get(source.platform)
+                        if _reason_adapter:
+                            lines = _streamed_reasoning.strip().splitlines()
+                            if len(lines) > 15:
+                                _display_r = "\n".join(lines[:15])
+                                _display_r += f"\n_... ({len(lines) - 15} more lines)_"
+                            else:
+                                _display_r = _streamed_reasoning.strip()
+                            await _reason_adapter.send(
+                                chat_id=event.chat_id,
+                                content=f"💭 **Reasoning:**\n```\n{_display_r}\n```",
+                            )
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:

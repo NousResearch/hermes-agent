@@ -48,3 +48,25 @@ def web_registry_populated():
     yield
     from agent.web_search_registry import _reset_for_tests
     _reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _no_lazy_install_stt(request, monkeypatch):
+    """Prevent transcription tests from triggering real faster-whisper install.
+
+    ``tools.transcription_tools._try_lazy_install_stt()`` calls
+    ``tools.lazy_deps.ensure("stt.faster_whisper")`` and re-probes via
+    ``importlib.util.find_spec``. In a dev environment with the package already
+    installed, the probe returns True and ``_get_provider()`` reports ``"local"``
+    even when tests have patched ``_HAS_FASTER_WHISPER`` to ``False`` to simulate
+    the unavailable state. That breaks ~15 tests that expect cloud fallback or
+    ``"none"`` when local is unavailable.
+
+    Default the helper to ``False`` everywhere; tests that specifically exercise
+    the lazy-install path can still re-patch it locally.
+    """
+    try:
+        import tools.transcription_tools as _tt
+    except Exception:
+        return
+    monkeypatch.setattr(_tt, "_try_lazy_install_stt", lambda: False, raising=False)

@@ -114,9 +114,10 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
         "kanban_progress",
         "kanban_reviews",
         "kanban_review",
+        "kanban_plan_review",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_reviews', 'kanban_review'}}"
+        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_reviews', 'kanban_review', 'kanban_plan_review'}}"
     )
 
 
@@ -141,6 +142,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_progress",
         "kanban_reviews",
         "kanban_review",
+        "kanban_plan_review",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
@@ -518,9 +520,63 @@ def test_review_tools_reject_worker_context(worker_env):
         (kt._handle_progress, {"task_id": worker_env}),
         (kt._handle_reviews, {}),
         (kt._handle_review, {"task_id": worker_env, "decision": "approve"}),
+        (kt._handle_plan_review, {"task_id": worker_env}),
     ]:
         out = handler(args)
         assert "orchestrator-only" in json.loads(out).get("error", "")
+
+
+def test_plan_review_tool_creates_review_and_test_followups(monkeypatch, worker_env, tmp_path):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "git": {"changed_files": ["app.py"], "diff_summary": " app.py | 4 ++++"},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="tool plan review",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_plan_review({
+        "task_id": tid,
+        "review_assignee": "codex-review",
+        "test_assignee": "codex-test",
+    })
+    d = json.loads(out)
+
+    conn = kb.connect()
+    try:
+        review_task = kb.get_task(conn, d["review_task_id"])
+        test_task = kb.get_task(conn, d["test_task_id"])
+    finally:
+        conn.close()
+
+    assert set(d["created"]) == {d["review_task_id"], d["test_task_id"]}
+    assert review_task.assignee == "codex-review"
+    assert test_task.assignee == "codex-test"
+    assert "app.py" in review_task.body
+    assert "pytest -q" in test_task.body
 
 
 def test_complete_happy_path(worker_env):

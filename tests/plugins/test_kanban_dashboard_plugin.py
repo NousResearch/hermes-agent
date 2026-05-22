@@ -1614,6 +1614,67 @@ def test_review_endpoint_approve_and_request_changes(client, tmp_path):
     assert any(e.kind == "worker_review_changes_requested" for e in events)
 
 
+def test_plan_review_endpoint_creates_review_and_test_followups(client, tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "git": {"changed_files": ["app.py"], "diff_summary": " app.py | 4 ++++"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="plan review via api",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{tid}/plan-review",
+        json={
+            "review_assignee": "codex-review",
+            "test_assignee": "codex-test",
+            "created_by": "dashboard-review-planner",
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    conn = kb.connect()
+    try:
+        review_task = kb.get_task(conn, data["review_task_id"])
+        test_task = kb.get_task(conn, data["test_task_id"])
+        progress = kb.task_progress_snapshot(conn, tid, include_children=True)
+    finally:
+        conn.close()
+
+    assert set(data["created"]) == {data["review_task_id"], data["test_task_id"]}
+    assert review_task.status == "ready"
+    assert test_task.status == "ready"
+    assert review_task.assignee == "codex-review"
+    assert test_task.assignee == "codex-test"
+    assert review_task.created_by == "dashboard-review-planner"
+    assert "app.py" in review_task.body
+    assert "pytest -q" in test_task.body
+    assert progress.child_summary["relationship_counts"]["review_followup"] == 1
+    assert progress.child_summary["relationship_counts"]["test_followup"] == 1
+
+
 def test_worker_lane_request_endpoint_validates_without_enabling(client):
     from hermes_cli.worker_lanes import clear_worker_lanes, get_worker_lane
 

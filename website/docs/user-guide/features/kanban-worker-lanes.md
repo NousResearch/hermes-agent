@@ -78,11 +78,12 @@ The kanban kernel enforces that exactly one of these terminates each run. A work
 
 ## Outputs and the review-required convention
 
-For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
+For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs independent review and verification. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
 
 - **Block instead of complete**, with `reason` prefixed `review-required: ` so the dashboard / `hermes kanban show` surfaces the row as awaiting review.
 - **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
-- **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
+- **A controller plans follow-up review/test tasks**, usually assigned to external lanes such as `codex-review` and `codex-test`, so review and verification are separate worker runs rather than Hermes reading the full implementation session.
+- **Reviewer either approves the bounded evidence**, after review/test evidence is satisfactory, or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
 
 The [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill has worked examples for both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
 
@@ -176,7 +177,36 @@ On success, the default `block_for_review` policy blocks the task with structure
 review-required: Codex completed; Hermes review required
 ```
 
-The metadata includes bounded output tail, git status, changed files, diff summary, verification commands, and review reason. This is distinct from the `review` column's profile-review dispatch path in current Kanban; Codex lane success hands evidence to Hermes/main-agent review without replaying the full Codex session.
+The metadata includes bounded output tail, git status, changed files, diff summary, verification commands, and review reason. This is distinct from the `review` column's profile-review dispatch path in current Kanban; Codex lane success hands evidence to the Hermes controller without replaying the full Codex session. The usual next step is to plan independent review/test worker tasks from that evidence.
+
+## Independent review/test follow-ups
+
+Hermes should not act as the primary code reviewer for large coding tasks. The controller reads bounded evidence from the implementation worker and creates follow-up worker tasks:
+
+```bash
+hermes kanban plan-review <implementation_task_id> --json
+```
+
+By default this creates two idempotent tasks for the implementation run:
+
+- `Review implementation evidence for <task_id>` assigned to `codex-review`
+- `Verify implementation evidence for <task_id>` assigned to `codex-test`
+
+The CLI accepts `--review-assignee`, `--test-assignee`, `--review-only`, and `--test-only`. The Python tool surface exposes the same operation as `kanban_plan_review`, and the dashboard API exposes:
+
+```text
+POST /api/plugins/kanban/tasks/<task_id>/plan-review
+```
+
+The follow-up task bodies contain bounded implementation evidence: worker lane identity, source run id, changed files, diff summary, verification commands, verification summary, and a bounded output tail. They instruct the review/test worker to inspect the workspace or diff as needed and return a structured verdict, without marking the source implementation task done.
+
+For scheduling, the follow-up tasks are independent `ready` tasks so a dispatcher can claim them immediately. They are also linked back as dependencies of the blocked implementation task, and the source task receives a `worker_review_followups_planned` event. Progress queries include those follow-ups even though the dependency edge points from follow-up to source:
+
+```bash
+hermes kanban progress <implementation_task_id> --children --json
+```
+
+This gives the main agent and dashboard a compact view of whether review and test workers are still ready, running, blocked, or done without interrupting any worker process.
 
 ## Skill lane intent
 
@@ -262,6 +292,7 @@ Codex session.
 Reviewers can close the handoff through the same bounded-evidence path:
 
 ```bash
+hermes kanban plan-review <task_id> --json
 hermes kanban review <task_id> approve --summary "bounded evidence accepted"
 hermes kanban review <task_id> request-changes --comment "add a regression test"
 ```
@@ -269,13 +300,16 @@ hermes kanban review <task_id> request-changes --comment "add a regression test"
 The dashboard/API equivalent is `POST /api/plugins/kanban/tasks/<task_id>/review`
 with `decision=approve` or `decision=request_changes`.
 
-`approve` records the review decision and marks the task done. `request-changes`
-records the reviewer comment, emits a review event, and unblocks the task so the
-dispatcher can hand the follow-up back to the assigned lane.
+`kanban plan-review` creates the independent review/test worker tasks.
+`approve` records the final controller decision and marks the implementation
+task done. `request-changes` records the reviewer comment, emits a review event,
+and unblocks the implementation task so the dispatcher can hand the follow-up
+back to the assigned lane.
 
 Configured orchestrator/main-agent profiles can use the equivalent tools:
 `kanban_reviews` for the queue, `kanban_progress` for one task's bounded
-snapshot, and `kanban_review` to approve or request changes. These tools are
+snapshot, `kanban_plan_review` to create independent review/test follow-ups,
+and `kanban_review` to approve or request changes. These tools are
 orchestrator-only; dispatcher-spawned Codex workers do not see them.
 
 Pass `include_children=true` to `kanban_progress` when the task is a goal/root
@@ -325,7 +359,7 @@ So lane authors don't have to reimplement these:
 
 - No full Codex event stream integration yet; progress is parsed from wrapper stdout/stderr.
 - No approval bridge; configure Codex lanes with controlled approval policy.
-- No automatic deep review for large diffs.
+- No automatic acceptance gate that requires review/test follow-up tasks to be done before `kanban review approve`; controllers should inspect follow-up evidence before approving.
 - External lane command shapes are adapter-defined, not model-defined.
 - Review reads Codex artifacts and bounded metadata, not the full Codex session.
 

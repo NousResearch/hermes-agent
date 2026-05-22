@@ -647,6 +647,58 @@ def test_run_slash_review_request_changes_unblocks_for_next_worker(
     assert any(event.kind == "worker_review_changes_requested" for event in events)
 
 
+def test_run_slash_plan_review_json_creates_followups(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "git": {"changed_files": ["hermes_cli/kanban.py"], "diff_summary": "+2 -0"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="plan review via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash(
+        f"plan-review {tid} --review-assignee codex-review "
+        "--test-assignee codex-test --json"
+    ))
+
+    with kb.connect() as conn:
+        review_task = kb.get_task(conn, payload["review_task_id"])
+        test_task = kb.get_task(conn, payload["test_task_id"])
+        progress = kb.task_progress_snapshot(conn, tid, include_children=True)
+        repeated = json.loads(kc.run_slash(f"plan-review {tid} --json"))
+
+    assert set(payload["created"]) == {payload["review_task_id"], payload["test_task_id"]}
+    assert payload["existing"] == []
+    assert review_task.status == "ready"
+    assert test_task.status == "ready"
+    assert review_task.assignee == "codex-review"
+    assert test_task.assignee == "codex-test"
+    assert "hermes_cli/kanban.py" in review_task.body
+    assert "pytest -q" in test_task.body
+    assert progress.child_summary["relationship_counts"]["review_followup"] == 1
+    assert progress.child_summary["relationship_counts"]["test_followup"] == 1
+    assert repeated["created"] == []
+    assert set(repeated["existing"]) == {payload["review_task_id"], payload["test_task_id"]}
+
+
 def test_run_slash_worker_lane_request_validates_without_enabling(
     kanban_home, tmp_path,
 ):

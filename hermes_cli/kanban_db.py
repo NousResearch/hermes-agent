@@ -885,6 +885,32 @@ class TaskProgressSnapshot:
 
 
 @dataclass
+class ReviewFollowupPlan:
+    """Review/test worker tasks created from implementation evidence."""
+
+    source_task_id: str
+    source_run_id: int
+    review_task_id: Optional[str]
+    test_task_id: Optional[str]
+    created: list[str]
+    existing: list[str]
+    review_assignee: Optional[str]
+    test_assignee: Optional[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_task_id": self.source_task_id,
+            "source_run_id": self.source_run_id,
+            "review_task_id": self.review_task_id,
+            "test_task_id": self.test_task_id,
+            "created": self.created,
+            "existing": self.existing,
+            "review_assignee": self.review_assignee,
+            "test_assignee": self.test_assignee,
+        }
+
+
+@dataclass
 class WorkerLaneStatus:
     """Read-only operational status for a registered worker lane."""
 
@@ -2176,6 +2202,29 @@ def _progress_summary_task_refs(
                 "decomposed_child",
             )
 
+    followup_rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? "
+        "ORDER BY created_at ASC, id ASC",
+        (task_id, "worker_review_followups_planned"),
+    ).fetchall()
+    for row in followup_rows:
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else None
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict):
+            continue
+        review_task_id = payload.get("review_task_id")
+        test_task_id = payload.get("test_task_id")
+        add(
+            [review_task_id] if isinstance(review_task_id, str) else [],
+            "review_followup",
+        )
+        add(
+            [test_task_id] if isinstance(test_task_id, str) else [],
+            "test_followup",
+        )
+
     if not refs:
         add(parent_ids(conn, task_id), "dependency")
 
@@ -2389,6 +2438,224 @@ def _review_required_snapshot_for_decision(
     if snapshot.run is None or not snapshot.review_required:
         raise ValueError(f"task {task_id} has no review-required worker evidence")
     return snapshot
+
+
+def _metadata_text_lines(value: Any, *, limit: int = 20) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(v)[:400] for v in value[:limit]]
+    if isinstance(value, str) and value.strip():
+        return [line[:400] for line in value.strip().splitlines()[:limit]]
+    return []
+
+
+def _review_followup_body(
+    snapshot: TaskProgressSnapshot,
+    *,
+    purpose: str,
+) -> str:
+    evidence = snapshot.evidence or {}
+    worker_lane = evidence.get("worker_lane") if isinstance(evidence, dict) else {}
+    git_meta = evidence.get("git") if isinstance(evidence, dict) else {}
+    verification = evidence.get("verification") if isinstance(evidence, dict) else {}
+    review = evidence.get("review") if isinstance(evidence, dict) else {}
+    changed_files = (
+        git_meta.get("changed_files")
+        if isinstance(git_meta, dict)
+        else None
+    )
+    verification_commands = (
+        verification.get("commands")
+        if isinstance(verification, dict)
+        else None
+    )
+    worker_tail = (
+        worker_lane.get("output_tail")
+        if isinstance(worker_lane, dict)
+        else None
+    )
+    run = snapshot.run
+    lines = [
+        f"Independent {purpose} task for implementation Kanban task {snapshot.task.id}.",
+        "",
+        "Do not implement new feature work unless explicitly requested by the review/test findings.",
+        "Read the bounded evidence below, inspect the workspace/diff as needed, and write a structured verdict.",
+        "",
+        "## Source task",
+        f"- id: {snapshot.task.id}",
+        f"- title: {snapshot.task.title}",
+        f"- assignee: {snapshot.task.assignee or '-'}",
+        f"- status: {snapshot.task.status}",
+        f"- workspace: {snapshot.task.workspace_kind} @ {snapshot.task.workspace_path or '-'}",
+        f"- source_run_id: {run.id if run else '-'}",
+        "",
+        "## Worker lane evidence",
+        f"- lane: {worker_lane.get('name', '-') if isinstance(worker_lane, dict) else '-'}",
+        f"- kind: {worker_lane.get('kind', '-') if isinstance(worker_lane, dict) else '-'}",
+        f"- exit_code: {worker_lane.get('exit_code', '-') if isinstance(worker_lane, dict) else '-'}",
+        f"- timed_out: {worker_lane.get('timed_out', '-') if isinstance(worker_lane, dict) else '-'}",
+        f"- review_reason: {review.get('reason', '-') if isinstance(review, dict) else '-'}",
+        "",
+        "## Changed files",
+    ]
+    changed_lines = _metadata_text_lines(changed_files)
+    lines.extend([f"- {line}" for line in changed_lines] or ["- (none recorded)"])
+    lines.extend(["", "## Diff summary"])
+    diff_summary = (
+        git_meta.get("diff_summary")
+        if isinstance(git_meta, dict)
+        else None
+    )
+    lines.extend(_metadata_text_lines(diff_summary, limit=40) or ["(none recorded)"])
+    lines.extend(["", "## Verification evidence"])
+    lines.extend([f"- command: {line}" for line in _metadata_text_lines(verification_commands)] or ["- (none recorded)"])
+    verification_summary = (
+        verification.get("summary")
+        if isinstance(verification, dict)
+        else None
+    )
+    if verification_summary:
+        lines.extend(["", "### Verification summary"])
+        lines.extend(_metadata_text_lines(verification_summary, limit=40))
+    if worker_tail:
+        lines.extend(["", "## Worker output tail"])
+        lines.extend(_metadata_text_lines(worker_tail, limit=80))
+    if purpose == "review":
+        lines.extend([
+            "",
+            "## Required review output",
+            "Return findings grouped by file/hunk where possible.",
+            "State one verdict: approve, request_changes, or blocked.",
+            "Do not mark the implementation task done; Hermes will consume your evidence.",
+        ])
+    else:
+        lines.extend([
+            "",
+            "## Required test output",
+            "Run or define deterministic verification commands when possible.",
+            "State one verdict: pass, fail, or blocked.",
+            "Do not mark the implementation task done; Hermes will consume your evidence.",
+        ])
+    return "\n".join(lines)
+
+
+def _review_followup_event_payload(plan: ReviewFollowupPlan) -> dict[str, Any]:
+    return {
+        "source_run_id": plan.source_run_id,
+        "review_task_id": plan.review_task_id,
+        "test_task_id": plan.test_task_id,
+        "created": list(plan.created),
+        "existing": list(plan.existing),
+        "review_assignee": plan.review_assignee,
+        "test_assignee": plan.test_assignee,
+    }
+
+
+def plan_review_followups(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    review_assignee: Optional[str] = "codex-review",
+    test_assignee: Optional[str] = "codex-test",
+    include_review: bool = True,
+    include_test: bool = True,
+    created_by: str = "hermes-review-planner",
+    board: Optional[str] = None,
+) -> ReviewFollowupPlan:
+    """Create independent review/test worker tasks for implementation evidence.
+
+    The source task must be blocked with ``review.required`` metadata. This
+    helper is deterministic and idempotent per source run: repeated calls return
+    the same child task ids instead of duplicating review/test work.
+    """
+    snapshot = _review_required_snapshot_for_decision(conn, task_id)
+    assert snapshot.run is not None
+    source_run_id = snapshot.run.id
+    if not include_review and not include_test:
+        raise ValueError("at least one follow-up type must be requested")
+
+    review_name = _canonical_assignee(review_assignee) if review_assignee else None
+    test_name = _canonical_assignee(test_assignee) if test_assignee else None
+    if include_review and not review_name:
+        raise ValueError("review_assignee is required when include_review is true")
+    if include_test and not test_name:
+        raise ValueError("test_assignee is required when include_test is true")
+
+    created: list[str] = []
+    existing: list[str] = []
+    review_task_id: Optional[str] = None
+    test_task_id: Optional[str] = None
+
+    if include_review:
+        key = f"review-followup:{task_id}:{source_run_id}:review"
+        preexisting = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            "AND status != 'archived' ORDER BY created_at DESC LIMIT 1",
+            (key,),
+        ).fetchone()
+        review_task_id = create_task(
+            conn,
+            title=f"Review implementation evidence for {task_id}",
+            body=_review_followup_body(snapshot, purpose="review"),
+            assignee=review_name,
+            created_by=created_by,
+            workspace_kind=snapshot.task.workspace_kind,
+            workspace_path=snapshot.task.workspace_path,
+            tenant=snapshot.task.tenant,
+            priority=snapshot.task.priority,
+            idempotency_key=key,
+            board=board,
+        )
+        if preexisting:
+            existing.append(review_task_id)
+        else:
+            created.append(review_task_id)
+        link_tasks(conn, review_task_id, task_id)
+
+    if include_test:
+        key = f"review-followup:{task_id}:{source_run_id}:test"
+        preexisting = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            "AND status != 'archived' ORDER BY created_at DESC LIMIT 1",
+            (key,),
+        ).fetchone()
+        test_task_id = create_task(
+            conn,
+            title=f"Verify implementation evidence for {task_id}",
+            body=_review_followup_body(snapshot, purpose="test"),
+            assignee=test_name,
+            created_by=created_by,
+            workspace_kind=snapshot.task.workspace_kind,
+            workspace_path=snapshot.task.workspace_path,
+            tenant=snapshot.task.tenant,
+            priority=snapshot.task.priority,
+            idempotency_key=key,
+            board=board,
+        )
+        if preexisting:
+            existing.append(test_task_id)
+        else:
+            created.append(test_task_id)
+        link_tasks(conn, test_task_id, task_id)
+
+    plan = ReviewFollowupPlan(
+        source_task_id=task_id,
+        source_run_id=source_run_id,
+        review_task_id=review_task_id,
+        test_task_id=test_task_id,
+        created=created,
+        existing=existing,
+        review_assignee=review_name if include_review else None,
+        test_assignee=test_name if include_test else None,
+    )
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "worker_review_followups_planned",
+            _review_followup_event_payload(plan),
+            run_id=source_run_id,
+        )
+    return plan
 
 
 def _review_decision_metadata(

@@ -661,6 +661,14 @@ class ReviewTaskBody(BaseModel):
     summary: Optional[str] = None
 
 
+class PlanReviewBody(BaseModel):
+    review_assignee: Optional[str] = "codex-review"
+    test_assignee: Optional[str] = "codex-test"
+    include_review: bool = True
+    include_test: bool = True
+    created_by: Optional[str] = "hermes-review-planner"
+
+
 class WorkerLaneRequestBody(BaseModel):
     worker_lane_request: dict[str, Any] = Field(
         ...,
@@ -696,6 +704,36 @@ def review_task_evidence(
             status_code = 404 if msg.startswith("unknown task ") else 400
             raise HTTPException(status_code=status_code, detail=msg)
         return snapshot.to_dict()
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/plan-review")
+def plan_task_review_followups(
+    task_id: str,
+    payload: PlanReviewBody,
+    board: Optional[str] = Query(None),
+):
+    """Create independent review/test worker tasks for implementation evidence."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            plan = kanban_db.plan_review_followups(
+                conn,
+                task_id,
+                review_assignee=payload.review_assignee or "codex-review",
+                test_assignee=payload.test_assignee or "codex-test",
+                include_review=payload.include_review,
+                include_test=payload.include_test,
+                created_by=payload.created_by or "hermes-review-planner",
+                board=board,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = 404 if msg.startswith("unknown task ") else 400
+            raise HTTPException(status_code=status_code, detail=msg)
+        return plan.to_dict()
     finally:
         conn.close()
 

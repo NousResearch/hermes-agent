@@ -541,6 +541,54 @@ def _handle_review(args: dict, **kw) -> str:
         return tool_error(f"kanban_review: {e}")
 
 
+def _handle_plan_review(args: dict, **kw) -> str:
+    """Plan independent review/test worker tasks from implementation evidence."""
+    guard = _require_orchestrator_tool("kanban_plan_review")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    include_review, review_error = _parse_bool_arg(
+        args,
+        "include_review",
+        default=True,
+    )
+    if review_error:
+        return tool_error(review_error)
+    include_test, test_error = _parse_bool_arg(
+        args,
+        "include_test",
+        default=True,
+    )
+    if test_error:
+        return tool_error(test_error)
+    if not include_review and not include_test:
+        return tool_error("at least one of include_review/include_test must be true")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            plan = kb.plan_review_followups(
+                conn,
+                str(tid),
+                review_assignee=args.get("review_assignee") or "codex-review",
+                test_assignee=args.get("test_assignee") or "codex-test",
+                include_review=include_review,
+                include_test=include_test,
+                created_by=str(args.get("created_by") or "hermes-review-planner"),
+                board=board,
+            )
+            return json.dumps(plan.to_dict())
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_plan_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_plan_review failed")
+        return tool_error(f"kanban_plan_review: {e}")
+
+
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _default_task_id(args.get("task_id"))
@@ -1138,6 +1186,47 @@ KANBAN_REVIEW_SCHEMA = {
     },
 }
 
+KANBAN_PLAN_REVIEW_SCHEMA = {
+    "name": "kanban_plan_review",
+    "description": (
+        "Create independent review/test worker tasks from a review-required "
+        "implementation task's bounded evidence. Use this instead of having "
+        "Hermes directly judge large code diffs. Idempotent per source run. "
+        "Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Implementation task id currently blocked for review.",
+            },
+            "review_assignee": {
+                "type": "string",
+                "description": "Assignee/lane for the review worker. Default codex-review.",
+            },
+            "test_assignee": {
+                "type": "string",
+                "description": "Assignee/lane for the test worker. Default codex-test.",
+            },
+            "include_review": {
+                "type": "boolean",
+                "description": "Whether to create the review follow-up task. Default true.",
+            },
+            "include_test": {
+                "type": "boolean",
+                "description": "Whether to create the test follow-up task. Default true.",
+            },
+            "created_by": {
+                "type": "string",
+                "description": "created_by value for planned follow-up tasks.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
 KANBAN_COMPLETE_SCHEMA = {
     "name": "kanban_complete",
     "description": (
@@ -1531,6 +1620,15 @@ registry.register(
     handler=_handle_review,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="✅",
+)
+
+registry.register(
+    name="kanban_plan_review",
+    toolset="kanban",
+    schema=KANBAN_PLAN_REVIEW_SCHEMA,
+    handler=_handle_plan_review,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🧪",
 )
 
 registry.register(

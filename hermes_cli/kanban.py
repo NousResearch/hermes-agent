@@ -535,6 +535,31 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_review.add_argument("--json", action="store_true")
 
+    # --- plan-review ---
+    p_plan_review = sub.add_parser(
+        "plan-review",
+        help="Create independent review/test worker tasks from review-required evidence",
+    )
+    p_plan_review.add_argument("task_id")
+    p_plan_review.add_argument("--review-assignee", default="codex-review")
+    p_plan_review.add_argument("--test-assignee", default="codex-test")
+    p_plan_review.add_argument(
+        "--review-only",
+        action="store_true",
+        help="Create only the review follow-up task",
+    )
+    p_plan_review.add_argument(
+        "--test-only",
+        action="store_true",
+        help="Create only the test follow-up task",
+    )
+    p_plan_review.add_argument(
+        "--created-by",
+        default="hermes-review-planner",
+        help="created_by value for the follow-up tasks",
+    )
+    p_plan_review.add_argument("--json", action="store_true")
+
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
     p_assign.add_argument("task_id")
@@ -1040,6 +1065,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "progress": _cmd_progress,
         "reviews":  _cmd_reviews,
         "review":   _cmd_review,
+        "plan-review": _cmd_plan_review,
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
@@ -2075,6 +2101,43 @@ def _cmd_review(args: argparse.Namespace) -> int:
         print(f"Approved {args.task_id}; task is now {snapshot.task.status}")
     else:
         print(f"Requested changes for {args.task_id}; task is now {snapshot.task.status}")
+    return 0
+
+
+def _cmd_plan_review(args: argparse.Namespace) -> int:
+    review_only = bool(getattr(args, "review_only", False))
+    test_only = bool(getattr(args, "test_only", False))
+    if review_only and test_only:
+        print("kanban plan-review: pass at most one of --review-only/--test-only", file=sys.stderr)
+        return 2
+    try:
+        with kb.connect() as conn:
+            plan = kb.plan_review_followups(
+                conn,
+                args.task_id,
+                review_assignee=getattr(args, "review_assignee", None),
+                test_assignee=getattr(args, "test_assignee", None),
+                include_review=not test_only,
+                include_test=not review_only,
+                created_by=getattr(args, "created_by", None) or "hermes-review-planner",
+            )
+    except ValueError as exc:
+        print(f"kanban plan-review: {exc}", file=sys.stderr)
+        return 2
+    payload = plan.to_dict()
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    print(
+        f"Planned review follow-ups for {plan.source_task_id} "
+        f"(run {plan.source_run_id})"
+    )
+    if plan.review_task_id:
+        state = "existing" if plan.review_task_id in plan.existing else "created"
+        print(f"  review: {plan.review_task_id} @{plan.review_assignee} ({state})")
+    if plan.test_task_id:
+        state = "existing" if plan.test_task_id in plan.existing else "created"
+        print(f"  test:   {plan.test_task_id} @{plan.test_assignee} ({state})")
     return 0
 
 

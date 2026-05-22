@@ -385,6 +385,102 @@ def test_review_worker_evidence_request_changes_unblocks_with_comment(
     )
 
 
+def test_plan_review_followups_creates_independent_review_and_test_tasks(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {
+            "name": "codex-deep",
+            "kind": "codex_cli",
+            "exit_code": 0,
+            "timed_out": False,
+            "output_tail": (
+                "Progress:\n- [x] implement\n\n"
+                "Verification:\n- command: pytest -q\n  result: passed\n"
+            ),
+        },
+        "git": {
+            "status": " M hermes_cli/kanban_db.py",
+            "changed_files": ["hermes_cli/kanban_db.py"],
+            "diff_summary": " hermes_cli/kanban_db.py | 42 +++++",
+        },
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="implementation",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            tenant="tenant-a",
+            priority=7,
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        source_run_id = task.current_run_id
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=source_run_id,
+            metadata=metadata,
+        )
+
+        plan = kb.plan_review_followups(
+            conn,
+            tid,
+            review_assignee="codex-review",
+            test_assignee="codex-test",
+        )
+        review_task = kb.get_task(conn, plan.review_task_id)
+        test_task = kb.get_task(conn, plan.test_task_id)
+        parents = kb.parent_ids(conn, tid)
+        events = kb.list_events(conn, tid)
+        root_snapshot = kb.task_progress_snapshot(conn, tid, include_children=True)
+        repeated = kb.plan_review_followups(
+            conn,
+            tid,
+            review_assignee="codex-review",
+            test_assignee="codex-test",
+        )
+        all_tasks = kb.list_tasks(conn, limit=20)
+
+    assert plan.source_task_id == tid
+    assert plan.source_run_id == source_run_id
+    assert len(plan.created) == 2
+    assert plan.existing == []
+    assert review_task is not None
+    assert test_task is not None
+    assert review_task.status == "ready"
+    assert test_task.status == "ready"
+    assert review_task.assignee == "codex-review"
+    assert test_task.assignee == "codex-test"
+    assert review_task.workspace_path == str(tmp_path)
+    assert test_task.workspace_path == str(tmp_path)
+    assert review_task.tenant == "tenant-a"
+    assert test_task.priority == 7
+    assert "Review implementation evidence" in review_task.title
+    assert "Verify implementation evidence" in test_task.title
+    assert "hermes_cli/kanban_db.py" in review_task.body
+    assert "pytest -q" in test_task.body
+    assert "Required review output" in review_task.body
+    assert "Required test output" in test_task.body
+    assert set(parents) >= {plan.review_task_id, plan.test_task_id}
+    assert any(
+        event.kind == "worker_review_followups_planned"
+        and event.run_id == source_run_id
+        for event in events
+    )
+    assert root_snapshot.child_summary["total"] == 2
+    assert root_snapshot.child_summary["relationship_counts"]["review_followup"] == 1
+    assert root_snapshot.child_summary["relationship_counts"]["test_followup"] == 1
+    assert repeated.created == []
+    assert set(repeated.existing) == {plan.review_task_id, plan.test_task_id}
+    assert len([task for task in all_tasks if task.created_by == "hermes-review-planner"]) == 2
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"

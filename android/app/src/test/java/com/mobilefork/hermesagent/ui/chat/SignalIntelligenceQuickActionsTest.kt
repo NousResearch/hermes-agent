@@ -14,6 +14,7 @@ class SignalIntelligenceQuickActionsTest {
         assertEquals("agent_environment_report", actionsById.getValue("agent_environment").diagnosticAction)
         assertEquals("agent_observation_report", actionsById.getValue("agent_observation").diagnosticAction)
         assertEquals("soc_compatibility_report", actionsById.getValue("soc_compatibility").diagnosticAction)
+        assertEquals("gpu_backend_risk_report", actionsById.getValue("backend_risk").diagnosticAction)
         assertEquals("local_backend_runtime_report", actionsById.getValue("runtime_backend").diagnosticAction)
         assertEquals("wifi_analyzer_report", actionsById.getValue("wifi_analyzer").diagnosticAction)
         assertEquals("wifi_scan", actionsById.getValue("wifi_nearby").diagnosticAction)
@@ -24,6 +25,7 @@ class SignalIntelligenceQuickActionsTest {
         assertEquals("motion_sensor_history", actionsById.getValue("motion_history").diagnosticAction)
         assertEquals("radio_signal_graph", actionsById.getValue("radio_limits").diagnosticAction)
         assertEquals("Runtime Backend", actionsById.getValue("runtime_backend").label)
+        assertEquals("Backend Risk", actionsById.getValue("backend_risk").label)
         assertEquals("Agent Observation", actionsById.getValue("agent_observation").label)
         assertEquals("Radio Signals", actionsById.getValue("radio_limits").label)
         SIGNAL_INTELLIGENCE_QUICK_ACTIONS.forEach { action ->

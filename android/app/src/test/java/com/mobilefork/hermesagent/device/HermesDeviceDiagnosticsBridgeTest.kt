@@ -1036,6 +1036,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("sensor_analyzer_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("local_backend_runtime_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("device_performance_report"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("gpu_backend_risk_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_status"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_graph"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_analyzer_report"))
@@ -1143,6 +1144,50 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getInt("soc_backend_constraint_count") >= 5)
         assertTrue(result.getInt("runtime_backend_feature_count") >= 6)
         assertTrue(result.getInt("runtime_stability_feature_count") >= 6)
+    }
+
+    @Test
+    fun gpuBackendRiskReportExposesOperationalRiskMatrixAndRoutes() {
+        val result = HermesDeviceDiagnosticsBridge.gpuBackendRiskReportJson(context)
+        val risks = result.getJSONArray("gpu_backend_risk_matrix")
+        val routes = result.getJSONArray("gpu_backend_risk_routes")
+        val riskLabels = buildSet {
+            for (index in 0 until risks.length()) add(risks.getJSONObject(index).getString("label"))
+        }
+        val routeLabels = buildSet {
+            for (index in 0 until routes.length()) add(routes.getJSONObject(index).getString("label"))
+        }
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("gpu_backend_risk_report", result.getString("action"))
+        assertTrue(result.has("android_device_identity"))
+        assertTrue(result.has("soc_profile"))
+        assertTrue(result.has("device_performance_profile"))
+        assertTrue(result.has("preferred_local_model"))
+        assertTrue(result.has("current_local_backend"))
+        assertTrue(result.has("litert_runtime_health"))
+        assertTrue(result.has("gpu_backend_risk_level"))
+        assertTrue(result.has("gpu_backend_risk_score"))
+        assertTrue(riskLabels.contains("Live accelerator acceptance"))
+        assertTrue(riskLabels.contains("SOC/GPU policy coverage"))
+        assertTrue(riskLabels.contains("Thermal throttle risk"))
+        assertTrue(riskLabels.contains("Memory pressure risk"))
+        assertTrue(riskLabels.contains("Power saver and battery heat"))
+        assertTrue(riskLabels.contains("Model artifact fit"))
+        assertTrue(riskLabels.contains("Phone validation scope"))
+        assertTrue(risks.getJSONObject(0).has("risk_level"))
+        assertTrue(risks.getJSONObject(0).has("risk_score"))
+        assertTrue(risks.getJSONObject(0).has("mitigation"))
+        assertTrue(routes.toString().contains("gpu_backend_risk_report"))
+        assertTrue(routeLabels.contains("Route GPU backend risk triage"))
+        assertTrue(routeLabels.contains("Route live runtime health"))
+        assertTrue(routeLabels.contains("Route SOC and artifact policy"))
+        assertTrue(routeLabels.contains("Route stability guardrails"))
+        assertTrue(routeLabels.contains("Route phone workflow preflight"))
+        assertTrue(result.getJSONArray("cards").toString().contains("GPU Backend Risk"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Backend Risk Routes"))
+        assertTrue(result.getInt("gpu_backend_risk_count") >= 8)
+        assertTrue(result.getInt("gpu_backend_risk_route_count") >= 5)
     }
 
     @Test

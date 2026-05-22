@@ -40,6 +40,13 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
         iconRes = R.drawable.ic_nav_device,
     ),
     SignalIntelligenceQuickAction(
+        id = "backend_risk",
+        label = "Backend Risk",
+        diagnosticAction = "gpu_backend_risk_report",
+        prompt = "Run android_device_diagnostics_tool action=gpu_backend_risk_report",
+        iconRes = R.drawable.ic_action_cog,
+    ),
+    SignalIntelligenceQuickAction(
         id = "runtime_backend",
         label = "Runtime Backend",
         diagnosticAction = "local_backend_runtime_report",

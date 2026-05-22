@@ -1255,6 +1255,44 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesGpuBackendRiskRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "GPU Backend Risk")
+                        .put("body", "Risk rows.")
+                        .put("graph_type", "gpu_backend_risk_matrix")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("category", "gpu_backend_risk")
+                                    .put("label", "Live accelerator acceptance")
+                                    .put("ready", true)
+                                    .put("value_label", "gpu")
+                                    .put("detail", "GPU accepted on MediaTek/Mali.")
+                                    .put("recommendation", "Use local_backend_runtime_report.")
+                                    .put("risk_level", "low")
+                                    .put("risk_score", 10)
+                                    .put("fraction", 0.9),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("Live accelerator acceptance", row.label)
+        assertEquals("gpu", row.valueLabel)
+        assertTrue(row.detail.contains("gpu backend risk"))
+        assertTrue(row.detail.contains("Use local_backend_runtime_report"))
+        assertTrue(row.fraction > 0.85f)
+    }
+
+    @Test
     fun parsesRuntimeBackendRowsForExpandableCards() {
         val content = JSONObject()
             .put(

@@ -93,6 +93,16 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsExplicitGpuBackendRiskDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=gpu_backend_risk_report",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("gpu_backend_risk_report", parsed.getString("action"))
+    }
+
+    @Test
     fun extractsExplicitLocalBackendRuntimeDiagnosticQuickActionArguments() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=local_backend_runtime_report",
@@ -758,6 +768,67 @@ class NativeToolCallingChatClientTest {
         assertEquals("soc_compatibility_report", backendMatrix.getJSONArray("items").getJSONObject(0).getString("tool_action"))
         assertEquals("Route SOC compatibility report", routes.getJSONObject(0).getString("label"))
         assertEquals("Avoid Adreno-only assumptions", constraints.getJSONObject(0).getString("label"))
+    }
+
+    @Test
+    fun compactsGpuBackendRiskReportWithoutDroppingRiskRows() {
+        val risks = JSONArray()
+        repeat(18) { index ->
+            risks.put(
+                JSONObject()
+                    .put("category", "gpu_backend_risk")
+                    .put("label", if (index == 0) "Live accelerator acceptance" else "GPU risk row $index")
+                    .put("ready", index < 8)
+                    .put("value_label", if (index == 0) "gpu" else "risk value $index")
+                    .put("detail", "Detailed GPU backend risk row $index with MediaTek Mali fallback context.")
+                    .put("recommendation", "Use gpu_backend_risk_report before changing local inference policy.")
+                    .put("risk_level", if (index == 0) "low" else "moderate")
+                    .put("risk_score", if (index == 0) 10 else 45)
+                    .put("runtime_signal", "accelerator_acceptance")
+                    .put("mitigation", "CPU fallback is available.")
+                    .put("tool_action", "local_backend_runtime_report"),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "gpu_backend_risk_report")
+            .put("gpu_backend_risk_count", 18)
+            .put("high_gpu_backend_risk_count", 0)
+            .put("ready_gpu_backend_risk_count", 8)
+            .put("gpu_backend_risk_route_count", 1)
+            .put("gpu_backend_risk_level", "moderate")
+            .put("gpu_backend_risk_score", 45)
+            .put("gpu_backend_risk_matrix", risks)
+            .put(
+                "gpu_backend_risk_routes",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "gpu_backend_risk_route")
+                        .put("label", "Route GPU backend risk triage")
+                        .put("ready", true)
+                        .put("value_label", "gpu_backend_risk_report")
+                        .put("tool_action", "gpu_backend_risk_report"),
+                ),
+            )
+            .put("cards", JSONArray().put(JSONObject().put("title", "GPU Backend Risk").put("body", "18 rows")))
+            .toString()
+
+        val parsed = JSONObject(NativeToolContextCompressor.compactToolResult(result))
+        val riskMatrix = parsed.getJSONObject("gpu_backend_risk_matrix")
+        val routes = parsed.getJSONArray("gpu_backend_risk_routes")
+        val first = riskMatrix.getJSONArray("items").getJSONObject(0)
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(18, parsed.getInt("gpu_backend_risk_count"))
+        assertEquals("moderate", parsed.getString("gpu_backend_risk_level"))
+        assertEquals(45, parsed.getInt("gpu_backend_risk_score"))
+        assertEquals("array", riskMatrix.getString("type"))
+        assertEquals("Live accelerator acceptance", first.getString("label"))
+        assertEquals("low", first.getString("risk_level"))
+        assertEquals(10, first.getInt("risk_score"))
+        assertEquals("accelerator_acceptance", first.getString("runtime_signal"))
+        assertEquals("local_backend_runtime_report", first.getString("tool_action"))
+        assertEquals("Route GPU backend risk triage", routes.getJSONObject(0).getString("label"))
     }
 
     @Test

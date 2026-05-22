@@ -113,6 +113,8 @@ object HermesDeviceDiagnosticsBridge {
                 localBackendRuntimeReportJson(appContext).toString()
             "soc_compatibility_report", "soc_backend_report", "mediatek_compatibility_report", "litert_backend_report", "gpu_backend_report" ->
                 socCompatibilityReportJson(appContext).toString()
+            "gpu_backend_risk_report", "backend_risk_report", "accelerator_risk_report", "mediatek_backend_risk_report", "non_adreno_backend_risk_report" ->
+                gpuBackendRiskReportJson(appContext).toString()
             "device_performance_report", "thermal_status_report", "runtime_stability_report", "mediatek_stability_report", "power_stability_report" ->
                 devicePerformanceReportJson(appContext).toString()
             "signal_awareness_report", "nearby_signal_report", "rf_sensor_fusion_report", "ambient_context_report" ->
@@ -1622,6 +1624,70 @@ object HermesDeviceDiagnosticsBridge {
                             body = "${stabilityRows.length()} stability row(s) for throttling, low-RAM, battery, power saver, and Android media performance class on MediaTek/non-Adreno devices.",
                             graphType = "runtime_stability_matrix",
                             rows = stabilityRows,
+                        ),
+                    ),
+            )
+    }
+
+    fun gpuBackendRiskReportJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val socProfile = socProfileJson()
+        val performanceProfile = devicePerformanceProfileJson(appContext)
+        val preferredModel = preferredLocalModelJson(appContext)
+        val settings = AppSettingsStore(appContext).load()
+        val selectedBackend = BackendKind.fromPersistedValue(settings.onDeviceBackend)
+        val currentBackend = OnDeviceBackendManager.currentStatus()
+        val runtimeHealth = liteRtRuntimeHealthJson()
+        val deviceIdentity = deviceIdentityJson()
+        val riskRows = gpuBackendRiskMatrixRows(
+            socProfile = socProfile,
+            performanceProfile = performanceProfile,
+            runtimeHealth = runtimeHealth,
+            currentBackend = currentBackend,
+            preferredModel = preferredModel,
+            selectedBackend = selectedBackend,
+            offlineAirplaneMode = settings.offlineAirplaneMode,
+            deviceIdentity = deviceIdentity,
+        )
+        val routeRows = gpuBackendRiskRouteRows()
+        val maxRiskScore = maxRiskScore(riskRows)
+        return JSONObject()
+            .put("success", true)
+            .put("action", "gpu_backend_risk_report")
+            .put("report_scope", "Operational GPU/backend risk matrix for MediaTek, Mali, PowerVR/IMG, Xclipse, Adreno, Tensor, Exynos, Unisoc, and CPU fallback decisions.")
+            .put("android_device_identity", deviceIdentity)
+            .put("soc_profile", socProfile)
+            .put("device_performance_profile", performanceProfile)
+            .put("preferred_local_model", preferredModel)
+            .put("selected_on_device_backend", selectedBackend.persistedValue)
+            .put("offline_airplane_mode", settings.offlineAirplaneMode)
+            .put("current_local_backend", localBackendStatusJson(currentBackend))
+            .put("litert_runtime_health", runtimeHealth)
+            .put("gpu_backend_risk_level", riskLevelForScore(maxRiskScore))
+            .put("gpu_backend_risk_score", maxRiskScore)
+            .put("gpu_backend_risk_matrix", riskRows)
+            .put("gpu_backend_risk_routes", routeRows)
+            .put("gpu_backend_risk_count", riskRows.length())
+            .put("high_gpu_backend_risk_count", countHighRiskRows(riskRows))
+            .put("ready_gpu_backend_risk_count", countReadyRows(riskRows))
+            .put("gpu_backend_risk_route_count", routeRows.length())
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "GPU Backend Risk",
+                            body = "${riskRows.length()} accelerator, SOC/GPU, thermal, memory, power, model, and validation-scope risk row(s) for non-Adreno local inference.",
+                            graphType = "gpu_backend_risk_matrix",
+                            rows = riskRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Backend Risk Routes",
+                            body = "${routeRows.length()} route row(s) for moving from risk triage into runtime, SOC, stability, or phone preflight diagnostics.",
+                            graphType = "gpu_backend_risk_routes",
+                            rows = routeRows,
                         ),
                     ),
             )
@@ -5450,6 +5516,309 @@ object HermesDeviceDiagnosticsBridge {
             .put("battery_plugged_label", batteryPluggedLabel(plugged))
             .put("battery_level_percent", percent ?: JSONObject.NULL)
             .put("battery_temperature_celsius", temperatureCelsius ?: JSONObject.NULL)
+    }
+
+    private fun gpuBackendRiskMatrixRows(
+        socProfile: JSONObject,
+        performanceProfile: JSONObject,
+        runtimeHealth: JSONObject,
+        currentBackend: LocalBackendStatus,
+        preferredModel: JSONObject,
+        selectedBackend: BackendKind,
+        offlineAirplaneMode: Boolean,
+        deviceIdentity: JSONObject,
+    ): JSONArray {
+        val healthAvailable = runtimeHealth.optString("status") == "ok" || runtimeHealth.optBoolean("available", false)
+        val accelerator = runtimeHealth.optString("accelerator").takeIf { it.isNotBlank() && it != "null" } ?: "not running"
+        val fallbackToCpu = runtimeHealth.optBoolean("gpu_fallback_to_cpu", false)
+        val selectedLocalBackend = selectedBackend != BackendKind.NONE
+        val supportsArm = socProfile.optBoolean("supports_arm64", false) || socProfile.optBoolean("supports_arm", false)
+        val supportsX86 = socProfile.optBoolean("supports_x86_64", false) || socProfile.optBoolean("supports_x86", false)
+        val thermalStatus = performanceProfile.optInt("thermal_status", THERMAL_STATUS_UNSUPPORTED)
+        val lowRam = performanceProfile.optBoolean("low_ram_device", false)
+        val memoryPressureLow = performanceProfile.optBoolean("memory_pressure_low", false)
+        val memoryClass = performanceProfile.optInt("memory_class_mb", 0)
+        val powerSaveMode = performanceProfile.optBoolean("power_save_mode", false)
+        val batteryTemperature = performanceProfile.optDouble("battery_temperature_celsius", Double.NaN)
+        val batteryHot = !batteryTemperature.isNaN() && batteryTemperature >= 45.0
+        val preferredModelReady = preferredModel.optBoolean("ready", false)
+        val likelyEmulator = deviceIdentity.optBoolean("likely_emulator", false)
+        val liveAcceleratorRisk = when {
+            healthAvailable && accelerator == "gpu" && !fallbackToCpu -> 10
+            healthAvailable && fallbackToCpu -> 45
+            healthAvailable && accelerator == "cpu" -> 40
+            currentBackend.started && !healthAvailable -> 50
+            selectedLocalBackend -> 35
+            else -> 20
+        }
+        val socPolicyRisk = when {
+            supportsArm -> 15
+            supportsX86 -> 45
+            else -> 35
+        }
+        val thermalRisk = when {
+            thermalStatus == THERMAL_STATUS_UNSUPPORTED -> 25
+            thermalStatus >= PowerManager.THERMAL_STATUS_CRITICAL -> 90
+            thermalStatus >= PowerManager.THERMAL_STATUS_SEVERE -> 70
+            thermalStatus == PowerManager.THERMAL_STATUS_MODERATE -> 45
+            else -> 15
+        }
+        val memoryRisk = when {
+            memoryPressureLow -> 80
+            lowRam -> 65
+            memoryClass in 1 until 128 -> 55
+            memoryClass in 128 until 192 -> 35
+            else -> 20
+        }
+        val powerRisk = when {
+            batteryHot && powerSaveMode -> 80
+            batteryHot -> 65
+            powerSaveMode -> 45
+            else -> 20
+        }
+        val modelRisk = when {
+            selectedLocalBackend && !preferredModelReady -> 55
+            !preferredModelReady -> 35
+            else -> 15
+        }
+        val validationRisk = if (likelyEmulator) 55 else 15
+        return JSONArray()
+            .put(
+                gpuRiskRow(
+                    label = "Live accelerator acceptance",
+                    ready = liveAcceleratorRisk < 60,
+                    valueLabel = if (healthAvailable) accelerator else if (currentBackend.started) "health unavailable" else "runtime not started",
+                    detail = listOf(
+                        "selected=${selectedBackend.persistedValue}",
+                        "started=${currentBackend.started}",
+                        "gpu_policy=${runtimeHealth.optString("gpu_policy").ifBlank { "unavailable" }}",
+                        "opencl=${runtimeHealth.opt("opencl_available") ?: JSONObject.NULL}",
+                        "fallback_to_cpu=$fallbackToCpu",
+                    ).joinToString(" | "),
+                    recommendation = "Read this row before promising GPU acceleration; CPU fallback is a valid mitigation when the delegate is rejected.",
+                    riskScore = liveAcceleratorRisk,
+                    extra = JSONObject()
+                        .put("source_surface", "/health")
+                        .put("runtime_signal", "accelerator_acceptance")
+                        .put("tool_action", "local_backend_runtime_report"),
+                ),
+            )
+            .put(
+                gpuRiskRow(
+                    label = "SOC/GPU policy coverage",
+                    ready = true,
+                    valueLabel = "${socProfile.optString("soc_family_label").ifBlank { "Android SOC" }} / ${socProfile.optString("gpu_family_label").ifBlank { "unknown GPU" }}",
+                    detail = listOf(
+                        "soc=${socProfile.optString("soc_family").ifBlank { "unknown" }}",
+                        "gpu=${socProfile.optString("gpu_family_hint").ifBlank { "unknown" }}",
+                        "arm=$supportsArm",
+                        "x86=$supportsX86",
+                    ).joinToString(" | "),
+                    recommendation = "Treat MediaTek/Mali/Immortalis/PowerVR/Xclipse as covered policy paths that still require live accelerator probing.",
+                    riskScore = socPolicyRisk,
+                    extra = JSONObject()
+                        .put("source_surface", "soc_profile")
+                        .put("runtime_signal", "soc_gpu_policy")
+                        .put("tool_action", "soc_compatibility_report"),
+                ),
+            )
+            .put(
+                gpuRiskRow(
+                    label = "Thermal throttle risk",
+                    ready = thermalRisk < 60,
+                    valueLabel = performanceProfile.optString("thermal_throttling_risk").ifBlank { "unknown" },
+                    detail = "thermal=${performanceProfile.optString("thermal_status_label").ifBlank { "unknown" }} | api=${performanceProfile.optBoolean("thermal_api_supported", false)}",
+                    recommendation = "Reduce model size, response length, scan cadence, or GPU-heavy bursts when thermal risk rises.",
+                    riskScore = thermalRisk,
+                    extra = JSONObject()
+                        .put("source_surface", "PowerManager.currentThermalStatus")
+                        .put("runtime_signal", "thermal"),
+                ),
+            )
+            .put(
+                gpuRiskRow(
+                    label = "Memory pressure risk",
+                    ready = memoryRisk < 60,
+                    valueLabel = "${memoryClass}MB app class",
+                    detail = "low_ram=$lowRam | pressure_low=$memoryPressureLow | available=${performanceProfile.optString("available_memory_label").ifBlank { "unknown" }} | threshold=${performanceProfile.optString("memory_threshold_label").ifBlank { "unknown" }}",
+                    recommendation = "Use smaller local models, shorter context, or CPU fallback when low-RAM or pressure flags are active.",
+                    riskScore = memoryRisk,
+                    extra = JSONObject()
+                        .put("source_surface", "ActivityManager.MemoryInfo")
+                        .put("runtime_signal", "memory_pressure"),
+                ),
+            )
+            .put(
+                gpuRiskRow(
+                    label = "Power saver and battery heat",
+                    ready = powerRisk < 60,
+                    valueLabel = if (powerSaveMode) "power saver" else "normal power",
+                    detail = "plugged=${performanceProfile.optString("battery_plugged_label").ifBlank { "unknown" }} | temp_c=${performanceProfile.opt("battery_temperature_celsius") ?: JSONObject.NULL} | level=${performanceProfile.opt("battery_level_percent") ?: JSONObject.NULL}",
+                    recommendation = "Avoid repeated active scans or long GPU runs when battery heat or power saver is active.",
+                    riskScore = powerRisk,
+                    extra = JSONObject()
+                        .put("source_surface", "PowerManager and battery state")
+                        .put("runtime_signal", "power_battery"),
+                ),
+            )
+            .put(
+                gpuRiskRow(
+                    label = "Model artifact fit",
+                    ready = modelRisk < 60,
+                    valueLabel = preferredModel.optString("runtime_flavor").ifBlank { "model import needed" },
+                    detail = listOf(
+                        preferredModel.optString("title").ifBlank { "no preferred model" },
+                        preferredModel.optString("destination_file_name").ifBlank { "no file" },
+                        preferredModel.optString("record_status").ifBlank { "no record" },
+                        "file_exists=${preferredModel.optBoolean("file_exists", false)}",
+                    ).joinToString(" | "),
+                    recommendation = "Confirm the preferred model matches the selected backend before treating GPU/SOC state as the blocker.",
+                    riskScore = modelRisk,
+                    extra = JSONObject()
+                        .put("source_surface", "preferred_local_model")
+                        .put("runtime_signal", "model_artifact")
+                        .put("tool_action", "soc_compatibility_report"),
+                ),
+            )
+            .put(
+                gpuRiskRow(
+                    label = "Phone validation scope",
+                    ready = validationRisk < 60,
+                    valueLabel = if (likelyEmulator) "emulator evidence" else "phone evidence",
+                    detail = "likely_emulator=$likelyEmulator | primary_abi=${socProfile.optString("primary_abi").ifBlank { "unknown" }} | offline_airplane_mode=$offlineAirplaneMode",
+                    recommendation = "Treat x86/emulator success as UI and CPU fallback coverage; validate ARM phone behavior before claiming GPU compatibility is fully green.",
+                    riskScore = validationRisk,
+                    extra = JSONObject()
+                        .put("constraint_type", "validation_scope")
+                        .put("runtime_signal", "phone_validation"),
+                ),
+            )
+            .put(
+                gpuRiskRow(
+                    label = "Fallback action route",
+                    ready = true,
+                    valueLabel = "triage available",
+                    detail = "Use runtime, SOC, stability, and preflight reports together before changing backend or model policy.",
+                    recommendation = "Route follow-up through gpu_backend_risk_report, local_backend_runtime_report, soc_compatibility_report, and device_performance_report.",
+                    riskScore = 15,
+                    extra = JSONObject()
+                        .put("tool_action", "gpu_backend_risk_report")
+                        .put("runtime_signal", "triage_route"),
+                ),
+            )
+    }
+
+    private fun gpuBackendRiskRouteRows(): JSONArray {
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "gpu_backend_risk_route",
+                    label = "Route GPU backend risk triage",
+                    ready = true,
+                    valueLabel = "gpu_backend_risk_report",
+                    detail = "Use when a user asks if local inference will be stable on MediaTek, Mali, PowerVR, or another non-Adreno phone.",
+                    recommendation = "Start with this matrix, then drill into runtime health, SOC policy, or phone preflight rows.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("tool_action", "gpu_backend_risk_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "gpu_backend_risk_route",
+                    label = "Route live runtime health",
+                    ready = true,
+                    valueLabel = "local_backend_runtime_report",
+                    detail = "Use for selected backend, current local runtime state, /health accelerator, GPU policy, and modality support.",
+                    recommendation = "Run when the risk row says the runtime is started or GPU fallback status is ambiguous.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "local_backend_runtime_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "gpu_backend_risk_route",
+                    label = "Route SOC and artifact policy",
+                    ready = true,
+                    valueLabel = "soc_compatibility_report",
+                    detail = "Use for SOC/GPU identity, ABI selection, LiteRT-LM artifact matching, and Adreno-only assumption checks.",
+                    recommendation = "Run when the question is about device family compatibility rather than current runtime pressure.",
+                    fraction = 0.88f,
+                    extra = JSONObject().put("tool_action", "soc_compatibility_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "gpu_backend_risk_route",
+                    label = "Route stability guardrails",
+                    ready = true,
+                    valueLabel = "device_performance_report",
+                    detail = "Use for thermal, low-RAM, power saver, battery heat, and media performance class rows.",
+                    recommendation = "Run before repeated scans, long local model calls, or multimodal local inference.",
+                    fraction = 0.86f,
+                    extra = JSONObject().put("tool_action", "device_performance_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "gpu_backend_risk_route",
+                    label = "Route phone workflow preflight",
+                    ready = true,
+                    valueLabel = "social_gmail_goal_preflight",
+                    detail = "Use when backend risk must be combined with installed apps, accessibility state, permissions, and preferred model readiness.",
+                    recommendation = "Use this route before end-to-end TikTok, Instagram, or Gmail phone workflows.",
+                    fraction = 0.82f,
+                    extra = JSONObject().put("tool_action", "social_gmail_goal_preflight"),
+                ),
+            )
+    }
+
+    private fun gpuRiskRow(
+        label: String,
+        ready: Boolean,
+        valueLabel: String,
+        detail: String,
+        recommendation: String,
+        riskScore: Int,
+        extra: JSONObject = JSONObject(),
+    ): JSONObject {
+        val normalizedScore = riskScore.coerceIn(0, 100)
+        return capabilityRow(
+            category = "gpu_backend_risk",
+            label = label,
+            ready = ready,
+            valueLabel = valueLabel,
+            detail = detail,
+            recommendation = recommendation,
+            fraction = ((100 - normalizedScore) / 100f).coerceIn(0.05f, 1f),
+            extra = extra
+                .put("risk_score", normalizedScore)
+                .put("risk_level", riskLevelForScore(normalizedScore))
+                .put("mitigation", recommendation),
+        )
+    }
+
+    private fun riskLevelForScore(score: Int): String = when {
+        score >= 85 -> "critical"
+        score >= 60 -> "high"
+        score >= 35 -> "moderate"
+        else -> "low"
+    }
+
+    private fun maxRiskScore(rows: JSONArray): Int {
+        var maxScore = 0
+        for (index in 0 until rows.length()) {
+            maxScore = maxOf(maxScore, rows.optJSONObject(index)?.optInt("risk_score", 0) ?: 0)
+        }
+        return maxScore
+    }
+
+    private fun countHighRiskRows(rows: JSONArray): Int {
+        var count = 0
+        for (index in 0 until rows.length()) {
+            val level = rows.optJSONObject(index)?.optString("risk_level").orEmpty()
+            if (level == "high" || level == "critical") count += 1
+        }
+        return count
     }
 
     private fun devicePerformanceMatrixRows(profile: JSONObject, socProfile: JSONObject): JSONArray {
@@ -9984,6 +10353,7 @@ object HermesDeviceDiagnosticsBridge {
         "signal_capability_status",
         "local_backend_runtime_report",
         "soc_compatibility_report",
+        "gpu_backend_risk_report",
         "device_performance_report",
         "signal_awareness_report",
         "agent_observation_report",

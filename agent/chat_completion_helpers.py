@@ -705,7 +705,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         current_provider = (getattr(agent, "provider", "") or "").strip().lower()
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-            agent._rate_limited_until = time.monotonic() + 60
+            # Exponential backoff: 30min → 1h → 2h → 4h cap
+            # Counter is reset by restore_primary_runtime on successful restore.
+            backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
+            agent._rate_limit_backoff_count = backoff_count + 1
+            backoff_seconds = min(1800 * (2 ** backoff_count), 14400)
+            agent._rate_limited_until = time.monotonic() + backoff_seconds
+            logging.info(
+                "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d)",
+                backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1,
+            )
     if agent._fallback_index >= len(agent._fallback_chain):
         return False
 

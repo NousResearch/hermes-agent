@@ -98,13 +98,18 @@ class TestSendblueSignatureVerification:
         adapter = _make_adapter(monkeypatch, webhook_secret="abc123")
         assert adapter._verify_signature("") is False
 
-    def test_no_secret_configured_passes_any_header(self, monkeypatch):
-        # _make_adapter sets SENDBLUE_WEBHOOK_SECRET env var, and the adapter's
-        # `webhook_secret or os.getenv(...)` fallback means passing
-        # extra={"webhook_secret": ""} falls through to the env var. Mutate
-        # post-construction to test the "no secret configured" branch.
+    def test_no_secret_configured_fails_closed(self, monkeypatch):
+        # Default behavior: missing secret rejects every webhook.
         adapter = _make_adapter(monkeypatch)
         adapter.webhook_secret = ""
+        assert adapter.disable_signature_check is False
+        assert adapter._verify_signature("whatever") is False
+
+    def test_no_secret_with_explicit_disable_passes(self, monkeypatch):
+        # Operator opt-in: disable_signature_check=True bypasses verification.
+        adapter = _make_adapter(monkeypatch)
+        adapter.webhook_secret = ""
+        adapter.disable_signature_check = True
         assert adapter._verify_signature("whatever") is True
 
     def test_uses_constant_time_compare(self, monkeypatch):
@@ -1831,3 +1836,155 @@ class TestSendbluePollingLoop:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert call_count >= 1
+
+
+class TestSendblueConfigLoading:
+    """Env-var precedence + canonical-key/alias handling.
+
+    Targets the `_apply_env_overrides` blank-out trap (env vars take
+    precedence over `extra` when present), and the auto_mark_read /
+    send_read_receipts alias resolution. These are the config gotchas
+    most likely to bite operators.
+    """
+
+    def test_extra_takes_precedence_over_env_when_both_set(self, monkeypatch):
+        from gateway.platforms.sendblue import SendblueAdapter
+        monkeypatch.setenv("SENDBLUE_API_KEY_ID", "env-key")
+        monkeypatch.setenv("SENDBLUE_API_SECRET", "env-secret")
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"api_key_id": "extra-key", "api_secret": "extra-secret"},
+        )
+        adapter = SendblueAdapter(cfg)
+        assert adapter.api_key_id == "extra-key"
+        assert adapter.api_secret == "extra-secret"
+
+    def test_env_used_when_extra_missing(self, monkeypatch):
+        from gateway.platforms.sendblue import SendblueAdapter
+        monkeypatch.setenv("SENDBLUE_API_KEY_ID", "env-key")
+        monkeypatch.setenv("SENDBLUE_API_SECRET", "env-secret")
+        monkeypatch.setenv("SENDBLUE_NUMBER", "+15555550199")
+        cfg = PlatformConfig(enabled=True, extra={})
+        adapter = SendblueAdapter(cfg)
+        assert adapter.api_key_id == "env-key"
+        assert adapter.api_secret == "env-secret"
+        assert adapter.sendblue_number == "+15555550199"
+
+    def test_auto_mark_read_canonical_key_wins(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            auto_mark_read=False,
+            send_read_receipts=True,
+        )
+        assert adapter.auto_mark_read is False
+        assert adapter.send_read_receipts is False
+
+    def test_send_read_receipts_alias_when_canonical_missing(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        assert adapter.auto_mark_read is False
+        assert adapter.send_read_receipts is False
+
+    def test_auto_mark_read_defaults_true(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.auto_mark_read is True
+        assert adapter.send_read_receipts is True
+
+    def test_disable_signature_check_defaults_false(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.disable_signature_check is False
+
+    def test_disable_signature_check_from_env(self, monkeypatch):
+        monkeypatch.setenv("SENDBLUE_DISABLE_SIGNATURE_CHECK", "true")
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.disable_signature_check is True
+
+    def test_polling_interval_floor_enforced(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, polling_interval_seconds=1)
+        assert adapter.polling_interval_seconds == 10
+
+    def test_webhook_path_normalized_to_leading_slash(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_path="sendblue/hook")
+        assert adapter.webhook_path == "/sendblue/hook"
+
+
+class TestSendblueConnectLifecycle:
+    """Connect/disconnect preconditions and polling-task lifecycle.
+
+    Covers the silent-startup failure modes: missing credentials,
+    polling task not spawned/cancelled cleanly. These would otherwise
+    surface only as "inbound is dead but service started green."
+    """
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_without_credentials(self, monkeypatch):
+        from gateway.platforms.sendblue import SendblueAdapter
+        cfg = PlatformConfig(enabled=True, extra={})
+        adapter = SendblueAdapter(cfg)
+        assert await adapter.connect() is False
+
+    @staticmethod
+    def _patch_connect_io(monkeypatch, adapter):
+        """Stub the IO inside connect() so the test stays hermetic."""
+        adapter._sendblue_api_get = AsyncMock(return_value=(200, {"webhooks": []}))
+        adapter._register_webhook = AsyncMock(return_value=True)
+        adapter._unregister_webhook = AsyncMock(return_value=True)
+
+        class _NoOpRunner:
+            async def setup(self):
+                pass
+
+            async def cleanup(self):
+                pass
+
+        class _NoOpSite:
+            def __init__(self, *_a, **_kw):
+                pass
+
+            async def start(self):
+                pass
+
+        import aiohttp.web as _web
+        monkeypatch.setattr(_web, "AppRunner", lambda *_a, **_kw: _NoOpRunner())
+        monkeypatch.setattr(_web, "TCPSite", _NoOpSite)
+
+    @pytest.mark.asyncio
+    async def test_polling_task_spawned_when_enabled(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch, polling_enabled=True, polling_interval_seconds=60,
+        )
+        self._patch_connect_io(monkeypatch, adapter)
+        adapter._poll_messages_once = AsyncMock(return_value=0)
+
+        try:
+            assert await adapter.connect() is True
+            assert adapter._polling_task is not None
+            assert not adapter._polling_task.done()
+        finally:
+            await adapter.disconnect()
+            assert adapter._polling_task is None
+
+    @pytest.mark.asyncio
+    async def test_polling_task_not_spawned_when_disabled(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, polling_enabled=False)
+        self._patch_connect_io(monkeypatch, adapter)
+
+        try:
+            assert await adapter.connect() is True
+            assert adapter._polling_task is None
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_running_polling_task(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch, polling_enabled=True, polling_interval_seconds=60,
+        )
+        adapter._poll_messages_once = AsyncMock(return_value=0)
+        adapter._unregister_webhook = AsyncMock(return_value=True)
+
+        adapter._polling_task = asyncio.create_task(adapter._polling_loop())
+        await asyncio.sleep(0)  # let loop start
+        assert not adapter._polling_task.done()
+
+        await adapter.disconnect()
+        assert adapter._polling_task is None

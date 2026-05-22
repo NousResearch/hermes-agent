@@ -1832,6 +1832,7 @@ async def _send_sendblue(extra, chat_id, message):
     """Send via Sendblue API. Standalone — bypasses adapter.connect() to
     avoid binding the webhook port already held by the live gateway."""
     try:
+        import httpx
         from gateway.platforms.sendblue import SendblueAdapter
         from gateway.config import PlatformConfig
         from gateway.platforms._http_client_limits import platform_httpx_limits

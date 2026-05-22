@@ -10,8 +10,6 @@ carrier-side fallbacks. Features that are iMessage-only (read
 receipts, typing indicators, tapback reactions, send effects) are
 gated on the inbound ``service`` field — calls are skipped cleanly
 for SMS/RCS deliveries.
-
-Architecture pattern modeled on bluebubbles.py.
 """
 
 import asyncio
@@ -163,14 +161,19 @@ class SendblueAdapter(BasePlatformAdapter):
         self.webhook_secret = (
             extra.get("webhook_secret") or os.getenv("SENDBLUE_WEBHOOK_SECRET", "")
         )
-        # auto_mark_read is the canonical config key; send_read_receipts is
-        # accepted as a back-compat alias (older configs and the upstream
-        # PR thread both use it).
+        # Fail-closed by default: a missing secret rejects every webhook.
+        # Operators that genuinely want unauthenticated ingress (testing,
+        # private networks) must opt in explicitly via this flag.
+        self.disable_signature_check = bool(
+            extra.get("disable_signature_check", False)
+            or os.getenv("SENDBLUE_DISABLE_SIGNATURE_CHECK", "").lower()
+            in {"true", "1", "yes"}
+        )
+        # auto_mark_read is the canonical key; send_read_receipts is a
+        # back-compat alias kept in sync to avoid touching every gate site.
         self.auto_mark_read = bool(
             extra.get("auto_mark_read", extra.get("send_read_receipts", True))
         )
-        # Internal references still use send_read_receipts to avoid touching
-        # every gate site; keep them in sync.
         self.send_read_receipts = self.auto_mark_read
         self.status_callback_url = (
             extra.get("status_callback_url")
@@ -338,12 +341,12 @@ class SendblueAdapter(BasePlatformAdapter):
     def _verify_signature(self, header_value: str) -> bool:
         """Verify the sb-signing-secret header against the configured webhook_secret.
 
-        Returns True if no secret is configured (signature verification disabled
-        with operator warning at connect() time). Otherwise returns True only on
-        exact string equality match.
+        Fail-closed: a missing or empty webhook_secret rejects every webhook
+        unless disable_signature_check is explicitly enabled. Constant-time
+        comparison via hmac.compare_digest.
         """
         if not self.webhook_secret:
-            return True
+            return self.disable_signature_check
         return hmac.compare_digest(header_value, self.webhook_secret)
 
     async def _find_registered_webhook_urls(self) -> List[str]:
@@ -392,10 +395,11 @@ class SendblueAdapter(BasePlatformAdapter):
 
         existing_urls = await self._find_registered_webhook_urls()
         if self.webhook_public_url in existing_urls:
-            logger.info(
-                "[sendblue] webhook already registered: %s", self.webhook_public_url
-            )
-            return True
+            # Sendblue's list endpoint doesn't return secrets, so we can't
+            # tell whether the registered secret matches our current one.
+            # Unregister-then-register to guarantee the live secret is fresh
+            # (handles SENDBLUE_WEBHOOK_SECRET rotation transparently).
+            await self._unregister_webhook()
 
         payload = {
             "webhooks": [
@@ -418,11 +422,9 @@ class SendblueAdapter(BasePlatformAdapter):
     async def _unregister_webhook(self) -> bool:
         """Unregister self.webhook_public_url from Sendblue's API.
 
-        Inline DELETE call (no shared helper — only callsite in MVP).
         Returns True if the DELETE succeeded, False on missing config,
-        missing client, or API failure. Failures are logged at DEBUG
-        per architecture Section 6 (non-critical — webhook re-registration
-        on next connect() handles cleanup).
+        missing client, or API failure. Non-critical: failures log at
+        DEBUG since the next connect() re-registers anyway.
         """
         if not self.webhook_public_url:
             return True  # nothing to do, no warning on cleanup path
@@ -573,9 +575,6 @@ class SendblueAdapter(BasePlatformAdapter):
         """Map a MIME type string to the corresponding MessageType enum.
 
         image/* → PHOTO, audio/* → VOICE, video/* → VIDEO, else DOCUMENT.
-        Matches the routing in bluebubbles.py:844-859. MVP only exercises
-        the PHOTO branch (images-only); other branches are scaffolded for
-        future audio/video/document support.
         """
         if mime_type.startswith("image/"):
             return MessageType.PHOTO
@@ -634,9 +633,8 @@ class SendblueAdapter(BasePlatformAdapter):
                 local_path = cache_audio_from_bytes(data, ext)
             else:
                 # Videos, documents, and unknown extensions all go to
-                # cache_document_from_bytes — matches BB at bluebubbles.py:731.
-                # Use the URL's last path segment as the filename so the
-                # cached doc keeps a recognizable name.
+                # cache_document_from_bytes. Use the URL's last path segment
+                # as the filename so the cached doc keeps a recognizable name.
                 filename = stem or f"file_{uuid.uuid4().hex[:8]}"
                 local_path = cache_document_from_bytes(data, filename)
         except ValueError as exc:
@@ -715,20 +713,18 @@ class SendblueAdapter(BasePlatformAdapter):
         on any successfully processed batch, 401/400 on auth/parse
         failures.
 
-        Architecture: Section 4. Mirrors bluebubbles.py:768-936 with
-        Sendblue-specific signature model, flat payload shape, and
-        DM-only assumption.
+        Differs from the BlueBubbles equivalent in signature model (shared
+        secret, not HMAC), payload shape (flat), and chat type (DM-only;
+        groups handled by the group_id branch inside _process_inbound_item).
         """
         from aiohttp import web
 
-        # -- STEP 0: Body size cap --
         # Sendblue payloads are small JSON (media is referenced by URL).
         # Reject oversized bodies before crypto so a leaked secret can't
         # turn the webhook into a DoS surface.
         if (request.content_length or 0) > MAX_WEBHOOK_BODY_BYTES:
             return web.json_response({"error": "payload too large"}, status=413)
 
-        # -- STEP 1: Signature verification --
         secret = request.headers.get(SIGNATURE_HEADER, "")
         if not self._verify_signature(secret):
             logger.warning(
@@ -737,14 +733,12 @@ class SendblueAdapter(BasePlatformAdapter):
             )
             return web.json_response({"error": "unauthorized"}, status=401)
 
-        # -- STEP 2: Body parsing --
         try:
             body = await request.json()
         except json.JSONDecodeError as exc:
             logger.error("[sendblue] webhook parse error: %s", exc)
             return web.json_response({"error": "invalid payload"}, status=400)
 
-        # -- STEP 2.5: Short-circuit typing-indicator webhooks --
         # Sendblue posts typing_indicator events with an `is_typing` field
         # and no message content. Dispatching them as messages would feed
         # the agent an empty turn.
@@ -755,14 +749,20 @@ class SendblueAdapter(BasePlatformAdapter):
 
         items = body if isinstance(body, list) else [body]
 
-        # -- STEP 3: Per-message loop --
         for item in items:
             if not isinstance(item, dict):
                 logger.debug("[sendblue] skipping non-dict item: %r", item)
                 continue
-            await self._process_inbound_item(item)
+            # Catch per-item so a malformed payload can't return 500 and
+            # trigger Sendblue's retry storm against the whole batch.
+            try:
+                await self._process_inbound_item(item)
+            except Exception:
+                logger.exception(
+                    "[sendblue] _process_inbound_item raised; "
+                    "ack'ing webhook to suppress Sendblue retry"
+                )
 
-        # -- STEP 4: Return --
         return web.Response(text="ok")
 
     async def _process_inbound_item(self, item: Dict[str, Any]) -> None:
@@ -776,13 +776,11 @@ class SendblueAdapter(BasePlatformAdapter):
         both paths — a message seen by the webhook won't be
         re-dispatched by polling, and vice versa.
         """
-        # -- STEP 3a: Skip outbound echoes / typing events --
         if item.get("is_outbound"):
             return
         if "is_typing" in item:
             return
 
-        # -- STEP 3b: Routing filter -- is this for our number? --
         inbound_line = self._value(
             item.get("sendblue_number"),
             item.get("to_number"),
@@ -790,10 +788,9 @@ class SendblueAdapter(BasePlatformAdapter):
         if self.sendblue_number and inbound_line != self.sendblue_number:
             return
 
-        # -- STEP 3c: Allowed-number check is handled at gateway level --
-        # (gateway runner's _is_user_authorized() runs before dispatch)
+        # Allowed-number check is handled at gateway level
+        # (gateway runner's _is_user_authorized() runs before dispatch).
 
-        # -- STEP 3d: Extract fields --
         text = self._value(
             item.get("content"),
             item.get("text"),
@@ -801,7 +798,6 @@ class SendblueAdapter(BasePlatformAdapter):
         ) or ""
         from_number = item.get("from_number", "")
         msg_handle = item.get("message_handle", "")
-        # -- STEP 3d.5: Webhook dedup --
         # Sendblue retries on 5xx/timeout. The same message_handle
         # landing twice means a retry, not a new message.
         if self._is_duplicate(msg_handle):
@@ -819,16 +815,15 @@ class SendblueAdapter(BasePlatformAdapter):
         # the other party's phone).
         chat_id = group_id if is_group else from_number
 
-        # -- STEP 3d.7: Record last-inbound handle for reactions --
-        # Tools like sendblue_react look up the most recent handle
-        # by chat_id to target tapbacks.
+        # Tools like sendblue_react look up the most recent inbound
+        # message_handle by chat_id to target tapbacks.
         if chat_id and msg_handle:
             self._last_inbound_handle[chat_id] = msg_handle
 
-        # -- STEP 3e: Media handling --
         media_urls: List[str] = []
         media_types: List[str] = []
         msg_type = MessageType.TEXT
+        media_download_failed = False
         if media_url:
             cached_path, mime_type = await self._download_and_cache_media(
                 media_url
@@ -838,16 +833,28 @@ class SendblueAdapter(BasePlatformAdapter):
                 media_types.append(mime_type)
                 msg_type = self._message_type_from_mime(mime_type)
             else:
+                media_download_failed = True
                 logger.warning(
                     "[sendblue] media download failed for %s", media_url
                 )
-                # Continue with text-only -- don't fail the whole message
         if not text and media_urls:
             text = "(attachment)"
-        # Media-only message where all downloads fail falls through to
-        # Step 3f and is silently dropped (no text, nothing to dispatch).
+        # Media-only message where the only attachment failed to download
+        # would otherwise fall through Step 3f silently. Surface that to
+        # the sender so they know to retry.
+        if media_download_failed and not text:
+            try:
+                await self.send(
+                    chat_id,
+                    "Couldn't fetch your attachment from Sendblue. "
+                    "Try sending it again.",
+                )
+            except Exception:
+                logger.exception(
+                    "[sendblue] failed to notify sender about media error"
+                )
+            return
 
-        # -- STEP 3f: Required fields check --
         if not from_number or not text or not chat_id:
             logger.debug(
                 "[sendblue] missing required fields -- "
@@ -856,7 +863,6 @@ class SendblueAdapter(BasePlatformAdapter):
             )
             return
 
-        # -- STEP 3f.5: Platform-native slash command intercept --
         if text.strip().lower() == "/quota":
             async def _send_quota_reply(target=chat_id):
                 try:
@@ -873,7 +879,6 @@ class SendblueAdapter(BasePlatformAdapter):
             task.add_done_callback(self._background_tasks.discard)
             return
 
-        # -- STEP 3g: Build MessageEvent --
         source = self.build_source(
             chat_id=chat_id,
             chat_name=group_display_name or chat_id,
@@ -891,12 +896,10 @@ class SendblueAdapter(BasePlatformAdapter):
             media_types=media_types,
         )
 
-        # -- STEP 3h: Dispatch to agent --
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-        # -- STEP 3i: Fire-and-forget read receipt --
         # Sendblue's mark-read API targets a DM by the other party's
         # number. There's no documented per-group mark-read, so skip
         # for group messages. Read receipts are an iMessage-only
@@ -1009,13 +1012,8 @@ class SendblueAdapter(BasePlatformAdapter):
             logger.info("[sendblue] polling loop cancelled")
             raise
 
-    # -- abstract method stubs (implemented in subsequent steps) --
-
     async def connect(self) -> bool:
-        """Connect to Sendblue and start the webhook server.
-
-        See architecture Section 3 for the seven-step sequence.
-        """
+        """Connect to Sendblue and start the webhook server."""
         # Step 1: Preflight validation
         if not self.api_key_id or not self.api_secret:
             logger.error(
@@ -1096,18 +1094,17 @@ class SendblueAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
-        """Disconnect from Sendblue and tear down the webhook server.
-
-        See architecture Section 3 disconnect sequence.
-        """
+        """Disconnect from Sendblue and tear down the webhook server."""
         # Step 0: Cancel polling loop (must happen before client close
         # so an in-flight GET doesn't get torn out from under it)
         if self._polling_task is not None:
             self._polling_task.cancel()
             try:
                 await self._polling_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception:
+                logger.exception("[sendblue] polling task crashed during shutdown")
             self._polling_task = None
 
         # Step 1: Unregister webhook (non-critical, logged at DEBUG on failure)
@@ -1145,17 +1142,12 @@ class SendblueAdapter(BasePlatformAdapter):
         Sendblue API call; the message_id of the last successful chunk
         is returned as the SendResult.message_id.
 
-        Architecture: Section 5 H1-H9. Mirrors bluebubbles.py:404-456
-        with Sendblue-specific payload shape and API helper contract.
-
-        reply_to and metadata parameters are accepted for interface
-        compatibility but currently ignored -- Sendblue MVP does not
-        implement message threading.
+        reply_to is accepted for interface compatibility but ignored —
+        Sendblue does not expose a reply-threading parameter.
         """
         if reply_to is not None:
             logger.debug(
-                "[sendblue] send() ignoring reply_to=%r "
-                "(not implemented in MVP)",
+                "[sendblue] send() ignoring reply_to=%r (not supported by Sendblue)",
                 reply_to,
             )
 
@@ -1274,15 +1266,15 @@ class SendblueAdapter(BasePlatformAdapter):
         Requirements (Sendblue API):
           - image_url must be publicly accessible HTTPS
           - URL must end with proper file extension (.jpg, .png, etc.)
-          - media_url does NOT support signed URLs (use media upload
-            endpoint for those, deferred post-MVP)
+          - media_url does NOT support signed URLs — for those, see
+            send_image_file() which uploads via /api/upload-file first
 
         Falls back to base class URL-as-text via send() if the URL
         doesn't look like a public image URL. Permissive fallback --
         better to send a clickable link than to fail.
 
         reply_to and metadata accepted for interface compatibility but
-        ignored (Sendblue MVP doesn't implement threading).
+        ignored (Sendblue does not expose a reply-threading parameter).
         """
         if not self._is_public_image_url(image_url):
             logger.debug(
@@ -1296,8 +1288,7 @@ class SendblueAdapter(BasePlatformAdapter):
 
         if reply_to is not None:
             logger.debug(
-                "[sendblue] send_image() ignoring reply_to=%r "
-                "(not implemented in MVP)",
+                "[sendblue] send_image() ignoring reply_to=%r (not supported)",
                 reply_to,
             )
 

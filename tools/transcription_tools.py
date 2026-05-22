@@ -212,8 +212,8 @@ def _try_lazy_install_stt() -> bool:
         import importlib.util as _iu
         if _iu.find_spec("faster_whisper"):
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Lazy install of faster-whisper failed: %s", exc)
     return False
 
 

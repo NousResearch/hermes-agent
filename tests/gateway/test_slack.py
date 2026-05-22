@@ -136,6 +136,55 @@ class TestSlashCommandSessionIsolation:
 # TestAppMentionHandler
 # ---------------------------------------------------------------------------
 
+class TestSlackOrphanContextUpdates:
+    def test_detects_short_ambiguous_task_updates(self, adapter):
+        assert adapter._looks_like_orphan_context_update("she paid")
+        assert adapter._looks_like_orphan_context_update("I emailed her today")
+        assert adapter._looks_like_orphan_context_update("CHQ-1547 is done")
+        assert not adapter._looks_like_orphan_context_update("what tickets do I have today?")
+        assert not adapter._looks_like_orphan_context_update("please write a detailed project summary for Little Rose")
+
+    @pytest.mark.asyncio
+    async def test_top_level_ambiguous_dm_gets_recent_thread_context(self, adapter):
+        adapter._resolve_user_name = AsyncMock(side_effect=lambda user, chat_id="": user)
+        adapter._fetch_thread_context = AsyncMock(
+            return_value=(
+                "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
+                "[thread parent] Andres: CHQ-1547 Call Little Rose about declined payment\n"
+                "Bryce: asking client now\n"
+                "[End of thread context]\n\n"
+            )
+        )
+        adapter._app.client.conversations_history = AsyncMock(return_value={
+            "ok": True,
+            "messages": [
+                {
+                    "ts": "170.000",
+                    "user": "U_ANDRES",
+                    "text": "CHQ-1547 Call Little Rose about declined payment",
+                    "reply_count": 2,
+                },
+            ],
+        })
+
+        await adapter._handle_slack_message({
+            "type": "message",
+            "channel": "D123",
+            "channel_type": "im",
+            "user": "U_BRYCE",
+            "team": "T123",
+            "ts": "171.000",
+            "text": "she paid",
+        })
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert "Recent Slack context" in event.text
+        assert "CHQ-1547" in event.text
+        assert event.text.endswith("she paid")
+        adapter._fetch_thread_context.assert_awaited_once()
+
+
 class TestAppMentionHandler:
     """Verify that the app_mention event handler is registered."""
 

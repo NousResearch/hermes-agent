@@ -2198,6 +2198,20 @@ class SlackAdapter(BasePlatformAdapter):
             self.config.extra, channel_id, None,
         )
 
+        # If someone posts a short top-level status update like "she paid"
+        # instead of replying in the relevant thread, fetch a small amount of
+        # recent Slack context before handing the message to the agent. This
+        # lets the agent ask a grounded confirmation ("is this about CHQ-...?")
+        # instead of treating pronouns as unknowable.
+        if not is_thread_reply and self._looks_like_orphan_context_update(text):
+            recent_context = await self._fetch_recent_channel_context(
+                channel_id=channel_id,
+                current_ts=ts,
+                team_id=team_id,
+            )
+            if recent_context:
+                text = recent_context + text
+
         # Extract reply context if this message is a thread reply.
         # Mirrors the Telegram/Discord implementations so that gateway.run
         # can inject a `[Replying to: "..."]` prefix when the parent is not
@@ -2711,6 +2725,89 @@ class SlackAdapter(BasePlatformAdapter):
 
         except Exception as e:
             logger.warning("[Slack] Failed to fetch thread context: %s", e)
+            return ""
+
+    def _looks_like_orphan_context_update(self, text: str) -> bool:
+        """Return true for short, ambiguous Slack updates that need context.
+
+        These are common when a teammate means to answer a task/check-in thread
+        but accidentally posts a new top-level message, e.g. "she paid" or
+        "I emailed her". The method is deliberately conservative so normal
+        long-form requests do not trigger extra Slack API calls.
+        """
+        cleaned = re.sub(r"\s+", " ", (text or "").strip())
+        if not cleaned:
+            return False
+        if len(cleaned) > 220:
+            return False
+
+        lowered = cleaned.lower()
+        has_pronoun = bool(re.search(r"\b(she|her|he|him|they|them|it|this|that)\b", lowered))
+        has_update_verb = bool(re.search(
+            r"\b(paid|pay|payment|done|finished|complete|completed|emailed|email(?:ed)?|called|call(?:ed)?|replied|responded|approved|sent|received|heard back|no response)\b",
+            lowered,
+        ))
+        has_ticket_hint = bool(re.search(r"\b(CHQ-\d{1,6}|ticket|task)\b", cleaned, re.IGNORECASE))
+        return has_update_verb and (has_pronoun or has_ticket_hint)
+
+    async def _fetch_recent_channel_context(
+        self, channel_id: str, current_ts: str, team_id: str = "", limit: int = 8,
+    ) -> str:
+        """Fetch recent top-level Slack messages plus nearby thread context.
+
+        Used for orphan top-level updates that appear to refer to a task/thread.
+        Includes recent thread replies for parent messages so context is still
+        available when the relevant discussion happened inside a thread but the
+        new update was posted outside it.
+        """
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_history(
+                channel=channel_id,
+                latest=current_ts,
+                inclusive=False,
+                limit=limit,
+            )
+            messages = result.get("messages", []) if result else []
+            if not messages:
+                return ""
+
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            parts: list[str] = []
+            for msg in reversed(messages):
+                msg_text = (msg.get("text") or "").strip()
+                if msg_text:
+                    if bot_uid:
+                        msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+                    user = msg.get("user") or msg.get("username") or "unknown"
+                    name = await self._resolve_user_name(user, chat_id=channel_id)
+                    parts.append(f"{name}: {msg_text}")
+
+                thread_ts = msg.get("thread_ts") or msg.get("ts")
+                reply_count = int(msg.get("reply_count") or 0)
+                if not thread_ts or reply_count <= 0:
+                    continue
+
+                thread_context = await self._fetch_thread_context(
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    current_ts=current_ts,
+                    team_id=team_id,
+                    limit=6,
+                )
+                if thread_context:
+                    parts.append(thread_context.strip())
+
+            if not parts:
+                return ""
+            return (
+                "[Recent Slack context — the current message was posted outside a thread but may refer to a recent task/thread. "
+                "Use this only to ask a grounded confirmation; do not update tickets from ambiguous pronouns without confirmation.]\n"
+                + "\n".join(parts[-20:])
+                + "\n[End of recent Slack context]\n\n"
+            )
+        except Exception as exc:
+            logger.debug("[Slack] Failed to fetch recent channel context: %s", exc)
             return ""
 
     async def _fetch_thread_parent_text(

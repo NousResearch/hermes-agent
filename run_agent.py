@@ -2911,12 +2911,40 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
-    def _emit_status(self, message: str) -> None:
-        """Emit a lifecycle status message to both CLI and gateway channels.
+    # Platforms whose end-users are external customers (vs. the operator/admin
+    # running Hermes via CLI or API). Internal-status banners are suppressed on
+    # these surfaces to avoid leaking implementation details into chat threads.
+    # Refs: https://github.com/NousResearch/hermes-agent/issues/28208
+    _CUSTOMER_FACING_PLATFORMS = frozenset({
+        "whatsapp", "slack", "signal", "telegram", "discord",
+    })
+
+    # Defensive glyph fallback for call sites that haven't been migrated to
+    # the explicit ``customer_facing=False`` kwarg yet. Kept narrow on purpose
+    # (compression banners only) — broader category suppression is tracked in
+    # Issue #28208's larger scope and will land via separate PRs.
+    _INTERNAL_STATUS_PREFIXES = (
+        "\U0001f5dc",  # 🗜  context-pressure / compression banner family
+    )
+
+    def _emit_status(self, message: str, customer_facing: bool = True) -> None:
+        """Emit a lifecycle status message to CLI and (selectively) gateway.
 
         CLI users see the message via ``_vprint(force=True)`` so it is always
-        visible regardless of verbose/quiet mode.  Gateway consumers receive
-        it through ``status_callback("lifecycle", ...)``.
+        visible regardless of verbose/quiet mode.
+
+        Gateway consumers receive it through ``status_callback("lifecycle", ...)``
+        UNLESS the runtime ``platform`` is in ``_CUSTOMER_FACING_PLATFORMS``
+        AND either:
+
+        * ``customer_facing=False`` was passed explicitly by the caller, OR
+        * the message starts with an internal-status glyph in
+          ``_INTERNAL_STATUS_PREFIXES`` (defensive fallback for un-migrated
+          call sites).
+
+        This shields end-user chats on platforms like WhatsApp from internal
+        Hermes diagnostics (compression progress, retry warnings, rate-limit
+        notices) without affecting admin/CLI visibility. See Issue #28208.
 
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
@@ -2925,6 +2953,12 @@ class AIAgent:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
             pass
+        platform = (getattr(self, "platform", "") or "").lower()
+        if platform in self._CUSTOMER_FACING_PLATFORMS:
+            if not customer_facing:
+                return
+            if message.startswith(self._INTERNAL_STATUS_PREFIXES):
+                return
         if self.status_callback:
             try:
                 self.status_callback("lifecycle", message)
@@ -14391,7 +14425,10 @@ class AIAgent:
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
-                        self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
+                        self._emit_status(
+                            f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...",
+                            customer_facing=False,
+                        )
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -14404,7 +14441,10 @@ class AIAgent:
                         conversation_history = None
 
                         if len(messages) < original_len:
-                            self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                            self._emit_status(
+                                f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...",
+                                customer_facing=False,
+                            )
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
@@ -14548,7 +14588,10 @@ class AIAgent:
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
-                        self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
+                        self._emit_status(
+                            f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...",
+                            customer_facing=False,
+                        )
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -14562,7 +14605,10 @@ class AIAgent:
 
                         if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                             if len(messages) < original_len:
-                                self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                                self._emit_status(
+                                f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...",
+                                customer_facing=False,
+                            )
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break

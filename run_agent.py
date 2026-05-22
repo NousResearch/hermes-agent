@@ -3357,6 +3357,25 @@ class AIAgent:
             return content
 
         if self._model_supports_vision():
+            # Vision-capable on paper — but if we've already learned in this
+            # session that the active (provider, model) rejects list-type
+            # tool content (e.g. Xiaomi MiMo's 400 "text is not set"),
+            # short-circuit to a text summary so we don't burn another
+            # round-trip relearning the same lesson.  Cache populated by
+            # the 400 recovery path in agent.conversation_loop.  Transient
+            # per-session; next session retries.
+            key = (
+                (getattr(self, "provider", "") or "").strip().lower(),
+                (getattr(self, "model", "") or "").strip(),
+            )
+            no_list = getattr(self, "_no_list_tool_content_models", None)
+            if no_list and key in no_list:
+                logger.debug(
+                    "Tool %s: model %s/%s known to reject list-type tool "
+                    "content this session — sending text summary",
+                    tool_name, key[0], key[1],
+                )
+                return _multimodal_text_summary(result)
             return content
 
         summary = _multimodal_text_summary(result)
@@ -3384,6 +3403,80 @@ class AIAgent:
         """Forwarder — see ``agent.conversation_compression.try_shrink_image_parts_in_messages``."""
         from agent.conversation_compression import try_shrink_image_parts_in_messages
         return try_shrink_image_parts_in_messages(api_messages)
+
+    def _try_strip_image_parts_from_tool_messages(self, api_messages: list) -> bool:
+        """Downgrade list-type tool messages to text summaries in-place.
+
+        Recovery path for providers that reject list-type tool message content
+        (e.g. Xiaomi MiMo's 400 "text is not set"; see issue #27344).  Walks
+        ``api_messages`` for any ``role: "tool"`` message whose ``content`` is
+        a list containing image parts, replaces the content with the existing
+        text part(s) (or a minimal placeholder if none survive), and records
+        the active (provider, model) in ``self._no_list_tool_content_models``
+        so subsequent ``_tool_result_content_for_active_model`` calls in this
+        session preemptively downgrade screenshots without a round-trip.
+
+        Returns True when at least one tool message was downgraded — the
+        caller (the 400 recovery branch in ``agent.conversation_loop``) uses
+        this to decide whether to retry the API call with the modified
+        history or surface the original error.
+        """
+        if not isinstance(api_messages, list):
+            return False
+
+        # Record (provider, model) so we don't relearn this lesson.
+        key = (
+            (getattr(self, "provider", "") or "").strip().lower(),
+            (getattr(self, "model", "") or "").strip(),
+        )
+        if not hasattr(self, "_no_list_tool_content_models"):
+            self._no_list_tool_content_models = set()
+        if key[1]:  # only record when we actually have a model id
+            self._no_list_tool_content_models.add(key)
+
+        changed = False
+        for msg in api_messages:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+
+            # Salvage any text parts so the model still sees some signal.
+            text_parts: List[str] = []
+            had_image = False
+            for part in content:
+                if not isinstance(part, dict):
+                    if isinstance(part, str) and part.strip():
+                        text_parts.append(part.strip())
+                    continue
+                ptype = part.get("type")
+                if ptype == "image_url" or ptype == "input_image":
+                    had_image = True
+                    continue
+                if ptype in {"text", "input_text"}:
+                    text = str(part.get("text") or "").strip()
+                    if text:
+                        text_parts.append(text)
+
+            if not had_image:
+                # List-type content but no image parts — leave alone (some
+                # providers reject ANY list content, but stripping a
+                # text-only list doesn't reduce ambiguity; let the caller
+                # surface the original error if this turns out to be the
+                # case).
+                continue
+
+            if text_parts:
+                msg["content"] = "\n\n".join(text_parts)
+            else:
+                msg["content"] = (
+                    "[image content removed — provider does not accept "
+                    "list-type tool message content]"
+                )
+            changed = True
+
+        return changed
 
     def _anthropic_preserve_dots(self) -> bool:
         """True when using an anthropic-compatible endpoint that preserves dots in model names.

@@ -1,0 +1,13 @@
+name: swarm-map-policy
+version: 1.0.0
+description: "HSM-backed group access control, admin resolution, and approval gating for multi-tenant Hermes deployments."
+author: NimbleCo
+requires_env:
+  - name: HSM_URL
+    description: "URL of the Hermes Swarm Map API"
+    prompt: "HSM API URL"
+    password: false
+  - name: HERMES_AGENT_NAME
+    description: "Agent identifier in HSM"
+    prompt: "Agent name"
+    password: false

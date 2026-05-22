@@ -555,6 +555,11 @@ PLATFORM_HINTS = {
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
     ),
+    "ntfy": (
+        "You are communicating via ntfy push notifications. "
+        "Use plain text by default — ntfy supports optional markdown (set markdown: true in config). "
+        "Keep responses concise; ntfy is a push notification service."
+    ),
     "yuanbao": (
         "You are on Yuanbao (腾讯元宝), a Chinese AI assistant platform. "
         "Markdown formatting is supported (code blocks, tables, bold/italic). "

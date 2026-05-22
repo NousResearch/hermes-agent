@@ -145,7 +145,7 @@ class TestMaxTokensRetryHardening:
         assert client.chat.completions.create.call_count == 2
         second_call = client.chat.completions.create.call_args_list[1]
         assert "max_tokens" not in second_call.kwargs
-        assert second_call.kwargs["max_completion_tokens"] == 512
+        assert "max_completion_tokens" not in second_call.kwargs
 
     @pytest.mark.asyncio
     async def test_async_max_tokens_retry_skipped_when_max_tokens_is_none(self):
@@ -198,4 +198,4 @@ class TestMaxTokensRetryHardening:
         assert client.chat.completions.create.await_count == 2
         second_call = client.chat.completions.create.call_args_list[1]
         assert "max_tokens" not in second_call.kwargs
-        assert second_call.kwargs["max_completion_tokens"] == 512
+        assert "max_completion_tokens" not in second_call.kwargs

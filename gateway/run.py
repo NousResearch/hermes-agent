@@ -1421,6 +1421,9 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _cached_runtime_kwargs: Optional[Dict[str, Any]] = None
+    _cached_runtime_ts: float = 0.0
+    _credential_cache_ttl_secs: float = 300.0
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -1536,7 +1539,13 @@ class GatewayRunner:
         # This preserves write_frequency="session" semantics across short-lived
         # per-message AIAgent instances.
 
-
+        # Credential cache: resolved once at startup and reused across
+        # per-message agent creation to avoid redundant load_pool() calls.
+        # The pool itself handles rotation/failover internally — we just
+        # cache the resolved runtime kwargs dict and refresh on TTL expiry.
+        self._cached_runtime_kwargs: Optional[Dict[str, Any]] = None
+        self._cached_runtime_ts: float = 0.0
+        self._credential_cache_ttl_secs: float = 300.0  # 5 min
 
         # Ensure tirith security scanner is available (downloads if needed)
         try:
@@ -2088,6 +2097,31 @@ class GatewayRunner:
                 return None
         return None
 
+    def _resolve_runtime_cached(self) -> dict:
+        """Resolve runtime credentials with a TTL-based cache.
+
+        On cache miss or TTL expiry, calls ``_resolve_runtime_agent_kwargs()``
+        and stores the result.  This avoids redundant ``load_pool()`` I/O
+        on every message while still picking up credential rotations within
+        the TTL window.
+        """
+        import time as _time
+
+        now = _time.monotonic()
+        cached = self._cached_runtime_kwargs
+        if cached is not None and (now - self._cached_runtime_ts) < self._credential_cache_ttl_secs:
+            return dict(cached)  # shallow copy so callers can pop/modify
+
+        kwargs = _resolve_runtime_agent_kwargs()
+        self._cached_runtime_kwargs = dict(kwargs)
+        self._cached_runtime_ts = now
+        return dict(kwargs)
+
+    def _invalidate_runtime_cache(self) -> None:
+        """Force the next agent creation to re-resolve credentials."""
+        self._cached_runtime_kwargs = None
+        self._cached_runtime_ts = 0.0
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -2138,7 +2172,7 @@ class GatewayRunner:
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_kwargs = self._resolve_runtime_cached()
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
@@ -3819,6 +3853,28 @@ class GatewayRunner:
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
         except Exception as e:
             logger.debug("Stuck-loop detection failed: %s", e)
+
+        # Pre-resolve and cache runtime credentials at startup so the first
+        # message doesn't pay the load_pool() + resolve cost.  This also
+        # serves as a startup health probe — if credentials are broken, we
+        # log a warning early instead of failing silently on the first message.
+        try:
+            _startup_runtime = _resolve_runtime_agent_kwargs()
+            self._cached_runtime_kwargs = dict(_startup_runtime)
+            import time as _time
+            self._cached_runtime_ts = _time.monotonic()
+            _startup_provider = _startup_runtime.get("provider") or "unknown"
+            _startup_pool = _startup_runtime.get("credential_pool")
+            _pool_entries = len(_startup_pool.entries()) if _startup_pool and hasattr(_startup_pool, "entries") else 0
+            _pool_available = _startup_pool.has_available() if _startup_pool and hasattr(_startup_pool, "has_available") else False
+            logger.info(
+                "Credential manager wired: provider=%s pool_entries=%d pool_available=%s",
+                _startup_provider,
+                _pool_entries,
+                _pool_available,
+            )
+        except Exception as exc:
+            logger.warning("Startup credential pre-resolution failed: %s — will retry on first message", exc)
 
         connected_count = 0
         enabled_platform_count = 0
@@ -7744,7 +7800,7 @@ class GatewayRunner:
                 from agent.model_metadata import get_model_context_length
 
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
-                _msg_runtime = _resolve_runtime_agent_kwargs()
+                _msg_runtime = self._resolve_runtime_cached()
                 _msg_config_ctx = None
                 try:
                     _msg_cfg = _load_gateway_config()

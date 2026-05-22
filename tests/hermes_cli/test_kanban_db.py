@@ -1909,6 +1909,38 @@ def test_add_notify_sub_defaults_to_notification(kanban_home):
     assert subs[0]["session_key"] is None
 
 
+def test_add_notify_sub_upgrades_existing_subscription_in_place(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="upgrade notify")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-default",
+            thread_id="thread-1",
+        )
+        first = kb.list_notify_subs(conn, tid)
+        assert len(first) == 1
+        created_at = first[0]["created_at"]
+        last_event_id = first[0]["last_event_id"]
+
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-default",
+            thread_id="thread-1",
+            delivery_mode="session_event",
+            session_key="agent:main:discord:thread:chat-default:thread-1",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "session_event"
+    assert subs[0]["session_key"] == "agent:main:discord:thread:chat-default:thread-1"
+    assert subs[0]["created_at"] == created_at
+    assert subs[0]["last_event_id"] == last_event_id
+
+
 def test_set_and_clear_task_watcher_round_trip(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="watched")

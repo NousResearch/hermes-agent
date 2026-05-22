@@ -5169,7 +5169,6 @@ class GatewayRunner:
                             board_slug,
                         )
                         continue
-                    title = (task.title if task else sub["task_id"])[:120]
                     delivery_mode = sub.get("delivery_mode") or "notification"
                     sub_key = (
                         sub["task_id"], sub["platform"],

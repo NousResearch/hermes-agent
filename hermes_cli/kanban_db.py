@@ -1989,9 +1989,14 @@ def create_task(
                         session_key = None
                     conn.execute(
                         """
-                        INSERT OR IGNORE INTO kanban_notify_subs
+                        INSERT INTO kanban_notify_subs
                             (task_id, platform, chat_id, thread_id, user_id, delivery_mode, session_key, notifier_profile, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(task_id, platform, chat_id, thread_id) DO UPDATE SET
+                            user_id = excluded.user_id,
+                            delivery_mode = excluded.delivery_mode,
+                            session_key = excluded.session_key,
+                            notifier_profile = COALESCE(excluded.notifier_profile, kanban_notify_subs.notifier_profile)
                         """,
                         (
                             task_id,
@@ -6486,9 +6491,14 @@ def add_notify_sub(
     with write_txn(conn):
         conn.execute(
             """
-            INSERT OR IGNORE INTO kanban_notify_subs
+            INSERT INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, delivery_mode, session_key, notifier_profile, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id, platform, chat_id, thread_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                delivery_mode = excluded.delivery_mode,
+                session_key = excluded.session_key,
+                notifier_profile = COALESCE(excluded.notifier_profile, kanban_notify_subs.notifier_profile)
             """,
             (
                 task_id,

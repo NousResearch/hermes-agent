@@ -41,6 +41,11 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level .env, even when running under a profile — overwriting it
             # leaks credentials across every profile that inherits from root (#15981).
             str(hermes_root / ".env"),
+            # Active profile Anthropic PKCE credential store.
+            str(hermes_home / ".anthropic_oauth.json"),
+            # Top-level Anthropic PKCE credential store remains sensitive even
+            # when a profile is active; default/non-profile sessions still read it.
+            str(hermes_root / ".anthropic_oauth.json"),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),

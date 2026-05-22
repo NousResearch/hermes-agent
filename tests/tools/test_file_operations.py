@@ -66,6 +66,7 @@ class TestIsWriteDenied:
             "auth.json",
             "config.yaml",
             "webhook_subscriptions.json",
+            ".anthropic_oauth.json",
             "mcp-tokens/token1.json",
             "mcp-tokens/subdir/token2.json",
             "pairing/telegram-approved.json",
@@ -74,8 +75,8 @@ class TestIsWriteDenied:
             "pairing",
         ],
     )
-    def test_hermes_control_files_and_mcp_tokens_denied(self, path):
-        """Hermes control files and mcp-tokens/pairing entries must be write-denied."""
+    def test_hermes_control_files_oauth_and_mcp_tokens_denied(self, path):
+        """Hermes control files, PKCE creds, mcp-tokens, and pairing entries must be write-denied."""
         from hermes_constants import get_hermes_home
         hermes_home = get_hermes_home()
         full_path = str(hermes_home / path)
@@ -86,11 +87,12 @@ class TestIsWriteDenied:
         [
             "dummy/../config.yaml",
             "./auth.json",
+            "./.anthropic_oauth.json",
             "mcp-tokens/../config.yaml",
         ],
     )
-    def test_hermes_control_files_traversal_denied(self, path):
-        """Path traversal attempts to control files must be blocked by realpath."""
+    def test_hermes_control_files_and_oauth_traversal_denied(self, path):
+        """Path traversal attempts to protected Hermes files must be blocked."""
         from hermes_constants import get_hermes_home
         hermes_home = get_hermes_home()
         full_path = str(hermes_home / path)
@@ -110,14 +112,15 @@ class TestIsWriteDenied:
 
     @pytest.mark.parametrize(
         "name",
-        ["auth.json", "config.yaml", "webhook_subscriptions.json"],
+        ["auth.json", "config.yaml", "webhook_subscriptions.json", ".anthropic_oauth.json"],
     )
-    def test_control_files_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
+    def test_control_files_and_oauth_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
         """Under a profile, BOTH <profile>/X and <root>/X must be denied (#15981 shape).
 
         Without the root-level pass, a profile-mode session leaves the
-        global ~/.hermes/{auth.json,config.yaml,webhook_subscriptions.json}
-        writable — the same gap PR #15981 fixed for .env.
+        global ~/.hermes/{auth.json,config.yaml,webhook_subscriptions.json,
+        .anthropic_oauth.json} writable — the same gap PR #15981 fixed
+        for .env.
         """
         # Simulate a profile-mode HERMES_HOME layout:
         #   <root>/profiles/coder/{auth.json,config.yaml,...}

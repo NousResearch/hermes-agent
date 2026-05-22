@@ -12,6 +12,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
+
+
 @pytest.fixture(autouse=True)
 def isolate_env(monkeypatch):
     """Strip every STT-related env var so the test really exercises the
@@ -26,20 +29,6 @@ def isolate_env(monkeypatch):
         "XAI_STT_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
-
-
-@pytest.fixture(autouse=True)
-def _disable_lazy_stt_install():
-    """Disarm the runtime lazy-install probe so static ``_HAS_FASTER_WHISPER``
-    patches accurately simulate 'faster-whisper not installed'.
-
-    Without this, ``_try_lazy_install_stt()`` calls
-    ``importlib.util.find_spec("faster_whisper")``, which returns truthy
-    whenever the package is installed in the dev / CI environment —
-    defeating the test's ``_HAS_FASTER_WHISPER=False`` patch.
-    """
-    with patch("tools.transcription_tools._try_lazy_install_stt", return_value=False):
-        yield
 
 
 class TestProviderSelectionGate:

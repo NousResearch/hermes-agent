@@ -156,6 +156,62 @@ class MarketingFactoryStore:
         self.audit("brand_profile.upserted", slug, {"name": merged.get("name"), "channels": merged.get("channels", [])})
         return merged
 
+    def remove_app(self, app_slug: str, *, cascade: bool = True) -> Dict[str, Any]:
+        """Remove a brand profile. With cascade=True, also drops every record
+        scoped to that slug. With cascade=False, refuses if any dependent record
+        exists.
+        """
+        slug = _require_slug(app_slug)
+        state = self.load()
+        if slug not in state["apps"]:
+            raise KeyError(f"Unknown app slug: {slug}")
+
+        def _belongs(record: Dict[str, Any]) -> bool:
+            return record.get("app_slug") == slug
+
+        # Collect what would be removed for the audit summary.
+        campaigns = [cid for cid, c in state["campaigns"].items() if _belongs(c)]
+        drafts = [did for did, d in state["drafts"].items() if _belongs(d)]
+        approvals = [aid for aid, a in state["approvals"].items() if a.get("app_slug") == slug]
+        schedules = [sid for sid, s in state["schedules"].items() if _belongs(s)]
+        publish_events = [pid for pid, p in state["publish_events"].items() if _belongs(p)]
+        analytics_ids = [aid for aid, a in state["analytics"].items() if _belongs(a)]
+
+        deps = {
+            "campaigns": len(campaigns),
+            "drafts": len(drafts),
+            "approvals": len(approvals),
+            "schedules": len(schedules),
+            "publish_events": len(publish_events),
+            "analytics": len(analytics_ids),
+        }
+        if not cascade and any(deps.values()):
+            raise ValueError(f"Cannot remove {slug} with cascade=False; dependents exist: {deps}")
+
+        for cid in campaigns:
+            state["campaigns"].pop(cid, None)
+        for did in drafts:
+            state["drafts"].pop(did, None)
+            state["approvals"].pop(did, None)  # approvals are keyed by draft_id
+        for sid in schedules:
+            state["schedules"].pop(sid, None)
+        for pid in publish_events:
+            state["publish_events"].pop(pid, None)
+        for aid in analytics_ids:
+            state["analytics"].pop(aid, None)
+        state["apps"].pop(slug, None)
+        state.get("brand_memories", {}).pop(slug, None)
+
+        # Strip per-app rows from budgets if any survive.
+        budgets = state.get("budgets") or {}
+        for table_name in ("per_app_tokens",):
+            table = budgets.get(table_name) or {}
+            table.pop(slug, None)
+
+        self._write_state(state)
+        self.audit("brand_profile.removed", slug, {"removed": deps})
+        return {"app_slug": slug, "removed": deps}
+
     def set_channel_mode(self, app_slug: str, channel: str, mode: str, reviewer: str = "human") -> Dict[str, Any]:
         """Switch a channel between `dry_run` and `live`.
 

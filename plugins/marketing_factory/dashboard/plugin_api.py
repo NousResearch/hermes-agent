@@ -37,6 +37,37 @@ class ChannelModeBody(BaseModel):
     reviewer: str = "dashboard"
 
 
+class AppCreateBody(BaseModel):
+    slug: str
+    name: str
+    positioning: str = ""
+    icp: str = ""
+    tone: str = ""
+    cta: str = ""
+    channels: list[str] = []
+    content_pillars: list[str] = []
+    claims: list[str] = []
+    forbidden_claims: list[str] = []
+    links: list[str] = []
+    competitors: list[str] = []
+    assets: list[str] = []
+
+
+class AppPatchBody(BaseModel):
+    name: Optional[str] = None
+    positioning: Optional[str] = None
+    icp: Optional[str] = None
+    tone: Optional[str] = None
+    cta: Optional[str] = None
+    channels: Optional[list[str]] = None
+    content_pillars: Optional[list[str]] = None
+    claims: Optional[list[str]] = None
+    forbidden_claims: Optional[list[str]] = None
+    links: Optional[list[str]] = None
+    competitors: Optional[list[str]] = None
+    assets: Optional[list[str]] = None
+
+
 def _store() -> MarketingFactoryStore:
     return MarketingFactoryStore()
 
@@ -207,6 +238,46 @@ async def publish_scheduled_with_channel_modes(app_slug: Optional[str] = None):
     behaves identically to /publish-dry-run until a human wires one in."""
     store = _store()
     result = _pipe(store).publisher.publish_scheduled(store, app_slug=app_slug)
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.post("/apps")
+async def create_app(body: AppCreateBody):
+    if not body.name.strip() or not body.slug.strip():
+        raise HTTPException(status_code=400, detail="slug and name are required")
+    if not body.channels:
+        raise HTTPException(status_code=400, detail="at least one channel is required")
+    store = _store()
+    store.initialize()
+    try:
+        result = store.upsert_app(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.patch("/apps/{app_slug}")
+async def patch_app(app_slug: str, body: AppPatchBody):
+    store = _store()
+    try:
+        existing = store.require_app(app_slug)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    merged = {**existing, **updates, "slug": app_slug}
+    result = store.upsert_app(merged)
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.delete("/apps/{app_slug}")
+async def delete_app(app_slug: str, cascade: bool = True):
+    store = _store()
+    try:
+        result = store.remove_app(app_slug, cascade=cascade)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"result": result, "overview": _overview(store)}
 
 

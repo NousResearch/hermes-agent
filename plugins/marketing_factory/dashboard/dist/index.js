@@ -374,11 +374,54 @@
           tokenPanel(data?.summary?.budgets),
           channelModePanel((data?.apps || []).find((app) => app.slug === appSlug), busy, run),
           card(null,
-            h("h2", { className: "text-lg font-semibold" }, "Brand apps"),
+            h("div", { className: "flex items-center justify-between gap-2" },
+              h("h2", { className: "text-lg font-semibold" }, "Brand apps"),
+              smallButton("+ Add app", () => {
+                const slug = window.prompt("New app slug (lowercase, alphanumeric, dashes/underscores ok):");
+                if (!slug || !slug.trim()) return;
+                const name = window.prompt(`Display name for ${slug}:`);
+                if (!name || !name.trim()) return;
+                const positioning = window.prompt("Brand positioning (one sentence):") || "";
+                const icp = window.prompt("Ideal customer profile (who buys/uses this?):") || "";
+                const tone = window.prompt("Brand tone (e.g. cute warm playful / trustworthy premium clear):") || "";
+                const cta = window.prompt("Default call-to-action:") || "";
+                const channelsStr = window.prompt("Channels (comma-separated, e.g. x,instagram,tiktok,blog,email,linkedin,app_store):") || "";
+                const channels = channelsStr.split(",").map((s) => s.trim()).filter(Boolean);
+                if (!channels.length) {
+                  alert("At least one channel is required. Aborting.");
+                  return;
+                }
+                const pillarsStr = window.prompt("Content pillars (comma-separated, the recurring themes):") || "";
+                const forbiddenStr = window.prompt("Forbidden claims (comma-separated, things the brand must NEVER promise):") || "";
+                const linkStr = window.prompt("Primary link (e.g. App Store URL, website):") || "";
+                return run("add-app", () => fetchJSON(`${API}/apps`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+                  slug: slug.trim(), name: name.trim(), positioning, icp, tone, cta,
+                  channels,
+                  content_pillars: pillarsStr.split(",").map((s) => s.trim()).filter(Boolean),
+                  forbidden_claims: forbiddenStr.split(",").map((s) => s.trim()).filter(Boolean),
+                  links: linkStr ? [linkStr] : [],
+                  claims: [], competitors: [], assets: [],
+                }) }));
+              }, !!busy, "primary")
+            ),
             h("div", { className: "mt-3 flex flex-col gap-3" },
-              (data?.apps || []).map((app) => h("button", { key: app.slug, onClick: () => setAppSlug(app.slug), className: cx("min-h-[44px] rounded-xl border p-3 text-left text-sm", app.slug === appSlug ? "border-cyan-300/40 bg-cyan-300/10" : "border-midground/15 bg-background/60") },
-                h("div", { className: "font-semibold" }, app.name || app.slug),
-                h("div", { className: "mt-1 text-midground" }, app.positioning || app.icp || "No positioning set")
+              (data?.apps || []).map((app) => h("div", { key: app.slug, className: cx("rounded-xl border p-3 text-sm", app.slug === appSlug ? "border-cyan-300/40 bg-cyan-300/10" : "border-midground/15 bg-background/60") },
+                h("div", { className: "flex items-start justify-between gap-2" },
+                  h("button", { type: "button", onClick: () => setAppSlug(app.slug), className: "flex-1 text-left" },
+                    h("div", { className: "font-semibold" }, app.name || app.slug),
+                    h("div", { className: "mt-1 text-midground" }, app.positioning || app.icp || "No positioning set")
+                  ),
+                  h("button", {
+                    type: "button",
+                    disabled: !!busy,
+                    onClick: () => {
+                      const confirmText = window.prompt(`Type the slug (${app.slug}) to DELETE this app and ALL its drafts/campaigns/etc:`);
+                      if (!confirmText || confirmText.trim() !== app.slug) return;
+                      return run(`remove ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}?cascade=true`, { method: "DELETE" }));
+                    },
+                    className: "text-[10px] text-midground/60 hover:text-red-300 underline",
+                  }, "remove")
+                )
               ))
             )
           ),

@@ -414,6 +414,123 @@ def test_publish_scheduled_uses_registered_live_connector_when_present(isolate_h
     assert final_draft["status"] == "posted"
 
 
+def test_add_app_via_api_creates_new_brand_profile(isolate_home):
+    """Phase 6 / multi-tenant: POST /apps lets us add Wingman/Hardline/etc without editing Python."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+    client.post("/api/plugins/marketing_factory/init")
+
+    response = client.post("/api/plugins/marketing_factory/apps", json={
+        "slug": "wingman",
+        "name": "Wingman",
+        "positioning": "iOS app for men replying in dating apps in their voice",
+        "icp": "men 25-40 using Hinge / Bumble / SMS",
+        "tone": "confident, witty, brief",
+        "cta": "Download Wingman from the App Store",
+        "channels": ["x", "tiktok"],
+        "content_pillars": ["voice-matched replies", "dating wins"],
+        "forbidden_claims": ["guaranteed dates"],
+        "links": ["https://apps.apple.com/us/app/wingman/idplaceholder"],
+        "claims": [], "competitors": [], "assets": [],
+    })
+    assert response.status_code == 200, response.text
+    overview = response.json()["overview"]
+    slugs = {app["slug"] for app in overview["apps"]}
+    assert slugs == {"pupular", "setvenue", "wingman"}
+
+    # New app gets channel_modes seeded to dry_run for every channel
+    wingman = next(app for app in overview["apps"] if app["slug"] == "wingman")
+    assert set(wingman["channel_modes"]) == {"x", "tiktok"}
+    assert all(mode == "dry_run" for mode in wingman["channel_modes"].values())
+
+
+def test_patch_app_partial_update_preserves_other_fields(isolate_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+    client.post("/api/plugins/marketing_factory/init")
+
+    response = client.patch("/api/plugins/marketing_factory/apps/pupular", json={
+        "tone": "Even cuter, even warmer, slightly mischievous",
+    })
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result["tone"] == "Even cuter, even warmer, slightly mischievous"
+    # Untouched fields still present
+    assert result["icp"]
+    assert result["channels"]
+    assert result["channel_modes"]
+
+
+def test_delete_app_cascades_drafts_campaigns_schedules(isolate_home):
+    """Phase 6: DELETE /apps/{slug}?cascade=true wipes all dependent records."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+    client.post("/api/plugins/marketing_factory/init")
+
+    # Seed some pupular activity
+    client.post("/api/plugins/marketing_factory/campaigns/generate", json={"app_slug": "pupular", "days": 2})
+    client.post("/api/plugins/marketing_factory/drafts/approve-all?app_slug=pupular")
+    overview_before = client.get("/api/plugins/marketing_factory/overview").json()
+    drafts_before = sum(1 for d in overview_before["drafts"] if d["app_slug"] == "pupular")
+    campaigns_before = sum(1 for c in overview_before["campaigns"] if c["app_slug"] == "pupular")
+    assert drafts_before > 0
+    assert campaigns_before > 0
+
+    response = client.delete("/api/plugins/marketing_factory/apps/pupular?cascade=true")
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result["app_slug"] == "pupular"
+    assert result["removed"]["drafts"] == drafts_before
+    assert result["removed"]["campaigns"] == campaigns_before
+
+    overview_after = response.json()["overview"]
+    assert all(a["slug"] != "pupular" for a in overview_after["apps"])
+    assert all(d["app_slug"] != "pupular" for d in overview_after["drafts"])
+    assert all(c["app_slug"] != "pupular" for c in overview_after["campaigns"])
+
+
+def test_delete_app_no_cascade_refuses_when_dependents_exist(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    pipe.generate_campaign("pupular", days=1)
+
+    with pytest.raises(ValueError):
+        store.remove_app("pupular", cascade=False)
+
+
+def test_delete_unknown_app_returns_404(isolate_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+    client.post("/api/plugins/marketing_factory/init")
+
+    response = client.delete("/api/plugins/marketing_factory/apps/bogus-slug")
+    assert response.status_code == 404
+
+
 def test_poll_skips_drafts_scheduled_in_the_future(isolate_home):
     """Phase 5: poll(due_only=True) must NOT publish drafts whose scheduled_for is in the future."""
     from datetime import datetime, timedelta, timezone

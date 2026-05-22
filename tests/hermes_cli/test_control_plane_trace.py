@@ -303,4 +303,3 @@ def test_unknown_review_handoff_vocab_is_rejected():
         trace.task_status_transition("t_impl", transition="implementation_running→done")
     with pytest.raises(ValueError):
         trace.review_todo_stalled_due_parent_blocked("t_review", parent_task_id="t_impl", reason="other")
-

@@ -492,6 +492,462 @@ def test_benign_seed_still_injects_active_block(monkeypatch) -> None:
     assert "[redacted" not in lowered  # no false-positive redactions
 
 
+@pytest.mark.parametrize(
+    "leaked",
+    [
+        "~/secret_notes.txt",
+        "~/.aws/credentials",
+        "~/.ssh/id_rsa",
+        "~alice/Documents/leak.json",
+        "~bob/private/key.pem",
+    ],
+)
+def test_tilde_home_paths_in_restore_are_redacted(monkeypatch, leaked) -> None:
+    """Private home shorthand (``~/...``, ``~user/...``) must not leak."""
+
+    state = _adversarial_state(
+        restore=[f"Restore unresolved tension: coupling anomaly seen near {leaked}"],
+        avoid=["Do not flatten the unresolved core."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for tilde path {leaked!r}"
+    assert health["skipped_reason"] is None
+    assert leaked not in text
+    assert "coupling" in text.lower()
+    assert "[redacted-path]" in text
+
+
+@pytest.mark.parametrize(
+    "leaked",
+    [
+        ".env",
+        ".env.local",
+        ".env.production",
+        "config/.env.staging",
+        "/srv/app/.env.development",
+        "./.env.test",
+    ],
+)
+def test_env_file_paths_in_restore_are_redacted(monkeypatch, leaked) -> None:
+    """``.env`` family config paths must not leak into the active block."""
+
+    state = _adversarial_state(
+        restore=[f"Restore stance: keep going; secret pulled from {leaked} in seed"],
+        avoid=["Do not flatten the unresolved core."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for env file {leaked!r}"
+    assert health["skipped_reason"] is None
+    assert leaked not in text
+    # Either the path was redacted (placeholder present) or it was wrapped in
+    # an enclosing absolute-path redaction — in both cases the raw token is gone.
+    assert "[redacted-path]" in text
+    assert "stance" in text.lower()
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "secrets.json",
+        "credentials.yaml",
+        "service_account.json",
+        "client_secret.json",
+        "keyfile.pem",
+        "id_rsa",
+        "id_ed25519.pub",
+    ],
+)
+def test_secret_filenames_in_restore_are_redacted(monkeypatch, filename) -> None:
+    state = _adversarial_state(
+        restore=[f"Restore stance: keep investigating; leaked filename {filename} appears"],
+        avoid=["Do not flatten the unresolved core."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for {filename!r}"
+    assert health["skipped_reason"] is None
+    assert filename not in text
+    assert "stance" in text.lower()
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "AKIAIOSFODNN7EXAMPLEKEY",
+        "ASIAIOSFODNN7EXAMPLE12",
+        "AIzaSyA0123456789ABCDEFGHIJKLMNOPQR123",
+        "glpat" + "-XYZ_abcdefghijkl0123",
+        "hf_abc...7890",
+        "sk-ant...cdef",
+        "npm_Ab...6789",
+        "ya29.a0AfH6SMC_abcdefghijklmnopqrstuv",
+        "sk" + "_live_abcdefghijklmnopqrstuvwxyz",
+        "shpat_abcdef0123456789abcdef01234567",
+    ],
+)
+def test_extra_token_prefixes_in_restore_are_redacted(monkeypatch, token) -> None:
+    """Non-OpenAI/GitHub vendor token prefixes must not leak."""
+
+    state = _adversarial_state(
+        restore=[f"Restore stance: keep going; vendor token {token} in seed"],
+        avoid=["Do not flatten the unresolved core."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for token {token!r}"
+    assert health["skipped_reason"] is None
+    assert token not in text
+    assert "stance" in text.lower()
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "t_d52bb1c6",
+        "t_0ac295c9",
+        "t_abcdef01",
+        "t_53b2223d",
+    ],
+)
+def test_kanban_task_ids_in_avoid_are_redacted(monkeypatch, task_id) -> None:
+    """Kanban task ids (``t_<hex>``) must not appear in the active block."""
+
+    state = _adversarial_state(
+        restore=["Restore unresolved tension: coupling anomaly"],
+        avoid=[f"Do not flatten earlier task {task_id} into a recency answer."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for task id {task_id!r}"
+    assert health["skipped_reason"] is None
+    assert task_id not in text
+    assert "[redacted-id]" in text
+    assert "coupling" in text.lower()
+
+
+@pytest.mark.parametrize(
+    "raw_id",
+    [
+        "sess_abc_XYZ123",
+        "session_42_token_holder",
+        "sid_aaaa_bbbb_cccc",
+        "conv_2025_05_abcdef",
+        "chat_room_42_msg_99",
+        "sock_open_77_888",
+        "gw_session_42_abc",
+        "gateway_main_777_888",
+    ],
+)
+def test_session_like_underscore_ids_are_redacted(monkeypatch, raw_id) -> None:
+    """Session-like / gateway-like underscore ids must not leak."""
+
+    state = _adversarial_state(
+        restore=["Restore unresolved tension: coupling anomaly"],
+        avoid=[f"Do not restore {raw_id}: ranked on recency, not pressure."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for raw id {raw_id!r}"
+    assert health["skipped_reason"] is None
+    assert raw_id not in text
+    assert "coupling" in text.lower()
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "password=hunter2supersecret",
+        "api_key: AbCdEf0123456789",
+        "auth_token = MySuperSecretValueXyz",
+        "client_secret: opaque_blob_12345",
+        "private_key=keep_this_safe_pls",
+        "access_token: abcdef01234567",
+        "refresh_token=verylonglived_xyz",
+    ],
+)
+def test_kv_secret_shapes_are_redacted(monkeypatch, secret) -> None:
+    """Generic ``key=value`` / ``key: value`` secret shapes must not leak."""
+
+    state = _adversarial_state(
+        restore=[f"Restore stance: keep going; observed {secret} embedded in seed"],
+        avoid=["Do not flatten the unresolved core."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for secret {secret!r}"
+    assert health["skipped_reason"] is None
+    # The secret-bearing rhs (whatever follows ``=``/``:``) must be gone.
+    rhs = secret.split("=", 1)[-1].split(":", 1)[-1].strip()
+    assert rhs not in text
+    assert "stance" in text.lower()
+
+
+@pytest.mark.parametrize(
+    "env_secret",
+    [
+        "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "GITHUB_TOKEN=ghp_doesnotreallymatterhere",
+        "DATABASE_PASSWORD=hunter2",
+        "OPENAI_API_KEY=opaque-token-value-xyz",
+        "STRIPE_SECRET_KEY=" + "sk_liv...alue",
+        "SOME_PRIVATE_KEY=-----BEGIN-OPAQUE-BLOB-----",
+    ],
+)
+def test_env_var_secret_assignments_are_redacted(monkeypatch, env_secret) -> None:
+    state = _adversarial_state(
+        restore=[f"Restore stance: keep going; env file had {env_secret} present"],
+        avoid=["Do not flatten the unresolved core."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for env secret {env_secret!r}"
+    assert health["skipped_reason"] is None
+    rhs = env_secret.split("=", 1)[1]
+    assert rhs not in text
+    assert "stance" in text.lower()
+
+
+@pytest.mark.parametrize(
+    "blob",
+    [
+        "AbCdEf0123456789GhIjKlMnOpQrStUvWxYz0123",
+        "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ",
+        "ZGFua2NyZXdrZXlibG9iMTIzNDU2Nzg5MGFiY2RlZg==",
+    ],
+)
+def test_base64_like_blobs_are_redacted(monkeypatch, blob) -> None:
+    """Long base64-ish secret blobs (mixed case + digits) must not leak."""
+
+    state = _adversarial_state(
+        restore=[f"Restore stance: keep investigating; opaque blob {blob} was seen"],
+        avoid=["Do not flatten the unresolved core."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for blob {blob!r}"
+    assert health["skipped_reason"] is None
+    assert blob not in text
+    assert "stance" in text.lower()
+
+
+def test_residual_unsafe_pattern_in_rendered_block_fails_closed(monkeypatch) -> None:
+    """If the per-item redactor misses an unsafe pattern, the residual guard
+    must drop the whole block via ``unsafe_context_pack`` rather than ship a
+    partially-sanitized line.
+    """
+
+    # Monkeypatch ``_redact`` to a no-op so adversarial content survives into
+    # the rendered block. The residual guard inside ``_render_active_block``
+    # should then trip and fail closed.
+    from contextops import active_hydration as ah
+
+    monkeypatch.setattr(ah, "_redact", lambda item: item)
+    state = _adversarial_state(
+        restore=["Restore stance: leaked path /home/duckran/.ssh/id_rsa here"],
+        avoid=["Do not flatten the unresolved core."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is None
+    assert health["enabled"] is True
+    assert health["allowlisted"] is True
+    assert health["skipped_reason"] == "unsafe_context_pack"
+
+
+# --- M1R4 raw-id key/value + snowflake regression tests -------------------
+#
+# These cover the reviewer BLOCK on commit 640029ec9: the sanitizer redacted
+# raw-id key/value LHS shapes but left the RHS exposed (``message_id=abc123``
+# → ``[redacted-id]=abc123``), and standalone Discord-style 15-22 digit
+# numeric snowflakes were not recognized as platform/raw IDs at all.
+
+
+@pytest.mark.parametrize(
+    "kv",
+    [
+        "message_id=abc123XYZ",
+        "channel_id=987654321",
+        "gateway_id=gw_main_777",
+        "user_id=user-42",
+        "session_id=sess-aaa-bbb",
+        "thread_id=thr_xxx",
+        "chat_id=chat-99",
+        "task_id=task_42",
+        "event_id=evt-7f2b",
+        "run_id=run_2025_05_20",
+        "conversation_id=conv_aaa",
+        "message-id=abc123XYZ",
+        "messageId=abc123XYZ",
+        "MESSAGE_ID=abc123XYZ",
+        "message_id: abc123XYZ",
+        "channel_id : 987654321",
+    ],
+)
+def test_raw_id_kv_forms_redact_both_lhs_and_rhs(monkeypatch, kv) -> None:
+    """Reviewer BLOCK regression: the full ``<id-noun>=<value>`` pair must be
+    redacted, not just the lhs key — the rhs identifier must not survive.
+    """
+
+    state = _adversarial_state(
+        restore=[f"Restore stance: keep going; observed {kv} in seed"],
+        avoid=["Do not flatten the unresolved core."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for {kv!r}"
+    assert health["skipped_reason"] is None
+    # Both sides must be gone — neither the verbatim pair nor the rhs value.
+    assert kv not in text
+    sep = "=" if "=" in kv else ":"
+    rhs = kv.split(sep, 1)[1].strip()
+    assert rhs not in text, f"rhs {rhs!r} of {kv!r} leaked into active block"
+    assert "stance" in text.lower()
+
+
+@pytest.mark.parametrize(
+    "snowflake",
+    [
+        "12345678901234567",     # 17 digits
+        "123456789012345678",    # 18 digits (typical Discord snowflake)
+        "1234567890123456789",   # 19 digits
+        "12345678901234567890",  # 20 digits
+    ],
+)
+def test_standalone_snowflake_ids_in_restore_are_redacted(
+    monkeypatch, snowflake
+) -> None:
+    """Standalone 15-22 digit platform IDs must not leak in restore text."""
+
+    state = _adversarial_state(
+        restore=[
+            f"Restore unresolved tension: coupling anomaly near {snowflake}"
+        ],
+        avoid=["Do not flatten the unresolved core."],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for snowflake {snowflake!r}"
+    assert health["skipped_reason"] is None
+    assert snowflake not in text
+    assert "[redacted-id]" in text
+    assert "coupling" in text.lower()
+
+
+@pytest.mark.parametrize(
+    "snowflake",
+    [
+        "12345678901234567",
+        "123456789012345678",
+        "1234567890123456789",
+        "12345678901234567890",
+    ],
+)
+def test_standalone_snowflake_ids_in_avoid_are_redacted(
+    monkeypatch, snowflake
+) -> None:
+    """Standalone 15-22 digit platform IDs must not leak in avoid text."""
+
+    state = _adversarial_state(
+        restore=["Restore unresolved tension: coupling anomaly"],
+        avoid=[
+            f"Do not flatten the message {snowflake} into a recency answer."
+        ],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None, f"unexpected fail-closed for snowflake {snowflake!r}"
+    assert health["skipped_reason"] is None
+    assert snowflake not in text
+    assert "[redacted-id]" in text
+    assert "coupling" in text.lower()
+
+
+def test_ordinary_small_numbers_in_cognitive_text_survive(monkeypatch) -> None:
+    """Benign active-hydration positive test: small numbers and ordinary
+    cognitive prose must not be over-redacted by the snowflake guard.
+    """
+
+    state = _adversarial_state(
+        restore=[
+            "Restore stance: keep investigating across 3 related threads",
+            "Restore unresolved tension: 2 systems coupled despite design intent",
+        ],
+        avoid=[
+            "Do not flatten 5 distinct pressure components into 1 recency answer.",
+            "Do not treat 2024 release work as a closed topic.",
+        ],
+    )
+    _patch_preview(monkeypatch, state)
+    text, health = build_active_context(
+        agent=_agent(),
+        original_user_message=PRESSURE_MESSAGE,
+        config=_enabled_cfg(),
+    )
+    assert text is not None
+    assert health["enabled"] is True
+    assert health["allowlisted"] is True
+    assert health["skipped_reason"] is None
+    assert "3 related threads" in text
+    assert "2 systems coupled" in text
+    assert "5 distinct pressure components" in text
+    assert "2024" in text
+    assert "[redacted" not in text
+
+
 def test_returns_health_dict_structure() -> None:
     text, health = build_active_context(
         agent=_agent(),

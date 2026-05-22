@@ -1048,7 +1048,3 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
         ).fetchall()
     }
     assert tables == set()
-
-
-
-

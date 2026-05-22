@@ -179,9 +179,9 @@ contextops replay --events fixtures/session.jsonl --state fixtures/state.yaml --
 
 **Experiment variants:**
 
-A. Recent raw turns only  
-B. Giant summary  
-C. Context pack only  
+A. Recent raw turns only
+B. Giant summary
+C. Context pack only
 D. Context pack + minimal raw excerpts
 
 **Evaluation rubric:**

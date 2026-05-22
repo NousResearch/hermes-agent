@@ -17,6 +17,9 @@ Each route defines:
     message that gets delivered.  Use for external push notifications
     (Supabase, monitoring alerts, inter-agent pings) where zero LLM cost
     and sub-second delivery matter more than agent reasoning.
+  - ack: optional dict {platform, message} to send a quick "received"
+    notification to another platform's home channel before the agent
+    starts processing. Fire-and-forget; failures only log a warning.
 
 Security:
   - HMAC secret is required per route (validated at startup)
@@ -567,6 +570,37 @@ class WebhookAdapter(BasePlatformAdapter):
             len(prompt),
             delivery_id,
         )
+
+        # Fire-and-forget pre-processing ack to another platform's home channel
+        # so users know the webhook was received before the agent starts.
+        ack_config = route_config.get("ack")
+        if isinstance(ack_config, dict) and ack_config.get("platform"):
+            ack_platform = ack_config["platform"]
+            ack_message = (
+                ack_config.get("message") or "👀 Processing webhook request..."
+            )
+
+            async def _send_ack() -> None:
+                try:
+                    result = await self._deliver_cross_platform(
+                        ack_platform, ack_message, {}
+                    )
+                    if not result.success:
+                        logger.warning(
+                            "[webhook] Ack delivery to %s failed: %s",
+                            ack_platform,
+                            result.error,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "[webhook] Ack delivery to %s raised: %s",
+                        ack_platform,
+                        e,
+                    )
+
+            ack_task = asyncio.create_task(_send_ack())
+            self._background_tasks.add(ack_task)
+            ack_task.add_done_callback(self._background_tasks.discard)
 
         # Non-blocking — return 202 Accepted immediately
         task = asyncio.create_task(self.handle_message(event))

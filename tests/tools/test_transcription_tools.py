@@ -53,6 +53,20 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _disable_lazy_stt_install():
+    """Disarm the runtime lazy-install probe so static ``_HAS_FASTER_WHISPER``
+    patches accurately simulate 'faster-whisper not installed'.
+
+    Without this, ``_try_lazy_install_stt()`` calls
+    ``importlib.util.find_spec("faster_whisper")``, which returns truthy
+    whenever the package is installed in the dev / CI environment —
+    defeating the test's ``_HAS_FASTER_WHISPER=False`` patch.
+    """
+    with patch("tools.transcription_tools._try_lazy_install_stt", return_value=False):
+        yield
+
+
 # ============================================================================
 # _get_provider — full permutation matrix
 # ============================================================================

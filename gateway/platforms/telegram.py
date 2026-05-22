@@ -2944,6 +2944,165 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+
+    # ──────────────────────────────────────────────────────────────────────
+    # SIE Routing Intel Phase 3 — routing-rec:{rec_id}:{action} callback
+    # Card: kn72qwdrmqfme9pk4ahmq68trs877kzh (Lex-Workspace)
+    # Local-only branch: sie-phase3-callback-handler (DO NOT push upstream)
+    # ──────────────────────────────────────────────────────────────────────
+    async def _handle_routing_rec_callback(
+        self, query: Any, data: str
+    ) -> None:
+        """Resolve a TJ tap on a routing-intel recommendation.
+
+        callback_data shape: routing-rec:{recommendation_id}:{action}
+        action ∈ {approve, skip, defer}
+
+        Appends a status-change row to
+        ~/hermes-workspace/Lex-Workspace/sie/routing-intel/approvals.jsonl
+        via the Lex-Workspace ale_atomic.atomic_append_jsonl primitive (run as
+        a subprocess so the gateway venv doesn't need Lex-Workspace deps).
+
+        Edits the originating Telegram message to remove the keyboard and
+        show TJ's choice. On 'defer', files an MC card via
+        scripts/file-mc-card.py (best-effort, non-blocking on failure).
+
+        Idempotent — multiple taps record multiple status-change rows, latest
+        wins per the consumer (Phase D/E reads with "latest row for
+        recommendation_id"). Telegram itself collapses rapid taps to one
+        callback per button.
+        """
+        import os
+        import subprocess
+        import json as _json
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        parts = data.split(":", 2)
+        if len(parts) != 3 or parts[0] != "routing-rec":
+            await query.answer(text="Malformed callback")
+            return
+        rec_id = parts[1]
+        action = parts[2]
+        if action not in ("approve", "skip", "defer"):
+            await query.answer(text=f"Unknown action: {action}")
+            return
+
+        # Authorization gate (mirror exec-approval pattern: only authorized
+        # users may resolve routing recommendations).
+        caller_id = str(getattr(query.from_user, "id", ""))
+        try:
+            query_message = getattr(query, "message", None)
+            query_chat_id = getattr(query_message, "chat_id", None)
+            query_chat = getattr(query_message, "chat", None)
+            query_chat_type = getattr(query_chat, "type", None)
+            query_thread_id = getattr(query_message, "message_thread_id", None)
+            query_user_name = getattr(query.from_user, "first_name", None)
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ Not authorized.")
+                return
+        except Exception:
+            # Auth helper missing in some test paths; in production it exists.
+            pass
+
+        # Resolve approvals.jsonl path. Lex-Workspace canonical location.
+        workspace = Path(os.path.expanduser("~/hermes-workspace/Lex-Workspace"))
+        approvals = workspace / "sie/routing-intel/approvals.jsonl"
+        approvals.parent.mkdir(parents=True, exist_ok=True)
+
+        status_map = {"approve": "approved", "skip": "skipped", "defer": "deferred"}
+        new_status = status_map[action]
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        user_display = getattr(query.from_user, "first_name", "User")
+
+        row = {
+            "recommendation_id": rec_id,
+            "status": new_status,
+            "decided_at": now,
+            "decided_by": user_display,
+            "decided_by_id": caller_id,
+            "source": "telegram-callback",
+        }
+
+        # Atomic append via Lex-Workspace ale_atomic primitive. We invoke it
+        # in-process when possible (Lex-Workspace scripts dir is usually on
+        # PYTHONPATH for gateway too); fall back to subprocess otherwise.
+        import sys
+        wrote = False
+        try:
+            import sys
+            scripts_dir = str(workspace / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from ale_atomic import atomic_append_jsonl  # type: ignore
+            atomic_append_jsonl(str(approvals), row)
+            wrote = True
+        except Exception as imp_exc:
+            logger.warning("[routing-rec] in-process append failed (%s); falling back to subprocess", imp_exc)
+            try:
+                py = sys.executable
+                code = (
+                    "import sys; sys.path.insert(0, %r); "
+                    "from ale_atomic import atomic_append_jsonl; "
+                    "import json; atomic_append_jsonl(%r, json.loads(%r))"
+                ) % (str(workspace / "scripts"), str(approvals), _json.dumps(row))
+                result = subprocess.run([py, "-c", code], capture_output=True, text=True, timeout=10)
+                wrote = result.returncode == 0
+                if not wrote:
+                    logger.error("[routing-rec] subprocess append failed: %s", result.stderr)
+            except Exception as sub_exc:  # noqa: BLE001
+                logger.error("[routing-rec] subprocess append also failed: %s", sub_exc)
+
+        if not wrote:
+            await query.answer(text="⚠️ Recorded in Telegram but file-write failed; check logs")
+        else:
+            label_map = {"approved": "✅ Approved", "skipped": "⏭ Skipped", "deferred": "📋 Deferred to MC"}
+            await query.answer(text=label_map[new_status])
+
+        # Edit message to remove buttons and reflect the decision.
+        try:
+            original_text = ""
+            try:
+                original_text = getattr(query.message, "text", "") or ""
+            except Exception:
+                pass
+            suffix = f"\n\n— {label_map.get(new_status, new_status)} by {user_display}"
+            new_text = (original_text[: TELEGRAM_TEXT_LIMIT - len(suffix) - 10] + suffix) if original_text else suffix
+            await query.edit_message_text(
+                text=new_text,
+                parse_mode=None,
+                reply_markup=None,
+            )
+        except Exception as edit_exc:  # noqa: BLE001
+            logger.warning("[routing-rec] edit_message_text failed (non-fatal): %s", edit_exc)
+
+        # On defer: file an MC card. Best-effort, non-blocking.
+        if new_status == "deferred":
+            mc_script = workspace / "scripts/file-mc-card.py"
+            if mc_script.exists():
+                try:
+                    subprocess.Popen(
+                        [
+                            sys.executable, str(mc_script),
+                            "--status", "proposed",
+                            "--lane", "routing-proposals",
+                            "--title", f"Routing recommendation deferred: {rec_id}",
+                            "--tags", f"routing-intel,recommendation_id:{rec_id}",
+                        ],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                except Exception as mc_exc:  # noqa: BLE001
+                    logger.warning("[routing-rec] MC card filing failed (non-fatal): %s", mc_exc)
+            else:
+                logger.info("[routing-rec] defer requested but %s missing; skipping MC card", mc_script)
+
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -2976,6 +3135,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- SIE routing-intel recommendation callbacks (Phase 3, plan v1.1 C.2) ---
+        # callback_data shape: routing-rec:{recommendation_id}:{approve|skip|defer}
+        # Updates ~/hermes-workspace/Lex-Workspace/sie/routing-intel/approvals.jsonl
+        # and edits the original message to remove buttons + show TJ's choice.
+        # On 'defer', files an MC card via scripts/file-mc-card.py (subprocess).
+        # Card: kn72qwdrmqfme9pk4ahmq68trs877kzh. Idempotent on repeated taps.
+        if data.startswith("routing-rec:"):
+            try:
+                await self._handle_routing_rec_callback(query, data)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[routing-rec] handler failed: %s", exc)
+                try:
+                    await query.answer(text="Failed to record choice; check gateway.log")
+                except Exception:
+                    pass
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

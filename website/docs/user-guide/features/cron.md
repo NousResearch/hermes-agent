@@ -121,9 +121,42 @@ When `workdir` is set:
 Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate — `TERMINAL_CWD` is process-global, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
 :::
 
+## Running cron jobs in a specific profile
+
+By default a cron job inherits whichever Hermes profile owned the gateway / CLI that created it. Pass `--profile <name>` (CLI) or `profile=` (cronjob tool) to re-target the job at a different profile — the scheduler resolves that profile's `HERMES_HOME`, temporarily switches into it for the duration of the run, loads its `.env` + `config.yaml`, and executes the job there:
+
+```bash
+# Pin a job to the `night-ops` profile regardless of where it was scheduled
+hermes cron create "every 1d at 03:00" \
+  "Tail the security log and flag anomalies" \
+  --profile night-ops
+```
+
+```python
+# From a chat, via the cronjob tool
+cronjob(
+    action="create",
+    schedule="every 1d at 03:00",
+    prompt="Tail the security log and flag anomalies",
+    profile="night-ops",
+)
+```
+
+Use `--profile default` to explicitly pin to the root Hermes profile. The named profile must already exist; the scheduler refuses to create profiles on the fly. To clear a profile pin during `cron edit`, pass an empty string (`--profile ""` or `profile=""`) — the job reverts to running in whatever profile the scheduler itself is in.
+
+If the pinned profile is later deleted, the scheduler logs a warning and falls back to running the job in its current profile rather than crashing — so a stale `profile` reference never wedges a job.
+
+:::note Serialization
+Jobs with a `profile` set also run sequentially, for the same reason as `workdir`-pinned jobs: switching `HERMES_HOME` is a process-global mutation, so two profile-pinned jobs running in parallel would race each other. Unpinned jobs still run in the normal parallel pool.
+:::
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.
+
+:::tip Job reference
+The `<job_id>` placeholder below (and in [Lifecycle actions](#lifecycle-actions)) also accepts the job's name (case-insensitive) — handy when you remember `morning-digest` but not the hex ID. An exact job ID takes precedence over name matches; if the reference is not an ID and a name matches more than one job, the command refuses and prints the candidate IDs so you can disambiguate.
+:::
 
 ### Chat
 
@@ -240,8 +273,30 @@ When scheduling jobs, you specify where the output goes:
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
 | `"qqbot"` | QQ Bot (Tencent QQ) | |
+| `"all"` | Fan out to every connected home channel | Resolved at fire time |
+| `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
+| `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
+
+### Routing intent (`all`)
+
+`all` lets you ship one cron job to every messaging channel you have configured, without having to enumerate them by name. It is **resolved at fire time**, so a job created before you wired up Telegram will pick up Telegram on the next tick after you set `TELEGRAM_HOME_CHANNEL`.
+
+Semantics: `all` expands to every platform with a configured home channel. Zero is fine; the job simply produces no delivery targets and is recorded as a delivery failure upstream.
+
+`all` composes with explicit targets. `origin,all` delivers to the origin chat *plus* every other connected home channel, de-duplicating by `(platform, chat_id, thread_id)`.
+
+### Telegram cron topic (`TELEGRAM_CRON_THREAD_ID`)
+
+When Telegram topic mode is enabled, the root DM is reserved as a system lobby — replies sent there are rebuffed with a lobby reminder and `reply_to_message_id` is dropped, so you cannot reply to a cron message that landed in the main chat.
+
+Point cron at a dedicated forum topic instead:
+
+1. In Telegram, open the bot DM and create a topic named e.g. `Cron`. Long-press the topic header → **Copy link**; the trailing integer is the topic's `message_thread_id`.
+2. Set `TELEGRAM_CRON_THREAD_ID=<that id>` in your `.env`.
+
+This applies only to cron deliveries. `TELEGRAM_HOME_CHANNEL_THREAD_ID` (used elsewhere, e.g. restart notifications) is unchanged. Explicit `deliver="telegram:chat_id:thread_id"` targets continue to win over the env var. Replies to cron messages now arrive in the existing topic session, so you can act on them directly.
 
 ### Response wrapping
 
@@ -510,6 +565,86 @@ print(json.dumps({"wakeAgent": True, "context": {"new_issues": latest - prev}}))
 ```
 
 When `wakeAgent` is omitted, the default is `true` (wake the agent as usual).
+
+#### Recipes: cheap pre-run gates
+
+The `wakeAgent` gate gives you a $0 way to decide whether a scheduled job should spend any LLM tokens at all. Three patterns cover most use cases.
+
+**File-change gate** — only run when a watched file has new content since the last successful tick. The scheduler records each job's `last_run_at`; compare it against the file's mtime.
+
+```bash
+#!/bin/bash
+# ~/.hermes/scripts/feed-changed.sh
+FEED="$HOME/data/feed.json"
+STATE="$HOME/.hermes/scripts/.feed-changed.last"
+test -f "$FEED" || { echo '{"wakeAgent": false}'; exit 0; }
+mtime=$(stat -c %Y "$FEED")
+last=$(cat "$STATE" 2>/dev/null || echo 0)
+if [ "$mtime" -le "$last" ]; then
+  echo '{"wakeAgent": false}'
+else
+  echo "$mtime" > "$STATE"
+  echo '{"wakeAgent": true}'
+fi
+```
+
+```text
+cronjob(action="create", name="process-feed",
+        schedule="every 30m",
+        script="feed-changed.sh",
+        prompt="A new ~/data/feed.json has landed. Summarize what changed.")
+```
+
+**External-flag gate** — only run when some other process has signalled readiness (e.g. a deploy hook drops a file, a CI job sets a value in your state store).
+
+```bash
+#!/bin/bash
+# ~/.hermes/scripts/flag-ready.sh
+if test -f /tmp/new-data-ready; then
+  rm -f /tmp/new-data-ready
+  echo '{"wakeAgent": true}'
+else
+  echo '{"wakeAgent": false}'
+fi
+```
+
+```text
+cronjob(action="create", name="nightly-analysis",
+        schedule="0 9 * * *",
+        script="flag-ready.sh",
+        prompt="Run the nightly analysis over today's batch.")
+```
+
+**SQL-count gate** — only run when there are new rows to process in your own database. The script can also pass the count through to the agent via `context`, so the agent knows how much it's looking at without re-querying.
+
+```python
+#!/usr/bin/env python
+# ~/.hermes/scripts/new-rows.py
+import json, sqlite3
+conn = sqlite3.connect("/home/me/data/app.db")
+n = conn.execute(
+    "SELECT COUNT(*) FROM messages WHERE ts > strftime('%s','now','-2 hours')"
+).fetchone()[0]
+if n < 1:
+    print(json.dumps({"wakeAgent": False}))
+else:
+    print(json.dumps({"wakeAgent": True, "context": {"new_rows": n}}))
+```
+
+```text
+cronjob(action="create", name="summarize-new-msgs",
+        schedule="every 2h",
+        script="new-rows.py",
+        prompt="Summarize the new messages from the last 2 hours.")
+```
+
+The same pattern works for any data source you can query from a script — Postgres, an HTTP API, your own state store — without baking a SQL evaluator into the cron subsystem.
+
+:::tip
+Hermes's own `~/.hermes/state.db` is an internal schema that changes between releases. Don't query it from a pre-run gate — point at your own database or feed instead.
+:::
+
+Credit: this recipe set was prompted by @iankar8's exploration in [#2654](https://github.com/NousResearch/hermes-agent/pull/2654), which proposed adding sql/file/command triggers as a parallel mechanism. The `script` + `wakeAgent` gate already covers all three cases at $0, so the work landed as documentation instead.
 
 ### Chaining jobs: `context_from`
 

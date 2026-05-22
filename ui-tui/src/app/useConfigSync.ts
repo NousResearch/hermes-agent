@@ -1,3 +1,4 @@
+import type { MouseTrackingMode } from '@hermes/ink'
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
@@ -68,16 +69,57 @@ export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
 }
 
 const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])
+const TRUTHY_MOUSE_ALL = new Set(['1', 'true', 'yes', 'on', 'all', 'full', 'any'])
 const hasOwn = (obj: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(obj, key)
 
-export const normalizeMouseTracking = (display: { mouse_tracking?: unknown; tui_mouse?: unknown }): boolean => {
+// `display.mouse_tracking` accepts boolean (`true` ⇒ all modes, `false` ⇒ off)
+// for back-compat, plus the string presets `off|wheel|buttons|all` (aliases:
+// `on`/`full`/`any`/`1`/`true`/... → `all`; `0`/`false`/`no`/`off` → `off`).
+// `wheel` enables 1000+1006 — scroll wheel + click only, no drag or hover,
+// which silences tmux's "No image in clipboard" spam over the prompt row.
+// `buttons` adds 1002 so terminal-side text selection drags still register.
+// Legacy `tui_mouse` is honored only if `mouse_tracking` is absent.
+export const normalizeMouseTracking = (display: {
+  mouse_tracking?: unknown
+  tui_mouse?: unknown
+}): MouseTrackingMode => {
   const raw = hasOwn(display, 'mouse_tracking') ? display.mouse_tracking : display.tui_mouse
 
   if (raw === false || raw === 0) {
-    return false
+    return 'off'
   }
 
-  return typeof raw === 'string' ? !FALSEY_MOUSE.has(raw.trim().toLowerCase()) : true
+  if (raw === true || raw === undefined || raw === null) {
+    return 'all'
+  }
+
+  if (typeof raw === 'number') {
+    return 'all'
+  }
+
+  if (typeof raw !== 'string') {
+    return 'all'
+  }
+
+  const v = raw.trim().toLowerCase()
+
+  if (FALSEY_MOUSE.has(v)) {
+    return 'off'
+  }
+
+  if (TRUTHY_MOUSE_ALL.has(v)) {
+    return 'all'
+  }
+
+  if (v === 'wheel' || v === 'scroll') {
+    return 'wheel'
+  }
+
+  if (v === 'buttons' || v === 'button' || v === 'click') {
+    return 'buttons'
+  }
+
+  return 'all'
 }
 
 const MTIME_POLL_MS = 5000

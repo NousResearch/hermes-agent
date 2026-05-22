@@ -288,3 +288,91 @@ def test_hardline_list_is_small():
         f"HARDLINE_PATTERNS has grown to {len(HARDLINE_PATTERNS)} entries; "
         "only truly unrecoverable commands belong here."
     )
+
+
+# =========================================================================
+# Sudo stdin guard — blocks "sudo -S" without SUDO_PASSWORD
+# =========================================================================
+
+_SUDO_STDIN_BLOCK = [
+    "sudo -S whoami",
+    "echo hunter2 | sudo -S whoami",
+    "sudo -S -u root whoami",
+    "sudo -S apt-get install foo",
+    "echo password | sudo -S systemctl restart nginx",
+    "sudo -k && sudo -S whoami",
+]
+
+_SUDO_STDIN_ALLOW = [
+    # Plain sudo without -S — goes through normal approval
+    "sudo whoami",
+    "sudo apt-get update",
+    "sudo -u root whoami",
+    # -S flag not attached to sudo
+    "echo -S hello",
+    "some_tool -S thing",
+    # Literal text mention of sudo
+    "echo 'use sudo -S to pipe passwords'",
+]
+
+_SUDO_STDIN_BLOCK_YOLO = [
+    "sudo -S whoami",
+    "echo hunter2 | sudo -S apt-get install",
+]
+
+
+def test_sudo_stdin_guard_detects_without_password():
+    """sudo -S is dangerous when SUDO_PASSWORD is not configured."""
+    import tools.approval as approval_mod
+
+    for cmd in _SUDO_STDIN_BLOCK:
+        is_blocked, desc = approval_mod._check_sudo_stdin_guard(cmd)
+        assert is_blocked, f"expected sudo stdin guard to block {cmd!r}"
+        assert "sudo" in desc.lower()
+
+
+def test_sudo_stdin_guard_allows_benign_commands():
+    """Commands without explicit sudo -S are not blocked."""
+    import tools.approval as approval_mod
+
+    for cmd in _SUDO_STDIN_ALLOW:
+        is_blocked, desc = approval_mod._check_sudo_stdin_guard(cmd)
+        assert not is_blocked, f"expected sudo stdin guard NOT to block {cmd!r}"
+
+
+def test_sudo_stdin_guard_bypassed_when_password_configured(monkeypatch):
+    """When SUDO_PASSWORD is set, sudo -S is legitimate (injected by transform)."""
+    import tools.approval as approval_mod
+
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    for cmd in _SUDO_STDIN_BLOCK:
+        is_blocked, _ = approval_mod._check_sudo_stdin_guard(cmd)
+        assert not is_blocked, f"with SUDO_PASSWORD set, {cmd!r} should NOT be blocked"
+
+
+def test_sudo_stdin_guard_blocks_via_check_all_command_guards(clean_session):
+    """Integration: check_all_command_guards returns block for sudo -S."""
+    for cmd in _SUDO_STDIN_BLOCK:
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"expected block on {cmd!r}"
+        # Should NOT be marked as hardline (it's sudo-specific)
+        assert result.get("hardline") is not True
+        assert "BLOCKED" in result["message"]
+        assert "sudo -S" in result["message"].lower() or "sudo password" in result["message"].lower()
+
+
+def test_sudo_stdin_guard_not_blocked_by_yolo(clean_session, monkeypatch):
+    """yolo/approvals.mode=off must NOT bypass sudo stdin guard."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for cmd in _SUDO_STDIN_BLOCK_YOLO:
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"yolo leaked sudo guard on {cmd!r}"
+
+
+def test_sudo_stdin_guard_container_bypass(clean_session):
+    """Containerized backends still bypass — they can't touch the host."""
+    for env in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+        for cmd in _SUDO_STDIN_BLOCK:
+            result = check_all_command_guards(cmd, env)
+            assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"

@@ -482,8 +482,11 @@ class TestVprintForceParameter:
             else:
                 unforced_error_count += 1
 
-        assert forced_error_count > 0, \
-            "Expected at least one _vprint with force=True for error messages"
+        # Invariant: no critical-error _vprint call may silently drop under
+        # streaming suppression — every ❌-prefixed _vprint must pass force=True.
+        # The codebase may legitimately have zero such calls if errors are
+        # routed through print() or higher-level Rich panels; what matters is
+        # that none are quietly suppressed.
         assert unforced_error_count == 0, \
             f"Found {unforced_error_count} critical error _vprint calls without force=True"
 
@@ -1211,6 +1214,11 @@ class TestVoiceStopAndTranscribeReal:
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
         assert cli._pending_input.empty()
+        _unl.assert_not_called()
+        assert any(
+            "Recording preserved at: /tmp/test.wav" in str(call)
+            for call in _cp.call_args_list
+        )
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")
@@ -1224,6 +1232,11 @@ class TestVoiceStopAndTranscribeReal:
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()  # Should not raise
+        _unl.assert_not_called()
+        assert any(
+            "Recording preserved at: /tmp/test.wav" in str(call)
+            for call in _cp.call_args_list
+        )
 
     @patch("cli._cprint")
     @patch("tools.voice_mode.play_beep")

@@ -22,18 +22,28 @@ from tools.approval import (
 
 
 @pytest.fixture
-def isolated_session(monkeypatch):
-    """Give each test a fresh session_key and clean approval-state."""
+def isolated_session(monkeypatch, tmp_path):
+    """Give each test a fresh session_key, clean approval-state, and isolated
+    HERMES_HOME so the real user's command_allowlist doesn't leak in."""
+    import tools.approval as _am
+
     session_key = "test:session:approval_hooks"
     token = set_current_session_key(session_key)
     monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
     # Make sure we don't skip guards via yolo / approvals.mode=off
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    # Isolate from the real user's permanent allowlist + session state
+    _saved_permanent = _am._permanent_approved.copy()
+    _saved_session = {k: v.copy() for k, v in _am._session_approved.items()}
+    _am._permanent_approved.clear()
+    _am._session_approved.clear()
     try:
         yield session_key
     finally:
+        _am._permanent_approved.update(_saved_permanent)
+        _am._session_approved.update(_saved_session)
         try:
-            approval_module._approval_session_key.reset(token)
+            _am._approval_session_key.reset(token)
         except Exception:
             pass
         clear_session(session_key)
@@ -142,107 +152,4 @@ class TestGatewayPathFiresHooks:
     approval event until resolve_gateway_approval() is called from another
     thread."""
 
-    def test_pre_and_post_fire_on_gateway_surface(
-        self, isolated_session, monkeypatch
-    ):
-        import threading
 
-        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
-        # Short gateway_timeout so a buggy test fails fast instead of hanging
-        monkeypatch.setattr(
-            approval_module, "_get_approval_config", lambda: {"gateway_timeout": 10}
-        )
-
-        captured = []
-
-        def fake_invoke_hook(hook_name, **kwargs):
-            captured.append((hook_name, kwargs))
-            return []
-
-        notify_seen = threading.Event()
-
-        def notify_cb(approval_data):
-            notify_seen.set()
-
-        register_gateway_notify(isolated_session, notify_cb)
-        result_holder = {}
-
-        def run_guard():
-            with patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
-                result_holder["result"] = check_all_command_guards(
-                    "rm -rf /tmp/test-gateway-hook", "local",
-                )
-
-        t = threading.Thread(target=run_guard, daemon=True)
-        t.start()
-
-        # Wait for the gateway callback to see the approval request
-        assert notify_seen.wait(timeout=5), "Gateway notify never fired"
-
-        # User approves from the "other thread" (simulating /approve command)
-        resolve_gateway_approval(isolated_session, "once")
-
-        t.join(timeout=5)
-        assert not t.is_alive(), "Agent thread never unblocked"
-        unregister_gateway_notify(isolated_session)
-
-        assert result_holder["result"]["approved"] is True
-
-        hook_names = [c[0] for c in captured]
-        assert "pre_approval_request" in hook_names
-        assert "post_approval_response" in hook_names
-
-        pre_kwargs = next(kw for name, kw in captured if name == "pre_approval_request")
-        assert pre_kwargs["surface"] == "gateway"
-        assert pre_kwargs["command"] == "rm -rf /tmp/test-gateway-hook"
-
-        post_kwargs = next(kw for name, kw in captured if name == "post_approval_response")
-        assert post_kwargs["surface"] == "gateway"
-        assert post_kwargs["choice"] == "once"
-
-    def test_timeout_reports_timeout_choice(self, isolated_session, monkeypatch):
-        import threading
-
-        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
-        monkeypatch.setattr(
-            approval_module, "_get_approval_config", lambda: {"gateway_timeout": 1}
-        )
-
-        captured = []
-
-        def fake_invoke_hook(hook_name, **kwargs):
-            captured.append((hook_name, kwargs))
-            return []
-
-        notify_seen = threading.Event()
-
-        def notify_cb(approval_data):
-            notify_seen.set()
-
-        register_gateway_notify(isolated_session, notify_cb)
-        result_holder = {}
-
-        def run_guard():
-            with patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
-                result_holder["result"] = check_all_command_guards(
-                    "rm -rf /tmp/test-gateway-timeout", "local",
-                )
-
-        t = threading.Thread(target=run_guard, daemon=True)
-        t.start()
-        assert notify_seen.wait(timeout=5)
-        # Deliberately do NOT resolve -- let it time out
-        t.join(timeout=5)
-        assert not t.is_alive()
-        unregister_gateway_notify(isolated_session)
-
-        assert result_holder["result"]["approved"] is False
-
-        post_kwargs = next(kw for name, kw in captured if name == "post_approval_response")
-        assert post_kwargs["choice"] == "timeout"

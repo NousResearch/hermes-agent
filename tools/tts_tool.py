@@ -9,7 +9,7 @@ Built-in TTS providers:
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
-- xAI TTS: Grok voices, needs XAI_API_KEY
+- xAI TTS: Grok voices, uses xAI Grok OAuth credentials or XAI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
 - Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
@@ -44,7 +44,6 @@ import queue
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import tempfile
 import threading
@@ -80,11 +79,34 @@ from tools.xai_http import hermes_xai_user_agent
 
 def _import_edge_tts():
     """Lazy import edge_tts. Returns the module or raises ImportError."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tts.edge", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     import edge_tts
     return edge_tts
 
 def _import_elevenlabs():
-    """Lazy import ElevenLabs client. Returns the class or raises ImportError."""
+    """Lazy import ElevenLabs client. Returns the class or raises ImportError.
+
+    Calls :func:`tools.lazy_deps.ensure` first so the SDK gets installed on
+    demand if the user picked ElevenLabs as their TTS provider but never ran
+    the post-setup hook (e.g. enabled it by editing config.yaml directly).
+    Raises ``ImportError`` on lazy-install failure so existing callers'
+    error-handling paths keep working.
+    """
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure
+        ensure("tts.elevenlabs", prompt=False)
+    except ImportError:
+        # lazy_deps module itself missing — fall through to the raw import
+        # so older code paths still get a clean ImportError.
+        pass
+    except Exception as e:  # FeatureUnavailable or any unexpected error
+        raise ImportError(str(e))
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
@@ -136,15 +158,16 @@ DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_MINIMAX_MODEL = "speech-01"
-DEFAULT_MINIMAX_VOICE_ID = "female-shaonv"
-DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.chat/v1/text_to_speech"
+DEFAULT_MINIMAX_MODEL = "speech-02-hd"
+DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
+DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_XAI_VOICE_ID = "eve"
 DEFAULT_XAI_LANGUAGE = "en"
 DEFAULT_XAI_SAMPLE_RATE = 24000
 DEFAULT_XAI_BIT_RATE = 128000
+DEFAULT_XAI_AUTO_SPEECH_TAGS = False
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
@@ -466,13 +489,12 @@ def _shell_quote_context(command_template: str, position: int) -> Optional[str]:
                 escaped = True
             elif char == '"':
                 quote = None
-        else:
-            if char == "'":
-                quote = "'"
-            elif char == '"':
-                quote = '"'
-            elif char == "\\":
-                i += 1
+        elif char == "'":
+            quote = "'"
+        elif char == '"':
+            quote = '"'
+        elif char == "\\":
+            i += 1
         i += 1
     return quote
 
@@ -541,9 +563,16 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
             proc.kill()
         return
 
+    import psutil
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
+        parent = psutil.Process(proc.pid)
+        for child in parent.children(recursive=True):
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        parent.terminate()
+    except psutil.NoSuchProcess:
         return
     except Exception:
         proc.terminate()
@@ -555,8 +584,14 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
         pass
 
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
+        parent = psutil.Process(proc.pid)
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        parent.kill()
+    except psutil.NoSuchProcess:
         return
     except Exception:
         proc.kill()
@@ -836,13 +871,13 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
     try:
-        create_kwargs = dict(
-            model=model,
-            voice=voice,
-            input=text,
-            response_format=response_format,
-            extra_headers={"x-idempotency-key": str(uuid.uuid4())},
-        )
+        create_kwargs = {
+            "model": model,
+            "voice": voice,
+            "input": text,
+            "response_format": response_format,
+            "extra_headers": {"x-idempotency-key": str(uuid.uuid4())},
+        }
         if speed != 1.0:
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
         response = client.audio.speech.create(**create_kwargs)
@@ -858,6 +893,79 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 # ===========================================================================
 # Provider: xAI TTS
 # ===========================================================================
+_XAI_INLINE_SPEECH_TAGS = (
+    "pause",
+    "long-pause",
+    "hum-tune",
+    "laugh",
+    "chuckle",
+    "giggle",
+    "cry",
+    "tsk",
+    "tongue-click",
+    "lip-smack",
+    "breath",
+    "inhale",
+    "exhale",
+    "sigh",
+)
+_XAI_WRAPPING_SPEECH_TAGS = (
+    "soft",
+    "whisper",
+    "loud",
+    "build-intensity",
+    "decrease-intensity",
+    "higher-pitch",
+    "lower-pitch",
+    "slow",
+    "fast",
+    "sing-song",
+    "singing",
+    "laugh-speak",
+    "emphasis",
+)
+_XAI_SPEECH_TAG_RE = re.compile(
+    r"(\[(?:" + "|".join(_XAI_INLINE_SPEECH_TAGS) + r")\]|</?(?:" + "|".join(_XAI_WRAPPING_SPEECH_TAGS) + r")>)",
+    flags=re.IGNORECASE,
+)
+_XAI_FIRST_SENTENCE_RE = re.compile(r"^(.{12,120}?[.!?…])\s+(?=\S)", flags=re.DOTALL)
+
+
+def _xai_bool_config(value: Any, default: bool = False) -> bool:
+    """Coerce common YAML/env bool spellings without treating random strings as true."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+    return default
+
+
+def _apply_xai_auto_speech_tags(text: str) -> str:
+    """Add light xAI speech tags for more natural voice-mode replies.
+
+    The transform is intentionally conservative: it only inserts pauses. It
+    never fabricates laughter or whispering, and it leaves explicit user/model
+    speech tags untouched.
+    """
+    clean = text.strip()
+    if not clean or _XAI_SPEECH_TAG_RE.search(clean):
+        return text
+
+    clean = re.sub(r"\n\s*\n+", " [pause] ", clean)
+    clean = re.sub(r"\s*\n\s*", " ", clean)
+    clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
+    clean = re.sub(r"\s{2,}", " ", clean).strip()
+    return clean
+
+
 def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
     Generate audio using xAI TTS.
@@ -867,17 +975,27 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     """
     import requests
 
-    api_key = (get_env_value("XAI_API_KEY") or "").strip()
+    from tools.xai_http import resolve_xai_http_credentials
+
+    creds = resolve_xai_http_credentials()
+    api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
-        raise ValueError("XAI_API_KEY not set. Get one at https://console.x.ai/")
+        raise ValueError("No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.")
 
     xai_config = tts_config.get("xai", {})
     voice_id = str(xai_config.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
     language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
     sample_rate = int(xai_config.get("sample_rate", DEFAULT_XAI_SAMPLE_RATE))
     bit_rate = int(xai_config.get("bit_rate", DEFAULT_XAI_BIT_RATE))
+    auto_speech_tags = _xai_bool_config(
+        xai_config.get("auto_speech_tags", xai_config.get("speech_tags")),
+        DEFAULT_XAI_AUTO_SPEECH_TAGS,
+    )
+    if auto_speech_tags:
+        text = _apply_xai_auto_speech_tags(text)
     base_url = str(
         xai_config.get("base_url")
+        or creds.get("base_url")
         or get_env_value("XAI_BASE_URL")
         or DEFAULT_XAI_BASE_URL
     ).strip().rstrip("/")
@@ -925,11 +1043,11 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
 # ===========================================================================
 def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
-    Generate audio using MiniMax TTS API (v1/text_to_speech).
+    Generate audio using MiniMax TTS API.
 
-    The current API (api.minimax.chat/v1/text_to_speech) uses a simple payload
-    and returns raw audio bytes directly (Content-Type: audio/mpeg), unlike
-    the deprecated v1/t2a_v2 endpoint which returned JSON with hex-encoded audio.
+    Supports two endpoints:
+    - v1/text_to_speech: simple payload, returns raw audio (Content-Type: audio/mpeg)
+    - v1/t2a_v2: nested voice_setting/audio_setting, returns JSON with hex-encoded audio
 
     Args:
         text: Text to convert (max 10,000 characters).
@@ -949,56 +1067,106 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
     base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
+    speed = mm_config.get("speed", 1.0)
+    vol = mm_config.get("vol", 1.0)
+    pitch = mm_config.get("pitch", 0)
+    emotion = mm_config.get("emotion", "neutral")
+    sample_rate = mm_config.get("sample_rate", 32000)
+    bitrate = mm_config.get("bitrate", 128000)
 
-    payload = {
-        "model": model,
-        "text": text,
-        "voice_id": voice_id,
-    }
+    # MiniMax accounts scope TTS requests by GroupId.  When present, the docs
+    # show it as a ?GroupId=<id> query param on the t2a_v2 URL.  Accept it
+    # from config or from the MINIMAX_GROUP_ID env var; only attach when the
+    # URL doesn't already carry one.
+    group_id = (
+        str(mm_config.get("group_id") or "").strip()
+        or (get_env_value("MINIMAX_GROUP_ID") or "").strip()
+    )
+    if group_id and "GroupId=" not in base_url:
+        sep = "&" if "?" in base_url else "?"
+        base_url = f"{base_url}{sep}GroupId={group_id}"
 
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
 
+    # Detect endpoint from URL
+    is_t2a_v2 = "t2a_v2" in base_url
+
+    if is_t2a_v2:
+        # t2a_v2 endpoint: nested voice_setting/audio_setting structure
+        payload = {
+            "model": model,
+            "text": text,
+            "voice_setting": {
+                "voice_id": voice_id,
+                "speed": speed,
+                "vol": vol,
+                "pitch": pitch,
+                "emotion": emotion,
+            },
+            "audio_setting": {
+                "sample_rate": sample_rate,
+                "bitrate": bitrate,
+                "format": "mp3",
+                "channel": 1,
+            },
+        }
+    else:
+        # text_to_speech endpoint: flat payload
+        payload = {
+            "model": model,
+            "text": text,
+            "voice_id": voice_id,
+        }
+
     response = requests.post(base_url, json=payload, headers=headers, timeout=60)
 
-    content_type = response.headers.get("Content-Type", "")
+    if is_t2a_v2:
+        # t2a_v2 returns JSON with hex-encoded audio
+        result = response.json()
+        base_resp = result.get("base_resp", {})
+        status_code = base_resp.get("status_code", -1)
 
-    if "audio/" in content_type:
-        # New API: returns raw audio directly
+        if status_code != 0:
+            status_msg = base_resp.get("status_msg", "unknown error")
+            raise RuntimeError(f"MiniMax TTS API error (code {status_code}): {status_msg}")
+
+        hex_audio = result.get("data", {}).get("audio", "")
+        if not hex_audio:
+            raise RuntimeError("MiniMax TTS returned empty audio data")
+
+        audio_bytes = bytes.fromhex(hex_audio)
         with open(output_path, "wb") as f:
-            f.write(response.content)
+            f.write(audio_bytes)
         return output_path
 
-    # Legacy / fallback: try parsing as JSON with hex-encoded audio
-    try:
-        result = response.json()
-    except Exception:
-        response.raise_for_status()
-        raise RuntimeError(
-            f"MiniMax TTS returned unexpected Content-Type '{content_type}' "
-            f"({len(response.content)} bytes)"
-        )
+    else:
+        # text_to_speech returns raw audio directly
+        content_type = response.headers.get("Content-Type", "")
 
-    base_resp = result.get("base_resp", {})
-    status_code = base_resp.get("status_code", -1)
+        if "audio/" in content_type:
+            with open(output_path, "wb") as f:
+                f.write(response.content)
+            return output_path
 
-    if status_code != 0:
-        status_msg = base_resp.get("status_msg", "unknown error")
-        raise RuntimeError(f"MiniMax TTS API error (code {status_code}): {status_msg}")
+        # Fallback: try parsing as JSON
+        try:
+            result = response.json()
+            base_resp = result.get("base_resp", {})
+            status_code = base_resp.get("status_code", -1)
+            if status_code != 0:
+                status_msg = base_resp.get("status_msg", "unknown error")
+                raise RuntimeError(f"MiniMax TTS API error (code {status_code}): {status_msg}")
+        except Exception:
+            response.raise_for_status()
+            raise RuntimeError(
+                f"MiniMax TTS returned unexpected Content-Type '{content_type}' "
+                f"({len(response.content)} bytes)"
+            )
 
-    hex_audio = result.get("data", {}).get("audio", "")
-    if not hex_audio:
-        raise RuntimeError("MiniMax TTS returned empty audio data")
-
-    # Legacy: hex-encoded audio
-    audio_bytes = bytes.fromhex(hex_audio)
-
-    with open(output_path, "wb") as f:
-        f.write(audio_bytes)
-
-    return output_path
+        raise RuntimeError("MiniMax TTS returned no audio data")
 
 
 # ===========================================================================
@@ -1600,7 +1768,7 @@ def text_to_speech_tool(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -1650,16 +1818,21 @@ def text_to_speech_tool(
             _generate_xai_tts(text, file_str, tts_config)
 
         elif provider == "mistral":
-            try:
-                _import_mistral_client()
-            except ImportError:
-                return json.dumps({
-                    "success": False,
-                    "error": "Mistral provider selected but 'mistralai' package not installed. "
-                             "Run: pip install 'hermes-agent[mistral]'"
-                }, ensure_ascii=False)
-            logger.info("Generating speech with Mistral Voxtral TTS...")
-            _generate_mistral_tts(text, file_str, tts_config)
+            # `mistralai` PyPI package was quarantined on 2026-05-12 after a
+            # malicious 2.4.6 release. Surface a clear status message instead
+            # of attempting an import that would either fail or pull a stale
+            # cached package.
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Mistral Voxtral TTS is temporarily disabled. The "
+                    "`mistralai` PyPI package was quarantined on 2026-05-12 "
+                    "after a malicious 2.4.6 release. Switch tts.provider in "
+                    "config.yaml to 'edge', 'elevenlabs', 'openai', 'minimax', "
+                    "'gemini', 'xai', 'neutts', or 'kittentts'. Mistral "
+                    "support will return once PyPI un-quarantines the package."
+                ),
+            }, ensure_ascii=False)
 
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
@@ -1737,8 +1910,10 @@ def text_to_speech_tool(
                 "error": f"TTS generation produced no output (provider: {provider})"
             }, ensure_ascii=False)
 
-        # Try Opus conversion for Telegram compatibility
-        # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV — all need ffmpeg conversion
+        # Try Opus conversion for Telegram compatibility.
+        # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV. Keep those native
+        # formats for local/CLI playback and only convert when the current
+        # platform actually needs Opus voice delivery.
         voice_compatible = False
         if command_provider_config is not None:
             # Command providers are documents by default. Voice-bubble
@@ -1750,13 +1925,17 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in ("edge", "neutts", "minimax", "xai", "kittentts", "piper") and not file_str.endswith(".ogg"):
+        elif (
+            want_opus
+            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and not file_str.endswith(".ogg")
+        ):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
-            voice_compatible = file_str.endswith(".ogg")
+        elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
+            voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
@@ -1827,8 +2006,13 @@ def check_tts_requirements() -> bool:
         pass
     if get_env_value("MINIMAX_API_KEY"):
         return True
-    if get_env_value("XAI_API_KEY"):
-        return True
+    try:
+        from tools.xai_http import resolve_xai_http_credentials
+
+        if resolve_xai_http_credentials().get("api_key"):
+            return True
+    except Exception:
+        pass
     if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
         return True
     try:

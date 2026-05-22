@@ -41,8 +41,9 @@ class TestResolveDisplaySetting:
 
         # Empty config — should get built-in defaults
         config = {}
-        # Telegram defaults to tier_high → "all"
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
+        # Telegram tier_high override: "new" (not "all") to reduce edit
+        # pressure during streaming on Telegram's ~1 edit/s flood envelope.
+        assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
         # Email defaults to tier_minimal → "off"
         assert resolve_display_setting(config, "email", "tool_progress") == "off"
 
@@ -179,11 +180,14 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Telegram and Discord default to 'all' tool progress."""
+        """Discord defaults to 'all' tool progress; Telegram is in tier_high
+        but overrides tool_progress to 'new' (less edit pressure)."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("telegram", "discord"):
-            assert resolve_display_setting({}, plat, "tool_progress") == "all", plat
+        # Telegram: tier_high member with tool_progress="new" override.
+        assert resolve_display_setting({}, "telegram", "tool_progress") == "new"
+        # Discord: pure tier_high.
+        assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
     def test_medium_tier_platforms(self):
         """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""

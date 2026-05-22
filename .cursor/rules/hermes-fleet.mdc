@@ -1,0 +1,47 @@
+---
+description: Hermes fleet context and authority — use before editing agents, pipeline, or MCP-related code
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# Hermes fleet (Cursor)
+
+Read the canonical guide: `website/docs/user-guide/features/cursor-hermes.md`.
+
+## Session start (declarative bootstrap)
+
+Prefer one consolidated MCP read when available; otherwise call in order:
+
+1. `fleet_context_snapshot()` — if present on the Hermes MCP server
+2. Else: `agents_list(include_heartbeat=true)` → `learnings_read()` → `knowledge_read(artifact="latest_state")` → `knowledge_read(artifact="held_spec_ledger")`
+
+Before changing a named agent: `skills_read(name="<agent>")` and `agents_get(name="<agent>")`.
+
+## Two MCP modes (do not conflate)
+
+| Mode | Requires gateway | Use for |
+|------|------------------|---------|
+| **Skills / context** | No | SOUL.md, registry, learnings, knowledge layer, artifacts |
+| **Live ops / messaging** | Yes | conversations, send_message, approvals, events |
+
+## Source of truth (precedence)
+
+Higher rows win over lower when they conflict:
+
+| Layer | Role |
+|-------|------|
+| Runtime wrappers / cron / production scripts | Execution truth |
+| `HERMES_AGENTS_DIR` … `SOUL.md` / `IDENTITY.md` / `HEARTBEAT.md` | Behavioral truth |
+| `AGENT_REGISTRY.json` | Index and discovery only |
+| Knowledge layer artifacts | Operational state |
+| `.learnings/` | Memory and operator notes |
+| `CLAUDE.md` / this rule | Workflow constraints for the IDE session |
+
+Registry metadata must never override runtime identity documents.
+
+## Paths
+
+Set machine-specific values in `.cursor/mcp.json` (copy from `.cursor/mcp.json.example`). Do not commit host-specific paths to the shared repo.
+
+Verify setup: `hermes doctor` (MCP checks planned).

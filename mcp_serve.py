@@ -10,9 +10,9 @@ Messaging tools (10) — OpenClaw channel bridge surface plus channels_list:
   events_poll, events_wait, messages_send, permissions_list_open,
   permissions_respond, channels_list
 
-Optional skills/knowledge tools (7) when hermes_skills_mcp is available:
-  skills_list, skills_read, agents_list, agents_get, knowledge_read,
-  learnings_read, artifacts_list
+Optional skills/knowledge tools (8) when hermes_skills_mcp is available:
+  fleet_context_snapshot, skills_list, skills_read, agents_list, agents_get,
+  knowledge_read, learnings_read, artifacts_list
 
 Usage:
     hermes mcp serve
@@ -172,7 +172,7 @@ def _extract_attachments(msg: dict) -> List[dict]:
                 url = part.get("url", part.get("source", {}).get("url", ""))
                 if url:
                     attachments.append({"type": "image", "url": url})
-            elif ptype not in ("text",):
+            elif ptype not in {"text",}:
                 # Unknown non-text content type
                 attachments.append({"type": ptype, "data": part})
 
@@ -359,7 +359,8 @@ class EventBridge:
         except OSError:
             sj_mtime = 0.0
 
-        if sj_mtime != self._sessions_json_mtime:
+        sessions_changed = sj_mtime != self._sessions_json_mtime
+        if sessions_changed:
             self._sessions_json_mtime = sj_mtime
             self._cached_sessions_index = _load_sessions_index()
 
@@ -375,7 +376,8 @@ class EventBridge:
         except OSError:
             db_mtime = 0.0
 
-        if db_mtime == self._state_db_mtime and sj_mtime == self._sessions_json_mtime:
+        db_changed = db_mtime != self._state_db_mtime
+        if not db_changed and not sessions_changed:
             return  # Nothing changed since last poll — skip entirely
 
         self._state_db_mtime = db_mtime
@@ -417,7 +419,7 @@ class EventBridge:
             for msg in messages:
                 ts = _ts_float(msg.get("timestamp", 0))
                 role = msg.get("role", "")
-                if role not in ("user", "assistant"):
+                if role not in {"user", "assistant"}:
                     continue
                 if ts > last_seen:
                     new_messages.append(msg)
@@ -597,7 +599,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         filtered = []
         for msg in all_messages:
             role = msg.get("role", "")
-            if role in ("user", "assistant"):
+            if role in {"user", "assistant"}:
                 content = _extract_message_content(msg)
                 if content:
                     filtered.append({
@@ -850,7 +852,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             id: The approval ID from permissions_list_open
             decision: One of "allow-once", "allow-always", or "deny"
         """
-        if decision not in ("allow-once", "allow-always", "deny"):
+        if decision not in {"allow-once", "allow-always", "deny"}:
             return json.dumps({
                 "error": f"Invalid decision: {decision}. "
                          f"Must be allow-once, allow-always, or deny"
@@ -860,8 +862,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         return json.dumps(result, indent=2)
 
     # -- Skills / Knowledge Layer tools ------------------------------------
-    # Registers: skills_list, skills_read, agents_list, agents_get,
-    #            knowledge_read, learnings_read, artifacts_list
+    # Registers: fleet_context_snapshot, skills_list, skills_read,
+    #            agents_list, agents_get, knowledge_read, learnings_read,
+    #            artifacts_list
     try:
         from hermes_skills_mcp import register_skills_tools
         register_skills_tools(mcp)

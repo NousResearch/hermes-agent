@@ -7,7 +7,18 @@ sidebar_position: 2
 
 # Windows (WSL2) Guide
 
-Hermes Agent is developed and tested on **Linux** and **macOS**. Native Windows is not supported — on Windows you run Hermes inside **WSL2** (Windows Subsystem for Linux, version 2). That means there are effectively two computers in play: your Windows host, and a Linux VM managed by WSL. Most confusion comes from not being sure which one you're on at any moment.
+Hermes Agent now supports **both** native Windows and WSL2.  This page covers the WSL2 path; for the native PowerShell install see the dedicated **[Windows (Native) Guide](./windows-native.md)**.
+
+**When to pick WSL2 over native:**
+- You want to use the dashboard's embedded terminal (`/chat` tab) — that pane requires a POSIX PTY and is WSL2-only.
+- You're doing POSIX-heavy development work and want your Hermes sessions to share the same filesystem / paths as your dev tools.
+- You already have a WSL2 environment and don't want to maintain a second install.
+
+**When native is fine (or better):**
+- Interactive chat, gateway (Telegram/Discord/etc.), cron scheduler, browser tool, MCP servers, and most Hermes features all run natively on Windows.
+- You don't want to think about crossing the WSL↔Windows boundary every time you reference a file or open a URL.
+
+In WSL2 there are effectively two computers in play: your Windows host, and a Linux VM managed by WSL.  Most confusion comes from not being sure which one you're on at any moment.
 
 This guide covers the parts of that split that specifically affect Hermes: installing WSL2, getting files back and forth between Windows and Linux, networking in both directions, and the pitfalls people actually hit.
 
@@ -15,11 +26,13 @@ This guide covers the parts of that split that specifically affect Hermes: insta
 A Chinese-language walkthrough of the minimum install path is maintained on this same page — switch via the **language** menu (top right) and select **简体中文**.
 :::
 
-## Why WSL2 (and not "just Windows")
+## Why WSL2 (vs. native Windows)
 
-Hermes assumes a POSIX environment: `fork`, `/tmp`, UNIX sockets, signal semantics, PTY-backed terminals, shells like `bash`/`zsh`, and tools like `rg`, `git`, `ffmpeg` that behave the way they do on Linux. Rewriting that for native Windows would be a full port — WSL2 gives you a real Linux kernel in a lightweight VM instead, and Hermes inside it is essentially identical to running on Ubuntu.
+The native Windows install runs in Windows directly: your Windows terminal (PowerShell, Windows Terminal, etc.), Windows filesystem paths (`C:\Users\…`), and Windows processes.  Hermes uses Git Bash to run shell commands, which is how Claude Code and other agents handle Windows today — it sidesteps the POSIX-vs-Windows gap without a full rewrite.
 
-Practical consequences of this choice:
+WSL2 runs a real Linux kernel in a lightweight VM, so Hermes inside it is essentially identical to running on Ubuntu.  That's valuable when you want a real POSIX environment: `fork`, `/tmp`, UNIX sockets, signal semantics, PTY-backed terminals, shells like `bash`/`zsh`, and tools like `rg`, `git`, `ffmpeg` that behave the way they do on Linux.
+
+Practical consequences of WSL2:
 
 - The Hermes CLI, gateway, sessions, memory, skills, and tool runtimes all live inside the Linux VM.
 - Windows programs (browsers, native apps, Chrome with your logged-in profile) live outside it.
@@ -201,7 +214,7 @@ For the full table (Ollama / LM Studio / vLLM / SGLang bind addresses, firewall 
 This is the reverse direction and is less documented elsewhere, but it's what you need for:
 
 - Using the Hermes **web dashboard** from a Windows browser.
-- Using the **API server** (`hermes api`) from a Windows-side tool.
+- Using the **OpenAI-compatible API server** (exposed by `hermes gateway` when `API_SERVER_ENABLED=true`) from a Windows-side tool. See the [API Server feature page](/docs/user-guide/features/api-server).
 - Testing a **messaging gateway** (Telegram, Discord, etc.) where the platform pings a local webhook URL — usually you'd use `cloudflared`/`ngrok` rather than raw port forwarding.
 
 #### Subcase 2a: from the Windows host itself

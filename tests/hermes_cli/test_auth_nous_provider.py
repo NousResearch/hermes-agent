@@ -1,7 +1,9 @@
 """Regression tests for Nous OAuth refresh + agent-key mint interactions."""
 
+import base64
 import json
-import os
+import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -126,6 +128,11 @@ def _setup_nous_auth(
     *,
     access_token: str = "access-old",
     refresh_token: str = "refresh-old",
+    scope: str = "inference:mint_agent_key",
+    expires_at: str = "2026-02-01T00:00:00+00:00",
+    expires_in: int = 0,
+    agent_key: str | None = None,
+    agent_key_expires_at: str | None = None,
 ) -> None:
     hermes_home.mkdir(parents=True, exist_ok=True)
     auth_store = {
@@ -137,15 +144,15 @@ def _setup_nous_auth(
                 "inference_base_url": "https://inference.example.com/v1",
                 "client_id": "hermes-cli",
                 "token_type": "Bearer",
-                "scope": "inference:mint_agent_key",
+                "scope": scope,
                 "access_token": access_token,
                 "refresh_token": refresh_token,
                 "obtained_at": "2026-02-01T00:00:00+00:00",
-                "expires_in": 0,
-                "expires_at": "2026-02-01T00:00:00+00:00",
-                "agent_key": None,
+                "expires_in": expires_in,
+                "expires_at": expires_at,
+                "agent_key": agent_key,
                 "agent_key_id": None,
-                "agent_key_expires_at": None,
+                "agent_key_expires_at": agent_key_expires_at,
                 "agent_key_expires_in": None,
                 "agent_key_reused": None,
                 "agent_key_obtained_at": None,
@@ -163,6 +170,463 @@ def _mint_payload(api_key: str = "agent-key") -> dict:
         "expires_in": 1800,
         "reused": False,
     }
+
+
+def _jwt_with_claims(claims: dict) -> str:
+    def _part(payload: dict) -> str:
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
+
+
+def _future_iso(seconds: int = 3600) -> str:
+    return datetime.fromtimestamp(time.time() + seconds, tz=timezone.utc).isoformat()
+
+
+def _invoke_jwt(*, seconds: int = 3600, scope: object = "inference:invoke inference:mint_agent_key") -> str:
+    return _jwt_with_claims({
+        "sub": "test-user",
+        "scope": scope,
+        "exp": int(time.time() + seconds),
+    })
+
+
+def test_resolve_nous_runtime_credentials_prefers_invoke_jwt_and_mirrors(
+    tmp_path,
+    monkeypatch,
+):
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    token = _invoke_jwt(seconds=3600)
+    _setup_nous_auth(
+        hermes_home,
+        access_token=token,
+        scope=auth_mod.DEFAULT_NOUS_SCOPE,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _unexpected_mint(*args, **kwargs):
+        raise AssertionError("legacy agent-key mint should not run for invoke JWT")
+
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _unexpected_mint)
+
+    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+
+    assert creds["api_key"] == token
+    assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
+    assert creds["auth_path"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
+
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    singleton = payload["providers"]["nous"]
+    assert singleton["agent_key"] == token
+    assert datetime.fromisoformat(singleton["agent_key_expires_at"]).timestamp() > time.time() + 300
+
+    pool_entries = payload["credential_pool"]["nous"]
+    assert len(pool_entries) == 1
+    assert pool_entries[0]["agent_key"] == token
+    assert pool_entries[0]["source"] == auth_mod.NOUS_DEVICE_CODE_SOURCE
+
+
+def test_resolve_nous_runtime_credentials_invoke_jwt_is_idempotent(
+    tmp_path,
+    monkeypatch,
+):
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    exp = int(time.time() + 3600)
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    token = _jwt_with_claims({
+        "sub": "test-user",
+        "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+        "exp": exp,
+    })
+    original_obtained_at = "2026-04-17T22:00:10+00:00"
+    auth_store = {
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "nous": {
+                "portal_base_url": "https://portal.example.com",
+                "inference_base_url": "https://inference.example.com/v1",
+                "client_id": "hermes-cli",
+                "token_type": "Bearer",
+                "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+                "access_token": token,
+                "refresh_token": "refresh-token",
+                "obtained_at": "2026-02-01T00:00:00+00:00",
+                "expires_in": 123,
+                "expires_at": expires_at,
+                "agent_key": token,
+                "agent_key_id": None,
+                "agent_key_expires_at": expires_at,
+                "agent_key_expires_in": 123,
+                "agent_key_reused": False,
+                "agent_key_obtained_at": original_obtained_at,
+                "tls": {"insecure": False, "ca_bundle": None},
+            },
+        },
+    }
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(json.dumps(auth_store, indent=2))
+    before_content = auth_path.read_text()
+    before_mtime = auth_path.stat().st_mtime_ns
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _unexpected_mint(*args, **kwargs):
+        raise AssertionError("stable invoke JWT should not mint a legacy key")
+
+    def _unexpected_shared_write(*args, **kwargs):
+        raise AssertionError("unchanged invoke JWT resolution should not sync shared store")
+
+    sync_calls = []
+
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _unexpected_mint)
+    monkeypatch.setattr(auth_mod, "_write_shared_nous_state", _unexpected_shared_write)
+    monkeypatch.setattr(
+        auth_mod,
+        "_sync_nous_pool_from_auth_store",
+        lambda: sync_calls.append(True),
+    )
+
+    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+
+    assert creds["api_key"] == token
+    assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
+    assert auth_path.read_text() == before_content
+    assert auth_path.stat().st_mtime_ns == before_mtime
+    assert sync_calls == []
+    payload = json.loads(auth_path.read_text())
+    assert (
+        payload["providers"]["nous"]["agent_key_obtained_at"]
+        == original_obtained_at
+    )
+
+
+def test_resolve_nous_runtime_credentials_trusts_invoke_jwt_exp_over_stale_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    token = _invoke_jwt(seconds=3600)
+    _setup_nous_auth(
+        hermes_home,
+        access_token=token,
+        scope=auth_mod.DEFAULT_NOUS_SCOPE,
+        expires_at="2000-01-01T00:00:00+00:00",
+        expires_in=0,
+        agent_key=token,
+        agent_key_expires_at="2000-01-01T00:00:00+00:00",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _unexpected_refresh(*args, **kwargs):
+        raise AssertionError("valid invoke JWT should not be refreshed because metadata is stale")
+
+    def _unexpected_mint(*args, **kwargs):
+        raise AssertionError("valid invoke JWT should not fall back to legacy mint")
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _unexpected_refresh)
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _unexpected_mint)
+
+    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+
+    assert creds["api_key"] == token
+    assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    singleton = payload["providers"]["nous"]
+    assert singleton["agent_key"] == token
+    assert datetime.fromisoformat(singleton["expires_at"]).timestamp() > time.time() + 300
+    assert datetime.fromisoformat(singleton["agent_key_expires_at"]).timestamp() > time.time() + 300
+
+
+def test_resolve_nous_runtime_credentials_does_not_apply_legacy_ttl_to_invoke_jwt(
+    tmp_path,
+    monkeypatch,
+):
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    token = _invoke_jwt(seconds=900)
+    _setup_nous_auth(
+        hermes_home,
+        access_token=token,
+        scope=auth_mod.DEFAULT_NOUS_SCOPE,
+        expires_at=_future_iso(900),
+        expires_in=900,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _unexpected_mint(*args, **kwargs):
+        raise AssertionError("1800s legacy min TTL should not force opaque mint for invoke JWT")
+
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _unexpected_mint)
+
+    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=1800)
+
+    assert creds["api_key"] == token
+    assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload["providers"]["nous"]["agent_key"] == token
+    assert payload["credential_pool"]["nous"][0]["agent_key"] == token
+
+
+def test_legacy_auth_mode_bypasses_usable_invoke_jwt(tmp_path, monkeypatch):
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    token = _invoke_jwt(seconds=3600)
+    _setup_nous_auth(
+        hermes_home,
+        access_token=token,
+        scope=auth_mod.DEFAULT_NOUS_SCOPE,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    mint_calls = []
+
+    def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
+        del client, portal_base_url, min_ttl_seconds
+        mint_calls.append(access_token)
+        return _mint_payload(api_key="legacy-after-jwt-401")
+
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _fake_mint_agent_key)
+
+    creds = auth_mod.resolve_nous_runtime_credentials(
+        min_key_ttl_seconds=300,
+        inference_auth_mode=auth_mod.NOUS_INFERENCE_AUTH_MODE_LEGACY,
+    )
+
+    assert mint_calls == [token]
+    assert creds["api_key"] == "legacy-after-jwt-401"
+    assert creds["auth_path"] == auth_mod.NOUS_AUTH_PATH_LEGACY_SESSION_KEY_MINT
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload["providers"]["nous"]["agent_key"] == "legacy-after-jwt-401"
+
+
+def test_resolve_nous_runtime_credentials_falls_back_when_invoke_scope_missing(
+    tmp_path,
+    monkeypatch,
+):
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    token = _jwt_with_claims({
+        "sub": "test-user",
+        "scope": "inference:mint_agent_key",
+        "exp": int(time.time() + 3600),
+    })
+    _setup_nous_auth(
+        hermes_home,
+        access_token=token,
+        scope=auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    calls = []
+
+    def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
+        del client, portal_base_url, min_ttl_seconds
+        calls.append(access_token)
+        return _mint_payload(api_key="opaque-agent-key")
+
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _fake_mint_agent_key)
+
+    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+
+    assert calls == [token]
+    assert creds["api_key"] == "opaque-agent-key"
+    assert creds["source"] == "portal"
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload["providers"]["nous"]["agent_key"] == "opaque-agent-key"
+    assert payload["credential_pool"]["nous"][0]["agent_key"] == "opaque-agent-key"
+
+
+def test_nous_device_code_login_retries_legacy_scope_when_invoke_refused(monkeypatch):
+    import hermes_cli.auth as auth_mod
+
+    scopes = []
+
+    def _fake_request_device_code(*, client, portal_base_url, client_id, scope):
+        del client, portal_base_url, client_id
+        scopes.append(scope)
+        if len(scopes) == 1:
+            request = httpx.Request("POST", "https://portal.example.com/api/oauth/device/code")
+            response = httpx.Response(
+                400,
+                json={
+                    "error": "invalid_scope",
+                    "error_description": "unsupported inference:invoke",
+                },
+                request=request,
+            )
+            raise httpx.HTTPStatusError("invalid_scope", request=request, response=response)
+        return {
+            "device_code": "device",
+            "user_code": "user",
+            "verification_uri": "https://portal.example.com/device",
+            "verification_uri_complete": "https://portal.example.com/device?code=user",
+            "expires_in": 600,
+            "interval": 1,
+        }
+
+    def _fake_poll_for_token(**kwargs):
+        del kwargs
+        return {
+            "access_token": "access-legacy",
+            "refresh_token": "refresh-legacy",
+            "expires_in": 900,
+            "scope": auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE,
+        }
+
+    def _fake_refresh(state, **kwargs):
+        del kwargs
+        refreshed = dict(state)
+        refreshed["agent_key"] = "opaque-agent-key"
+        refreshed["agent_key_expires_at"] = _future_iso(1800)
+        return refreshed
+
+    monkeypatch.setattr(auth_mod, "_request_device_code", _fake_request_device_code)
+    monkeypatch.setattr(auth_mod, "_poll_for_token", _fake_poll_for_token)
+    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _fake_refresh)
+
+    result = auth_mod._nous_device_code_login(
+        portal_base_url="https://portal.example.com",
+        inference_base_url="https://inference.example.com/v1",
+        open_browser=False,
+        timeout_seconds=1,
+    )
+
+    assert scopes == [auth_mod.DEFAULT_NOUS_SCOPE, auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE]
+    assert result["scope"] == auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE
+    assert result["agent_key"] == "opaque-agent-key"
+
+
+def test_forced_legacy_env_skips_invoke_scope_and_jwt_storage(tmp_path, monkeypatch):
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    token = _invoke_jwt(seconds=3600)
+    _setup_nous_auth(
+        hermes_home,
+        access_token=token,
+        scope=auth_mod.DEFAULT_NOUS_SCOPE,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv(auth_mod.NOUS_LEGACY_SESSION_KEYS_ENV, "true")
+
+    mint_calls = []
+
+    def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
+        del client, portal_base_url, min_ttl_seconds
+        mint_calls.append(access_token)
+        return _mint_payload(api_key="forced-legacy-key")
+
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _fake_mint_agent_key)
+
+    creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+
+    assert mint_calls == [token]
+    assert creds["api_key"] == "forced-legacy-key"
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload["providers"]["nous"]["agent_key"] == "forced-legacy-key"
+
+    requested_scopes = []
+
+    def _fake_request_device_code(*, client, portal_base_url, client_id, scope):
+        del client, portal_base_url, client_id
+        requested_scopes.append(scope)
+        return {
+            "device_code": "device",
+            "user_code": "user",
+            "verification_uri": "https://portal.example.com/device",
+            "verification_uri_complete": "https://portal.example.com/device?code=user",
+            "expires_in": 600,
+            "interval": 1,
+        }
+
+    def _fake_poll_for_token(**kwargs):
+        del kwargs
+        return {
+            "access_token": "access-legacy",
+            "refresh_token": "refresh-legacy",
+            "expires_in": 900,
+            "scope": auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE,
+        }
+
+    def _fake_refresh(state, **kwargs):
+        del kwargs
+        refreshed = dict(state)
+        refreshed["agent_key"] = "forced-legacy-login-key"
+        refreshed["agent_key_expires_at"] = _future_iso(1800)
+        return refreshed
+
+    monkeypatch.setattr(auth_mod, "_request_device_code", _fake_request_device_code)
+    monkeypatch.setattr(auth_mod, "_poll_for_token", _fake_poll_for_token)
+    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _fake_refresh)
+
+    auth_mod._nous_device_code_login(
+        portal_base_url="https://portal.example.com",
+        inference_base_url="https://inference.example.com/v1",
+        open_browser=False,
+        timeout_seconds=1,
+    )
+
+    assert requested_scopes == [auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE]
+
+
+def test_nous_inference_auth_logs_do_not_include_secret_values(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    token = _jwt_with_claims({
+        "sub": "secret-user",
+        "scope": "inference:mint_agent_key",
+        "exp": int(time.time() + 3600),
+    })
+    refresh_token = "refresh-secret-token"
+    opaque_key = "opaque-secret-agent-key"
+    _setup_nous_auth(
+        hermes_home,
+        access_token=token,
+        refresh_token=refresh_token,
+        scope=auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE,
+        expires_at=_future_iso(3600),
+        expires_in=3600,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
+        del client, portal_base_url, access_token, min_ttl_seconds
+        return _mint_payload(api_key=opaque_key)
+
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _fake_mint_agent_key)
+
+    caplog.set_level(logging.INFO, logger="hermes_cli.auth")
+    auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+
+    logged = caplog.text
+    assert "legacy session key path" in logged
+    assert token not in logged
+    assert refresh_token not in logged
+    assert opaque_key not in logged
 
 
 def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
@@ -374,6 +838,99 @@ def test_refresh_token_persisted_when_mint_times_out(tmp_path, monkeypatch):
     assert state_after_failure["access_token"] == "access-1"
 
 
+def test_terminal_refresh_failure_quarantines_tokens(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """A revoked/invalid Nous refresh token must not be replayed forever."""
+    from hermes_cli import auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, refresh_token="refresh-old")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    from agent.credential_pool import load_pool
+
+    assert load_pool("nous").select() is not None
+
+    shared_state = _full_state_fixture()
+    shared_state["access_token"] = "access-old"
+    shared_state["refresh_token"] = "refresh-old"
+    shared_state["expires_at"] = "2026-02-01T00:00:00+00:00"
+    auth_mod._write_shared_nous_state(shared_state)
+
+    refresh_calls: list[str] = []
+
+    def _terminal_refresh_failure(*, client, portal_base_url, client_id, refresh_token):
+        refresh_calls.append(refresh_token)
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="nous",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _terminal_refresh_failure)
+
+    with pytest.raises(AuthError, match="Refresh session has been revoked"):
+        auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+
+    state_after_failure = auth_mod.get_provider_auth_state("nous")
+    assert state_after_failure is not None
+    assert not state_after_failure.get("refresh_token")
+    assert not state_after_failure.get("access_token")
+    assert not state_after_failure.get("agent_key")
+    assert state_after_failure["last_auth_error"]["code"] == "invalid_grant"
+    assert auth_mod._read_shared_nous_state() is None
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload.get("credential_pool", {}).get("nous") == []
+
+    with pytest.raises(AuthError, match="No access token found"):
+        auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+
+    assert refresh_calls == ["refresh-old"]
+
+
+def test_managed_access_token_refresh_failure_quarantines_tokens(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    from hermes_cli import auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, refresh_token="refresh-old")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    from agent.credential_pool import load_pool
+
+    assert load_pool("nous").select() is not None
+
+    refresh_calls: list[str] = []
+
+    def _terminal_refresh_failure(*, client, portal_base_url, client_id, refresh_token):
+        refresh_calls.append(refresh_token)
+        raise AuthError(
+            "Invalid refresh token",
+            provider="nous",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _terminal_refresh_failure)
+
+    with pytest.raises(AuthError, match="Invalid refresh token"):
+        auth_mod.resolve_nous_access_token()
+
+    state_after_failure = auth_mod.get_provider_auth_state("nous")
+    assert state_after_failure is not None
+    assert not state_after_failure.get("refresh_token")
+    assert not state_after_failure.get("access_token")
+    assert state_after_failure["last_auth_error"]["message"] == "Invalid refresh token"
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload.get("credential_pool", {}).get("nous") == []
+
+    with pytest.raises(AuthError, match="No access token found"):
+        auth_mod.resolve_nous_access_token()
+
+    assert refresh_calls == ["refresh-old"]
+
+
 def test_mint_retry_uses_latest_rotated_refresh_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_nous_auth(hermes_home, refresh_token="refresh-old")
@@ -556,7 +1113,7 @@ class TestLoginNousSkipKeepsCurrent:
         auth_path = hermes_home / "auth.json"
         auth_after = json.loads(auth_path.read_text())
         # active_provider should NOT be set to "nous" after Skip
-        assert auth_after.get("active_provider") in (None, "")
+        assert auth_after.get("active_provider") in {None, ""}
         # But Nous creds are still saved
         assert "nous" in auth_after.get("providers", {})
 
@@ -641,7 +1198,11 @@ def test_persist_nous_credentials_allows_recovery_from_401(tmp_path, monkeypatch
     calls after a Nous 401 — before the fix it would raise AuthError because
     providers.nous was empty.
     """
-    from hermes_cli.auth import persist_nous_credentials, resolve_nous_runtime_credentials
+    from hermes_cli.auth import (
+        NOUS_INFERENCE_AUTH_MODE_FRESH,
+        persist_nous_credentials,
+        resolve_nous_runtime_credentials,
+    )
 
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
@@ -669,7 +1230,10 @@ def test_persist_nous_credentials_allows_recovery_from_401(tmp_path, monkeypatch
     monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
     monkeypatch.setattr("hermes_cli.auth._mint_agent_key", _fake_mint_agent_key)
 
-    creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=300, force_mint=True)
+    creds = resolve_nous_runtime_credentials(
+        min_key_ttl_seconds=300,
+        inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
+    )
     assert creds["api_key"] == "new-agent-key"
 
 
@@ -860,6 +1424,76 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
     # Must still be classified as invalid_grant + relogin_required.
     assert exc_info.value.code == "invalid_grant"
     assert exc_info.value.relogin_required is True
+
+
+def test_refresh_token_reuse_error_code_is_terminal():
+    """Nous may return refresh_token_reused as the OAuth error code itself."""
+    from hermes_cli import auth as auth_mod
+
+    class _FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {
+                "error": "refresh_token_reused",
+                "error_description": "Refresh token reuse detected",
+            }
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        auth_mod._refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="rt_consumed_elsewhere",
+        )
+
+    assert exc_info.value.code == "refresh_token_reused"
+    assert exc_info.value.relogin_required is True
+    assert auth_mod._is_terminal_nous_refresh_error(exc_info.value) is True
+
+
+def test_refresh_token_exchange_sends_refresh_token_header():
+    """Nous refresh tokens must be sent in a header so sandbox proxies can
+    substitute placeholder credentials without parsing form bodies.
+    """
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "access-2", "refresh_token": "refresh-2"}
+
+    class _FakeClient:
+        def __init__(self):
+            self.kwargs = None
+
+        def post(self, *args, **kwargs):
+            del args
+            self.kwargs = kwargs
+            return _FakeResponse()
+
+    client = _FakeClient()
+
+    payload = _refresh_access_token(
+        client=client,
+        portal_base_url="https://portal.nousresearch.com",
+        client_id="hermes-cli",
+        refresh_token="refresh-1",
+    )
+
+    assert payload["access_token"] == "access-2"
+    assert payload["refresh_token"] == "refresh-2"
+    assert client.kwargs is not None
+    assert client.kwargs["headers"]["x-nous-refresh-token"] == "refresh-1"
+    assert client.kwargs["data"] == {
+        "grant_type": "refresh_token",
+        "client_id": "hermes-cli",
+    }
 
 
 def test_refresh_non_reuse_error_keeps_original_description():
@@ -1079,6 +1713,47 @@ def test_try_import_shared_returns_none_on_refresh_failure(
     monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _boom)
 
     assert auth_mod._try_import_shared_nous_state() is None
+    assert auth_mod._read_shared_nous_state() is None
+
+
+def test_try_import_shared_persists_rotated_token_when_mint_fails(
+    shared_store_env, monkeypatch,
+):
+    """A forced shared import refresh rotates the single-use token before minting.
+
+    If the later agent-key mint fails, the shared store must still keep the
+    rotated refresh token; otherwise the next import attempt replays the
+    consumed token and trips refresh-token reuse.
+    """
+    from hermes_cli import auth as auth_mod
+
+    shared_state = _full_state_fixture()
+    shared_state["refresh_token"] = "refresh-old"
+    shared_state["access_token"] = "access-old"
+    auth_mod._write_shared_nous_state(shared_state)
+
+    def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+        assert refresh_token == "refresh-old"
+        return {
+            "access_token": "access-new",
+            "refresh_token": "refresh-new",
+            "expires_in": 900,
+            "token_type": "Bearer",
+        }
+
+    def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
+        assert access_token == "access-new"
+        raise AuthError("credits exhausted", provider="nous", code="insufficient_credits")
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _fake_mint_agent_key)
+
+    assert auth_mod._try_import_shared_nous_state() is None
+
+    shared_after = auth_mod._read_shared_nous_state()
+    assert shared_after is not None
+    assert shared_after["refresh_token"] == "refresh-new"
+    assert shared_after["access_token"] == "access-new"
 
 
 def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
@@ -1093,7 +1768,10 @@ def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     def _fake_refresh(state, **kwargs):
         # Simulate portal returning fresh tokens + a new agent_key
         assert kwargs.get("force_refresh") is True
-        assert kwargs.get("force_mint") is True
+        assert (
+            kwargs.get("inference_auth_mode")
+            == auth_mod.NOUS_INFERENCE_AUTH_MODE_FRESH
+        )
         return {
             **state,
             "access_token": "fresh-access-tok",
@@ -1221,7 +1899,7 @@ def test_runtime_refresh_uses_newer_shared_token_before_local_stale_token(
 
     creds = auth_mod.resolve_nous_runtime_credentials(
         min_key_ttl_seconds=300,
-        force_mint=True,
+        inference_auth_mode=auth_mod.NOUS_INFERENCE_AUTH_MODE_FRESH,
     )
 
     assert creds["api_key"] == "agent-key-from-shared-token"

@@ -130,6 +130,11 @@ def _prepare_cli_with_active_session(tmp_path):
     old_session_start = cli.session_start - timedelta(seconds=1)
     cli.session_start = old_session_start
     cli.agent.session_start = old_session_start
+
+    # Bypass the destructive-slash confirmation gate — these tests focus on
+    # the new-session mechanics, not the confirm prompt itself (covered in
+    # tests/cli/test_destructive_slash_confirm.py).
+    cli._confirm_destructive_slash = lambda *_a, **_kw: "once"
     return cli
 
 

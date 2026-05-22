@@ -13,10 +13,11 @@ read-only tools that let MCP clients discover and read:
   - Skill documents from the repo skills/ directory
   - Cron schedule configuration
 
-All paths resolve via HERMES_HOME and HERMES_REPO environment variables,
-following the same conventions as the existing mcp_serve.py.
+Paths resolve via HERMES_AGENTS_DIR (runtime fleet), then HERMES_REPO,
+then HERMES_HOME — same profile conventions as mcp_serve.py.
 
-Tool surface (7 tools):
+Tool surface (8 tools; read-only by design):
+  fleet_context_snapshot — one-call bounded fleet bootstrap for IDEs
   skills_list          — list available agent SOUL.md files and repo skills
   skills_read          — read a specific skill/SOUL.md document
   agents_list          — list agents from registry with status summary
@@ -36,6 +37,24 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("hermes.mcp_skills")
+
+_SNAPSHOT_TEXT_CAP = 4_000
+_SNAPSHOT_LIST_CAP = 25
+_HEARTBEAT_STALE_SECONDS = 24 * 60 * 60
+# Bump this version when the documented authority hierarchy changes.
+# It is an API contract marker for MCP clients, not derived from docs.
+_SOURCE_OF_TRUTH_HIERARCHY = {
+    "version": "2026-05-22.cursor-hermes.v1",
+    "reference": "website/docs/user-guide/features/cursor-hermes.md#source-of-truth-hierarchy",
+    "layers": [
+        {"layer": "runtime_wrappers_scripts", "authority": "execution_truth"},
+        {"layer": "SOUL_IDENTITY_HEARTBEAT", "authority": "behavioral_truth"},
+        {"layer": "AGENT_REGISTRY.json", "authority": "index_discovery_only"},
+        {"layer": "knowledge_layer", "authority": "operational_state"},
+        {"layer": ".learnings", "authority": "memory_reference"},
+        {"layer": "CLAUDE.md_cursor_rules", "authority": "operator_workflow_constraints"},
+    ],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -130,8 +149,15 @@ def _dir_listing(path: Path, max_depth: int = 2, _depth: int = 0) -> List[dict]:
 def _find_agents_dir() -> Optional[Path]:
     """Find the custom agents/ directory (local clone, not upstream repo).
 
-    Checks HERMES_REPO/agents/ first, then HERMES_HOME/hermes-agent/agents/.
+    Checks HERMES_AGENTS_DIR env var first (explicit override), then
+    HERMES_REPO/agents/, then HERMES_HOME/hermes-agent/agents/.
     """
+    explicit = os.environ.get("HERMES_AGENTS_DIR")
+    if explicit:
+        p = Path(explicit)
+        if p.is_dir():
+            return p
+
     repo = _get_hermes_repo()
     candidates = [
         repo / "agents",
@@ -166,6 +192,182 @@ def _load_agent_registry() -> dict:
     except Exception as e:
         logger.debug("Failed to load agent registry: %s", e)
         return {}
+
+
+def _registry_agents(registry: dict) -> dict:
+    """Return the agent mapping from supported registry shapes."""
+    if isinstance(registry.get("agents"), dict):
+        return registry["agents"]
+    return registry
+
+
+def _count_by_field(entries: dict, field: str) -> dict:
+    counts: dict[str, int] = {}
+    for meta in entries.values():
+        if not isinstance(meta, dict):
+            continue
+        value = str(meta.get(field) or "unknown")
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _bounded_read(path: Optional[Path], *, max_chars: int = _SNAPSHOT_TEXT_CAP) -> dict:
+    """Read a file without exceeding the snapshot character budget."""
+    if not path or not path.exists() or not path.is_file():
+        return {"present": False, "path": str(path) if path else None, "content": ""}
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return {"present": False, "path": str(path), "error": str(exc), "content": ""}
+    truncated = len(content) > max_chars
+    return {
+        "present": True,
+        "path": str(path),
+        "modified": _file_mtime_iso(path),
+        "truncated": truncated,
+        "content": content[:max_chars],
+    }
+
+
+def _find_latest_state_path() -> Optional[Path]:
+    artifacts_dir = _get_artifacts_dir()
+    if not artifacts_dir:
+        return None
+    for suffix in ("md", "json"):
+        path = artifacts_dir / "ops" / "knowledge_layer" / f"latest_state.{suffix}"
+        if path.exists():
+            return path
+    return None
+
+
+def _find_held_spec_ledger_path() -> Optional[Path]:
+    artifacts_dir = _get_artifacts_dir()
+    if not artifacts_dir:
+        return None
+    for suffix in ("md", "json"):
+        path = artifacts_dir / "ops" / "held_spec_ledger" / f"latest.{suffix}"
+        if path.exists():
+            return path
+    return None
+
+
+def _extract_held_spec_flags(content: str) -> list[str]:
+    """Return a bounded list of held-spec lines that look operationally active."""
+    flags: list[str] = []
+    markers = ("held", "hold", "blocked", "frozen", "active", "must", "cannot")
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if any(marker in lowered for marker in markers):
+            flags.append(line[:240])
+        if len(flags) >= _SNAPSHOT_LIST_CAP:
+            break
+    return flags
+
+
+def _gateway_reachable() -> bool:
+    """Best-effort read-only probe for live gateway availability."""
+    try:
+        from gateway.status import is_gateway_running
+
+        return bool(is_gateway_running(cleanup_stale=False))
+    except Exception as exc:
+        logger.debug("Gateway reachability probe failed: %s", exc)
+        return False
+
+
+def build_fleet_context_snapshot() -> dict:
+    """Build a bounded, read-only fleet bootstrap snapshot for MCP clients."""
+    hermes_home = _get_hermes_home()
+    hermes_repo = _get_hermes_repo()
+    agents_dir = _find_agents_dir()
+    registry_path = _find_agent_registry()
+    registry = _load_agent_registry()
+    registry_entries = _registry_agents(registry)
+    warnings: list[str] = []
+    missing_layers: list[str] = []
+
+    explicit_agents_dir = os.environ.get("HERMES_AGENTS_DIR")
+    if explicit_agents_dir and not Path(explicit_agents_dir).is_dir():
+        warnings.append(f"HERMES_AGENTS_DIR does not exist: {explicit_agents_dir}")
+
+    if not agents_dir:
+        missing_layers.append("agents_dir")
+        warnings.append("No agents directory found; checked HERMES_AGENTS_DIR, HERMES_REPO/agents, and HERMES_HOME/hermes-agent/agents.")
+    if not registry_path:
+        missing_layers.append("registry")
+        warnings.append("AGENT_REGISTRY.json not found.")
+
+    registry_summary = {
+        "path": str(registry_path) if registry_path else None,
+        "agents": sorted(registry_entries.keys())[:_SNAPSHOT_LIST_CAP],
+        "agents_truncated": len(registry_entries) > _SNAPSHOT_LIST_CAP,
+        "by_status": _count_by_field(registry_entries, "status"),
+        "by_lane": _count_by_field(registry_entries, "lane"),
+        "by_authority": _count_by_field(registry_entries, "authority"),
+    }
+
+    stale_heartbeats: list[dict] = []
+    now = datetime.now(timezone.utc).timestamp()
+    if agents_dir and registry_entries:
+        for agent_name in sorted(registry_entries.keys()):
+            heartbeat = agents_dir / agent_name / "HEARTBEAT.md"
+            if not heartbeat.exists():
+                stale_heartbeats.append({"agent": agent_name, "status": "missing"})
+            else:
+                try:
+                    age_seconds = max(0.0, now - heartbeat.stat().st_mtime)
+                    if age_seconds > _HEARTBEAT_STALE_SECONDS:
+                        stale_heartbeats.append({
+                            "agent": agent_name,
+                            "status": "stale",
+                            "age_hours": round(age_seconds / 3600, 1),
+                            "path": str(heartbeat),
+                            "modified": _file_mtime_iso(heartbeat),
+                        })
+                except OSError as exc:
+                    stale_heartbeats.append({"agent": agent_name, "status": "unreadable", "error": str(exc)})
+
+    stale_truncated = len(stale_heartbeats) > _SNAPSHOT_LIST_CAP
+    if stale_truncated:
+        warnings.append(f"stale_heartbeats truncated at {_SNAPSHOT_LIST_CAP} entries.")
+    stale_heartbeats = stale_heartbeats[:_SNAPSHOT_LIST_CAP]
+
+    learnings_dir = _get_learnings_dir()
+    hot_path = learnings_dir / "memory.md" if learnings_dir else None
+    hot = _bounded_read(hot_path)
+    if not hot["present"]:
+        missing_layers.append("hot_learnings")
+
+    latest_state = _bounded_read(_find_latest_state_path())
+    if not latest_state["present"]:
+        missing_layers.append("latest_state")
+
+    held_ledger = _bounded_read(_find_held_spec_ledger_path())
+    held_spec_flags = _extract_held_spec_flags(str(held_ledger.get("content") or "")) if held_ledger["present"] else []
+    if not held_ledger["present"]:
+        missing_layers.append("held_spec_ledger")
+
+    gateway = _gateway_reachable()
+    return {
+        "mode": "live_ops_available" if gateway else "skills_only",
+        "hermes_home": str(hermes_home),
+        "hermes_repo": str(hermes_repo),
+        "agents_dir": str(agents_dir) if agents_dir else None,
+        "registry_present": bool(registry_path),
+        "agent_count": len(registry_entries),
+        "registry_summary": registry_summary,
+        "stale_heartbeats": stale_heartbeats,
+        "hot_learnings_excerpt": hot,
+        "latest_state_digest": latest_state,
+        "held_spec_flags": held_spec_flags,
+        "gateway_reachable": gateway,
+        "missing_layers": sorted(set(missing_layers)),
+        "warnings": warnings,
+        "source_of_truth_hierarchy": _SOURCE_OF_TRUTH_HIERARCHY,
+    }
 
 
 def _find_heartbeat(agent_name: str) -> Optional[dict]:
@@ -322,6 +524,18 @@ def register_skills_tools(mcp) -> None:
         from hermes_skills_mcp import register_skills_tools
         register_skills_tools(mcp)
     """
+
+    # -- fleet_context_snapshot -------------------------------------------
+
+    @mcp.tool()
+    def fleet_context_snapshot() -> str:
+        """Return a bounded, read-only fleet bootstrap snapshot for IDE clients.
+
+        The snapshot works in skills/context mode even when the live gateway is
+        down. It never writes files and reports missing layers explicitly so
+        Cursor can continue with partial but trustworthy context.
+        """
+        return json.dumps(build_fleet_context_snapshot(), indent=2)
 
     # -- skills_list -------------------------------------------------------
 

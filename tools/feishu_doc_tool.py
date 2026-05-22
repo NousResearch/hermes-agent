@@ -52,10 +52,17 @@ FEISHU_DOC_READ_SCHEMA = {
 
 
 def _check_feishu():
+    # Use ``importlib.util.find_spec`` — it checks whether ``lark_oapi``
+    # is importable without actually executing its ``__init__``.
+    # Executing the real import here costs ~5 seconds (the SDK eagerly
+    # loads websockets, dispatcher, every api/v2 model) and this probe
+    # fires at every ``hermes`` startup during tool-availability
+    # evaluation.  Correctness is preserved because the actual tool
+    # handler still does the real import when invoked.
+    import importlib.util
     try:
-        import lark_oapi  # noqa: F401
-        return True
-    except ImportError:
+        return importlib.util.find_spec("lark_oapi") is not None
+    except (ImportError, ValueError):
         return False
 
 

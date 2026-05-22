@@ -13,6 +13,21 @@ Hermes has two slash-command surfaces, both driven by a central `COMMAND_REGISTR
 
 Installed skills are also exposed as dynamic slash commands on both surfaces. That includes bundled skills like `/plan`, which opens plan mode and saves markdown plans under `.hermes/plans/` relative to the active workspace/backend working directory.
 
+## Permissions and admin/user split
+
+Every messaging platform that supports a per-user allowlist (Telegram, Discord, Slack, Matrix, Mattermost, Signal, …) also supports a two-tier slash command split: **admins** get every registered command, **regular users** only get the names you list in `user_allowed_commands` (plus the always-allowed floor `/help` and `/whoami`). Configure `allow_admin_from` and `user_allowed_commands` (and the per-group equivalents `group_allow_admin_from` / `group_user_allowed_commands`) inside the platform's `extra:` block in `~/.hermes/gateway-config.yaml`.
+
+See the per-platform docs for examples — the structure is identical across platforms:
+
+- [Telegram](../user-guide/messaging/telegram.md#slash-command-access-control)
+- [Discord](../user-guide/messaging/discord.md)
+- [Slack](../user-guide/messaging/slack.md)
+- [Matrix](../user-guide/messaging/matrix.md)
+- [Mattermost](../user-guide/messaging/mattermost.md)
+- [Signal](../user-guide/messaging/signal.md)
+
+If `allow_admin_from` is unset for a scope, that scope stays in unrestricted backward-compat mode — every allowed user can run every command.
+
 ## Interactive CLI slash commands
 
 Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-insensitive.
@@ -21,7 +36,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 
 | Command | Description |
 |---------|-------------|
-| `/new` (alias: `/reset`) | Start a new session (fresh session ID + history) |
+| `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title — e.g. `/new my-experiment` opens a fresh session already titled `my-experiment` so it's easy to find later with `/resume` or `/sessions`. |
 | `/clear` | Clear screen and start a new session |
 | `/history` | Show conversation history |
 | `/save` | Save the current conversation |
@@ -35,12 +50,15 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn (doesn't interrupt the current agent response). |
 | `/steer <prompt>` | Inject a mid-run note that arrives at the agent **after the next tool call** — no interrupt, no new user turn. The text is appended to the last tool result's content once the current tool completes, giving the agent new context without breaking the current tool-calling loop. Use this to nudge direction mid-task (e.g. "focus on the auth module" while the agent is running tests). |
 | `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. After each turn an auxiliary judge model decides whether the goal is done; if not, Hermes auto-continues. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Budget defaults to 20 turns (`goals.max_turns`); any real user message preempts the continuation loop, and state survives `/resume`. See [Persistent Goals](/docs/user-guide/features/goals) for the full walkthrough. |
+| `/subgoal <text>` | Append a user-supplied criterion to the active goal mid-loop. The continuation prompt surfaces all subgoals to the agent verbatim, and the judge factors them into its DONE/CONTINUE verdict — so the goal isn't marked done until the original goal **and** every subgoal are met. Subcommands: `/subgoal` (list), `/subgoal remove <N>`, `/subgoal clear`. Requires an active `/goal`. |
 | `/resume [name]` | Resume a previously-named session |
+| `/sessions` | Browse and resume previous sessions in an interactive picker |
 | `/redraw` | Force a full UI repaint (recovers from terminal drift after tmux resize, mouse selection artifacts, etc.) |
-| `/status` | Show session info |
+| `/status` | Show session info — model, provider, profile, session ID, working directory, title, created/updated timestamps, token totals, agent-running state — followed by a local **Session recap** block (recent user/assistant turn counts, tool result count, top tools used, last few files touched, the latest user prompt, and the latest assistant reply). The recap is computed locally from the in-memory conversation; no LLM call, no prompt-cache impact. |
 | `/agents` (alias: `/tasks`) | Show active agents and running tasks across the current session. |
 | `/background <prompt>` (alias: `/bg`, `/btw`) | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
 | `/branch [name]` (alias: `/fork`) | Branch the current session (explore a different path) |
+| `/handoff <platform>` | **CLI only.** Hand the current session off to a messaging platform (Telegram, Discord, Slack, WhatsApp, Signal, Matrix). The gateway picks it up immediately, creates a fresh thread on platforms that support threads (Telegram topics, Discord text-channel threads, Slack message-anchored threads), re-binds the destination to your CLI session_id so the full role-aware transcript replays, and forges a synthetic user turn so the agent confirms it's working in the new place. Your CLI exits cleanly on success with a `/resume` hint; resume locally any time with `/resume <title>`. Refused mid-turn. Requires the gateway to be running and a home channel configured for the target platform (`/sethome` from the destination chat). See [Cross-Platform Handoff](/docs/user-guide/sessions#cross-platform-handoff). |
 
 ### Configuration
 
@@ -48,6 +66,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 |---------|-------------|
 | `/config` | Show current configuration |
 | `/model [model-name]` | Show or change the current model. Supports: `/model claude-sonnet-4`, `/model provider:model` (switch providers), `/model custom:model` (custom endpoint), `/model custom:name:model` (named custom provider), `/model custom` (auto-detect from endpoint), and user-defined aliases (`/model fav`, `/model grok` — see [Custom model aliases](#custom-model-aliases)). Use `--global` to persist the change to config.yaml. **Note:** `/model` can only switch between already-configured providers. To add a new provider, exit the session and run `hermes model` from your terminal. |
+| `/codex-runtime [auto\|codex_app_server\|on\|off]` | Toggle the optional [Codex app-server runtime](../user-guide/features/codex-app-server-runtime) for OpenAI/Codex models. `auto` (default) uses Hermes' standard chat completions; `codex_app_server` hands turns to a `codex app-server` subprocess for native shell, apply_patch, ChatGPT subscription auth, and migrated Codex plugins. Effective on next session. |
 | `/personality` | Set a predefined personality |
 | `/verbose` | Cycle tool progress display: off → new → all → verbose. Can be [enabled for messaging](#notes) via config. |
 | `/fast [normal\|fast\|status]` | Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode. Options: `normal`, `fast`, `status`. |
@@ -66,12 +85,13 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 |---------|-------------|
 | `/tools [list\|disable\|enable] [name...]` | Manage tools: list available tools, or disable/enable specific tools for the current session. Disabling a tool removes it from the agent's toolset and triggers a session reset. |
 | `/toolsets` | List available toolsets |
-| `/browser [connect\|disconnect\|status]` | Manage local Chrome CDP connection. `connect` attaches browser tools to a running Chrome instance (default: `ws://localhost:9222`). `disconnect` detaches. `status` shows current connection. Auto-launches Chrome if no debugger is detected. |
+| `/browser [connect\|disconnect\|status]` | Manage a local Chromium-family CDP connection. `connect` attaches browser tools to a running Chrome, Brave, Chromium, or Edge instance (default: `http://127.0.0.1:9222`). `disconnect` detaches. `status` shows current connection. Auto-launches a supported Chromium-family browser if no debugger is detected. |
 | `/skills` | Search, install, inspect, or manage skills from online registries |
 | `/cron` | Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove) |
 | `/curator` | Background skill maintenance — `status`, `run`, `pin`, `archive`. See [Curator](/docs/user-guide/features/curator). |
 | `/kanban <action>` | Drive the multi-profile, multi-project collaboration board without leaving chat. Full `hermes kanban` surface is available: `/kanban list`, `/kanban show t_abc`, `/kanban create "title" --assignee X`, `/kanban comment t_abc "text"`, `/kanban unblock t_abc`, `/kanban dispatch`, etc. Multi-board support included: `/kanban boards list`, `/kanban boards create <slug>`, `/kanban boards switch <slug>`, `/kanban --board <slug> <action>`. See [Kanban slash command](/docs/user-guide/features/kanban#kanban-slash-command). |
 | `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config.yaml |
+| `/reload-skills` (alias: `/reload_skills`) | Re-scan `~/.hermes/skills/` for newly installed or removed skills |
 | `/reload` | Reload `.env` variables into the running session (picks up new API keys without restarting) |
 | `/plugins` | List installed plugins and their status |
 
@@ -82,7 +102,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/help` | Show this help message |
 | `/usage` | Show token usage, cost breakdown, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits / plan usage pulled live from the provider's API. |
 | `/insights` | Show usage insights and analytics (last 30 days) |
-| `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status |
+| `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status (CLI-only summary view). |
+| `/platform <list\|pause\|resume> [name]` | Operate a running gateway platform. `/platform list` lists every adapter and its state (running, paused-by-breaker, manually-paused); `/platform pause <name>` stops dispatching new messages to that adapter without unloading it; `/platform resume <name>` re-enables it. The gateway also auto-pauses an adapter when its circuit breaker trips on repeated retryable failures (network / rate-limit / 5xx) — use `/platform resume <name>` to clear the breaker once the upstream is healthy. Available wherever the gateway is reachable (CLI session, Telegram, Discord, …). |
 | `/paste` | Attach a clipboard image |
 | `/copy [number]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). CLI-only. |
 | `/image <path>` | Attach a local image file for your next prompt. |
@@ -94,7 +115,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 
 | Command | Description |
 |---------|-------------|
-| `/quit` | Exit the CLI (also: `/exit`). |
+| `/quit` | Exit the CLI (also: `/exit`). See note on `/q` under `/queue` above. Pass `--delete` (or `-d`) — e.g. `/exit --delete` — to also permanently remove the current session's SQLite history and on-disk transcripts before exiting. Useful for privacy-sensitive or one-off tasks. |
 
 ### Dynamic CLI slash commands
 
@@ -174,9 +195,10 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 |---------|-------------|
 | `/new` | Start a new conversation. |
 | `/reset` | Reset conversation history. |
-| `/status` | Show session info. |
+| `/status` | Show session info, followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest prompt + reply). |
 | `/stop` | Kill all running background processes and interrupt the running agent. |
 | `/model [provider:model]` | Show or change the model. Supports provider switches (`/model zai:glm-5`), custom endpoints (`/model custom:model`), named custom providers (`/model custom:local:qwen`), auto-detect (`/model custom`), and user-defined aliases (`/model fav`, `/model grok` — see [Custom model aliases](#custom-model-aliases)). Use `--global` to persist the change to config.yaml. **Note:** `/model` can only switch between already-configured providers. To add a new provider or set up API keys, use `hermes model` from your terminal (outside the chat session). |
+| `/codex-runtime [auto\|codex_app_server\|on\|off]` | Toggle the optional [Codex app-server runtime](../user-guide/features/codex-app-server-runtime). Persists to `model.openai_runtime` in config.yaml and evicts the cached agent so the next message picks up the new runtime. Effective on next session. |
 | `/personality [name]` | Set a personality overlay for the session. |
 | `/fast [normal\|fast\|status]` | Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode. |
 | `/retry` | Retry the last message. |
@@ -211,8 +233,23 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 ## Notes
 
-- `/skin`, `/snapshot`, `/gquota`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/skills`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, and `/quit` are **CLI-only** commands.
+- `/skin`, `/snapshot`, `/gquota`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/skills`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, and `/quit` are **CLI-only** commands.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, `/topic`, and `/commands` are **messaging-only** commands.
-- `/status`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, and `/yolo` work in **both** the CLI and the messaging gateway.
+- `/status`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
+
+## Confirmation prompts for destructive commands
+
+The CLI prompts before running slash commands that throw away unsaved session state. The current destructive set is:
+
+| Command | What it destroys |
+|---------|------------------|
+| `/clear` | Clears the screen and starts a fresh session — current session ID and in-memory history are gone. |
+| `/new` / `/reset` | Starts a fresh session (new session ID + empty history). |
+| `/undo` | Removes the last user/assistant exchange from history. |
+| `/exit --delete` / `/quit --delete` | Exits **and** permanently deletes the current session's SQLite history and on-disk transcripts. |
+
+For each of these the CLI opens a three-choice modal: **Approve Once** (proceed this time), **Always Approve** (proceed and persist `approvals.destructive_slash_confirm: false` so future destructive commands run without prompting), or **Cancel**.
+
+Set `approvals.destructive_slash_confirm: false` in `~/.hermes/config.yaml` to disable the prompts globally; set it back to `true` to re-enable. See [Security — Destructive slash command confirmation](../user-guide/security.md#dangerous-command-approval) for context.

@@ -23,10 +23,10 @@ from gateway.config import Platform, PlatformConfig
 # Telegram
 # ---------------------------------------------------------------------------
 
-def _make_telegram_adapter(*, allowed_chats=None, require_mention=None):
+def _make_telegram_adapter(*, allowed_chats=None, require_mention=None, guest_mode=False):
     from gateway.platforms.telegram import TelegramAdapter
 
-    extra = {}
+    extra = {"guest_mode": guest_mode}
     if allowed_chats is not None:
         extra["allowed_chats"] = allowed_chats
     if require_mention is not None:
@@ -38,6 +38,10 @@ def _make_telegram_adapter(*, allowed_chats=None, require_mention=None):
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._message_handler = AsyncMock()
     adapter._mention_patterns = adapter._compile_mention_patterns()
+    # PR db50af910 added a TELEGRAM_ALLOWED_USERS allowlist gate to
+    # _should_process_message; stub it for tests that exercise the
+    # allowed-channels widening logic that runs after.
+    adapter._is_callback_user_authorized = lambda *_a, **_kw: True
     return adapter
 
 

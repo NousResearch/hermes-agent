@@ -6,13 +6,17 @@ truth when details differ.
 
 ## MANDATORY: Fetch Hermes Context First
 
-**Before doing ANY work in this repo, you MUST call the following MCP tools
-to load the current state of the Hermes agent fleet.** Do not skip this step.
-Do not rely on cached or stale context from previous sessions.
+**Before doing ANY work in this repo, load fleet context via Hermes MCP.** Do not
+rely on cached or stale context from previous sessions.
+
+**Canonical reference:** [Cursor & Hermes](website/docs/user-guide/features/cursor-hermes.md)
+(source-of-truth hierarchy, skills-only vs gateway mode, `HERMES_AGENTS_DIR`).
+
+**Cursor rule:** `.cursor/rules/hermes-fleet.mdc` mirrors this checklist.
 
 ### Session Start Checklist
 
-Run these MCP tool calls at the beginning of every session:
+Prefer `fleet_context_snapshot()` when available; otherwise run:
 
 1. **`skills_list()`** — discover all custom agents and their SOUL.md files.
    This tells you what agents exist, which have skills documents, and where

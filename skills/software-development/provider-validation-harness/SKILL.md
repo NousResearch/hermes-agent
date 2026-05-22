@@ -146,7 +146,7 @@ Use this lane when comparing the **same model** under different runtime settings
 - prompt-cache on vs off;
 - context-length settings;
 - batch/concurrency settings;
-- inference servers such as llama.cpp, vLLM, SGLang, SABER, or Huihui;
+- inference servers such as llama.cpp, vLLM, SGLang, TGI, Ollama, or TensorRT-LLM;
 - GPU split/tensor-parallel settings.
 
 Rules:
@@ -180,31 +180,7 @@ hermes providers validate \
   --out "$MTP"
 ```
 
-Good verdict wording:
-
-```text
-MTP A/B result: qwen36-27b
-
-Baseline:
-- suite: agent-readiness
-- result: PASS (6/6)
-- tool behavior: required tools called; forbidden tools absent
-- receipts: /tmp/hermes-qwen36-no-mtp
-
-MTP:
-- result: PASS (6/6)
-- tool behavior: required tools called; forbidden tools absent
-- receipts: /tmp/hermes-qwen36-mtp
-
-Verdict:
-MTP preserved agent-readiness behavior on this suite. Promotion is safe for this narrow lane, pending longer multi-turn and loaded-context tests.
-```
-
-Bad verdict wording:
-
-```text
-MTP was faster but failed readiness: one invalid/missing tool-call receipt and one premature final answer. Do not promote. Speed improved, but Hermes behavior regressed.
-```
+When reporting A/B results, include both receipt paths and state whether the variant preserved readiness before discussing latency or throughput.
 
 ## Reading Results
 
@@ -265,7 +241,6 @@ Keep first PRs small and generic:
 7. **Overgeneralizing a pass.** `agent-readiness` passing means the provider passed this narrow suite, not all Hermes tasks.
 8. **Ignoring stdout/stderr receipts.** Timeouts and auth failures often appear outside the final assistant text.
 9. **Forgetting provider aliases.** Use the exact provider/model route Hermes will use in production, not a nearby alias.
-10. **Using force-pushed PR branches carelessly.** For PR maintenance, sync with `origin/main`, verify focused tests/help smokes, and push with `--force-with-lease` only when appropriate.
 
 ## Verification Checklist
 

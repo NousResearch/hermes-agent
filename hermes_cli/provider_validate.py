@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 
+# Contract with `hermes chat -Q`: quiet-mode stdout/stderr includes a
+# `session_id: ...` line so this harness can load persisted receipts.
 SESSION_ID_RE = re.compile(r"\bsession_id:\s*([^\s]+)")
 VISIBLE_REASONING_MARKERS = (
     "<think>",

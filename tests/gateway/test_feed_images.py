@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -79,6 +80,56 @@ def test_build_transform_prompt_uses_required_synthesis_prompt(tmp_path):
     assert "ignored user text" not in prompt
 
 
+def test_generate_with_codex_oauth_image_uses_input_image_and_writes_result(monkeypatch, tmp_path):
+    input_image = tmp_path / "source.jpg"
+    input_image.write_bytes(b"source-image-bytes")
+    output_b64 = base64.b64encode(b"generated-image-bytes").decode("ascii")
+    captured = {}
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def __iter__(self):
+            item = SimpleNamespace(type="image_generation_call", result=output_b64, status="completed", revised_prompt="revised")
+            yield SimpleNamespace(type="response.output_item.done", item=item)
+
+        def get_final_response(self):
+            return SimpleNamespace(id="resp_1", usage=SimpleNamespace(total_tokens=1), output=[])
+
+    class FakeResponses:
+        def stream(self, **kwargs):
+            captured["payload"] = kwargs
+            return FakeStream()
+
+    class FakeClient:
+        responses = FakeResponses()
+
+    monkeypatch.setattr(feed_images, "_build_codex_oauth_client", lambda: FakeClient())
+
+    output_path, output_url = feed_images.generate_with_codex_oauth_image(input_image, "generated prompt", tmp_path / "job")
+
+    assert output_url is None
+    assert output_path == tmp_path / "job" / "completed_image.png"
+    assert output_path.read_bytes() == b"generated-image-bytes"
+    payload = captured["payload"]
+    assert payload["model"] == "gpt-5.4"
+    assert payload["tools"] == [{"type": "image_generation", "model": "gpt-image-2", "size": "1024x1024", "quality": "medium", "output_format": "png", "background": "auto"}]
+    content = payload["input"][0]["content"]
+    assert content[0] == {"type": "input_text", "text": "generated prompt"}
+    assert content[1]["type"] == "input_image"
+    assert set(content[1]) == {"type", "image_url"}
+    assert content[1]["image_url"].startswith("data:image/jpeg;base64,")
+    assert base64.b64decode(content[1]["image_url"].split(",", 1)[1]) == b"source-image-bytes"
+    metadata = json.loads((tmp_path / "job" / "completed_image.png.json").read_text())
+    assert metadata["model"] == "gpt-5.4"
+    assert metadata["image_model"] == "gpt-image-2"
+    assert metadata["revised_prompt"] == "revised"
+
+
 @pytest.mark.asyncio
 async def test_process_queued_feed_images_claims_generates_and_updates(monkeypatch, tmp_path):
     input_image = tmp_path / "source.png"
@@ -119,14 +170,15 @@ async def test_process_queued_feed_images_claims_generates_and_updates(monkeypat
         assert image_path == input_image
         return "generated prompt"
 
-    def fake_generate_image(prompt, output_dir):
+    def fake_generate_image(image_path, prompt, output_dir):
+        assert image_path == input_image
         assert prompt == "generated prompt"
-        return output_image, "https://fal/generated.png"
+        return output_image, None
 
     monkeypatch.setattr(feed_images.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(feed_images, "_download_image", fake_download)
     monkeypatch.setattr(feed_images, "build_transform_prompt", fake_generate_prompt)
-    monkeypatch.setattr(feed_images, "generate_with_gpt_image_2", fake_generate_image)
+    monkeypatch.setattr(feed_images, "generate_with_codex_oauth_image", fake_generate_image)
 
     summary = await feed_images.process_queued_feed_images(
         api_base_url="https://dev-api.fanhearts.com",
@@ -144,4 +196,6 @@ async def test_process_queued_feed_images_claims_generates_and_updates(monkeypat
     assert kwargs["headers"]["Authorization"] == "Bearer jwt-token"
     assert kwargs["data"]["status"] == "completed"
     assert kwargs["data"]["transform_prompt"] == "generated prompt"
+    assert kwargs["data"]["model"] == "codex-oauth/gpt-5.4-image_generation"
+    assert kwargs["data"]["output_image_url"] == ""
     assert "completed_image" in kwargs["files"]

@@ -10,11 +10,13 @@ name variants.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import mimetypes
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urljoin
@@ -179,41 +181,176 @@ def build_transform_prompt(image_path: Path, user_prompt: str) -> str:
     return FEED_IMAGE_TRANSFORM_PROMPT
 
 
-def generate_with_gpt_image_2(prompt: str, output_dir: Path) -> tuple[Path | None, str | None]:
-    """Generate an image through Hermes' FAL gpt-image-2 integration.
+CODEX_IMAGE_CHAT_MODEL = "gpt-5.4"
+CODEX_IMAGE_MODEL = "gpt-image-2"
+CODEX_IMAGE_PROVIDER_MODEL_LABEL = "codex-oauth/gpt-5.4-image_generation"
+CODEX_IMAGE_BASE_URL = "https://chatgpt.com/backend-api/codex"
+CODEX_IMAGE_INSTRUCTIONS = (
+    "You are an image editing assistant operating through Codex OAuth. "
+    "Use the supplied source image and produce the best possible completed image for the prompt."
+)
 
-    Returns ``(local_output_path, remote_image_url)``. The local path may be None
-    when the remote URL could not be downloaded; the PUT updater still sends the
-    remote URL so the Fanhearts API can fetch it server-side.
+
+def _codex_image_generation_payload(image_path: Path, prompt: str) -> dict[str, Any]:
+    """Build a Codex OAuth Responses image-generation request payload.
+
+    This intentionally avoids Hermes' built-in image_generate/FAL path. Codex
+    OAuth exposes image generation through the Responses API `image_generation`
+    tool, with the source image supplied as an input image for edits/variations.
     """
 
-    from tools import image_generation_tool as image_tool
+    mime_type = mimetypes.guess_type(str(image_path))[0] or "application/octet-stream"
+    encoded_image = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    size = os.getenv("FANHEARTS_FEED_IMAGES_CODEX_SIZE", "1024x1024").strip() or "1024x1024"
+    quality = os.getenv("FANHEARTS_FEED_IMAGES_CODEX_QUALITY", "medium").strip() or "medium"
+    output_format = os.getenv("FANHEARTS_FEED_IMAGES_CODEX_FORMAT", "png").strip() or "png"
+    background = os.getenv("FANHEARTS_FEED_IMAGES_CODEX_BACKGROUND", "auto").strip() or "auto"
 
-    original_resolver = image_tool._resolve_fal_model
-    image_tool._resolve_fal_model = lambda: ("fal-ai/gpt-image-2", image_tool.FAL_MODELS["fal-ai/gpt-image-2"])
+    return {
+        "model": os.getenv("FANHEARTS_FEED_IMAGES_CODEX_MODEL", CODEX_IMAGE_CHAT_MODEL).strip() or CODEX_IMAGE_CHAT_MODEL,
+        "store": False,
+        "instructions": CODEX_IMAGE_INSTRUCTIONS,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:{mime_type};base64,{encoded_image}",
+                    },
+                ],
+            }
+        ],
+        "tools": [
+            {
+                "type": "image_generation",
+                "model": os.getenv("FANHEARTS_FEED_IMAGES_CODEX_IMAGE_MODEL", CODEX_IMAGE_MODEL).strip() or CODEX_IMAGE_MODEL,
+                "size": size,
+                "quality": quality,
+                "output_format": output_format,
+                "background": background,
+            }
+        ],
+    }
+
+
+def _build_codex_oauth_client() -> Any | None:
+    """Return an OpenAI client authenticated with Hermes' Codex OAuth token."""
+
     try:
-        raw = image_tool.image_generate_tool(prompt=prompt, aspect_ratio="square")
-    finally:
-        image_tool._resolve_fal_model = original_resolver
+        import openai
+        from agent.auxiliary_client import _codex_cloudflare_headers, _read_codex_access_token
 
-    payload = json.loads(raw)
-    if not payload.get("success"):
-        raise RuntimeError(payload.get("error") or "gpt-image-2 generation failed")
-    image_url = payload.get("image")
-    if not image_url:
-        raise RuntimeError("gpt-image-2 returned no image URL")
+        token = _read_codex_access_token()
+        if not isinstance(token, str) or not token.strip():
+            return None
+        base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or CODEX_IMAGE_BASE_URL
+        return openai.OpenAI(
+            api_key=token.strip(),
+            base_url=base_url,
+            default_headers=_codex_cloudflare_headers(token.strip()),
+        )
+    except Exception as exc:
+        logger.debug("Could not build Codex OAuth image client: %s", exc)
+        return None
+
+
+def _get_event_attr(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, Mapping):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _jsonable(model_dump())
+    if hasattr(value, "__dict__"):
+        return _jsonable(vars(value))
+    return str(value)
+
+
+def _collect_codex_oauth_image(client: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Stream a Codex Responses image_generation call and return image metadata."""
+
+    image_item = None
+    response_id = None
+    usage = None
+    with client.responses.stream(**payload) as stream:
+        for event in stream:
+            event_type = _get_event_attr(event, "type", "")
+            if event_type == "response.output_item.done":
+                item = _get_event_attr(event, "item")
+                if _get_event_attr(item, "type") == "image_generation_call" and _get_event_attr(item, "result"):
+                    image_item = item
+            elif event_type == "response.image_generation_call.partial_image":
+                partial = _get_event_attr(event, "partial_image_b64")
+                if isinstance(partial, str) and partial:
+                    image_item = {"type": "image_generation_call", "result": partial, "status": "partial"}
+        final = stream.get_final_response()
+
+    response_id = _get_event_attr(final, "id")
+    usage = _get_event_attr(final, "usage")
+    for item in _get_event_attr(final, "output", []) or []:
+        if _get_event_attr(item, "type") == "image_generation_call" and _get_event_attr(item, "result"):
+            image_item = item
+
+    if not image_item:
+        raise RuntimeError("Codex response contained no image_generation_call result")
+    return {"image_item": image_item, "response_id": response_id, "usage": usage}
+
+
+def generate_with_codex_oauth_image(image_path: Path, prompt: str, output_dir: Path) -> tuple[Path | None, str | None]:
+    """Generate/edit a feed image through Codex OAuth, not FAL.
+
+    Returns ``(local_output_path, remote_image_url)``. Codex returns image bytes
+    directly, so the remote URL is always ``None``.
+    """
+
+    if not image_path.exists():
+        raise FileNotFoundError(str(image_path))
+
+    client = _build_codex_oauth_client()
+    if client is None:
+        raise RuntimeError("No Codex/ChatGPT OAuth credentials available. Run `hermes auth codex` to sign in.")
+
+    payload = _codex_image_generation_payload(image_path, prompt)
+    parsed = _collect_codex_oauth_image(client, payload)
+    image_item = parsed["image_item"]
+    image_b64 = _get_event_attr(image_item, "result")
+    if not isinstance(image_b64, str) or not image_b64:
+        raise RuntimeError("Codex image_generation_call did not include image bytes")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "completed_image.png"
-    try:
-        with httpx.Client(timeout=DEFAULT_TIMEOUT_SECONDS) as client:
-            response = client.get(image_url)
-            response.raise_for_status()
-            output_path.write_bytes(response.content)
-        return output_path, image_url
-    except Exception as exc:
-        logger.warning("Could not download generated image %s: %s", image_url, exc)
-        return None, image_url
+    output_path.write_bytes(base64.b64decode(image_b64))
+
+    metadata = {
+        "ok": True,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "output_path": str(output_path),
+        "model": payload["model"],
+        "image_model": payload["tools"][0].get("model"),
+        "tool": payload["tools"][0],
+        "prompt": prompt,
+        "response_id": parsed.get("response_id"),
+        "usage": _jsonable(parsed.get("usage")),
+        "revised_prompt": _get_event_attr(image_item, "revised_prompt"),
+        "status": _get_event_attr(image_item, "status"),
+        "image_bytes": output_path.stat().st_size,
+    }
+    output_path.with_suffix(output_path.suffix + ".json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return output_path, None
 
 
 async def _mark_failed(
@@ -285,13 +422,13 @@ async def process_queued_feed_images(
 
                 input_path = await _download_image(client, image_url, job_dir)
                 transform_prompt = build_transform_prompt(input_path, user_prompt)
-                output_path, output_url = generate_with_gpt_image_2(transform_prompt, job_dir)
+                output_path, output_url = generate_with_codex_oauth_image(input_path, transform_prompt, job_dir)
 
                 data = {
                     "status": "completed",
                     "transform_prompt": transform_prompt,
                     "output_image_url": output_url or "",
-                    "model": "fal-ai/gpt-image-2",
+                    "model": "codex-oauth/gpt-5.4-image_generation",
                 }
                 files = None
                 file_handle = None

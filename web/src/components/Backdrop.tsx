@@ -33,7 +33,8 @@ export function Backdrop() {
         className="pointer-events-none fixed inset-0 z-[1]"
         style={{
           backgroundColor: "var(--background-base)",
-          mixBlendMode: "difference",
+          mixBlendMode:
+            "var(--component-backdrop-base-blend-mode, difference)" as React.CSSProperties["mixBlendMode"],
         }}
       />
 

@@ -449,7 +449,10 @@ export default function App() {
 
         <Typography
           className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
-          style={{ mixBlendMode: "plus-lighter" }}
+          style={{
+            color: "var(--component-header-brand-color)",
+            mixBlendMode: "var(--component-header-brand-blend-mode, plus-lighter)" as React.CSSProperties["mixBlendMode"],
+          }}
         >
           {t.app.brand}
         </Typography>
@@ -499,7 +502,10 @@ export default function App() {
 
                 <Typography
                   className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-                  style={{ mixBlendMode: "plus-lighter" }}
+                  style={{
+                    color: "var(--component-header-brand-color)",
+                    mixBlendMode: "var(--component-header-brand-blend-mode, plus-lighter)" as React.CSSProperties["mixBlendMode"],
+                  }}
                 >
                   Hermes
                   <br />

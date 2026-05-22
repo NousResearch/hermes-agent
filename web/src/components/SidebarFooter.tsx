@@ -31,7 +31,11 @@ export function SidebarFooter() {
           "transition-opacity hover:opacity-90",
           "focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40",
         )}
-        style={{ mixBlendMode: "plus-lighter" }}
+        style={{
+          color: "var(--component-header-brand-color)",
+          mixBlendMode:
+            "var(--component-header-brand-blend-mode, plus-lighter)" as React.CSSProperties["mixBlendMode"],
+        }}
       >
         {t.app.footer.org}
       </a>

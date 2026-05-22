@@ -804,6 +804,57 @@ class TestDeliverResultErrorReturns:
         assert result is not None
         assert "no delivery target" in result
 
+    def test_live_adapter_rate_limit_does_not_fallback_to_standalone(self):
+        """Rate-limited live-adapter sends should return delivery error directly
+        and must NOT trigger standalone fallback (prevents duplicate send storms)."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(
+            success=False,
+            error="iLink sendmessage rate limited: ret=-2 errcode=None errmsg=rate limited",
+        )
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.WEIXIN: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(
+                success=False,
+                error="iLink sendmessage rate limited: ret=-2 errcode=None errmsg=rate limited",
+            ))
+            coro.close()
+            return future
+
+        job = {
+            "id": "wx-rate-limit-job",
+            "deliver": "origin",
+            "origin": {"platform": "weixin", "chat_id": "o9cq80-qjsrglS3v5UNo29vHCtNw@im.wechat"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as standalone_send:
+            result = _deliver_result(
+                job,
+                "hello",
+                adapters={Platform.WEIXIN: adapter},
+                loop=loop,
+            )
+
+        assert result is not None
+        assert "delivery error:" in result
+        assert "rate limited" in result.lower()
+        standalone_send.assert_not_called()
+
 
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):

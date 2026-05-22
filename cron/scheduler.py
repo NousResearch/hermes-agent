@@ -596,6 +596,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         raise
                     if send_result and not getattr(send_result, "success", True):
                         err = getattr(send_result, "error", "unknown")
+                        err_text = str(err).lower()
+                        # Avoid duplicate send storms on upstream rate limits.
+                        # When live adapter returns rate-limit style errors, do NOT
+                        # immediately fall back to standalone (which hits the same
+                        # upstream API again). Surface delivery error directly.
+                        if ("rate limited" in err_text) or ("rate limit" in err_text) or ("ret=-2" in err_text):
+                            msg = f"delivery error: {err}"
+                            logger.error("Job '%s': %s", job["id"], msg)
+                            delivery_errors.append(msg)
+                            continue
                         logger.warning(
                             "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
                             job["id"], platform_name, chat_id, err,

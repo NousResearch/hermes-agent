@@ -19,6 +19,7 @@ import os
 import random
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -259,6 +260,8 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_uuid_by_number: Dict[str, str] = {}
         self._recipient_number_by_uuid: Dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
+        self._message_context_by_chat: Dict[str, deque] = {}
+        self._message_context_limit = int(extra.get("message_context_limit", 25) or 25)
 
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, redact_phone(self.account),
@@ -485,6 +488,7 @@ class SignalAdapter(BasePlatformAdapter):
         sender: str,
         reaction: dict,
         is_group: bool,
+        target_text: Optional[str] = None,
     ) -> str:
         """Render a reaction as agent-facing context, not an automatic reply request."""
         emoji = str(reaction.get("emoji") or "").strip() or "<no emoji>"
@@ -503,13 +507,90 @@ class SignalAdapter(BasePlatformAdapter):
         actor = sender_name or sender
         verb = f"removed reaction {emoji} from" if removed else f"reacted {emoji} to"
         scope = " in a group conversation" if is_group else ""
+        target_text_hint = f" Target message text: {target_text}" if target_text else ""
         return (
             f"Signal reaction event: {actor} {verb} a message{scope}. "
-            f"Target author: {target_author}. Target timestamp: {target_ts}. "
+            f"Target author: {target_author}. Target timestamp: {target_ts}.{target_text_hint} "
             "Use this as lightweight conversational input: decide whether this reaction is meaningful, "
             "actionable, or memory-relevant. Emoji such as thumbs up/down, check marks, or crosses may answer a prior question. "
             "You do not need to respond, especially in group conversations, unless a response or action is useful."
         )
+
+    def _remember_message_context(
+        self,
+        *,
+        source,
+        sender: str,
+        sender_name: str,
+        timestamp_ms: Any,
+        text: str,
+    ) -> None:
+        """Keep a small in-memory per-chat window so reactions have context."""
+        if not timestamp_ms or not text or not text.strip():
+            return
+        chat_id = source.chat_id
+        entries = self._message_context_by_chat.setdefault(
+            chat_id, deque(maxlen=max(1, self._message_context_limit))
+        )
+        timestamp_key = str(timestamp_ms)
+        # Replace if signal-cli redelivers the same timestamp.
+        for idx, existing in enumerate(entries):
+            if existing.get("timestamp_ms") == timestamp_key:
+                del entries[idx]
+                break
+        entries.append({
+            "timestamp_ms": timestamp_key,
+            "sender": sender,
+            "sender_name": sender_name or sender,
+            "text": text.strip(),
+        })
+
+    def _find_message_context(self, chat_id: str, timestamp_ms: Any) -> Optional[dict]:
+        if not timestamp_ms:
+            return None
+        timestamp_key = str(timestamp_ms)
+        for entry in reversed(self._message_context_by_chat.get(chat_id, ())):
+            if entry.get("timestamp_ms") == timestamp_key:
+                return entry
+        # DMs can need this fallback when a reaction refers to a message whose
+        # target author is not the reacting sender (for example, echoed sent
+        # messages or tests that model both sides as inbound envelopes).
+        for entries in self._message_context_by_chat.values():
+            for entry in reversed(entries):
+                if entry.get("timestamp_ms") == timestamp_key:
+                    return entry
+        return None
+
+    def _format_recent_message_context(
+        self,
+        chat_id: str,
+        *,
+        target_ts: Any,
+        target_entry: Optional[dict],
+        limit: int = 6,
+    ) -> Optional[str]:
+        entries = list(self._message_context_by_chat.get(chat_id, ()))
+        if not entries and target_entry:
+            entries = [target_entry]
+        if not entries:
+            return None
+
+        recent = entries[-limit:]
+        lines = ["Recent chat context for interpreting this Signal reaction:"]
+        if target_entry:
+            lines.append(
+                f"Target message: {target_entry['sender_name']}: {target_entry['text']}"
+            )
+        else:
+            lines.append(
+                "Target message was not found in the local Signal context cache. "
+                "Use the recent messages below only as weak context."
+            )
+        lines.append("Recent messages:")
+        for entry in recent:
+            marker = " (target)" if target_entry is entry else ""
+            lines.append(f"- {entry['sender_name']}: {entry['text']}{marker}")
+        return "\n".join(lines)
 
     async def _dispatch_reaction_event(
         self,
@@ -534,6 +615,21 @@ class SignalAdapter(BasePlatformAdapter):
             or reaction.get("targetTimestamp")
             or reaction.get("target_sent_timestamp")
         )
+        target_entry = self._find_message_context(source.chat_id, target_ts)
+        target_text = target_entry.get("text") if target_entry else None
+        channel_context = self._format_recent_message_context(
+            source.chat_id,
+            target_ts=target_ts,
+            target_entry=target_entry,
+        )
+        if not channel_context and not is_group:
+            target_author = reaction.get("targetAuthor") or reaction.get("target_author")
+            if target_author:
+                channel_context = self._format_recent_message_context(
+                    str(target_author),
+                    target_ts=target_ts,
+                    target_entry=target_entry,
+                )
         event = MessageEvent(
             source=source,
             text=self._reaction_event_text(
@@ -541,6 +637,7 @@ class SignalAdapter(BasePlatformAdapter):
                 sender=sender,
                 reaction=reaction,
                 is_group=is_group,
+                target_text=target_text,
             ),
             message_type=MessageType.TEXT,
             timestamp=self._timestamp_from_envelope(envelope_data),
@@ -549,9 +646,12 @@ class SignalAdapter(BasePlatformAdapter):
                 "timestamp_ms": envelope_data.get("timestamp", 0),
                 "reaction": dict(reaction),
                 "signal_event_type": "reaction",
+                "target_message": dict(target_entry) if target_entry else None,
             },
             message_id=str(envelope_data.get("timestamp")) if envelope_data.get("timestamp") else None,
             reply_to_message_id=str(target_ts) if target_ts else None,
+            reply_to_text=target_text,
+            channel_context=channel_context,
         )
         logger.debug(
             "Signal: reaction from %s in %s: %s",
@@ -680,6 +780,14 @@ class SignalAdapter(BasePlatformAdapter):
         mentions = data_message.get("mentions", [])
         if text and mentions:
             text = _render_mentions(text, mentions)
+
+        self._remember_message_context(
+            source=source,
+            sender=sender,
+            sender_name=sender_name,
+            timestamp_ms=envelope_data.get("timestamp", 0),
+            text=text or "",
+        )
 
         # Mention filter: in groups, only process messages that @mention the bot account
         if is_group and self.require_mention:

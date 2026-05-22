@@ -462,21 +462,58 @@ def cmd_setup(args) -> None:
     cfg.pop("base_url", None)
 
     if is_local:
-        # --- Local: ask for base URL, skip or clear API key ---
+        # --- Local: ask for base URL, optionally accept a JWT for auth ---
         current_url = cfg.get("baseUrl") or ""
         new_url = _prompt("Base URL", default=current_url or "http://localhost:8000")
         if new_url:
             cfg["baseUrl"] = new_url
 
-        # For local no-auth, the SDK must not send an API key.
-        # We keep the key in config (for cloud switching later) but
-        # the client should skip auth when baseUrl is local.
-        current_key = cfg.get("apiKey", "")
-        if current_key:
-            print(f"\n  API key present in config (kept for cloud/hybrid use).")
-            print("  Local connections will skip auth automatically.")
+        # Self-hosted Honcho can run with AUTH_USE_AUTH=true and an
+        # AUTH_JWT_SECRET on the server side. In that case clients must
+        # send a JWT signed with that secret as the bearer token (the
+        # Honcho SDK takes it via ``api_key=``). Cloud users got prompted
+        # for a key already; the local path historically skipped this and
+        # forced users to disable auth on the server. Offer the prompt
+        # here too. We store it under the host block (not the top-level
+        # apiKey) so ``get_honcho_client`` recognises it as an explicit
+        # local auth opt-in (see ``_host_has_key`` in client.py) and
+        # cloud/hybrid switching is unaffected.
+        current_host_key = hermes_host.get("apiKey", "")
+        masked = (
+            f"...{current_host_key[-8:]}"
+            if len(current_host_key) > 8
+            else ("set" if current_host_key else "not set")
+        )
+        print(
+            "\n  Local Honcho auth (JWT signed with the server's "
+            "AUTH_JWT_SECRET)."
+        )
+        print(
+            "  Leave blank if your server runs with AUTH_USE_AUTH=false. "
+            f"Current: {masked}"
+        )
+        new_local_key = _prompt(
+            "Local JWT / bearer token (blank to skip / keep current)",
+            secret=True,
+        )
+        if new_local_key:
+            hermes_host["apiKey"] = new_local_key
+        elif current_host_key:
+            print("  Keeping existing local JWT.")
         else:
-            print("\n  No API key set. Local no-auth ready.")
+            # Surface the top-level key situation for transparency.
+            top_key = cfg.get("apiKey", "")
+            if top_key:
+                print(
+                    "\n  Top-level API key present in config (kept for "
+                    "cloud/hybrid use)."
+                )
+                print(
+                    "  Local connections will skip auth automatically "
+                    "until a local JWT is set above."
+                )
+            else:
+                print("\n  No local JWT set. Local no-auth ready.")
     else:
         # --- Cloud: set default base URL, require API key ---
         cfg.pop("baseUrl", None)  # cloud uses SDK default

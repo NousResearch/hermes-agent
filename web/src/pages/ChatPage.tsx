@@ -430,6 +430,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
+    // Capture-phase wheel listener on the host div as a fallback.
+    // In browser/dashboard layouts, parent layers or renderer/host event
+    // ordering can consume or bypass wheel events before xterm's own
+    // attachCustomWheelEventHandler fires. This non-passive capture listener
+    // ensures the scroll always reaches the terminal.
+    const wheelHandler = (ev: WheelEvent) => {
+      const delta = ev.deltaY;
+      if (!delta) return;
+      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
+      term.scrollLines(delta > 0 ? step : -step);
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    host.addEventListener("wheel", wheelHandler, { capture: true, passive: false });
+
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
@@ -656,6 +671,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // effect's top level so it can't reach into that scope — close via
       // the ref instead. ``?.`` covers the race where unmount fires before
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
+      host.removeEventListener("wheel", wheelHandler, { capture: true });
       wsRef.current?.close();
       wsRef.current = null;
       term.dispose();

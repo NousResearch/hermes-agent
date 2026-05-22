@@ -5312,7 +5312,9 @@ def _model_flow_bedrock(config, current_model=""):
 
     auth_var = resolve_aws_auth_env_var()
     if auth_var:
-        print(f"  AWS credentials: {auth_var} ✓")
+        from hermes_cli.env_loader import format_secret_source_suffix
+        source_suffix = format_secret_source_suffix(auth_var)
+        print(f"  AWS credentials: {auth_var} ✓{source_suffix}")
     else:
         print("  AWS credentials: boto3 default chain (instance role / SSO)")
     print()

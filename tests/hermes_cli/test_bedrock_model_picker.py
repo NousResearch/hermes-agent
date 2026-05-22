@@ -335,6 +335,55 @@ class TestBedrockRegionRouting:
 # 4. providers.py overlay registration
 # ---------------------------------------------------------------------------
 
+class TestBedrockNativeAuthBitwarden:
+    """_model_flow_bedrock shows '(from Bitwarden)' when AWS creds came from BSM."""
+
+    def _run_flow(self, monkeypatch, auth_var, bw_label=None):
+        """Run _model_flow_bedrock up to the credentials print, then bail."""
+        from hermes_cli import env_loader
+
+        env_loader._SECRET_SOURCES.clear()
+        if bw_label:
+            env_loader._SECRET_SOURCES[auth_var] = bw_label
+
+        bedrock_mock = MagicMock()
+        bedrock_mock.has_aws_credentials.return_value = True
+        bedrock_mock.resolve_aws_auth_env_var.return_value = auth_var
+        # Abort after the credentials line so we don't need to mock the full flow.
+        bedrock_mock.resolve_bedrock_region.side_effect = KeyboardInterrupt
+
+        import sys
+        sys.modules["agent.bedrock_adapter"] = bedrock_mock
+
+        from hermes_cli.main import _model_flow_bedrock
+        import io
+
+        buf = io.StringIO()
+        with patch("builtins.input", side_effect=KeyboardInterrupt):
+            with patch("sys.stdout", buf):
+                try:
+                    _model_flow_bedrock({})
+                except (KeyboardInterrupt, SystemExit):
+                    pass
+
+        env_loader._SECRET_SOURCES.clear()
+        del sys.modules["agent.bedrock_adapter"]
+        return buf.getvalue()
+
+    def test_shows_bitwarden_suffix_when_aws_key_from_bsm(self, monkeypatch):
+        output = self._run_flow(monkeypatch, "AWS_ACCESS_KEY_ID", bw_label="bitwarden")
+        assert "AWS_ACCESS_KEY_ID ✓ (from Bitwarden)" in output
+
+    def test_no_suffix_when_aws_key_not_from_bsm(self, monkeypatch):
+        output = self._run_flow(monkeypatch, "AWS_ACCESS_KEY_ID", bw_label=None)
+        assert "AWS_ACCESS_KEY_ID ✓" in output
+        assert "(from Bitwarden)" not in output
+
+    def test_bearer_token_var_also_gets_suffix(self, monkeypatch):
+        output = self._run_flow(monkeypatch, "AWS_BEARER_TOKEN_BEDROCK", bw_label="bitwarden")
+        assert "AWS_BEARER_TOKEN_BEDROCK ✓ (from Bitwarden)" in output
+
+
 class TestBedrockOverlayRegistration:
     """bedrock entry in HERMES_OVERLAYS is correctly configured."""
 

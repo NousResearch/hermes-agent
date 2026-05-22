@@ -207,7 +207,9 @@ class DeliveryRouter:
         lines.append("")
         lines.append(content)
         
-        output_path.write_text("\n".join(lines))
+        tmp = output_path.with_suffix(".tmp")
+        tmp.write_text("\n".join(lines))
+        tmp.replace(output_path)
         
         return {
             "path": str(output_path),
@@ -220,7 +222,9 @@ class DeliveryRouter:
         out_dir = get_hermes_home() / "cron" / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"{job_id}_{timestamp}.txt"
-        path.write_text(content)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(content)
+        tmp.replace(path)
         return path
 
     async def _deliver_to_platform(

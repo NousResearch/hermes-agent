@@ -346,62 +346,67 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         if data_url is None:
             data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         return data_url  # fall through to size-check in caller
-    # Convert RGBA to RGB for JPEG output
-    if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
-        img = img.convert("RGB")
+    try:
+        # Convert RGBA to RGB for JPEG output
+        if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
+            old_img = img
+            img = img.convert("RGB")
+            old_img.close()
 
-    # Strategy: halve dimensions until base64 fits, up to 4 rounds.
-    # For JPEG, also try reducing quality at each size step.
-    # For PNG, quality is irrelevant — only dimension reduction helps.
-    quality_steps = (85, 70, 50) if pil_format == "JPEG" else (None,)
-    prev_dims = (img.width, img.height)
-    candidate = None  # will be set on first loop iteration
+        # Strategy: halve dimensions until base64 fits, up to 4 rounds.
+        # For JPEG, also try reducing quality at each size step.
+        # For PNG, quality is irrelevant — only dimension reduction helps.
+        quality_steps = (85, 70, 50) if pil_format == "JPEG" else (None,)
+        prev_dims = (img.width, img.height)
+        candidate = None  # will be set on first loop iteration
 
-    for attempt in range(5):
-        if attempt > 0:
-            # Proportional scaling: halve the longer side and scale the
-            # shorter side to preserve aspect ratio (min dimension 64).
-            scale = 0.5
-            new_w = max(int(img.width * scale), 64)
-            new_h = max(int(img.height * scale), 64)
-            # Re-derive the scale from whichever dimension hit the floor
-            # so both axes shrink by the same factor.
-            if new_w == 64 and img.width > 0:
-                effective_scale = 64 / img.width
-                new_h = max(int(img.height * effective_scale), 64)
-            elif new_h == 64 and img.height > 0:
-                effective_scale = 64 / img.height
-                new_w = max(int(img.width * effective_scale), 64)
-            # Stop if dimensions can't shrink further
-            if (new_w, new_h) == prev_dims:
-                break
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-            prev_dims = (new_w, new_h)
-            logger.info("Resized to %dx%d (attempt %d)", new_w, new_h, attempt)
+        for attempt in range(5):
+            if attempt > 0:
+                # Proportional scaling: halve the longer side and scale the
+                # shorter side to preserve aspect ratio (min dimension 64).
+                scale = 0.5
+                new_w = max(int(img.width * scale), 64)
+                new_h = max(int(img.height * scale), 64)
+                # Re-derive the scale from whichever dimension hit the floor
+                # so both axes shrink by the same factor.
+                if new_w == 64 and img.width > 0:
+                    effective_scale = 64 / img.width
+                    new_h = max(int(img.height * effective_scale), 64)
+                elif new_h == 64 and img.height > 0:
+                    effective_scale = 64 / img.height
+                    new_w = max(int(img.width * effective_scale), 64)
+                # Stop if dimensions can't shrink further
+                if (new_w, new_h) == prev_dims:
+                    break
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                prev_dims = (new_w, new_h)
+                logger.info("Resized to %dx%d (attempt %d)", new_w, new_h, attempt)
 
-        for q in quality_steps:
-            buf = _io.BytesIO()
-            save_kwargs = {"format": pil_format}
-            if q is not None:
-                save_kwargs["quality"] = q
-            img.save(buf, **save_kwargs)
-            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-            candidate = f"data:{out_mime};base64,{encoded}"
-            if len(candidate) <= max_base64_bytes:
-                logger.info("Auto-resized image fits: %.1f MB (quality=%s, %dx%d)",
-                            len(candidate) / (1024 * 1024), q,
-                            img.width, img.height)
-                return candidate
+            for q in quality_steps:
+                buf = _io.BytesIO()
+                save_kwargs = {"format": pil_format}
+                if q is not None:
+                    save_kwargs["quality"] = q
+                img.save(buf, **save_kwargs)
+                encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+                candidate = f"data:{out_mime};base64,{encoded}"
+                if len(candidate) <= max_base64_bytes:
+                    logger.info("Auto-resized image fits: %.1f MB (quality=%s, %dx%d)",
+                                len(candidate) / (1024 * 1024), q,
+                                img.width, img.height)
+                    return candidate
 
-    # If we still can't get it small enough, return the best attempt
-    # and let the caller decide
-    if candidate is not None:
-        logger.warning("Auto-resize could not fit image under %.1f MB (best: %.1f MB)",
-                       max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
-        return candidate
+        # If we still can't get it small enough, return the best attempt
+        # and let the caller decide
+        if candidate is not None:
+            logger.warning("Auto-resize could not fit image under %.1f MB (best: %.1f MB)",
+                           max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
+            return candidate
 
-    # Shouldn't reach here, but fall back to full encode
-    return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
+        # Shouldn't reach here, but fall back to full encode
+        return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
+    finally:
+        img.close()
 
 
 # ---------------------------------------------------------------------------

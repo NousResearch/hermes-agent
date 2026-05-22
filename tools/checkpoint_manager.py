@@ -466,7 +466,9 @@ def _register_project(store: Path, working_dir: str) -> None:
             pass
     try:
         meta_path.parent.mkdir(parents=True, exist_ok=True)
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        tmp = meta_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(meta), encoding="utf-8")
+        tmp.replace(meta_path)
     except OSError as exc:
         logger.debug("Could not write project metadata %s: %s", meta_path, exc)
 

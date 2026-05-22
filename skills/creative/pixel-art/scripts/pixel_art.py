@@ -105,7 +105,11 @@ def pixel_art(input_path, output_path, preset="arcade", **overrides):
         )
     cfg = {**PRESETS[preset], **overrides}
 
-    img = Image.open(input_path).convert("RGB")
+    raw_img = Image.open(input_path)
+    try:
+        img = raw_img.convert("RGB")
+    finally:
+        raw_img.close()
 
     img = ImageEnhance.Contrast(img).enhance(cfg["contrast"])
     img = ImageEnhance.Color(img).enhance(cfg["color"])

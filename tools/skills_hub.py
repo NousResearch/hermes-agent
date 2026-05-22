@@ -2774,7 +2774,9 @@ class HubLockFile:
 
     def save(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        tmp.replace(self.path)
 
     def record_install(
         self,
@@ -2841,7 +2843,9 @@ class TapsManager:
 
     def save(self, taps: List[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n")
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"taps": taps}, indent=2) + "\n")
+        tmp.replace(self.path)
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""

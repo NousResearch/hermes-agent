@@ -1742,9 +1742,11 @@ class GatewayRunner:
     def _save_voice_modes(self) -> None:
         try:
             self._VOICE_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            self._VOICE_MODE_PATH.write_text(
+            tmp = self._VOICE_MODE_PATH.with_suffix(".tmp")
+            tmp.write_text(
                 json.dumps(self._voice_mode, indent=2)
             )
+            tmp.replace(self._VOICE_MODE_PATH)
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
 

@@ -4479,7 +4479,12 @@ class DiscordAdapter(BasePlatformAdapter):
             skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            # Discord quote-replies in free-response/no-mention contexts often
+            # belong inline, but an explicit @Hermes reply in a normal channel
+            # is still a new user-initiated conversation and should get the
+            # same thread isolation as a default message mention.
+            should_skip_reply_thread = is_reply_message and not mention_prefix
+            if auto_thread and not skip_thread and not is_voice_linked_channel and not should_skip_reply_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)

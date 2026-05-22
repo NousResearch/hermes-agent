@@ -384,8 +384,8 @@ async def test_discord_auto_thread_enabled_by_default(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
-    """Quote-replies should stay in-channel instead of trying to create a thread."""
+async def test_discord_reply_message_skips_auto_thread_without_mention(adapter, monkeypatch):
+    """Unmentioned quote-replies in free-response channels should stay inline."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
@@ -406,6 +406,35 @@ async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
     assert event.text == "reply without mention"
     assert event.source.chat_id == "123"
     assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_mentioned_reply_message_auto_threads(adapter, monkeypatch):
+    """Explicit @Hermes quote-replies should still get a fresh thread."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_user = adapter._client.user
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content=f"<@{bot_user.id}> reply with mention",
+        mentions=[bot_user],
+        msg_type=discord_platform.discord.MessageType.reply,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "reply with mention"
+    assert event.source.chat_id == "999"
+    assert event.source.thread_id == "999"
+    assert event.source.chat_type == "thread"
 
 
 @pytest.mark.asyncio

@@ -454,3 +454,101 @@ If your configured provider isn't available, Hermes automatically falls back:
 - **OpenAI key not set** → Falls back to local transcription, then Groq
 - **Mistral key/SDK not set** → Skipped in auto-detect; falls through to next available provider
 - **Nothing available** → Voice messages pass through with an accurate note to the user
+
+### Python plugin providers (STT)
+
+For STT engines that aren't built-in (OpenRouter, SenseAudio, Gemini-STT, Deepgram, custom proprietary backends), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 6 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`) — those keep their native implementations and always win on name collision.
+
+#### Resolution order
+
+1. **`stt.provider` is a built-in name** → built-in dispatch. **Always wins.**
+2. **`stt.provider` matches a plugin-registered `TranscriptionProvider`** → plugin dispatch:
+   - if the plugin's `is_available()` returns `False` (missing creds or SDK), the call surfaces an unavailability error envelope identifying the plugin — **not** the generic "No STT provider available" message.
+   - otherwise the plugin's `transcribe()` is called with `model` (from the public `model=` arg, falling back to `stt.<provider>.model`) and `language` (from `stt.<provider>.language`).
+3. **No match** → "No STT provider available" error.
+
+#### Per-provider config namespace
+
+Plugins read their per-provider configuration from `stt.<provider>` in `config.yaml`, mirroring how built-ins read `stt.openai.model` / `stt.mistral.model`:
+
+```yaml
+stt:
+  provider: my-stt
+  my-stt:
+    model: whisper-large-v3
+    language: ja          # forwarded as language= to transcribe()
+    # any other plugin-specific keys go here; read them via your
+    # own config.yaml access in __init__/is_available/transcribe
+```
+
+The dispatcher forwards `model` and `language` from this section; everything else, the plugin can read itself.
+
+#### Minimal plugin
+
+Drop this in `~/.hermes/plugins/my-stt/`:
+
+`plugin.yaml`:
+```yaml
+name: my-stt
+version: 0.1.0
+description: "My custom Python STT backend"
+```
+
+`__init__.py`:
+```python
+from agent.transcription_provider import TranscriptionProvider
+
+
+class MySTTProvider(TranscriptionProvider):
+    @property
+    def name(self) -> str:
+        return "my-stt"  # what stt.provider matches against
+
+    @property
+    def display_name(self) -> str:
+        return "My Custom STT"
+
+    def is_available(self) -> bool:
+        # Return False when credentials/deps are missing — picker skips
+        # this row but the dispatcher still routes here on explicit config.
+        import os
+        return bool(os.environ.get("MY_STT_API_KEY"))
+
+    def transcribe(self, file_path, *, model=None, language=None, **extra):
+        # Return the standard transcribe envelope:
+        #   {"success": bool, "transcript": str, "provider": str, "error": str}
+        # Do NOT raise — convert exceptions to the error envelope so the
+        # gateway/CLI caller sees a consistent shape on failure.
+        try:
+            import my_stt_sdk
+            client = my_stt_sdk.Client()
+            text = client.transcribe(open(file_path, "rb"))
+            return {
+                "success": True,
+                "transcript": text,
+                "provider": "my-stt",
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"my-stt failed: {exc}",
+                "provider": "my-stt",
+            }
+
+
+def register(ctx):
+    ctx.register_transcription_provider(MySTTProvider())
+```
+
+Enable it (`hermes plugins enable my-stt`), set `stt.provider: my-stt` in `config.yaml`, and voice-message transcription will route through your plugin.
+
+#### Optional hooks
+
+Override these on your provider class for richer integration:
+
+- `list_models()` → list of `{id, display, languages, max_audio_seconds}` dicts.
+- `default_model()` → string returned when the user doesn't override the model.
+- `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power picker rows in `hermes tools` / `hermes setup` (the picker category for STT is not yet shipped — this metadata is available to plugins for forward compatibility).
+
+See `agent/transcription_provider.py` for the full ABC including docstrings.

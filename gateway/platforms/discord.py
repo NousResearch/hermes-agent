@@ -1348,13 +1348,45 @@ class DiscordAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
+    _REACTION_DEFAULTS: Dict[str, str] = {
+        "thinking": "👀",
+        "done": "✅",
+        "error": "❌",
+    }
+
+    def _resolve_emoji(self, slot: str) -> Optional[str]:
+        """Resolve the emoji for a lifecycle slot, applying per-slot overrides.
+
+        Resolution semantics:
+        - Missing key in reaction_emojis → use default for the slot
+        - null / "" / whitespace-only string → disabled (returns None)
+        - Non-empty string → use trimmed value
+        """
+        reaction_emojis = {}
+        if self.config and isinstance(self.config.extra, dict):
+            reaction_emojis = self.config.extra.get("reaction_emojis") or {}
+        if not isinstance(reaction_emojis, dict):
+            reaction_emojis = {}
+
+        default = self._REACTION_DEFAULTS.get(slot, "")
+        if slot not in reaction_emojis:
+            return default if default else None
+
+        value = reaction_emojis[slot]
+        if value is None:
+            return None
+        trimmed = str(value).strip()
+        return trimmed if trimmed else None
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction for normal Discord message events."""
         if not self._reactions_enabled():
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
-            await self._add_reaction(message, "👀")
+            emoji = self._resolve_emoji("thinking")
+            if emoji:
+                await self._add_reaction(message, emoji)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
@@ -1362,11 +1394,17 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
+            thinking_emoji = self._resolve_emoji("thinking")
+            if thinking_emoji:
+                await self._remove_reaction(message, thinking_emoji)
             if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, "✅")
+                done_emoji = self._resolve_emoji("done")
+                if done_emoji:
+                    await self._add_reaction(message, done_emoji)
             elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
+                error_emoji = self._resolve_emoji("error")
+                if error_emoji:
+                    await self._add_reaction(message, error_emoji)
 
     async def send(
         self,

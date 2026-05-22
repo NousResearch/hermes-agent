@@ -246,3 +246,254 @@ async def test_on_processing_complete_cancelled_removes_eyes_without_terminal_re
 
     raw_message.remove_reaction.assert_awaited_once_with("👀", adapter._client.user)
     raw_message.add_reaction.assert_not_awaited()
+
+
+def _make_adapter_with_emojis(emoji_overrides: dict) -> DiscordAdapter:
+    config = PlatformConfig(enabled=True, token="***", extra={"reaction_emojis": emoji_overrides})
+    adapter = DiscordAdapter(config)
+    adapter._client = SimpleNamespace(
+        tree=FakeTree(),
+        get_channel=lambda _id: None,
+        fetch_channel=AsyncMock(),
+        user=SimpleNamespace(id=99999, name="HermesBot"),
+    )
+    return adapter
+
+
+def test_resolve_emoji_missing_key_uses_default(adapter):
+    assert adapter._resolve_emoji("thinking") == "👀"
+    assert adapter._resolve_emoji("done") == "✅"
+    assert adapter._resolve_emoji("error") == "❌"
+
+
+def test_resolve_emoji_null_disables():
+    a = _make_adapter_with_emojis({"done": None, "error": None})
+    assert a._resolve_emoji("done") is None
+    assert a._resolve_emoji("error") is None
+
+
+def test_resolve_emoji_empty_string_disables():
+    a = _make_adapter_with_emojis({"thinking": "", "done": ""})
+    assert a._resolve_emoji("thinking") is None
+    assert a._resolve_emoji("done") is None
+
+
+def test_resolve_emoji_whitespace_only_disables():
+    a = _make_adapter_with_emojis({"done": "   "})
+    assert a._resolve_emoji("done") is None
+
+
+def test_resolve_emoji_non_empty_returns_trimmed():
+    a = _make_adapter_with_emojis({"done": " 🎉 "})
+    assert a._resolve_emoji("done") == "🎉"
+
+
+def test_resolve_emoji_no_reaction_emojis_key_uses_defaults(adapter):
+    assert adapter._resolve_emoji("thinking") == "👀"
+    assert adapter._resolve_emoji("done") == "✅"
+    assert adapter._resolve_emoji("error") == "❌"
+
+
+@pytest.mark.asyncio
+async def test_failure_path_default_behavior(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("10", raw_message)
+
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
+    raw_message.remove_reaction.assert_awaited_once_with("👀", adapter._client.user)
+    assert raw_message.add_reaction.await_args_list[1].args == ("❌",)
+
+
+@pytest.mark.asyncio
+async def test_only_thinking_customized_done_error_use_defaults(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({"thinking": "🔄"})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("11", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    calls = raw_message.add_reaction.await_args_list
+    assert calls[0].args == ("🔄",)
+    assert calls[1].args == ("✅",)
+    raw_message.remove_reaction.assert_awaited_once_with("🔄", a._client.user)
+
+
+@pytest.mark.asyncio
+async def test_done_null_disables_success_emoji(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({"done": None})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("12", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert raw_message.add_reaction.await_count == 1
+    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
+
+
+@pytest.mark.asyncio
+async def test_done_empty_string_disables_success_emoji(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({"done": ""})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("13", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert raw_message.add_reaction.await_count == 1
+    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
+
+
+@pytest.mark.asyncio
+async def test_error_null_disables_failure_emoji(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({"error": None})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("14", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert raw_message.add_reaction.await_count == 1
+    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
+
+
+@pytest.mark.asyncio
+async def test_error_empty_string_disables_failure_emoji(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({"error": ""})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("15", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert raw_message.add_reaction.await_count == 1
+    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
+
+
+@pytest.mark.asyncio
+async def test_thinking_null_skips_add_and_remove_but_done_still_fires(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({"thinking": None})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("16", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    raw_message.remove_reaction.assert_not_awaited()
+    assert raw_message.add_reaction.await_count == 1
+    assert raw_message.add_reaction.await_args_list[0].args == ("✅",)
+
+
+@pytest.mark.asyncio
+async def test_thinking_empty_skips_add_and_remove_error_still_fires(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({"thinking": ""})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("17", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    raw_message.remove_reaction.assert_not_awaited()
+    assert raw_message.add_reaction.await_count == 1
+    assert raw_message.add_reaction.await_args_list[0].args == ("❌",)
+
+
+@pytest.mark.asyncio
+async def test_all_three_custom_emojis(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({"thinking": "⏳", "done": "🎉", "error": "💥"})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("18", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert raw_message.add_reaction.await_args_list[0].args == ("⏳",)
+    raw_message.remove_reaction.assert_awaited_once_with("⏳", a._client.user)
+    assert raw_message.add_reaction.await_args_list[1].args == ("🎉",)
+
+
+@pytest.mark.asyncio
+async def test_all_three_custom_emojis_failure_path(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({"thinking": "⏳", "done": "🎉", "error": "💥"})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("19", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert raw_message.add_reaction.await_args_list[0].args == ("⏳",)
+    raw_message.remove_reaction.assert_awaited_once_with("⏳", a._client.user)
+    assert raw_message.add_reaction.await_args_list[1].args == ("💥",)
+
+
+@pytest.mark.asyncio
+async def test_call_order_add_thinking_remove_thinking_terminal(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({})
+
+    call_log = []
+    raw_message = SimpleNamespace(
+        add_reaction=AsyncMock(side_effect=lambda e: call_log.append(("add", e))),
+        remove_reaction=AsyncMock(side_effect=lambda e, u: call_log.append(("remove", e))),
+    )
+    event = _make_event("20", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert call_log == [("add", "👀"), ("remove", "👀"), ("add", "✅")]
+
+
+@pytest.mark.asyncio
+async def test_thinking_disabled_done_customized(monkeypatch):
+    monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+    a = _make_adapter_with_emojis({"thinking": None, "done": "🎉"})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("21", raw_message)
+
+    await a.on_processing_start(event)
+    raw_message.add_reaction.assert_not_awaited()
+
+    await a.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    raw_message.remove_reaction.assert_not_awaited()
+    assert raw_message.add_reaction.await_args_list[0].args == ("🎉",)
+
+
+@pytest.mark.asyncio
+async def test_global_reactions_disabled_overrides_emoji_config(monkeypatch):
+    monkeypatch.setenv("DISCORD_REACTIONS", "false")
+    a = _make_adapter_with_emojis({"thinking": "⏳", "done": "🎉", "error": "💥"})
+
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("22", raw_message)
+
+    await a.on_processing_start(event)
+    await a.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    raw_message.add_reaction.assert_not_awaited()
+    raw_message.remove_reaction.assert_not_awaited()

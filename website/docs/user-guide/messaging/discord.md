@@ -311,6 +311,10 @@ discord:
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
+  reaction_emojis:                # Override per-slot emojis (optional)
+    thinking: "👀"                # Emoji while processing (null or "" to disable)
+    done: "✅"                    # Emoji on success (null or "" to disable)
+    error: "❌"                   # Emoji on failure (null or "" to disable)
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
@@ -386,6 +390,31 @@ Controls whether the bot adds emoji reactions to messages as visual feedback:
 - ❌ added if an error occurs during processing
 
 Disable this if you find the reactions distracting or if the bot's role doesn't have the **Add Reactions** permission.
+
+#### `discord.reaction_emojis`
+
+**Type:** object — **Default:** `{}` (all slots use built-in defaults)
+
+Overrides the emoji used for each processing-lifecycle slot. Any slot you omit keeps its default. Set a slot to `null` or an empty string to disable that reaction entirely (whitespace-only strings are also treated as disabled).
+
+```yaml
+discord:
+  reaction_emojis:
+    thinking: "⏳"    # Replace 👀 with a different in-progress emoji
+    done: "🎉"        # Replace ✅ with a custom success emoji
+    error: "💥"       # Replace ❌ with a custom failure emoji
+```
+
+To disable only the success and failure reactions while keeping the in-progress indicator:
+
+```yaml
+discord:
+  reaction_emojis:
+    done: null
+    error: null
+```
+
+`discord.reactions: false` (or `DISCORD_REACTIONS=false`) still overrides everything — no reactions are added regardless of what `reaction_emojis` contains.
 
 #### `discord.ignored_channels`
 

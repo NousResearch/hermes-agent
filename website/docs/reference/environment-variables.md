@@ -483,6 +483,24 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
 
+### XMPP
+
+Used by the bundled XMPP platform plugin (`plugins/platforms/xmpp/`). See [Messaging Gateway → XMPP](/docs/user-guide/messaging/xmpp) for full setup.
+
+| Variable | Description |
+|----------|-------------|
+| `XMPP_JID` | Bare JID the bot logs in as (e.g. `hermes@chat.example.org`). Required. |
+| `XMPP_PASSWORD` | Password for the bot account. Required. |
+| `XMPP_HOST` | Server host override. Default: SRV lookup on the JID domain. |
+| `XMPP_PORT` | Server port override. Default: `5222`. |
+| `XMPP_FORCE_STARTTLS` | Require STARTTLS. Default: `true`. Set `false` only for trusted dev servers on loopback. |
+| `XMPP_NICKNAME` | MUC nickname. Default: the JID's local part. |
+| `XMPP_ROOMS` | Comma-separated MUC JIDs to auto-join. |
+| `XMPP_ALLOWED_USERS` | Comma-separated bare JIDs allowed to DM the bot. |
+| `XMPP_ALLOW_ALL_USERS` | Dev-only escape hatch — accepts any JID. Default: `false`. |
+| `XMPP_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: xmpp`. Prefix MUC targets with `muc:`. |
+| `XMPP_HOME_CHANNEL_NAME` | Human label for the home channel. |
+
 ### Advanced Messaging Tuning
 
 Advanced per-platform knobs for throttling the outbound message batcher. Most users never need to touch these; defaults are set to respect each platform's rate limits without feeling sluggish.

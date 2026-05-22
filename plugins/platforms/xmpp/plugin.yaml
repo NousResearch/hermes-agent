@@ -1,0 +1,61 @@
+name: xmpp-platform
+label: XMPP
+kind: platform
+version: 1.0.0
+description: >
+  XMPP gateway adapter for Hermes Agent.
+  Connects to a self-hosted or hosted XMPP server (Prosody, ejabberd, etc.)
+  and relays messages between XMPP contacts/rooms and the Hermes agent.
+  Built on slixmpp; STARTTLS is on by default. JIDs in an allowlist are
+  authorized to chat with the bot; MUC rooms join with a configurable
+  nickname and reply only when addressed by that nickname.
+author: alien2003
+# ``requires_env`` and ``optional_env`` entries are surfaced in the
+# ``hermes config`` UI via the platform-plugin env var injector in
+# ``hermes_cli/config.py``.
+requires_env:
+  - name: XMPP_JID
+    description: "Bare JID the bot logs in as (e.g. hermes@chat.example.org)"
+    prompt: "Bot JID"
+    password: false
+  - name: XMPP_PASSWORD
+    description: "Password for the bot account"
+    prompt: "XMPP password"
+    password: true
+optional_env:
+  - name: XMPP_HOST
+    description: "Server host override (default: SRV lookup on the JID domain)"
+    prompt: "XMPP host (or empty)"
+    password: false
+  - name: XMPP_PORT
+    description: "Server port override (default: 5222)"
+    prompt: "XMPP port (or empty)"
+    password: false
+  - name: XMPP_FORCE_STARTTLS
+    description: "Require STARTTLS (default: true). Set 'false' only for trusted dev servers."
+    prompt: "Force STARTTLS? (true/false)"
+    password: false
+  - name: XMPP_NICKNAME
+    description: "MUC nickname (default: the JID's local part)"
+    prompt: "MUC nickname (or empty)"
+    password: false
+  - name: XMPP_ROOMS
+    description: "Comma-separated MUC JIDs to auto-join (e.g. ops@conference.example.org)"
+    prompt: "Rooms to join (or empty)"
+    password: false
+  - name: XMPP_ALLOWED_USERS
+    description: "Comma-separated bare JIDs allowed to DM the bot"
+    prompt: "Allowed JIDs (comma-separated)"
+    password: false
+  - name: XMPP_ALLOW_ALL_USERS
+    description: "Allow any JID to talk to the bot (dev only — disables allowlist)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: XMPP_HOME_CHANNEL
+    description: "Default JID for cron / notification delivery (DM JID or MUC JID prefixed with 'muc:')"
+    prompt: "Home channel JID (or empty)"
+    password: false
+  - name: XMPP_HOME_CHANNEL_NAME
+    description: "Human label for the home channel (defaults to the JID)"
+    prompt: "Home channel display name (or empty)"
+    password: false

@@ -544,5 +544,6 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Yuanbao Setup](yuanbao.md)
 - [Microsoft Teams Setup](teams.md)
 - [Teams Meetings Pipeline](teams-meetings.md)
+- [XMPP Setup](xmpp.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Webhooks](webhooks.md)

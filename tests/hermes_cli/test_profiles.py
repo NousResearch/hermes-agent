@@ -478,6 +478,18 @@ class TestListProfiles:
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
 
+    def test_ignores_orphan_default_named_profile_dir(self, profile_env):
+        """A stray profiles/default directory must not duplicate root default."""
+        tmp_path = profile_env
+        (tmp_path / ".hermes" / "profiles" / "default").mkdir(parents=True)
+
+        profiles = list_profiles()
+
+        defaults = [p for p in profiles if p.name == "default"]
+        assert len(defaults) == 1
+        assert defaults[0].is_default is True
+        assert defaults[0].path == tmp_path / ".hermes"
+
 
 # ===================================================================
 # TestActiveProfile

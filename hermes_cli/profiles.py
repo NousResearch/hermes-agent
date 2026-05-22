@@ -607,6 +607,8 @@ def list_profiles() -> List[ProfileInfo]:
             if not entry.is_dir():
                 continue
             name = entry.name
+            if normalize_profile_name(name) == "default":
+                continue
             if not _PROFILE_ID_RE.match(name):
                 continue
             model, provider = _read_config_model(entry)
